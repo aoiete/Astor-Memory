@@ -491,6 +491,7 @@ Use to compare before/after config changes.
 
 ## Next
 
+- [`docs/api.md`](./api.md) — full REST endpoint reference
 - [`docs/faq.md`](./faq.md) — frequently asked questions
 - [`docs/contributing.md`](./contributing.md) — for contributors
 - [`README.md`](../README.md) — quickstart and overview

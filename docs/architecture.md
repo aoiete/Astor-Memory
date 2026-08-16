@@ -549,6 +549,7 @@ Astor-Memory v1.0 ships these insights, absorbed from papers and open-source pro
 
 ## Next
 
+- [`docs/api.md`](./api.md) — full REST endpoint reference (18 endpoints)
 - [`docs/migration.md`](./migration.md) — upgrade guide from old `memory-bus` system
 - [`docs/agent-adapters.md`](./agent-adapters.md) — MCP / LangChain / REST / Python integration
 - [`docs/faq.md`](./faq.md) — frequently asked questions
