@@ -321,3 +321,128 @@ def test_db_paths_resolve_under_astor_dir(monkeypatch, tmp_path):
     assert get_db_path("public", "bus") == target / "public/memory/astor_bus_public.db"
     assert get_db_path("private", "nest", "user_e") == target / "users/user_e/memory/astor_nest_sunny.db"
     assert get_audit_path() == target / "audit/astor_audit.db"
+
+
+# --- Server-level ACL enforcement (2026-08-16 P0-fix regression tests) ---
+#
+# Bug: server.py before_request hardcoded actor='first_admin' for every
+# POST request, so any user could write source tier and read another user's
+# private DB. Fix: actor/role are now resolved from bot-binding.db user_meta.
+#
+# These tests seed bot-binding.db via the public API (upsert_user) and
+# exercise the live Flask test_client against /v1/write + /v1/read.
+
+@pytest.fixture
+def seeded_users(tmp_path, monkeypatch):
+    """Seed bot-binding.db with admin (first_admin) + user_a (user) + user_c (admin)."""
+    target = tmp_path / "astor"
+    monkeypatch.setenv("ASTOR_DIR", str(target))
+    # bot_binding uses _db_path() = ASTOR_DIR/bot-binding.db; reset singleton.
+    from astor_memory._internal import bot_binding as bb
+    monkeypatch.setattr(bb, "_con", None)
+    # Seed users via the upsert API so role + active are correctly recorded.
+    bb.upsert_user(user_id="admin", short_alias="admin", role="first_admin", subscription_plan="permanent")
+    bb.upsert_user(user_id="user_a", short_alias="user_a", role="user", subscription_plan="lifetime")
+    bb.upsert_user(user_id="user_c", short_alias="user_c", role="admin", subscription_plan="lifetime")
+    bb.upsert_user(user_id="sunday", short_alias="sunday", role="user", subscription_plan="lifetime")
+    return target
+
+
+def _client(target):
+    from astor_memory.server import create_app
+    return create_app(str(target)).test_client()
+
+
+def test_acl_yuqi_cannot_write_source(seeded_users):
+    """user_a (role=user) writing tier=source → 403.
+
+    Regression for the 2026-08-16 P0 ACL bug: previously returned 200 because
+    server before_request hardcoded first_admin.
+    """
+    client = _client(seeded_users)
+    r = client.post("/v1/write", json={
+        "user": "user_a", "tier": "source", "text": "should be denied",
+    })
+    assert r.status_code == 403, r.get_data(as_text=True)
+    body = r.get_json()
+    assert body["error"] in ("permission_denied", "acl_init_failed")
+
+
+def test_acl_yuqi_cannot_read_other_users_private(seeded_users):
+    """user_a reading admin's private tier → 403 (cross-user denied).
+
+    Regression for the 2026-08-16 P0 ACL bug.
+    """
+    client = _client(seeded_users)
+    r = client.post("/v1/read", json={
+        "user": "user_a", "tier": "private", "user_id": "admin", "query": "anything",
+    })
+    assert r.status_code == 403, r.get_data(as_text=True)
+    body = r.get_json()
+    assert body["error"] == "cross_user_forbidden"
+    assert "user_a" in body["detail"]
+    assert "admin" in body["detail"]
+
+
+def test_acl_yuqi_can_write_own_private(seeded_users):
+    """user_a writing to her own private tier → 200 (allowed)."""
+    client = _client(seeded_users)
+    r = client.post("/v1/write", json={
+        "user": "user_a", "tier": "private", "text": "I prefer dark roast",
+    })
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert r.get_json().get("count", 0) >= 1
+
+
+def test_acl_yuqi_can_read_own_private(seeded_users):
+    """user_a reading her own private tier → 200 (allowed)."""
+    client = _client(seeded_users)
+    # First, seed something user_a can read back.
+    client.post("/v1/write", json={
+        "user": "user_a", "tier": "private", "text": "user_a likes oolong tea",
+    })
+    r = client.post("/v1/read", json={
+        "user": "user_a", "tier": "private", "query": "tea preference", "top_k": 5,
+    })
+    assert r.status_code == 200
+    results = r.get_json().get("results", [])
+    assert any("oolong" in str(x.get("content", "")).lower() for x in results), results
+
+
+def test_acl_first_admin_can_write_source(seeded_users):
+    """first_admin (user_id=admin alias) writing tier=source → 200."""
+    client = _client(seeded_users)
+    r = client.post("/v1/write", json={
+        "user": "admin", "tier": "source", "text": "first admin source fact",
+    })
+    assert r.status_code == 200, r.get_data(as_text=True)
+
+
+def test_acl_admin_role_can_read_other_users_private(seeded_users):
+    """user_c (role=admin per plan §2624 power-user) can read user_a's private.
+
+    Per plan §2624, admin is "power user" — can read other users' private
+    for support purposes. This is a deliberate carve-out distinct from the
+    regular user role.
+    """
+    client = _client(seeded_users)
+    # Seed user_a's private.
+    client.post("/v1/write", json={
+        "user": "user_a", "tier": "private", "text": "user_a keeps secrets here",
+    })
+    # user_c (admin role) should be allowed to read it.
+    r = client.post("/v1/read", json={
+        "user": "user_c", "tier": "private", "user_id": "user_a", "query": "secrets",
+    })
+    assert r.status_code == 200, r.get_data(as_text=True)
+
+
+def test_acl_resolve_actor_returns_correct_roles(seeded_users):
+    """Direct unit test for _astor_resolve_actor — no HTTP roundtrip needed."""
+    from astor_memory.server import _astor_resolve_actor
+    assert _astor_resolve_actor("admin") == ("first_admin", "first_admin")
+    assert _astor_resolve_actor("user_c") == ("admin:user_c", "admin")
+    assert _astor_resolve_actor("user_a") == ("user:user_a", "user")
+    assert _astor_resolve_actor(None) == ("first_admin", "first_admin")
+    assert _astor_resolve_actor("") == ("first_admin", "first_admin")
+    assert _astor_resolve_actor("ghost_user_not_in_db") == ("first_admin", "first_admin")

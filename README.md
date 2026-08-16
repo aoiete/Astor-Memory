@@ -286,16 +286,32 @@ am compact                        # Run lifecycle (decay/merge/promote)
 REST (optional):
 
 ```bash
+# Write — `user` field is required for private tier; ACL resolves role
+# from bot-binding.db user_meta.role automatically
 curl -X POST http://localhost:7803/v1/write \
   -H "Content-Type: application/json" \
-  -d '{"text": "user prefers red", "scope": "long_term"}'
+  -d '{"text": "user prefers red", "scope": "long_term", "tier": "private", "user": "alice"}'
 
+# Read — `user_id` filters to one user's private DB
 curl -X POST http://localhost:7803/v1/read \
   -H "Content-Type: application/json" \
-  -d '{"query": "user preferences", "top_k": 5}'
+  -d '{"query": "user preferences", "top_k": 5, "tier": "private", "user": "alice"}'
+
+# Cross-user reads by admin (power user per plan §2624)
+curl -X POST http://localhost:7803/v1/read \
+  -H "Content-Type: application/json" \
+  -d '{"query": "support ticket", "user": "admin", "tier": "private", "user_id": "alice"}'
+# → 200 OK (admin can cross-read for support)
+
+# Cross-user reads by regular user (denied)
+curl -X POST http://localhost:7803/v1/read \
+  -H "Content-Type: application/json" \
+  -d '{"query": "anything", "user": "alice", "tier": "private", "user_id": "bob"}'
+# → 403 cross_user_forbidden
 ```
 
-Full API reference: [`docs/architecture.md`](./docs/architecture.md).
+See [`docs/architecture.md`](./docs/architecture.md) § "ACL enforcement flow"
+for the full per-request binding pipeline.
 
 ---
 

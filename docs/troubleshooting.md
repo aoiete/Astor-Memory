@@ -318,7 +318,88 @@ Check [`docs/migration.md`](./migration.md#side-by-side-reference) for the full 
 
 ---
 
-## Diagnostic commands
+## ACL & permission errors
+
+### `403 cross_user_forbidden` on a private-tier read/write
+
+You're trying to access another user's private DB. By design:
+
+- **Regular `user` role** can only access their own `private_<self>`.
+  Cross-user reads/writes are denied.
+- **`admin` role** (power user per plan §2624) can cross-read for support
+  purposes. Cross-writes are also allowed but you should write an
+  `astor_audit` row documenting the moderation event.
+- **`first_admin` role** (the system root, user_id='admin' alias) can
+  access any user's private DB.
+
+If you got `403` and believe you should have access, check:
+
+```bash
+# What role is your user?
+am platform list-users  # → look up your user_id's role
+```
+
+If you're missing an admin role, ask the first_admin to promote you:
+
+```bash
+am bot promote <your_user_id> --to=admin  # first_admin only
+```
+
+### `403 permission_denied` after working fine for days
+
+This is `astor_check_*` failing from inside a route handler. Either:
+
+- The route is being called with a stale `body.user` (some upstream code
+  cached a default value)
+- The user's `bot-binding.db user_meta.role` was changed and is now denied
+- A tier mismatch: you're calling with `tier='private'` from a request
+  that should be `tier='public'`
+
+Check the server log:
+
+```bash
+tail -50 ~/.astor/logs/astor_server.log  # Linux/Mac
+# or
+Get-Content <runtime_dir>logs\astor_server.log -Tail 50  # PowerShell
+```
+
+The `astor_check_*` failure detail includes the actor, role, tier, and
+target user_id — that tells you which constraint fired.
+
+### `sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread` (Flask server only)
+
+You're running v1.1.0 or earlier. Upgrade to **v1.1.1 or later** — the
+fix adds `check_same_thread=False` to `bot_binding._connect()` because
+Flask is multi-threaded and the ACL `before_request` hook now reads
+`bot-binding.db` from worker threads.
+
+Quick check:
+
+```bash
+am --version  # should print 1.1.1 or later
+```
+
+If you can't upgrade immediately, run the Flask server in single-threaded
+mode:
+
+```bash
+flask --app astor_memory.server run --port 7803 --without-threads
+```
+
+### Health endpoint returns `403`
+
+`/v1/health` should always return 200 for status monitoring. If you're
+seeing 403 after the v1.1.1 ACL fix, restart the server so the new
+`before_request` code is loaded — older worker threads may still have
+the old ACL bind.
+
+```bash
+python <runtime_dir>restart.py restart
+```
+
+---
+
+
 
 ### `am doctor` — overall health
 

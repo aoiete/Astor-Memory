@@ -150,6 +150,36 @@ grants:
 
 Default behavior: writes go to `tier.default`. Reads default to `tier.default` + the user's own `private × N` row.
 
+### ACL enforcement flow (v1.1.1 — per-request actor resolution)
+
+The HTTP server runs Flask multi-threaded. Each request goes through
+`before_request` to bind the ACL context for the worker thread:
+
+1. **`_astor_resolve_actor(body.user)`** reads `bot-binding.db user_meta.role`
+   and returns `(actor, role)`:
+   - `admin` alias or `role='first_admin'` → `(first_admin, first_admin)`
+   - `role='admin'` → `(admin:<id>, admin)` — power user per plan §2624
+   - `role='user'` → `(user:<id>, user)`
+   - unknown / inactive → `(first_admin, first_admin)` fail-closed
+2. **`astor_init_acl(actor, role, tier, user_id=actor_id)`** binds the
+   thread-local `_CURRENT` context. `user_id` is the **actor's** id, not
+   the target — so downstream `astor_check_*` enforces identity correctly.
+3. **Cross-user boundary check** (only when `tier='private'` and
+   `target_user != body_user`): runs `astor_check_read` + `astor_check_write`
+   against `target_user`. If denied, returns `403 cross_user_forbidden`.
+   `admin` role passes this per the carve-out in `acl.py`.
+4. **`errorhandler(PermissionError_)`** converts any downstream
+   `astor_check_*` failure into `403 permission_denied` (instead of
+   bubbling as 500).
+5. **Default bind for GETs**: `health`, `viewer_stats`, `lex_stats` get
+   `actor=first_admin, tier=public` so worker threads don't trip
+   `astor_acl not initialized`.
+
+**P0 fix history**: v1.1.0 hardcoded `actor='first_admin'` in
+`before_request`, allowing any user to write source tier and read any
+user's private DB. Fixed in v1.1.1 (2026-08-16). See CHANGELOG.md for
+the full incident writeup.
+
 ---
 
 ## 3. Temporal scopes (3 layers × 3 dimensions)
