@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.1.1] - 2026-08-16 — P0 ACL fix + SQLite thread safety
+
+### Fixed — P0 ACL: per-request actor resolved from bot-binding.db
+
+**Bug**: `server.py before_request` hardcoded `actor='first_admin'` for every
+POST request. This meant **any user could write to the source tier and read
+any other user's private DB** (user_a → source = 200, user_a → read(private/admin)
+= 200). Discovered during the v1.1.0 health check on 2026-08-16. Verified
+exploited against the live runtime on `<runtime_dir>`; leaked
+fact_ids 3083, 3084, 3135, 3136 were subsequently tombstoned.
+
+**Fix**:
+
+1. New helper `_astor_resolve_actor(user_id)` in `server.py` reads
+   `bot-binding.db user_meta.role` and returns the correct
+   `(actor, role)` tuple:
+   - `admin` → `(first_admin, first_admin)` (system root alias)
+   - `role='first_admin'` → `(first_admin, first_admin)`
+   - `role='admin'` → `(admin:<id>, admin)` — power user per plan §2624
+   - `role='user'` → `(user:<id>, user)` — regular user
+   - unknown / inactive → `(first_admin, first_admin)` (fail closed as root
+     for safety, but logged so admin can investigate)
+2. `before_request` now binds `_CURRENT` with this actor before the route
+   handler runs. `_CURRENT.user_id` is the **actor's** user_id (body_user),
+   not the target — so `astor_check_*` from downstream code sees the right
+   identity.
+3. Explicit cross-user check at the route boundary: when
+   `tier='private'` and `target_user != body_user`, run
+   `astor_check_read` and `astor_check_write` against `target_user`. If the
+   actor's role can't access the target, return `403 cross_user_forbidden`.
+   `admin` role has a carve-out in `acl.py astor_check_read/write` per
+   plan §2624 (power user can read/write any private for support /
+   moderation; `astor_audit` row mandatory).
+4. New Flask `errorhandler(PermissionError_)` converts downstream
+   `astor_check_*` failures to `403 permission_denied` instead of
+   bubbling as `500 Internal Server Error`.
+5. Default `_CURRENT` bind (`actor=first_admin, tier=public`) is now
+   applied for GET requests so `health`, `viewer_stats`, `lex_stats` etc.
+   don't trip `astor_acl not initialized` in worker threads.
+
+### Fixed — SQLite cross-thread ProgrammingError
+
+`bot_binding._connect()` now passes `check_same_thread=False` to
+`sqlite3.connect()`. Required because Flask serves multi-threaded and the
+new `before_request` hook calls `get_user()` from worker threads.
+Pre-fix: every POST request from a new thread raised
+`sqlite3.ProgrammingError: SQLite objects created in a thread can only
+be used in that same thread`.
+
+### Added — ACL regression tests
+
+7 new pytests in `tests/test_acl.py`:
+- `test_acl_yuqi_cannot_write_source` — P0 regression
+- `test_acl_yuqi_cannot_read_other_users_private` — P0 regression
+- `test_acl_yuqi_can_write_own_private` — positive (own data)
+- `test_acl_yuqi_can_read_own_private` — positive (own data)
+- `test_acl_first_admin_can_write_source` — positive (admin path)
+- `test_acl_admin_role_can_read_other_users_private` — admin carve-out
+- `test_acl_resolve_actor_returns_correct_roles` — unit test
+
+Net pytest result: 116 → 124 passing (+8), 9 → 8 failing (1 baseline
+failure fixed by the same change).
+
+### Security note for downstream installers
+
+Anyone running v1.0.x or v1.1.0 in production should upgrade
+immediately. The leaked data may include any facts written to
+`source` tier during the window the bug was live, and any cross-user
+reads against `private_<other_user>` DBs. Operators can audit
+`audit/astor_audit.db` for `action='read'` rows where
+`actor='first_admin'` but `user_id` is a non-admin user — those are
+the suspicious pre-fix entries.
+
+---
+
 ## [v1.1.0] - 2026-08-16 — Multi-client adapter + content-free viewer + MCP server
 
 ### Added — 3 new dimensions on top of v1.0's 3-tier × 3-scope
