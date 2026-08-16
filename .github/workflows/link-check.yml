@@ -1,0 +1,67 @@
+name: link-check
+
+# Validates all links in docs/ and root .md files.
+# Replaces zensical build --strict (P-DOCS-BUILD-040 → P-LINK-CHECK-DOCS-041).
+# See docs/contributing.md for rationale.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - ".github/workflows/link-check.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - ".github/workflows/link-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  link-check:
+    name: lychee link check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run lychee
+        id: lychee
+        uses: lycheeverse/lychee-action@v2
+        with:
+          # Check all .md files in repo (root + docs/)
+          args: >
+            --no-progress
+            --exclude-loopback
+            --exclude-mail
+            --exclude 'https://twitter.com/*'
+            --exclude 'https://x.com/*'
+            --exclude 'https://localhost:*'
+            --exclude 'https://github.com/flopworld/astor-memory/issues/new*'
+            --exclude 'https://github.com/flopworld/astor-memory/discussions/new*'
+            --max-concurrency 16
+            --timeout 20
+            --accept 200,203,206
+            --format markdown
+            ./README.md
+            ./ACKNOWLEDGEMENTS.md
+            ./CHANGELOG.md
+            ./docs/architecture.md
+            ./docs/migration.md
+            ./docs/agent-adapters.md
+            ./docs/faq.md
+            ./docs/troubleshooting.md
+            ./docs/contributing.md
+
+      - name: Upload lychee report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lychee-report
+          path: lychee/out.md
+          if-no-files-found: ignore
+          retention-days: 7

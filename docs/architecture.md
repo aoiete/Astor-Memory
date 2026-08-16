@@ -1,0 +1,526 @@
+# Architecture
+
+> Deep dive on Astor-Memory's 3-store × 3-tier design, 11 absorbed insights, and lifecycle evolution.
+
+This document explains *why* each component exists. For installation and usage, see [`README.md`](../README.md).
+
+---
+
+## Table of contents
+
+1. [The 3-store triplet](#1-the-3-store-triplet)
+2. [The 3-tier isolation model](#2-the-3-tier-isolation-model)
+3. [Temporal scopes (3 layers × 3 dimensions)](#3-temporal-scopes-3-layers--3-dimensions)
+4. [Lifecycle: decay, merge, promote](#4-lifecycle-decay-merge-promote)
+5. [Revision tracking (append-only)](#5-revision-tracking-append-only)
+6. [Citation-first context packs](#6-citation-first-context-packs)
+7. [Search ↔ context-pack separation](#7-search--context-pack-separation)
+8. [Cross-LLM adapter (vendor-neutral recall)](#8-cross-llm-adapter-vendor-neutral-recall)
+9. [Single-user vs multi-user mode](#9-single-user-vs-multi-user-mode)
+10. [Process model](#10-process-model)
+11. [Iron rules (default runtime)](#11-iron-rules-default-runtime)
+12. [External skill governance](#12-external-skill-governance)
+13. [Absorbed insights (11 from literature)](#13-absorbed-insights-11-from-literature)
+
+---
+
+## 1. The 3-store triplet
+
+Astor-Memory decomposes memory into three single-responsibility stores. Each does one thing well; together they form a complete pipeline.
+
+### `bus` — event log (append-only)
+
+```python
+# astor_memory/bus.py
+class Bus:
+    """Append-only event log. SQLite + WAL. Time-series."""
+
+    def append(self, event: Event) -> EventId:
+        """Single write. Returns immediately. No extraction, no indexing."""
+
+    def query(self, since: datetime, kind: str) -> list[Event]:
+        """Time-range scan. For replay, audit, debugging."""
+```
+
+**Why a separate event log?** Because raw events are valuable even when not yet structured. A user typing "user prefers concise replies" creates one event. Three months later, we may discover it relates to a behavior pattern. The bus preserves that original signal.
+
+**Storage**: 3 separate SQLite files with WAL mode (one per store):
+- `~/.astor/astor_bus.db` — events + memory_candidates + memory_canonical + audit_log
+- `~/.astor/astor_nest.db` — vector embeddings
+- `~/.astor/astor_forge.db` — LLM extraction cache
+
+Why 3 files (per user lock 2026-08-15): independent backup/migration, independent lock contention (bus write-heavy vs nest read-heavy), independent schema evolution (HNSW in v2.0+ won't touch bus).
+
+**TTL policy**: events 90 days (configurable), candidates 30 days, canonical + rules permanent.
+
+### `forge` — fact extraction (LLM-async)
+
+```python
+# astor_memory/forge.py
+class Forge:
+    """Extract structured facts from raw events. Async via daemon thread."""
+
+    def extract(self, event_id: EventId) -> Fact:
+        """Cloud LLM call. Async. Returns when extraction completes."""
+
+    def provider(self) -> LLMProvider:
+        """Currently configured provider. Read from config."""
+```
+
+**Why async?** Writes must return immediately (`bus.append()` is sync; `forge.extract()` runs in background). This is the Mem-π insight: agents should not block on memory extraction.
+
+**LLM provider**: configurable. Defaults to the agent's current provider. Supports OpenAI, Anthropic, Gemini, DeepSeek, 智谱, Ollama. Cross-LLM compatible.
+
+**Output**: a `Fact` object with `kind`, `confidence`, `references`, and a `revision_id`. Goes to `nest` for indexing.
+
+### `nest` — vector store (SQLite + NumPy kNN)
+
+```python
+# astor_memory/nest.py
+class Nest:
+    """Vector store. SQLite for text + NumPy for brute-force kNN."""
+
+    def index(self, fact: Fact) -> None:
+        """Compute embedding via fastembed. Insert into SQLite."""
+
+    def search(self, query: str, top_k: int) -> list[Hit]:
+        """Embed query, cosine similarity, return top_k."""
+```
+
+**Why not chromadb?** Three reasons:
+1. **Footprint** — chromadb pulls in 80 MB of transitive deps. NumPy + SQLite is 12 MB.
+2. **Simplicity** — brute-force kNN is 5 lines of code. Fast up to 5 K docs (1 ms latency).
+3. **Predictability** — no daemon, no separate server, no migration scripts.
+
+**HNSW deferred to v2.0** — when `nest` exceeds 100 K docs, we'll add faiss or hnswlib. Not before.
+
+### The write pipeline
+
+```python
+def write(text: str, scope: str = "long_term", tier: str = "public") -> FactId:
+    eid = bus.append(Event(text=text, scope=scope, tier=tier))
+    forge.extract_async(eid)        # background
+    return eid                       # immediate
+```
+
+The event is durable the moment `bus.append()` returns. Extraction and indexing are best-effort with retry.
+
+### The read pipeline
+
+```python
+def read(query: str, top_k: int = 5, tier: str = "public") -> list[Hit]:
+    return nest.search(query, top_k=top_k, tier=tier)
+```
+
+A read is a vector search. Citations come from the indexed `Fact.references`.
+
+---
+
+## 2. The 3-tier isolation model
+
+Three spatial tiers match the ACL needs of every agent system we've seen in production.
+
+| Tier | Default visibility | Use case |
+|---|---|---|
+| `public` | Everyone (all users + agent) | Shared knowledge, skills, public rules |
+| `source` | Admin only (agent sees, user doesn't) | Admin-private context, agent self-patterns, internal config |
+| `private × N` | One user at a time | Per-user private facts (preferences, history, audit) |
+
+### Why exactly 3?
+
+We considered 2 (just public/private) and 5 (PowerContext's profile/private/short/long/shared). The reason 3 wins:
+
+- **2 is too coarse.** Admins need a tier for "I see this but the end user doesn't" — for things like debugging context, internal notes, agent self-patterns. Without it, admins either leak too much (everything in `public`) or hide useful context from the agent (everything in `private`).
+- **5 is over-scoped.** PowerContext's 5 tiers mix spatial (where it lives) with temporal (how long it lives) with audience (who sees it). We separated these concerns: spatial = 3 tiers (this section), temporal = 3 scopes (next section), audience = ACL grants (later in this section).
+
+### ACL rules
+
+```yaml
+# ~/.astor/config.yaml
+tiers:
+  default: public              # default tier for writes
+  admin_only: source           # only admins can write to source
+
+# Per-rule grants (v1.1+)
+grants:
+  - rule_id: P-CRON-DATA-010
+    grants: [admin]
+    # v1.0: hardcoded by tier; v1.1+ configurable
+```
+
+Default behavior: writes go to `tier.default`. Reads default to `tier.default` + the user's own `private × N` row.
+
+---
+
+## 3. Temporal scopes (3 layers × 3 dimensions)
+
+Beyond spatial tiers, Astor-Memory adds 3 temporal scopes. The intersection of tier × scope gives 9 cells; we actively use 6 of them.
+
+| Scope | TTL | Default use |
+|---|---|---|
+| `short_term` | 30 days | Today's tasks, recent context, transient state |
+| `long_term` | Permanent | User preferences, decisions, rules |
+| `profile` | Permanent (per-user) | User persona, stable facts about a specific user |
+
+### Scope determination (Insight 6)
+
+Default = `long_term` (most common case). Override:
+
+```python
+write("today's standup at 3pm", scope="short_term")
+write("user prefers Chinese", scope="long_term")
+write("alice's timezone is MDT", scope="profile", user_id="alice")
+```
+
+### Cross-tier promotion (auto)
+
+A `short_term` fact that gets accessed ≥ 5 times in 30 days auto-promotes to `long_term`. This handles "things that started as transient but turned out to matter" without manual intervention.
+
+---
+
+## 4. Lifecycle: decay, merge, promote
+
+Three automatic processes prevent unbounded growth. Inspired by Ebbinghaus forgetting curve + PowerContext RFC 0020 lifecycle model.
+
+### Decay (relevance decay over time)
+
+```
+score = relevance × exp(-age_days / 30) × log(1 + access_count)
+```
+
+- `relevance`: raw cosine similarity
+- `exp(-age_days / 30)`: half-life of 30 days
+- `log(1 + access_count)`: usage bonus (diminishing returns)
+
+A fact that's never accessed decays exponentially. A fact accessed 100 times decays much slower.
+
+### Merge (deduplicate near-duplicates)
+
+Facts with cosine similarity ≥ 0.85 consolidate into one revision. The merged fact inherits the union of references and the max confidence.
+
+Triggered by:
+- `am compact` (manual)
+- Nightly cron (automatic, off by default; enable via `am config lifecycle.auto_merge=true`)
+
+### Promote (graduate facts to rules)
+
+A fact that appears ≥ 3 times across revisions (different `revision_id` but same conceptual entity) graduates from `kind=fact` to `kind=rule`. Rules get priority in retrieval.
+
+This is how agent behavior patterns become encoded as default policies.
+
+### Configuration
+
+```yaml
+# ~/.astor/config.yaml
+lifecycle:
+  decay_half_life_days: 30
+  merge_threshold: 0.85
+  promote_threshold: 3
+  auto_compact: false  # enable nightly cron
+```
+
+---
+
+## 5. Revision tracking (append-only)
+
+Every `update` creates a new `revision`. Old content stays queryable for audit.
+
+```python
+# Writing a "update"
+write("user prefers concise replies", scope="long_term")
+# → f_8a3b2c1d, revision_id=1
+
+# Updating (later)
+write("user prefers very concise replies", scope="long_term", update_of="f_8a3b2c1d")
+# → f_8a3b2c1d, revision_id=2  (same fact_id, new revision)
+# revision_id=1 still exists and can be queried
+```
+
+### Why not overwrite?
+
+Three reasons:
+
+1. **Audit** — when did the agent's understanding change? Trace the revision history.
+2. **Citation** — `<ref fact_id:revision_id>` lets you pin to a specific historical state.
+3. **No data loss on retry** — if `write()` fails after partial commit, the previous revision remains.
+
+### Storage
+
+`memory_canonical` table gains `revision_id` and `parent_revision_id` columns. Index by `(fact_id, revision_id)`. Query latest = `MAX(revision_id)` per `fact_id`.
+
+---
+
+## 6. Citation-first context packs
+
+Every recall() output embeds `<ref>` markers so agents can verify what they read.
+
+```python
+hits = read("user preferences", top_k=5)
+
+# Each hit carries:
+# - content (the text)
+# - references (list of memory_id:revision_id)
+# - confidence (0.0 - 1.0)
+# - context_pack_inclusion_reason (why this was included)
+```
+
+Example output:
+
+```
+[0.92] 用户偏好简洁回复
+  ref: f_8a3b2c1d:rev_2, f_7c4d9e0a:rev_1
+  conf: 0.94
+  reason: cosine_match + temporal_decay
+
+[0.78] 用户偏好中文交流
+  ref: f_3e1b2f9c:rev_1
+  conf: 0.81
+  reason: cosine_match
+```
+
+### Why citation-first?
+
+**Citation proves locatability, not correctness.** A hit with `ref=f_8a3b2c1d:rev_2` lets the agent call `am verify f_8a3b2c1d:rev_2` to confirm the content still exists and hasn't been superseded.
+
+Low-confidence hits (< 0.7) require explicit human ack before injection into context packs. This prevents hallucination cascades.
+
+---
+
+## 7. Search ↔ context-pack separation
+
+PowerContext RFC 0028 insight: keep "search" pure and "context pack preparation" separate.
+
+### Search (粗排)
+
+```python
+def search(query: str, top_k: int = 30) -> list[Hit]:
+    """Pure retrieval. No budget control, no trimming."""
+```
+
+Returns Top-30 with FTS + vector + time signals fused (Reciprocal Rank Fusion). High recall; precision intentionally loose.
+
+### Context pack (精排)
+
+```python
+def prepare_context(query: str, max_bytes: int = 4096) -> ContextPack:
+    """Take search hits, trim to budget, add citations, mark omissions."""
+```
+
+Returns a `ContextPack` with:
+- `content`: the actual text to inject
+- `references`: list of `<memory_id:revision_id>` cited
+- `truncated`: which hits were trimmed due to budget
+- `omitted`: bool, whether any hits were dropped
+- `byte_count`: actual bytes used
+
+### Why split?
+
+Without separation, `recall()` dumps all hits into the prompt → long-tail pollution. With separation, the agent explicitly controls how much context to consume.
+
+Mem-π measured: separate search→context_pack achieves 43.1% task success with 138 tokens; naive dump achieves 27% with 200-225 tokens.
+
+---
+
+## 8. Cross-LLM adapter (vendor-neutral recall)
+
+The Mem-π paper showed: a memory generation strategy trained on Qwen2.5-7B still works as guidance for GPT-5-mini (+16 percentage points over RAG +4.3 pp).
+
+**Insight: memory strategy is independent of executor.**
+
+### Implementation
+
+Astor-Memory's `recall()` output is structured (citations, confidence, scope) — never coupled to any specific LLM provider's prompt format.
+
+```python
+# This output works for any LLM downstream
+pack = recall("user preferences", max_bytes=2048)
+# → structured hits + citations, format-neutral
+
+# Agent then injects into ANY LLM:
+openai.chat(messages=[{"role": "user", "content": inject(pack)}])
+anthropic.messages(messages=[{"role": "user", "content": inject(pack)}])
+```
+
+### Configuration
+
+```bash
+am config llm.provider=openai        # default
+am config llm.provider=anthropic
+am config llm.provider=gemini
+am config llm.provider=deepseek
+am config llm.provider=zhipu
+am config llm.provider=ollama         # local
+```
+
+Same recall output, different LLM downstream. The 16 iron rules (P-CITATION-015 etc.) ensure every context pack is auditable regardless of provider.
+
+---
+
+## 9. Single-user vs multi-user mode
+
+Astor-Memory supports two modes with the same code path. The mode is determined by config, not by build.
+
+### Single-user mode (default)
+
+```bash
+am init
+```
+
+Creates:
+- `~/.astor/public.db` — shared knowledge
+- `~/.astor/source.db` — admin-private (agent + admin)
+- `~/.astor/private_admin.db` — self-private (admin's own user, present in both single-user and multi-user modes)
+
+### Multi-user mode
+
+```bash
+am bot on
+am bot add-user alice
+am bot add-user bob
+```
+
+Creates:
+- `~/.astor/public.db` (shared)
+- `~/.astor/source.db` (admin)
+- `~/.astor/private_<user_id>.db` — one per user
+
+The CLI command `am bot on` triggers the structure creation; the code path is identical otherwise.
+
+### When to use which
+
+| Scenario | Mode |
+|---|---|
+| Personal agent (1 user) | Single-user |
+| Bot with N users (e.g. Discord, Telegram, WeChat) | Multi-user |
+| Personal agent + bot (admin uses bot + has own private) | Multi-user with `user_id=admin` as default |
+
+---
+
+## 10. Process model
+
+### Before (legacy 3-server architecture)
+
+```
+bus_server.py:7803       # event log
+memu_server.py:7801      # LLM extraction
+mempalace_server.py:7802 # vector store
+```
+
+3 separate processes, 3 ports, 3 health checks, 3 deployment units.
+
+### After (Astor-Memory single daemon)
+
+```
+astord                  # in-process bus + forge + nest
+```
+
+Or even simpler — **library mode**:
+
+```python
+from astor_memory import AstorMemory
+am = AstorMemory()
+am.write("...")
+am.read("...")
+```
+
+No daemon, no port. Library imports directly.
+
+### REST API (optional)
+
+For external integration (e.g. non-Python agents):
+
+```python
+# astor_memory/server.py
+from flask import Flask
+app = Flask(__name__)
+
+@app.route("/v1/write", methods=["POST"])
+def write():
+    return am.write(request.json["text"])
+
+@app.route("/v1/read", methods=["POST"])
+def read():
+    return am.read(request.json["query"])
+```
+
+Run with `am serve --port=7803` (optional, defaults off in library mode).
+
+### Why in-process?
+
+- **Latency** — in-process calls are 100x faster than HTTP round-trips
+- **Simplicity** — one process to start, one to monitor, one to restart
+- **Same code path** — library mode and REST mode share the same `AstorMemory` instance; no separate API to maintain
+
+---
+
+## 11. Iron rules (default runtime)
+
+Astor-Memory ships 15 Core runtime iron rules that every agent must obey. Plus 8 Engineering + 5 Docs engineering rules in `CONTRIBUTING.md`. Plus 4 Vendor-neutral + 4 Personal rules opt-in via config.
+
+### Core 15 (default for all agents)
+
+| Category | Rules |
+|---|---|
+| **Operational** (12) | P-VERIFY-001, P-MULTISRC-002, P-SHIP-004, P-FAIL-005, P-NOLOOP-007, P-CRON-DATA-010, P-CITATION-015, P-IMMUT-016, P-FAIL-NO-DATA-024, P-NO-FABRICATE-026, P-DEDUPE-014, P-FAILOPEN-013 |
+| **Communication** (2) | P-CONF-003, P-PUSHBCK-008 |
+| **Security** (1) | P-NOSECRET-020 |
+
+### Personal category (opt-in)
+
+- P-CONT-006 — "继续" token workflow (flopworld-specific)
+
+### Disclosure policy
+
+11 of the 15 Core rules are universal (matched in CoALA, PowerContext RFCs, Anthropic/ADK style guides). 4 rules (P-CONF-003, P-MULTISRC-002, P-CRON-DATA-010, P-DEDUPE-014) are behavioral statements whose implementation details (style granularity, 3-source example, cron enum list, fingerprint algorithm) live in `CONTRIBUTING.md` to avoid leaking personal workflow or attack surface.
+
+Full rule list and implementation details: [`docs/contributing.md`](../docs/contributing.md).
+
+---
+
+## 12. External skill governance
+
+Astor-Memory doesn't own external skills. It can *scan* and *reference* them, but not edit or copy.
+
+```bash
+am skill scan                              # index ~/.hermes/skills/
+am skill import moomoo-currency-pitfall    # reference into catalog
+am skill edit moomoo-currency-pitfall      # REFUSE — external skill, Hermes owns content
+```
+
+Only Astor-managed skills (created via `from-experience` in v1.1+) can be edited.
+
+Why: discovery without ownership transfer. PowerContext RFC 0051 principle.
+
+---
+
+## 13. Absorbed insights (11 from literature)
+
+Astor-Memory v1.0 ships these insights, absorbed from papers and open-source projects. Each contributed to a specific design decision.
+
+| # | Insight | Source | Ship status |
+|---|---|---|---|
+| 1 | Search ↔ context-pack separation | PowerContext RFC 0028 | v1.0 (mandatory) |
+| 2 | LLM listwise rerank | PowerContext RFC 0051 | v1.1 (opt-in) |
+| 3 | Lifecycle decay + merge + promote | PowerContext RFC 0020, Ebbinghaus | v1.0 (mandatory) |
+| 4 | Experience ↔ Skill split | PowerContext RFC 0051 | v1.1 (key architecture) |
+| 5 | Artifact revision tracking | PowerContext RFC 0028 | v1.0 (mandatory) |
+| 6 | Temporal scope (short/long/profile) | PowerContext 5-layer model | v1.0 (3 of 5 scopes) |
+| 7 | Citation-first design | PowerContext citation principle | v1.0 (mandatory) |
+| 8 | External skill governance | PowerContext RFC 0051 | v1.0 (boundary) |
+| 9 | On-demand generation | Mem-π paper §3 | v1.1 (key architecture) |
+| 10 | Abstain mechanism (71% abstention) | Mem-π paper §5 | v1.1 (key architecture) |
+| 11 | Cross-LLM adapter | Mem-π paper §6 | v1.0 (mandatory) |
+
+**v1.0 scope**: 10 of 11 (Insights 2, 4, 9, 10 deferred to v1.1).
+
+**Why this matters**: Astor-Memory didn't invent these patterns — we absorbed them and integrated them into a single coherent architecture. Each insight is a battle-tested design from production systems or peer-reviewed papers. Credits in [`ACKNOWLEDGEMENTS.md`](../ACKNOWLEDGEMENTS.md).
+
+---
+
+## Next
+
+- [`docs/migration.md`](./migration.md) — upgrade guide from old `memory-bus` system
+- [`docs/agent-adapters.md`](./agent-adapters.md) — MCP / LangChain / REST / Python integration
+- [`docs/faq.md`](./faq.md) — frequently asked questions
+- [`docs/troubleshooting.md`](./troubleshooting.md) — common errors and fixes
+- [`docs/contributing.md`](./contributing.md) — for contributors

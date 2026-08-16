@@ -1,0 +1,145 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "astor-memory"
+version = "1.1.0"
+description = "Self-owned memory system for AI agents: 3-tier × 3-store × 3-scope = 9+ SQLite layout, multi-user ACL, WeChat/Telegram/Discord token manager, MCP server"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<3.14"
+authors = [
+    {name = "T flopworld L", email = "astor-memory@users.noreply.github.com"},
+]
+keywords = [
+    "memory",
+    "agent",
+    "agent-memory",
+    "rag",
+    "knowledge-base",
+    "context-management",
+    "ai-agent",
+    "llm",
+    "multi-agent",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "flask>=3.0,<4.0",
+    "requests>=2.31,<3.0",
+    "numpy>=1.26,<3.0",
+    "fastembed>=0.3,<1.0",
+    "pydantic>=2.5,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4,<9.0",
+    "pytest-cov>=4.1,<6.0",
+    "pytest-asyncio>=0.23,<2.0",
+    "ruff>=0.4,<1.0",
+    "mypy>=1.8,<2.0",
+    "hatch>=1.9,<2.0",
+]
+docs = [
+    # No SSG dependency — GitHub native .md rendering is sufficient for v1.0.
+    # See CONTRIBUTING.md for rationale.
+]
+test = [
+    "pytest>=7.4,<9.0",
+    "pytest-cov>=4.1,<6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/flopworld/astor-memory"
+Repository = "https://github.com/flopworld/astor-memory.git"
+Issues = "https://github.com/flopworld/astor-memory/issues"
+Discussions = "https://github.com/flopworld/astor-memory/discussions"
+Changelog = "https://github.com/flopworld/astor-memory/blob/main/CHANGELOG.md"
+
+[project.scripts]
+am = "astor_memory.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["astor_memory"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "astor_memory/",
+    "README.md",
+    "LICENSE",
+    "ACKNOWLEDGEMENTS.md",
+    "CHANGELOG.md",
+    "docs/",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "SIM", # flake8-simplify
+    "PTH", # flake8-use-pathlib
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "N"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+# Astor-Memory-specific config (parsed by `am config` CLI)
+[tool.astor]
+version = "0.3.0"
+config_schema_version = 2  # +1 for v0.3.0 (added platform CLI section)
+
+[tool.astor.docs]
+# See CONTRIBUTING.md "Documentation" section.
+# v1.0: GitHub native rendering + lychee link-check CI
+# v1.1+ (optional): zensical or alternative SSG if project grows > 30 docs
+generator = "github-native"
+
+[tool.astor.cron]
+# Operator role enum list (P-CRON-DATA-010 implementation detail, not exposed in docs)
+operator_types = ["data_pull", "transform", "deliver"]
+
+[tool.astor.platform]
+# bot-binding.db schema_version (each contract change → +1, run am platform migrate-to-v3)
+bot_binding_schema_version = 1
+
+[tool.astor.cli]
+# Total number of CLI subcommands shipped in this version
+subcommands = ["bot:9", "admin:2", "platform:10"]
+total = 21
