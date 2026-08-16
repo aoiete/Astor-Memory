@@ -848,7 +848,7 @@ def cmd_mcp_serve(args) -> int:
             args = params.get('arguments') or {}
             try:
                 if tool_name == 'astor_recall':
-                    from . import astor_read as _astor_read
+                    from .. import astor_read as _astor_read
                     text = _astor_read(
                         args.get('query', ''),
                         top_k=args.get('top_k', 5),
@@ -856,7 +856,7 @@ def cmd_mcp_serve(args) -> int:
                     )
                     content = [{'type': 'text', 'text': text}]
                 elif tool_name == 'astor_write':
-                    from . import astor_write as _astor_write
+                    from .. import astor_write as _astor_write
                     text_out = _astor_write(
                         args.get('text', ''),
                         tier=args.get('tier', 'public'),
@@ -865,7 +865,7 @@ def cmd_mcp_serve(args) -> int:
                     )
                     content = [{'type': 'text', 'text': text_out}]
                 elif tool_name == 'astor_status':
-                    from .server import create_app as _ca
+                    from ..server import create_app as _ca
                     app = _ca()
                     with app.test_client() as c:
                         resp = c.get('/v1/viewer/stats')
