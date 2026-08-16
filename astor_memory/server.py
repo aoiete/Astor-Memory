@@ -23,8 +23,36 @@ from typing import Any
 from flask import Flask, jsonify, request
 
 from . import __version__, astor_bus, astor_nest, astor_forge
-from ._internal.acl import astor_init_acl, _CURRENT, astor_current_acl
+from ._internal.acl import astor_init_acl, _CURRENT, astor_current_acl, PermissionError_
+from ._internal.bot_binding import get_user
 from .config import get_default_astor_dir, get_default_bus_path, get_default_nest_path
+
+
+def _astor_resolve_actor(user_id: str | None) -> tuple[str, str]:
+    """Resolve (actor, role) for a given user_id from bot-binding.db user_meta.
+
+    Returns ('first_admin', 'first_admin') when:
+      - user_id is None/empty
+      - user_id is 'admin' (the canonical first_admin alias; matches install-state.json)
+      - user is not in user_meta (fail closed as root)
+
+    Otherwise returns ('admin:<id>', 'admin') for role='admin', or
+    ('user:<id>', 'user') for role='user'.
+
+    2026-08-16 ACL fix (P0): was hardcoded to first_admin, allowing user_a
+    to write source tier and any user to read another user's private DB.
+    """
+    if not user_id or user_id == 'admin':
+        return ('first_admin', 'first_admin')
+    meta = get_user(user_id)
+    if meta is None or not meta.get('active', 1):
+        return ('first_admin', 'first_admin')  # unknown → fail closed as root
+    role = meta.get('role', 'user')
+    if role == 'first_admin':
+        return ('first_admin', 'first_admin')
+    if role == 'admin':
+        return (f'admin:{user_id}', 'admin')
+    return (f'user:{user_id}', 'user')
 
 
 def create_app(astor_dir: str | None = None) -> Flask:
@@ -46,42 +74,79 @@ def create_app(astor_dir: str | None = None) -> Flask:
     # read can cross tiers as designed; tier-scoped endpoints (private DB)
     # should re-bind to a narrower context inside their handler.
     # P2-fix 2026-08-15: rebind ACL per request, taking tier + actor from the
-    # request body so per-tier writes use the correct role. The server is
-    # first_admin (root) by default so it can write source tier; for public/
-    # private writes, we still run as first_admin since first_admin can write
-    # any tier (per acl.py matrix). The `_CURRENT.tier` is now updated so
-    # downstream checks see the request's tier.
+    # request body so per-tier writes use the correct role.
+    # P0-fix 2026-08-16: actor/role now come from bot-binding.db user_meta.role
+    # based on `body.user` (was hardcoded to first_admin, allowing user_a → source
+    # write + cross-user private read). Also enforce cross-user protection:
+    # if tier=private and user_id != actor, deny at the request boundary
+    # instead of letting it reach `astor_check_write/read`.
     @app.before_request
     def _astor_bind_request_acl() -> None:
-        # For write/read endpoints, peek at body to bind tier+user_id.
-        bound = False
+        # 2026-08-16: Always bind a default ACL for GET requests (e.g. health,
+        # viewer_stats, lex_stats). Without this, Flask worker threads may
+        # not have _CURRENT set, and downstream astor_check_* raises
+        # "astor_acl not initialized" → 500. POST requests get per-body binding.
         if request.method == 'POST' and request.is_json:
             body = request.get_json(silent=True) or {}
             tier = body.get('tier')
-            user = body.get('user')
-            # v1.1: tier=repo uses repo_id (explicit field) or 'user' as
-            # repo_id. Both map to user_id in the ACL layer.
-            repo_id = body.get('repo_id')
-            if tier == 'repo' and repo_id:
-                user = repo_id
-            user_id = user if tier in ('private', 'repo') else None
             if tier in ('public', 'source', 'private', 'repo'):
+                # v1.1: tier=repo uses repo_id (explicit field) or 'user' as repo_id.
+                repo_id = body.get('repo_id')
+                if tier == 'repo' and repo_id:
+                    body_user = repo_id
+                else:
+                    body_user = body.get('user')
+                actor, role = _astor_resolve_actor(body_user)
+                if tier == 'private':
+                    target_user = body.get('user_id') or body_user
+                elif tier == 'repo':
+                    target_user = body_user
+                else:
+                    target_user = None
                 try:
+                    # Bind ACL with ACTOR's identity (user_id = body_user).
+                    # The cross-user check below uses target_user to verify
+                    # the actor is allowed to access the target's data.
                     astor_init_acl(
-                        actor='first_admin',
-                        role='first_admin',
-                        tier=tier,
-                        user_id=user_id,
+                        actor=actor, role=role, tier=tier,
+                        user_id=body_user if tier in ('private', 'repo') else None,
                     )
-                    bound = True
-                except Exception:
-                    pass
-        if not bound:
-            # Default for /v1/health or unparseable body.
-            try:
-                _ = _CURRENT.actor
-            except AttributeError:
-                astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+                except (ValueError, PermissionError_) as exc:
+                    return jsonify({'error': 'acl_init_failed', 'detail': str(exc)}), 403
+                if tier == 'private':
+                    from ._internal.acl import astor_check_read as _acr, astor_check_write as _acw
+                    try:
+                        _acr(tier='private', user_id=target_user)
+                    except PermissionError_:
+                        return jsonify({'error': 'cross_user_forbidden', 'detail': (
+                            f"user={body_user!r} (role={role!r}) cannot read private_<{target_user}>; "
+                            f"only first_admin/admin may access other users' private tier"
+                        )}), 403
+                    try:
+                        _acw(tier='private', user_id=target_user)
+                    except PermissionError_:
+                        return jsonify({'error': 'cross_user_forbidden', 'detail': (
+                            f"user={body_user!r} (role={role!r}) cannot write private_<{target_user}>; "
+                            f"only first_admin/admin may write other users' private tier"
+                        )}), 403
+                return
+        # Default bind for GET endpoints + POST without JSON body.
+        # GETs are read-only public-tier inspections; safe to bind as
+        # first_admin (server identity).
+        try:
+            _ = _CURRENT.actor
+        except AttributeError:
+            astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+
+    @app.errorhandler(PermissionError_)
+    def _astor_handle_permission_error(exc: PermissionError_):  # noqa: ARG001
+        """2026-08-16 ACL fix: convert PermissionError_ from astor_check_*
+        into 403 instead of 500. The before_request hook binds ACL per
+        request, but astor_bus() / astor_nest() may still raise from
+        downstream checks (e.g. promote_candidate) — those should surface
+        as 403, not 500.
+        """
+        return jsonify({'error': 'permission_denied', 'detail': str(exc)}), 403
 
     @app.route('/v1/health', methods=['GET'])
     def health():
