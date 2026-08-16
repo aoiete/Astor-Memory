@@ -80,6 +80,33 @@ reads against `private_<other_user>` DBs. Operators can audit
 `actor='first_admin'` but `user_id` is a non-admin user — those are
 the suspicious pre-fix entries.
 
+### Added — `docs/api.md` full REST endpoint reference
+
+New [`docs/api.md`](../api.md) documents all 18 REST endpoints:
+
+- **Core write/read**: `/v1/write`, `/v1/read`
+- **opt3-6 forget + audit**: `/v1/forget` (dry-run + tombstone + audit
+  snapshot), `/v1/read/multi` (cross-tier parallel recall)
+- **opt3-6 merge dedup v2**: `/v1/merge/find` (cosine + LLM judge,
+  first_admin only), `/v1/merge/apply` (apply reviewed merges)
+- **opt3-6 provenance**: `/v1/fact/<id>/provenance`, `/lineage`,
+  `/graph.dot` (graphviz), `POST /provenance` (record parent edges)
+- **opt3-6 versioning + restore**: `/v1/fact/<id>/versions`,
+  `/v1/fact/<id>/restore` (preview or commit), `/v1/snapshot/stats`
+  (daily event stats)
+- **Stats + health**: `/v1/health`, `/v1/viewer/stats` (MemoraX
+  content-free Viewer), `/v1/lex/stats`
+- **Admin + installer**: `/v1/reload`, `/v1/install`
+
+Each entry has: body shape, response shape, error codes (incl. the
+v1.1.1 ACL error types: `permission_denied`, `cross_user_forbidden`,
+`acl_init_failed`), and at least one example. Cross-linked from
+README.md, docs/architecture.md, and docs/troubleshooting.md.
+
+Closes the docs gap from the opt3-6 ship (merge.py + provenance.py +
+versioning.py added 1843 lines but had no standalone reference until
+now).
+
 ---
 
 ## [v1.1.0] - 2026-08-16 — Multi-client adapter + content-free viewer + MCP server
