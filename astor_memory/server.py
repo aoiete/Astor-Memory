@@ -23,7 +23,7 @@ from typing import Any
 from flask import Flask, jsonify, request
 
 from . import __version__, astor_bus, astor_nest, astor_forge
-from ._internal.acl import astor_init_acl, _CURRENT
+from ._internal.acl import astor_init_acl, _CURRENT, astor_current_acl
 from .config import get_default_astor_dir, get_default_bus_path, get_default_nest_path
 
 
@@ -32,6 +32,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
     app = Flask(__name__)
     if astor_dir:
         os.environ['ASTOR_DIR'] = astor_dir
+    # 2026-08-16 opt4: upgrade every known tier DB
+    try:
+        from .bus.schema import astor_upgrade_all_tier_dbs
+        astor_upgrade_all_tier_dbs()
+    except Exception:
+        pass
     # 2026-08-15 ship: process-level ACL bootstrap. Flask is multi-threaded
     # and `_CURRENT` is a `_thread._local`, so the main-thread init below
     # would NOT propagate to request-handler threads. We therefore register
@@ -411,6 +417,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         fact_id = body.get('fact_id')
         query   = body.get('query')
         tombstone_only = bool(body.get('tombstone_only', False))
+        dry_run = bool(body.get('dry_run', False))
         forget_threshold = float(body.get('forget_threshold', 5.0))
 
         if not fact_id and not query:
@@ -450,8 +457,48 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 return jsonify({'error': f'BM25 winner {best_fid} missing in bus'}), 500
             chosen = (int(row[0]), float(best_score), str(row[1]))
 
-        # Apply forget
         cfid, cscore, ccontent = chosen
+        # DRY-RUN (opt5): return what would be forgotten, no mutation.
+        if dry_run:
+            return jsonify({
+                'dry_run': True,
+                'would_forget': [{
+                    'fact_id': cfid, 'score': round(cscore, 3),
+                    'content_preview': ccontent[:120],
+                    'tombstone_only': tombstone_only,
+                    'tier': tier, 'user_id': user_id,
+                }],
+                'note': 'No mutation was performed.',
+            })
+        # Capture old_state for versioning (opt6)
+        snapshot_json = None
+        try:
+            existing = bus.conn.execute(
+                "SELECT * FROM memory_canonical WHERE id = ?", (cfid,),
+            ).fetchone()
+            if existing is not None:
+                cols = [d[1] for d in bus.conn.execute(
+                                    "PRAGMA table_info(memory_canonical)"
+                                ).fetchall()]
+                row_dict = {cols[i]: existing[i] for i in range(len(cols))}
+                for k in list(row_dict.keys()):
+                    v = row_dict[k]
+                    if isinstance(v, (bytes, bytearray)):
+                        row_dict.pop(k)
+                        continue
+                    try:
+                        import json as _json_mod_inner
+                        _json_mod_inner.dumps(v)
+                    except Exception:
+                        row_dict[k] = repr(v)
+                import json as _json_mod_outer
+                snapshot_json = _json_mod_outer.dumps(
+                    {'columns': row_dict, 'tier': tier, 'user_id': user_id},
+                    ensure_ascii=False,
+                )
+        except Exception:
+            snapshot_json = None
+        # Apply forget
         # 1. tombstone / hard-delete in bus
         try:
             if tombstone_only:
@@ -483,12 +530,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception as e:
             import sys as _sys
             print(f'[astor.server] lex remove failed (continuing): {e}', file=_sys.stderr)
-        # 3. audit
+        # 3. audit (with old_state snapshot for opt6 versioning)
         try:
             bus.conn.execute(
-                "INSERT INTO audit_log(event, actor, target_type, target_id, reason, metadata, severity) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO audit_log(event, actor, target_type, target_id, "
+                "old_state, reason, metadata, severity) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 ('forget', 'rest_api', 'fact', str(cfid),
+                 snapshot_json,
                  f'tombstone={tombstone_only} tier={tier} user={user_id} '
                  f'score={cscore:.3f}',
                  f'{{"content_preview": {ccontent[:80]!r}}}',
@@ -649,6 +698,165 @@ def create_app(astor_dir: str | None = None) -> Flask:
             except Exception as e:
                 out[f'{tier}/{uid or "_"}'] = {'error': str(e)}
         return jsonify(out)
+
+    @app.route('/v1/merge/find', methods=['POST'])
+    def merge_find():
+        """Find candidate duplicate facts (cosine + LLM judge)."""
+        from .nest.merge import find_duplicate_groups
+        body = request.get_json(force=True)
+        tier = body.get('tier', 'public')
+        user_id = body.get('user_id')
+        if tier == 'private' and not user_id:
+            user_id = body.get('user', 'admin')
+        threshold = float(body.get('threshold', 0.92))
+        top_k = int(body.get('top_k', 50))
+        use_llm = bool(body.get('use_llm', True))
+        max_groups = int(body.get('max_groups', 100))
+        try:
+            ctx = astor_current_acl()
+            if ctx.role != 'first_admin':
+                return jsonify({'error': 'merge requires first_admin'}), 403
+        except Exception:
+            pass
+        result = find_duplicate_groups(
+            tier=tier, user_id=user_id,
+            threshold=threshold, top_k=top_k,
+            use_llm=use_llm, max_groups=max_groups,
+        )
+        # Slim groups in response (drop embedding vectors)
+        slim = [{
+            'group_id': g['group_id'], 'size': g['size'],
+            'method': g['method'],
+            'suggested_winner': g['suggested_winner'],
+            'losers': g['losers'],
+            'llm_verdicts': g.get('llm_verdicts', []),
+        } for g in result.get('groups', [])]
+        return jsonify({
+            'tier': result['tier'], 'user_id': result['user_id'],
+            'candidate_count': result['candidate_count'],
+            'group_count': len(slim), 'groups': slim,
+            'threshold': threshold, 'top_k': top_k, 'use_llm': use_llm,
+        })
+
+    @app.route('/v1/merge/apply', methods=['POST'])
+    def merge_apply():
+        """Apply reviewed merge list."""
+        from .nest.merge import apply_merges
+        body = request.get_json(force=True)
+        merges = body.get('merges', [])
+        actor = body.get('actor', 'merge_v2_operator')
+        if not isinstance(merges, list) or not merges:
+            return jsonify({'error': 'merges list required'}), 400
+        try:
+            ctx = astor_current_acl()
+            if ctx.role != 'first_admin':
+                return jsonify({'error': 'merge requires first_admin'}), 403
+        except Exception:
+            pass
+        result = apply_merges(merges=merges, actor=actor)
+        return jsonify(result)
+
+    @app.route('/v1/fact/<int:fact_id>/provenance', methods=['GET'])
+    def fact_provenance(fact_id):
+        from .nest.provenance import get_provenance
+        tier = request.args.get('tier', 'public')
+        user_id = request.args.get('user_id')
+        max_depth = int(request.args.get('max_depth', 8))
+        try:
+            return jsonify(get_provenance(fact_id, tier=tier, user_id=user_id,
+                                          max_depth=max_depth))
+        except FileNotFoundError as e:
+            return jsonify({'error': str(e)}), 404
+
+    @app.route('/v1/fact/<int:fact_id>/lineage', methods=['GET'])
+    def fact_lineage(fact_id):
+        from .nest.provenance import get_lineage
+        tier = request.args.get('tier', 'public')
+        user_id = request.args.get('user_id')
+        max_depth = int(request.args.get('max_depth', 8))
+        try:
+            return jsonify(get_lineage(fact_id, tier=tier, user_id=user_id,
+                                       max_depth=max_depth))
+        except FileNotFoundError as e:
+            return jsonify({'error': str(e)}), 404
+
+    @app.route('/v1/fact/<int:fact_id>/graph.dot', methods=['GET'])
+    def fact_graph_dot(fact_id):
+        from .nest.provenance import graph_dot
+        direction = request.args.get('direction', 'both')
+        tier = request.args.get('tier', 'public')
+        user_id = request.args.get('user_id')
+        max_depth = int(request.args.get('max_depth', 6))
+        try:
+            dot = graph_dot(fact_id=fact_id, direction=direction,
+                            tier=tier, user_id=user_id, max_depth=max_depth)
+        except FileNotFoundError as e:
+            return jsonify({'error': str(e)}), 404
+        return (dot, 200, {'Content-Type': 'text/vnd.graphviz'})
+
+    @app.route('/v1/fact/<int:fact_id>/provenance', methods=['POST'])
+    def fact_record_provenance(fact_id):
+        from .nest.provenance import record_provenance
+        body = request.get_json(force=True)
+        result = record_provenance(
+            fact_id=fact_id,
+            parents=body.get('parents', []),
+            kind=body.get('kind', 'extracted'),
+            agent=body.get('agent', 'forge.regex_v2'),
+            depth=body.get('depth'),
+            tier=body.get('tier', 'public'),
+            user_id=body.get('user_id'),
+        )
+        return jsonify(result)
+
+    @app.route('/v1/fact/<int:fact_id>/versions', methods=['GET'])
+    def fact_versions(fact_id):
+        from .nest.versioning import list_versions
+        tier = request.args.get('tier', 'public')
+        user_id = request.args.get('user_id')
+        try:
+            rows = list_versions(fact_id, tier=tier, user_id=user_id)
+        except FileNotFoundError as e:
+            return jsonify({'error': str(e)}), 404
+        return jsonify({
+            'fact_id': fact_id, 'tier': tier, 'user_id': user_id,
+            'version_count': len(rows), 'versions': rows,
+        })
+
+    @app.route('/v1/fact/<int:fact_id>/restore', methods=['POST'])
+    def fact_restore(fact_id):
+        from .nest.versioning import restore_fact
+        body = request.get_json(force=True) if request.is_json else {}
+        try:
+            ctx = astor_current_acl()
+            if ctx.role != 'first_admin':
+                return jsonify({'error': 'restore requires first_admin'}), 403
+        except Exception:
+            pass
+        result = restore_fact(
+            fact_id=fact_id,
+            tier=body.get('tier', 'public'),
+            user_id=body.get('user_id'),
+            target_state=body.get('target_state', 'preview'),
+            actor=body.get('actor', 'restore_v1'),
+        )
+        return jsonify(result)
+
+    @app.route('/v1/snapshot/stats', methods=['GET'])
+    def snapshot_stats():
+        from .nest.versioning import daily_snapshot_stats
+        date_str = request.args.get('date')
+        if not date_str:
+            from datetime import datetime, timezone
+            date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        try:
+            return jsonify(daily_snapshot_stats(
+                date_str=date_str,
+                tier=request.args.get('tier', 'public'),
+                user_id=request.args.get('user_id'),
+            ))
+        except FileNotFoundError as e:
+            return jsonify({'error': str(e)}), 404
 
     @app.route('/v1/install', methods=['POST'])
     def install():

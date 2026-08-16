@@ -16,7 +16,7 @@ Tables:
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 -- Pragmas set at connection time (bus/store.py:connect)
@@ -162,6 +162,40 @@ CREATE TABLE IF NOT EXISTS schema_version (
 """
 
 
+def astor_upgrade_all_tier_dbs() -> None:
+    """Run v1→v2 and v2→v3 migrations across all known (tier, user_id)
+    scope DBs (public, source, every private_<user>, every repo_<id>).
+
+    Called once at server startup so all 9 schema files share the same
+    schema_version. Cross-tier provenance probes then succeed instead
+    of crashing on 'no such column'.
+    """
+    from .._internal.acl_layout import (
+        list_user_ids, list_repo_ids, Tier, get_db_path,
+    )
+    scopes: list[tuple[str, str | None]] = [
+        (Tier.PUBLIC.value, None),
+        (Tier.SOURCE.value, None),
+    ]
+    scopes += [(Tier.PRIVATE.value, u) for u in list_user_ids()]
+    scopes += [(Tier.REPO.value, r) for r in list_repo_ids()]
+    for tier, user_id in scopes:
+        try:
+            p = get_db_path(tier, 'bus', user_id)
+            if not p.exists():
+                continue
+            conn = sqlite3.connect(str(p), timeout=5)
+            try:
+                _astor_upgrade_v1_to_v2(conn)
+                _astor_upgrade_v2_to_v3(conn)
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            # Some DBs may be locked or corrupted — skip, do not crash
+            pass
+
+
 def astor_init_schema(conn: sqlite3.Connection) -> None:
     """
     Initialize schema. Idempotent (uses IF NOT EXISTS).
@@ -169,11 +203,12 @@ def astor_init_schema(conn: sqlite3.Connection) -> None:
 
     Order:
       1. executescript(SCHEMA_SQL) — IF NOT EXISTS creates new tables/cols (no-op for v1)
-      2. ALTER TABLE for any new columns (v1 → v2 publishable)
+      2. ALTER TABLE for any new columns (v1 → v2 publishable, v2 → v3 provenance)
       3. CREATE INDEX only AFTER columns exist (same ordering issue as nest)
     """
     conn.executescript(SCHEMA_SQL)
     _astor_upgrade_v1_to_v2(conn)
+    _astor_upgrade_v2_to_v3(conn)
     # Index that depends on the publishable column must be created AFTER the column exists.
     # The executescript above emits CREATE INDEX inside the same script as the table,
     # which works for fresh DBs but errors on v1 databases because the column doesn't exist yet.
@@ -218,6 +253,57 @@ def _astor_upgrade_v1_to_v2(conn: sqlite3.Connection) -> None:
     except Exception:
         # Table doesn't exist yet (fresh DB) — IF NOT EXISTS created it with publishable.
         pass
+
+
+def _astor_upgrade_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """
+    2026-08-16: provenance-graph columns.
+        parent_fact_ids    TEXT (JSON array of fact_ids this fact derived from)
+        provenance_kind    TEXT (rule | extracted | inferred | manual | merged)
+        provenance_agent   TEXT (which producer/forge/operator)
+        provenance_depth   INTEGER (distance from source event; 0 = directly
+                           observed, 1 = first derivative, etc.)
+        provenance_at      DATETIME (when the lineage was last updated)
+    Idempotent — uses PRAGMA table_info to probe.
+    """
+    try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(memory_canonical)"
+        ).fetchall()}
+    except Exception:
+        return
+    alters = []
+    if "parent_fact_ids" not in cols:
+        alters.append(("parent_fact_ids", "TEXT"))
+    if "provenance_kind" not in cols:
+        alters.append(("provenance_kind", "TEXT DEFAULT 'extracted'"))
+    if "provenance_agent" not in cols:
+        alters.append(("provenance_agent", "TEXT"))
+    if "provenance_depth" not in cols:
+        alters.append(("provenance_depth", "INTEGER NOT NULL DEFAULT 0"))
+    if "provenance_at" not in cols:
+        alters.append(("provenance_at", "DATETIME"))
+    for col, decl in alters:
+        try:
+            conn.execute(
+                f"ALTER TABLE memory_canonical ADD COLUMN {col} {decl}"
+            )
+        except Exception:
+            pass
+    if alters:
+        # Index parent_fact_ids so we can quickly find "who derived from me"
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_canonical_parent ON memory_canonical(parent_fact_ids)"
+            )
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_canonical_provenance ON memory_canonical(provenance_kind, provenance_agent)"
+            )
+        except Exception:
+            pass
 
 
 def astor_verify_schema(conn: sqlite3.Connection) -> dict:
