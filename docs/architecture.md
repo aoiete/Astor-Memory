@@ -547,9 +547,20 @@ Astor-Memory v1.0 ships these insights, absorbed from papers and open-source pro
 
 ---
 
+## Competitive landscape (2026-08-16)
+
+For a research-backed comparison against the two leading open-source agent-memory frameworks (EverOS, A-MEM), see [`docs/integration-research-everos-a-mem-2026-08-16.md`](./integration-research-everos-a-mem-2026-08-16.md). Key findings:
+
+- **EverOS** (`EverMind-AI/EverOS`, 12k ★, Apache-2.0, v1.2.3 2026-08-07): Markdown-truth + SQLite-state + LanceDB-index, 8-kind taxonomy, async cascade with crash-recovery queue, **reflection orchestrator** (Select→Merge→Re-extract→Deprecate). Strongest competitor in single-user / dev-friendly segment.
+- **A-MEM** (`agiresearch/A-mem`, 1149 ★, MIT, arXiv:2502.12110): Zettelkasten-style auto-linking, evolution_history per memory, ChromaDB+BM25. Interesting ideas but single-namespace + no ACL.
+- **astor-memory moat**: 4-tier × 4-role ACL (no one else does this), cross-platform token binding (Telegram/Discord/WeChat/Feishu), per-fact provenance graph with DOT export, dry-run forget, versioning + restore, repo tier for per-git-repo memory.
+
+P1 follow-ups identified: async cascade write with crash-recovery queue, `keywords` + `context` schema columns. See the research doc for full P1/P2/P3 priority list.
+
 ## Next
 
 - [`docs/api.md`](./api.md) — full REST endpoint reference (18 endpoints)
+- [`docs/integration-research-everos-a-mem-2026-08-16.md`](./integration-research-everos-a-mem-2026-08-16.md) — competitive landscape (EverOS + A-MEM research)
 - [`docs/migration.md`](./migration.md) — upgrade guide from old `memory-bus` system
 - [`docs/agent-adapters.md`](./agent-adapters.md) — MCP / LangChain / REST / Python integration
 - [`docs/faq.md`](./faq.md) — frequently asked questions
