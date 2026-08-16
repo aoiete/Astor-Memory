@@ -56,13 +56,19 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
-    """Get or create the bot-binding.db connection (with schema init)."""
+    """Get or create the bot-binding.db connection (with schema init).
+
+    2026-08-16 ACL fix: check_same_thread=False is required because Flask
+    serves multi-threaded, and the before_request hook now calls get_user()
+    which uses this connection. Without this, every cross-thread request
+    raises SQLite ProgrammingError.
+    """
     global _con
     if _con is not None:
         return _con
     p = _db_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(p))
+    con = sqlite3.connect(str(p), check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     _init_schema(con)

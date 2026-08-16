@@ -163,7 +163,12 @@ def astor_check_read(tier: str, user_id: str | None = None) -> None:
     # tier == "private"
     if ctx.role == "first_admin":
         return  # first_admin can read any private, with audit trail
-    # admin / user: only own private
+    if ctx.role == "admin":
+        # 2026-08-16 ACL fix: admin = power user per plan §2624. Can read any
+        # private for support purposes. astor_audit row is written by the
+        # caller (cross-user access is a notable event).
+        return
+    # user: only own private
     if user_id != ctx.user_id:
         raise PermissionError_(
             f"actor={ctx.actor!r} (role={ctx.role}) cannot read "
@@ -203,6 +208,12 @@ def astor_check_write(tier: str, user_id: str | None = None) -> None:
     # tier == "private"
     if ctx.role == "first_admin":
         return  # first_admin root write
+    if ctx.role == "admin":
+        # 2026-08-16 ACL fix: admin = power user per plan §2624. Can write
+        # any private for moderation / data correction. The caller should
+        # write an astor_audit row for cross-user access.
+        return
+    # user: only own private
     if user_id != ctx.user_id:
         raise PermissionError_(
             f"actor={ctx.actor!r} (role={ctx.role}) cannot write "
