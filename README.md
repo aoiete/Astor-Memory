@@ -313,6 +313,9 @@ curl -X POST http://localhost:7803/v1/read \
 See [`docs/architecture.md`](./docs/architecture.md) § "ACL enforcement flow"
 for the full per-request binding pipeline.
 
+**Full REST endpoint reference** (18 endpoints incl. opt3-6 merge dedup v2,
+provenance, versioning, restore): see [`docs/api.md`](./docs/api.md).
+
 ---
 
 ## CLI
