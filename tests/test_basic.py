@@ -344,8 +344,13 @@ def test_rest_health(tmp_path, monkeypatch):
     data = r.get_json()
     assert data['status'] == 'ok'
     assert 'version' in data
-    assert 'astor_bus.db' in data['dbs']['bus']
-    assert 'astor_nest.db' in data['dbs']['nest']
+    # 2026-08-16 fix: 9-db layout uses per-tier filenames (e.g.
+    # `astor_bus_public.db`) instead of the legacy single-file `astor_bus.db`.
+    # Test asserts the suffix `astor_bus` is present, which works for
+    # all per-tier variants (astor_bus_public, astor_bus_admin, etc.).
+    assert 'astor_bus' in data['dbs']['bus']
+    # 2026-08-16 fix: 9-db layout uses per-tier filenames. Match by prefix.
+    assert 'astor_nest' in data['dbs']['nest']
 
 
 def test_rest_write_read_roundtrip(tmp_path, monkeypatch):
@@ -586,8 +591,10 @@ def test_e2e_integration(tmp_path, monkeypatch):
     from astor_memory.cli import main as cli_main
     assert cli_main(['init']) == 0
     astor_dir = Path(tmp_path / 'astor_e2e')
-    assert (astor_dir / 'astor_bus.db').exists()
-    assert (astor_dir / 'astor_nest.db').exists()
+    # 2026-08-16 fix: 9-db layout uses per-tier filenames. public tier
+    # gets  suffix; private_*/source gets the appropriate tag.
+    assert (astor_dir / 'public' / 'memory' / 'astor_bus_public.db').exists()
+    assert (astor_dir / 'public' / 'memory' / 'astor_nest_public.db').exists()
 
     # 2. CLI write (multi-fact extraction)
     assert cli_main(['write', 'I prefer dark roast coffee and tea', '--user', 'admin']) == 0

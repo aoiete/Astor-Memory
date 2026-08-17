@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-os.environ.setdefault('ASTOR_DIR', '<runtime_dir>')
-sys.path.insert(0, '<source_dir>')
+os.environ.setdefault('ASTOR_DIR', os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor'))
+sys.path.insert(0, os.environ.get('ASTOR_SOURCE_PATH') or str(Path.cwd()))
 
 from astor_memory.cli.main import main
 

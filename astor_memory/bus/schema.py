@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS memory_canonical (
     session_id TEXT,
     -- Tier 3: 3-tier isolation (public / source / private / private_<user>).
     -- 'private' alone = generic private (caller must include user_id to disambiguate).
-    -- 'private_<user>' = explicit per-user private (e.g. 'private_sunny').
+    -- 'private_<user>' = explicit per-user private (e.g. 'private_alice').
     tier TEXT NOT NULL DEFAULT 'public'
             CHECK(tier IN ('public', 'source', 'private', 'repo')
                   OR tier LIKE 'private\_%' ESCAPE '\'),

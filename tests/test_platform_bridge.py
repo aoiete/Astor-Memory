@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-os.environ.setdefault('ASTOR_DIR', '<runtime_dir>')
+os.environ.setdefault('ASTOR_DIR', os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor'))
 
-sys.path.insert(0, '<source_dir>')
+sys.path.insert(0, os.environ.get('ASTOR_SOURCE_PATH') or str(Path.cwd()))
 
 from astor_memory._internal import platform_bridge as pb
 from astor_memory._internal import bot_binding as bb
@@ -101,7 +101,7 @@ def test_audit_written_per_lookup(monkeypatch):
     pb.astor_get_token('telegram')
     pb.astor_get_token('discord')
 
-    audit_db = Path('<runtime_dir>audit/astor_audit.db')
+    audit_db = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') / 'audit' / 'astor_audit.db'
     if not audit_db.exists():
         return  # OK silent fallback
 
