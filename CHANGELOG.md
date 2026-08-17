@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.2.7] - 2026-08-17 — Public-source PII cleanup + author rebrand
+
+Per flopworld direction 2026-08-17: source tree contained operator-specific
+private data (real trial-user handles, real personal-name fixtures, hardcoded
+filesystem paths, hardcoded author name). Cleaned up so the repo can be
+published and installed by anyone without leaking personal information.
+
+### Changed — author attribution
+- `pyproject.toml` authors: `T flopworld L` → **`flopworld with AI`** (maintainer choice for public source identity)
+- `ACKNOWLEDGEMENTS.md` § 6 Authors same rename
+- Doc-comment "flopworld-specific" / "flopworld workflow" reframed as
+  "project maintainer's" / "project reference" / "reference implementation"
+  so non-author readers don't see the project as one person's private repo
+  (the GitHub URL remains `flopworld/astor-memory` since that's where it lives)
+
+### Fixed — `cmd_platform_verify` hardcoded DB path
+- `astor_memory/cli/main.py` line 1493 hardcoded `<runtime_dir>bot-binding.db`.
+  Anyone running `am platform verify` outside that exact path crashed.
+  Now uses `$ASTOR_DIR or ~/.astor/bot-binding.db` like the rest of the CLI.
+
+### Fixed — `_resolve_from_config_yaml` hardcoded fallback path
+- `astor_memory/_internal/platform_bridge.py` had `<home_dir>...` as
+  fallback for hermes config lookup. Replaced with portable fallback chain:
+  `$HERMES_HOME/config.yaml` → `~/.hermes/config.yaml` → `$APPDATA/hermes/config.yaml`.
+  Same logic, works on any operator's machine.
+
+### Removed — operator-specific scripts (5 files deleted)
+- `astor_memory/cli/dry_run_mapping.py` — 2026-08-15 one-shot migration
+  helper with `user_e/user_b/operator` user_id mapping. Already
+  orphaned (no CLI subcommand registered, no other module imports it).
+- `astor_memory/cli/migrate_multi.py` — multi-source migrator with
+  hardcoded `<mem_sys>/memory-bus/memory_user_the_nuts.db`
+  path and real `TRIAL_USERS` handle list. Same orphaned status.
+- `backup_astor.py` — personal backup script with hardcoded
+  `F:/Google Drive/aoiete/AI stuff/Hermesbackup` destination.
+- `bots/archive/README.md` — operator-specific wechat-bot migration
+  audit listing 5 real `account_id@im.bot` → real trial-user bindings.
+- `docs/migration-verification-2026-08-16.md` and
+  `resources/migration-verification-2026-08-16.md` — operator's personal
+  migration verification log with real handle counts (`users/user_c: 8`,
+  `users/sunday: 8`, etc).
+
+These are operator-internal one-shot artifacts that should not ship as
+library code. Operators who need them can keep local copies in
+`~/.astor/migration-scripts/` outside the source tree.
+
+### Changed — personal fixtures → generic examples
+- `_internal/acl.py`, `_internal/acl_layout.py`, `_internal/audit_logger.py`,
+  `bus/schema.py`, `bus/store.py` docstring examples: `user_e` → `alice`
+- `tests/test_acl.py`: 33 occurrences of `user_e` → `alice`,
+  `user_a` → `bob`, `user_c` → `carol`, `zhang-user_d` → `dave_user`,
+  `xian-ding` → `eve_user`, `halamadrid9988` → `frank_user`.
+  Test function names (`test_acl_yuqi_*`) renamed to `test_acl_bob_*`.
+- `tests/test_bot_binding.py`: `user_b` real-name fixture `Sunny Zhang`
+  → `alice_b` / `Alice Example` so no real human name is in test data.
+- `astor_memory/cli/main.py` hardcoded user list
+  `['sunday', 'user_c', 'user_a', 'user_d']` → `['alice', 'bob', 'carol', 'dave']`.
+
+### Changed — absolute paths → env-relative / placeholders
+- `tests/test_bot_binding.py`, `tests/test_cli_doctor.py`,
+  `tests/test_platform_bridge.py`, `tests/test_hermes_adapter.py`,
+  `scripts/check_bot_binding_invariants.py`: all
+  `<runtime_dir>` defaults → `$ASTOR_DIR or ~/.astor`,
+  all `<source_dir>` sys.path inserts →
+  `$ASTOR_SOURCE_PATH or Path.cwd()`. Anyone with the env var set runs
+  tests against their own ASTOR_DIR; default fallback is portable.
+- `hermes_adapter.py`, `docs/agent-adapters.md`, `docs/migration.md`,
+  `bots/README.md`: doc-internal `<source_dir>...` references →
+  `<repo>/...` placeholders so docs aren't tied to one operator's path.
+
+### Verification
+- 14 modified .py files all `ast.parse()` cleanly
+- `pytest tests/test_acl.py`: **32 passed** (the file I rewrote 30+ times)
+- `pytest tests/`: **171 passed**, 5 failed — failures are pre-existing
+  (broken numpy 3.11↔3.14 mismatch in this venv + integration tests that
+  need an external hermes-agent checkout). Not caused by this change.
+
+### Anti-pattern check (per `astor-ship-workflow`)
+- ✓ No new endpoint behavior — server.py only got comment-only edits
+- ✓ No schema change — bus/schema.py only had a docstring tweak
+- ✓ No ACL rule change — `_internal/acl.py` only had docstring example
+- ✓ Restart server: not needed (no behavior change); skip Step 6
+- ✓ Live ACL probe: not needed; skip Step 7
+
+---
+
 ## [v1.2.6] - 2026-08-16 — bots/ directory + bots design philosophy doc
 
 ### Added — unified bot platform integration home

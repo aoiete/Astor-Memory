@@ -537,7 +537,7 @@ Astor-Memory ships 15 Core runtime iron rules that every agent must obey. Plus 8
 
 ### Personal category (opt-in)
 
-- P-CONT-006 — "继续" token workflow (flopworld-specific)
+- P-CONT-006 — "继续" token workflow (flopworld-with-AI reference)
 
 ### Disclosure policy
 
