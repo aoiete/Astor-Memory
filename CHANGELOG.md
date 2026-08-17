@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.2.6] - 2026-08-16 — bots/ directory + bots design philosophy doc
+
+### Added — unified bot platform integration home
+
+Per user question "其他对应程序文件是不是可以统一到一个目录
+包括其他平台不单单微信" (2026-08-16): created
+**`$ASTOR_DIR/bots/`** as the canonical home for bot-related data,
+scripts, and design documentation. Same directory exists at
+`<source_dir>bots\` (the repo copy).
+
+### Layout
+
+```
+$ASTOR_DIR/bots/
+├── README.md                         (you are here) — what lives here
+├── DESIGN.md                         why 1xNxM many-to-many
+├── archive/
+│   ├── README.md
+│   └── wechat_bots.db.archived_2026-08-16   (retired 2026-08-16)
+├── sessions/                         (reserved for future wechat/chat logs)
+└── check/                            (reserved for future health scripts)
+```
+
+### Why two tables in bot-binding.db (not one combined)
+
+```
+platforms  -- per-bot config (token, base_url, enabled)
+bindings   -- per-chat-id -> user_id mapping
+```
+
+Merging them forces token duplication per chat (security hazard) or
+forces only one user per bot (kills the service-bot pattern). Real
+relationship is genuinely many-to-many.
+
+### Why WeChat is special
+
+WeChat's `im.bot` protocol is 1:1 (one bot, one DM = one user). A single
+bot serves N users via separate DM chats. Telegram / Discord are the
+opposite: 1 bot, N users, all chats in parallel. The `bindings` table
+absorbs the per-platform mapping uniformly while `platform_kind` keeps the
+shape explicit.
+
+### The four canonical scenarios (all supported by astor)
+
+| Scenario | Person count | Bots used | Memory layout |
+| | 1 | 1 (just TG for cron notifications) | public + private_admin |
+| | 1 | N (TG + DC + WX for cross-device) | public + private_admin (shared across bots) |
+| | N | 1 (WX bot operator) | public + per-user private_<user> |
+| | N | M (TG + DC + WX support tiers) | public + per-user private_<user> (per-bot chat_ids per user) |
+
+### Archived: `D:/AI/users/_system/wechat_bots.db`
+
+`wechat_bots.db` (5 wechat bots) was already consolidated into
+`bot-binding.db` (in tables `platforms` + `bindings` + `user_meta`).
+Source file renamed to `wechat_bots.db.archived_2026-08-16`. Safe to
+delete after 60 days (2026-10-15) if no rollback needed.
+
+### Verified
+
+- 0 active code references to `wechat_bots.db` (grep over repo, scripts, runtime)
+- All 5 wechat bots present in `bot-binding.db` `platforms` + `bindings`
+- Account tokens (botid:secret strings) match between legacy and current
+- Tests unchanged (this is a doc-only ship; runtime behavior unchanged)
+
+### Why a directory was created (not just docs in the repo)
+
+User: "<runtime_dir> 所以这个下面应该会多一个 bots 目录?"
+Confirmed: bots/ lives at runtime root next to bot-binding.db, audit/,
+public/, source/, etc. so operators see the architecture at runtime,
+not just from the repo. Same directory exists at repo root for
+version control + design review.
+
+---
+
 ## [v1.2.5] - 2026-08-16 — Strict-privacy ship: explicit grants for cross-user private access
 
 ### Changed — first_admin and admin no longer have implicit cross-user private access
