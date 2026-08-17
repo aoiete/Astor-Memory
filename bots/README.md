@@ -5,8 +5,7 @@ astor-memory. It groups all data and code that pertain to multi-platform
 messaging (telegram, discord, wechat, feishu, webchat, ...) under one
 directory.
 
-This README also lives at `<source_dir>bots\README.md` (the repo
-copy). Both point to the same architecture.
+This README lives at `<repo>/bots/README.md` (the repo copy).
 
 ## Files that LIVE here (active, single source of truth)
 
@@ -148,8 +147,8 @@ isolation persists in the SQLite files.
 
 ### 2026-08-16 — unified bot-binding.db created
 
-Previously, each platform had its own DB file:
-- `D:/AI/users/_system/wechat_bots.db` (5 wechat bots)
+Previously, each platform had its own DB file (path was operator-specific; example:
+- `<runtime>/users/_system/wechat_bots.db` for 5 wechat bots)
 - (telegram / discord / feishu were tracked in `install-state.json`)
 
 All of these were consolidated into **`$ASTOR_DIR/bot-binding.db`** with 4 tables:
@@ -180,7 +179,7 @@ explicit grant (no more implicit admin override).
 ## Layout diagram
 
 ```
-$ASTOR_DIR/                                  = <runtime_dir>
+$ASTOR_DIR/                                  = e.g. ~/.astor/  (or %LOCALAPPDATA%\astor on Windows)
 ├── bot-binding.db                            ← unified, single source
 ├── audit/                                    ← single source
 │   ├── astor_audit.db

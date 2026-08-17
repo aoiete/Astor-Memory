@@ -60,7 +60,7 @@ full pipeline. The relevant body fields per request:
 
 | Status | `error` | Meaning |
 |---|---|---|
-| 403 | `permission_denied` | `astor_check_*` from downstream code raised (e.g. user_a → source) |
+| 403 | `permission_denied` | `astor_check_*` from downstream code raised (e.g. user → source tier) |
 | 403 | `cross_user_forbidden` | Cross-user access attempted by a `user` role |
 | 403 | `acl_init_failed` | `astor_init_acl` itself failed (bad tier / missing user_id for private) |
 
@@ -106,7 +106,7 @@ Write a fact through `bus` (canonical store) + `forge` (extraction) +
 ```
 
 **Errors**: `400 text required`, `400 invalid scope`, `400 tier=repo requires repo_id`,
-`403 permission_denied` (user_a → source), `403 acl_init_failed`.
+`403 permission_denied` (user → source tier), `403 acl_init_failed`.
 
 ---
 
@@ -895,7 +895,7 @@ count.
 ```json
 {
   "private/admin": {"documents": 3104, "terms": 9197, "tombstoned": 0},
-  "private/user_c": {"documents": 8, "terms": 240, "tombstoned": 0},
+    "private/alice": {"documents": 8, "terms": 240, "tombstoned": 0},
   "public/_": {"documents": 5, "terms": 21, "tombstoned": 0},
   "source/_": {"documents": 12, "terms": 145, "tombstoned": 0},
   "version": 1
