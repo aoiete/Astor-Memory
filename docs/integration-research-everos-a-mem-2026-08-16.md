@@ -220,6 +220,11 @@ This is the **competitive moat** we should not regress on:
 ### P1 (next ship cycle) — direct value-add
 
 1. **Async cascade write with crash-recovery queue** (EverOS pattern)
+   - ✅ **SHIPPED 2026-08-16 as v1.2.0** — `bus/cascade.py` + `cascade_state` table
+     (schema v3→v4) + `POST /v1/cascade/replay` + `GET /v1/cascade/stats` +
+     `am cascade {replay,stats,purge}` + 11 pytests covering enqueue,
+     replay success/failure, FIFO drain, purge protection, full server
+     roundtrip with ACL enforcement.
    - Add `lex_change_state` table mirroring `md_change_state`
    - On `nest.store()` failure (e.g. embedding model OOM), buffer in queue
    - Cron replays queue on next daemon start

@@ -18,23 +18,24 @@ For all POST endpoints, send `Content-Type: application/json`.
    - [`POST /v1/read`](#post-v1read)
    - [`POST /v1/forget`](#post-v1forget) — **opt3-6 (forget + dry-run + audit snapshot)**
    - [`POST /v1/read/multi`](#post-v1readmulti) — **opt3-6 (cross-tier parallel recall)**
-3. [Lifecycle: dedup + merge](#lifecycle-dedup--merge)
+3. [Cascade write queue](#cascade-write-queue-v120--2026-08-16) — *(v1.2.0 — durable embed failure queue)*
+4. [Lifecycle: dedup + merge](#lifecycle-dedup--merge)
    - [`POST /v1/merge/find`](#post-v1mergefind) — **opt3-6 (cosine + LLM judge)**
    - [`POST /v1/merge/apply`](#post-v1mergeapply) — **opt3-6 (apply reviewed merges)**
-4. [Provenance graph (fact lineage)](#provenance-graph-fact-lineage)
+5. [Provenance graph (fact lineage)](#provenance-graph-fact-lineage)
    - [`GET /v1/fact/<id>/provenance`](#get-v1factidprovenance) — **opt3-6**
    - [`GET /v1/fact/<id>/lineage`](#get-v1factidlineage) — **opt3-6**
    - [`GET /v1/fact/<id>/graph.dot`](#get-v1factidgraphdot) — **opt3-6 (graphviz)**
    - [`POST /v1/fact/<id>/provenance`](#post-v1factidprovenance) — **opt3-6 (record parents)**
-5. [Versioning + restore](#versioning--restore)
+6. [Versioning + restore](#versioning--restore)
    - [`GET /v1/fact/<id>/versions`](#get-v1factidversions) — **opt3-6**
    - [`POST /v1/fact/<id>/restore`](#post-v1factidrestore) — **opt3-6**
    - [`GET /v1/snapshot/stats`](#get-v1snapshotstats) — **opt3-6 (daily snapshot stats)**
-6. [Stats + health](#stats--health)
+7. [Stats + health](#stats--health)
    - [`GET /v1/health`](#get-v1health)
    - [`GET /v1/viewer/stats`](#get-v1viewerstats) — v1.1.0 (MemoraX Viewer)
    - [`GET /v1/lex/stats`](#get-v1lexstats)
-7. [Admin + installer](#admin--installer)
+8. [Admin + installer](#admin--installer)
    - [`POST /v1/reload`](#post-v1reload) — first_admin only
    - [`POST /v1/install`](#post-v1install)
 
@@ -266,6 +267,104 @@ identity spans both `public` (agent's shared knowledge) and
 
 Z-score normalization is applied per scope before merging, so heavier
 weights can pull up lower-ranked hits in their scope.
+
+---
+
+## Cascade write queue  *(v1.2.0 — 2026-08-16)*
+
+Durable queue for failed embed writes. When `nest.store()` fails inside
+`promote_candidate` (e.g. embedding model OOM, fastembed import error,
+LanceDB unavailable), the fact + content + tier + user_id are queued
+here for replay. Without this, the fact lived forever with no
+embedding and recall returned empty for it. Pattern from EverOS
+`md_change_state` (simplified for astor's SQLite-only stack).
+
+### `POST /v1/cascade/replay`  *(v1.2.0)*
+
+Drain pending cascade rows. **First_admin only** — this is a
+destructive operation (can write to many nest DBs at once).
+
+**Body**
+
+```json
+{
+  "limit": 100,            // max rows to process (default 100)
+  "max_attempts": 5        // per-row max retry count (default 5)
+}
+```
+
+**Response 200**
+
+```json
+{
+  "processed": 5,
+  "succeeded": 4,
+  "failed": 1,
+  "still_pending": 0,
+  "results": [
+    {"ok": true,  "row_id": 17, "fact_id": 359, "operation": "embed_insert",
+     "status": "succeeded", "attempt_count": 1},
+    {"ok": false, "row_id": 18, "fact_id": 360, "operation": "embed_insert",
+     "status": "failed", "attempt_count": 5, "error": "embed model still down"}
+  ]
+}
+```
+
+**Row state machine**: `pending → succeeded` (embed succeeded on retry)
+or `pending → failed` (still failing after `max_attempts` retries; row
+kept for post-mortem, cleared by `am cascade purge`). Pending rows
+that fail but haven't hit max_attempts stay as `pending` for the next
+replay pass.
+
+**Errors**: `403 cascade_replay requires first_admin`.
+
+### `GET /v1/cascade/stats`  *(v1.2.0)*
+
+Aggregate stats: counts by status + last_attempt_at.
+
+**Response 200**
+
+```json
+{
+  "pending": 3,
+  "succeeded": 42,
+  "failed": 1,
+  "last_attempt_at": "2026-08-16T10:15:42.123Z"
+}
+```
+
+### CLI equivalents
+
+```bash
+# Same as POST /v1/cascade/replay
+am cascade replay [--limit=N] [--max-attempts=N]
+
+# Same as GET /v1/cascade/stats
+am cascade stats
+
+# Delete old rows (default: succeeded older than 7 days)
+am cascade purge [--status=succeeded|failed|pending] [--older-than-days=N]
+```
+
+### When to replay
+
+- After server restart (any pending rows from previous crashes)
+- After fixing the underlying cause (e.g. embedding model OOM resolved)
+- Via cron: `am cascade replay --limit=50` daily 03:30 MDT drains any
+  backlog that built up overnight (set up separately — not auto-run
+  in v1.2.0)
+
+### Failure modes that route to the queue
+
+| Failure | Routes? | Reason |
+|---|---|---|
+| Embedding model not loaded (lazy load failed first time) | ✓ | Transient — retry on next replay |
+| OOM during batched embed | ✓ | Transient — retry when memory freed |
+| SQLite disk full / I/O error | ✓ | Transient — retry once disk freed |
+| fastembed / numpy version mismatch | ✓ (with care) | May or may not succeed; `max_attempts` prevents loop |
+| ACL permission denied | ✗ | Caller sees 403 — wrong layer |
+| Schema corruption | ✗ | Loud failure + audit row, manual fix |
+| Schema version mismatch | ✗ | Loud failure — server must migrate |
 
 ---
 
