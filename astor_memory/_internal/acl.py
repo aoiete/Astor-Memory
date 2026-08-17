@@ -3,10 +3,11 @@ ACL enforcement: the central gatekeeper that ensures all data access follows
 plan §3-tier × 3-store permission matrix (lines 2576-2607).
 
 Three roles (per plan):
-- first_admin: writes source.db, reads any private (with audit), creates users,
-  cannot be demoted.
-- admin: power user (essentially a user with extra privileges; CANNOT read
-  source.db — distinction from first_admin per plan line 2570 + 2624).
+- first_admin: writes source.db, reads any private **with explicit grant from
+  data owner (2026-08-16 strict-privacy ship)**, creates users, cannot be demoted.
+- admin: power user; CANNOT read source.db (distinction from first_admin per
+  plan line 2570 + 2624). Cross-user private access **requires explicit grant
+  from data owner (2026-08-16 strict-privacy ship)**.
 - user: can only access own private_<id>.db.
 
 This module is process-level state. It enforces:
@@ -15,7 +16,7 @@ This module is process-level state. It enforces:
 2. Write paths to private dbs are validated against the requested user_id.
 3. The actor + user_id are recorded in audit rows automatically.
 
-Lock: 2026-08-15 (turn design discussion).
+Lock: 2026-08-15 (turn design discussion); 2026-08-16 strict-privacy ship.
 """
 
 from __future__ import annotations
@@ -27,6 +28,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .acl_layout import Tier, get_db_path, _validate_user_id
+from . import grants
+from .audit_logger import astor_audit
 
 
 Role = Literal["first_admin", "admin", "user", "system"]
@@ -44,6 +47,11 @@ _VALID_ROLES = {"first_admin", "admin", "user", "system"}
 # target_tier could be 'source' / 'private_<id>' / 'public' — represented here
 # by source/private/public for the matrix-level check; finer per-user checks
 # are done in `astor_check_read` / `astor_check_write`.
+#
+# 2026-08-16 strict-privacy ship: this matrix lists *which roles can attempt*
+# access. Cross-user private still goes through `grants.check_grant(...)` for
+# fine-grained per-data-owner authorization. So matrix entries alone no longer
+# mean "implicit access allowed".
 _MATRIX = {
     # Read source: only first_admin
     ("read", "source"): {"first_admin"},
@@ -53,10 +61,9 @@ _MATRIX = {
     ("read", "public"): {"first_admin", "admin", "user", "system"},
     # Write public: any authenticated role
     ("write", "public"): {"first_admin", "admin", "user", "system"},
-    # Read private: only the owner (or first_admin for audit)
-    # 'user' here is checked against the user_id in astor_check_read
+    # Read private: only the owner (cross-user via grant only)
     ("read", "private"): {"first_admin", "admin", "user"},
-    # Write private: only the owner
+    # Write private: only the owner (cross-user via grant only)
     ("write", "private"): {"first_admin", "admin", "user"},
     # v1.1: tier=repo (per-git-repository memory). Anyone can read; only
     # first_admin can write (since the writer is the agent itself).
@@ -142,8 +149,9 @@ def astor_check_read(tier: str, user_id: str | None = None) -> None:
     Raises PermissionError_ on denial. Always succeeds for public.
 
     Plan rules:
-    - first_admin: can read any (tier, user_id)
-    - admin/user: read ONLY own (private_<self>) + public
+    - first_admin: read any private IFF has explicit grant from data owner
+    - admin:       read any private IFF has explicit grant from data owner
+    - user:        read ONLY own private_<self> + public
     """
     ctx = astor_current_acl()
     if tier == "public":
@@ -162,17 +170,52 @@ def astor_check_read(tier: str, user_id: str | None = None) -> None:
         return
     # tier == "private"
     if ctx.role == "first_admin":
-        return  # first_admin can read any private, with audit trail
+        # 2026-08-16 strict-privacy ship (B option): first_admin no longer has
+        # implicit cross-user private access. Must hold an explicit grant
+        # from the data owner. Audit row written regardless of outcome.
+        if grants.check_grant(grantor=user_id, grantee="first_admin", required_scope="read"):
+            astor_audit(
+                actor=ctx.actor, tier="private", action="read",
+                user_id=user_id, target="granted",
+                metadata={"required_scope": "read"},
+            )
+            return
+        astor_audit(
+            actor=ctx.actor, tier="private", action="read",
+            user_id=user_id, target="denied_no_grant",
+            metadata={"required_scope": "read", "reason": "first_admin lacks grant"},
+        )
+        raise PermissionError_(
+            f"actor={ctx.actor!r} (role=first_admin) cannot read private_<{user_id}>; "
+            f"user grant required (strict privacy model 2026-08-16)"
+        )
     if ctx.role == "admin":
-        # 2026-08-16 ACL fix: admin = power user per plan §2624. Can read any
-        # private for support purposes. astor_audit row is written by the
-        # caller (cross-user access is a notable event).
-        return
+        # 2026-08-16 strict-privacy ship: admin can no longer implicitly read
+        # other users' private. Must have explicit grant from data owner.
+        admin_grantee = f"admin:{ctx.user_id}" if ctx.user_id else None
+        if admin_grantee and grants.check_grant(
+            grantor=user_id, grantee=admin_grantee, required_scope="read"
+        ):
+            astor_audit(
+                actor=ctx.actor, tier="private", action="read",
+                user_id=user_id, target="granted",
+                metadata={"required_scope": "read"},
+            )
+            return
+        astor_audit(
+            actor=ctx.actor, tier="private", action="read",
+            user_id=user_id, target="denied_no_grant",
+            metadata={"required_scope": "read", "reason": "admin lacks grant"},
+        )
+        raise PermissionError_(
+            f"actor={ctx.actor!r} (role=admin) cannot read private_<{user_id}>; "
+            f"user grant required (strict privacy model 2026-08-16)"
+        )
     # user: only own private
     if user_id != ctx.user_id:
         raise PermissionError_(
             f"actor={ctx.actor!r} (role={ctx.role}) cannot read "
-            f"private_<{user_id}>; only own private or first_admin (audit) allowed"
+            f"private_<{user_id}>; only own private allowed"
         )
 
 
@@ -182,9 +225,9 @@ def astor_check_write(tier: str, user_id: str | None = None) -> None:
     Raises PermissionError_ on denial.
 
     Plan rules:
-    - first_admin: can write any (tier, user_id)
-    - admin/user: write ONLY own private + public (own facts only)
-    - everyone: source requires first_admin
+    - first_admin: write any private IFF has explicit 'write'/'admin' grant
+    - admin:       write any private IFF has explicit 'write'/'admin' grant
+    - user:        write ONLY own private_<self> + public
     """
     ctx = astor_current_acl()
     if tier == "public":
@@ -207,17 +250,51 @@ def astor_check_write(tier: str, user_id: str | None = None) -> None:
         return
     # tier == "private"
     if ctx.role == "first_admin":
-        return  # first_admin root write
+        # 2026-08-16 strict-privacy ship: first_admin must hold a 'write' or
+        # 'admin' grant from the data owner before writing their private tier.
+        if grants.check_grant(grantor=user_id, grantee="first_admin", required_scope="write"):
+            astor_audit(
+                actor=ctx.actor, tier="private", action="write",
+                user_id=user_id, target="granted",
+                metadata={"required_scope": "write"},
+            )
+            return
+        astor_audit(
+            actor=ctx.actor, tier="private", action="write",
+            user_id=user_id, target="denied_no_grant",
+            metadata={"required_scope": "write", "reason": "first_admin lacks grant"},
+        )
+        raise PermissionError_(
+            f"actor={ctx.actor!r} (role=first_admin) cannot write private_<{user_id}>; "
+            f"user write-grant required (strict privacy model 2026-08-16)"
+        )
     if ctx.role == "admin":
-        # 2026-08-16 ACL fix: admin = power user per plan §2624. Can write
-        # any private for moderation / data correction. The caller should
-        # write an astor_audit row for cross-user access.
-        return
+        # 2026-08-16 strict-privacy ship: admin must hold a 'write' or 'admin'
+        # grant from the data owner before modifying their private tier.
+        admin_grantee = f"admin:{ctx.user_id}" if ctx.user_id else None
+        if admin_grantee and grants.check_grant(
+            grantor=user_id, grantee=admin_grantee, required_scope="write"
+        ):
+            astor_audit(
+                actor=ctx.actor, tier="private", action="write",
+                user_id=user_id, target="granted",
+                metadata={"required_scope": "write"},
+            )
+            return
+        astor_audit(
+            actor=ctx.actor, tier="private", action="write",
+            user_id=user_id, target="denied_no_grant",
+            metadata={"required_scope": "write", "reason": "admin lacks grant"},
+        )
+        raise PermissionError_(
+            f"actor={ctx.actor!r} (role=admin) cannot write private_<{user_id}>; "
+            f"user write-grant required (strict privacy model 2026-08-16)"
+        )
     # user: only own private
     if user_id != ctx.user_id:
         raise PermissionError_(
             f"actor={ctx.actor!r} (role={ctx.role}) cannot write "
-            f"private_<{user_id}>; only own private or first_admin allowed"
+            f"private_<{user_id}>; only own private allowed"
         )
 
 
