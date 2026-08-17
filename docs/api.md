@@ -834,10 +834,10 @@ Health check + DB status. **Always 200** when server is up.
 {
   "status": "ok",
   "version": "1.1.1",
-  "astor_dir": "D:\\AI\\Astor-Memory-Runtime",
+  "astor_dir": "$ASTOR_DIR (e.g. /home/you/.astor)",
   "dbs": {
-    "bus": "D:\\AI\\Astor-Memory-Runtime\\public\\memory\\astor_bus_public.db",
-    "nest": "D:\\AI\\Astor-Memory-Runtime\\public\\memory\\astor_nest_public.db"
+    "bus": "$ASTOR_DIR/public/memory/astor_bus_public.db",
+    "nest": "$ASTOR_DIR/public/memory/astor_nest_public.db"
   },
   "facts": 866,
   "events": 86,
@@ -859,7 +859,7 @@ without leaking PII.
 ```json
 {
   "version": "1.1.1",
-  "astor_dir": "D:\\AI\\Astor-Memory-Runtime",
+  "astor_dir": "$ASTOR_DIR (e.g. /home/you/.astor)",
   "generated_at": "2026-08-16T...Z",
   "counts": {
     "facts_total": 6808,

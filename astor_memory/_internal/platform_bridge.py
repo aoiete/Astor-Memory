@@ -211,6 +211,6 @@ def _audit_lookup(platform_kind: str, account_id: str | None, source: str, resul
 def smoke_test() -> None:
     print("=== platform_bridge smoke test ===")
     for kind in ("weixin", "telegram", "discord", "feishu"):
-        for acct in (None, "8263b17ef9c7@im.bot"):
+        for acct in (None, "<your_bot_account_id>@im.bot"):
             r = astor_get_token(kind, acct)
             print(f"  astor_get_token({kind!r}, {acct!r}) -> {r.to_dict()}")
