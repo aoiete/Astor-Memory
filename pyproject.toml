@@ -86,6 +86,20 @@ include = [
     "CHANGELOG.md",
     "docs/",
 ]
+exclude = [
+    "bots/",           # operator-internal runtime data + scripts (see .gitignore)
+    "tests/",          # pytest tree, not part of installable package
+    "scripts/",        # operator CLI helpers
+    ".github/",        # CI config
+    "backup_astor.py", # legacy operator backup script
+    ".gitignore",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    "__pycache__/",
+    "dist/",
+    "build/",
+    "*.egg-info/",
+]
 
 [tool.ruff]
 line-length = 100
