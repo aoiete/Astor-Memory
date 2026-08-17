@@ -137,6 +137,20 @@ def main(argv: list[str] | None = None) -> int:
     reflection_run_p.add_argument('--kinds', default=None, help='Comma-separated kinds to filter (default: all)')
     reflection_run_p.set_defaults(func=cmd_reflection_run)
 
+    # v1.2.3 (2026-08-16): am auto-link — establish auto-link edges
+    # between similar facts (A-MEM Zettelkasten pattern). Backfill runs
+    # once over existing facts; live writes trigger auto_link_for_fact
+    # in the server hot path.
+    sub = subparsers.add_parser('auto-link', help='Zettelkasten auto-link (audit-safe)')
+    auto_link_sub = sub.add_subparsers(dest='auto_link_action', required=True)
+    auto_link_backfill_p = auto_link_sub.add_parser('backfill', help='Backfill auto-links for existing facts')
+    auto_link_backfill_p.add_argument('--tier', default='public', help='Tier to backfill (default public)')
+    auto_link_backfill_p.add_argument('--user-id', default=None, help='User id (for private tier)')
+    auto_link_backfill_p.add_argument('--limit', type=int, default=500, help='Max facts to process (default 500)')
+    auto_link_backfill_p.add_argument('--cosine-threshold', type=float, default=0.85, help='Cosine threshold (default 0.85)')
+    auto_link_backfill_p.add_argument('--max-links-per-fact', type=int, default=5, help='Max links per fact (default 5)')
+    auto_link_backfill_p.set_defaults(func=cmd_auto_link_backfill)
+
     mcp_serve.add_argument('--transport', default='stdio', choices=['stdio'],
                            help='MCP transport (only stdio supported in v1.1)')
     mcp_serve.set_defaults(func=cmd_mcp_serve)
@@ -753,6 +767,33 @@ def cmd_reflection_run(args) -> int:
         bus, tier=tier, user_id=user_id,
         min_size=min_size, max_clusters=max_clusters, kinds=kinds,
         actor='cli',
+    )
+    import json as _json
+    print(_json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_auto_link_backfill(args) -> int:
+    """v1.2.3: Backfill auto-link edges for existing facts.
+
+    Reads the most recent N non-tombstoned facts in a tier, runs
+    auto_link_for_fact on each, returns aggregate counts. Idempotent —
+    re-running finds 0 new edges (existing parent_fact_ids already
+    contain the discovery).
+    """
+    from ..bus import astor_bus
+    from ..nest import auto_link as _auto_link
+    tier = getattr(args, 'tier', 'public') or 'public'
+    user_id = getattr(args, 'user_id', None) or None
+    limit = int(getattr(args, 'limit', 500) or 500)
+    cosine_threshold = float(getattr(args, 'cosine_threshold', 0.85) or 0.85)
+    max_links = int(getattr(args, 'max_links_per_fact', 5) or 5)
+    bus = astor_bus(tier=tier, user_id=user_id)
+    result = _auto_link.backfill_all(
+        bus, tier=tier, user_id=user_id,
+        cosine_threshold=cosine_threshold,
+        max_links_per_fact=max_links,
+        limit=limit,
     )
     import json as _json
     print(_json.dumps(result, indent=2, ensure_ascii=False))

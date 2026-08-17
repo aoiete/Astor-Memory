@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.2.3] - 2026-08-16 — Zettelkasten auto-link (A-MEM pattern)
+
+### Added — audit-safe auto-link edges in write hot path
+
+Pattern adopted from A-MEM (\`agiresearch/A-mem\`): when a new fact is
+written, automatically establish provenance edges to existing similar
+facts in the same (tier, kind). Builds an implicit knowledge graph that
+recall + lineage can leverage.
+
+**Why auto-link is different from merge** (v1.2.2 reflection):
+- **Merge** = tombstone losers, replace with winner. Destructive.
+- **Auto-link** = add bidirectional edge to provenance graph. Both
+  facts survive intact. No data loss. Audit-safe.
+
+**Use cases**:
+- Short queries that benefit from graph expansion ("related facts")
+  via existing \`/v1/fact/<id>/lineage\` endpoint.
+- A-MEM shows 5-10% precision gain from automatic linking (vs
+  flat retrieval).
+- Builds a knowledge graph WITHOUT requiring LLM calls (cosine
+  similarity is fast).
+
+1. **\`astor_memory/nest/auto_link.py\`** (new, 220 lines):
+   - \`find_similar_facts(bus_conn, new_fact_id, content, kind, ...)\` —
+     embed new content, search existing via \`astor_nest.search\`,
+     filter by \`cosine > threshold\` (default 0.85) + same \`kind\`.
+   - \`add_auto_link(bus_conn, new_fact_id, existing_fact_id, similarity)\`
+     — insert bidirectional edge: new_fact_id joins existing's
+     parent_fact_ids AND existing joins new's parent_fact_ids. Sets
+     \`provenance_kind=''auto_link'\` + \`provenance_agent=''nest.auto_link'\`.
+     Idempotent: if edge already exists, returns False.
+   - \`auto_link_for_fact(bus, new_fact_id, content, kind, ...)\` —
+     orchestrator. Returns \`{new_fact_id, linked_to, edges_added}\`.
+   - \`backfill_all(bus, tier, user_id, ...)\` — one-shot pass over
+     existing facts to establish edges retroactively.
+
+2. **Server write hot path** (\`astor_memory/server.py\`) — after each
+   \`promote_candidate\` + \`lex.index_fact\`, calls \`auto_link_for_fact\`.
+   Auto-link failures logged to stderr, never block the write.
+
+3. **CLI**: \`am auto-link backfill [--tier=...] [--user-id=...] [--limit=N]
+   [--cosine-threshold=0.85] [--max-links-per-fact=5]\` for periodic
+   backfill.
+
+4. **\`tests/test_auto_link.py\`** (11 tests) covering bidirectional
+   edge creation, idempotency, self-link skip, missing-fact graceful
+   handling, same-kind filter, threshold filter, server write endpoint
+   hot path, backfill audit.
+
+**Verified**: pytest 159 → 170 passing (+11 auto-link tests), no regressions
+in pre-existing 8 failures.
+
+### Safety / idempotency
+
+- **Audit-safe**: auto-link never rewrites existing facts. Both sides
+  of the edge keep their original \`content\` + \`importance\`.
+- **Idempotent**: re-running \`add_auto_link(a, b)\` returns False;
+  parent_fact_ids never duplicate.
+- **Best-effort**: \`auto_link_for_fact\` wrapping in \`try/except\` so
+  embedding-model OOM or schema mismatch never blocks the write path.
+- **Threshold-bounded**: cosine > 0.85 default means noisy edges are
+  rare; same- \`kind\` filter prevents cross-category linking
+  (e.g. \`user_preference\` ↔ \`risk_rule\`).
+
+### Performance
+
+- Per-write: 1 embedding + 1 nest.search (over 200 candidates) + 1
+  up-to-5 UPDATE pairs. Adds ~50-200ms to a write.
+- Backfill: O(N) per fact, limit=500 default. Run as cron (e.g. weekly
+  Sun 04:00 UTC) to amortize.
+
+---
+
 ## [v1.2.2] - 2026-08-16 — Episodic reflection orchestrator (EverOS pattern)
 
 ### Added — Select → Merge → Deprecate pipeline
