@@ -8,8 +8,8 @@ import sys
 import unittest
 from pathlib import Path
 
-os.environ['ASTOR_DIR'] = str(Path(r'D:\\AI\\Astor-Memory-Runtime'))
-sys.path.insert(0, str(Path(r'D:\\AI\\astor-memory')))
+os.environ['ASTOR_DIR'] = os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor')
+sys.path.insert(0, os.environ.get('ASTOR_SOURCE_PATH') or str(Path.cwd()))
 # Do not purge astor_memory from sys.modules here.  Pytest imports test
 # modules during collection, and test_acl.py keeps references to its imported
 # ACL functions.  Purging the package creates a second ACL module instance
