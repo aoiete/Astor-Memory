@@ -169,6 +169,11 @@ def astor_check_read(tier: str, user_id: str | None = None) -> None:
         # v1.1: repo tier readable by any role; writer restriction is on write.
         return
     # tier == "private"
+    if user_id is None:
+        # Pathological: private without user_id. Caller should fall through
+        # to a ValueError. ACL check would raise PermissionError_ which is
+        # a worse error message — defer to caller.
+        return
     if ctx.role == "first_admin":
         # 2026-08-16 strict-privacy ship (B option): first_admin no longer has
         # implicit cross-user private access. Must hold an explicit grant
@@ -249,6 +254,11 @@ def astor_check_write(tier: str, user_id: str | None = None) -> None:
             )
         return
     # tier == "private"
+    if user_id is None:
+        # Pathological: private without user_id. Caller should raise
+        # ValueError. ACL check returns silently here so caller's
+        # ValueError is the primary error.
+        return
     if ctx.role == "first_admin":
         # 2026-08-16 strict-privacy ship: first_admin must hold a 'write' or
         # 'admin' grant from the data owner before writing their private tier.

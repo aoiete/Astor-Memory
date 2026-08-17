@@ -158,21 +158,35 @@ def test_user_cannot_read_other_private():
 
 
 def test_first_admin_can_read_other_private_with_audit():
-    """first_admin reading someone's private data — must produce audit row."""
+    """first_admin reading someone's private data — must hold an explicit grant.
+
+    2026-08-16 strict-privacy ship: first_admin no longer has implicit
+    cross-user private access. The data owner must grant first_admin
+    access first. Audit row still written for both granted and denied.
+    """
+    from astor_memory._internal.grants import create_grant, revoke_grant
     astor_close_audit()  # clean state
-    astor_init_acl(actor="first_admin", role="first_admin", tier="private", user_id="user_a")
-    # allowed
-    astor_check_read("private", "user_e")
-    # then write audit row
-    astor_audit(
-        actor="first_admin", tier="private", action="read",
-        user_id="user_e", target="memory_canonical/all",
-        reason="GDPR investigation",
+    # Sunny (data owner) grants first_admin read access to her private.
+    _grant_id = create_grant(
+        grantor="user_e", grantee="first_admin", scope="read",
+        reason="GDPR investigation test",
     )
-    rows = astor_query_audit(user_id="user_e")
-    assert any(r["actor"] == "first_admin" for r in rows)
-    assert any(r["reason"] == "GDPR investigation" for r in rows)
-    astor_close_audit()
+    try:
+        astor_init_acl(actor="first_admin", role="first_admin", tier="private", user_id="user_a")
+        # allowed (grant exists)
+        astor_check_read("private", "user_e")
+        # then write audit row
+        astor_audit(
+            actor="first_admin", tier="private", action="read",
+            user_id="user_e", target="memory_canonical/all",
+            reason="GDPR investigation",
+        )
+        rows = astor_query_audit(user_id="user_e")
+        assert any(r["actor"] == "first_admin" for r in rows)
+        assert any(r["reason"] == "GDPR investigation" for r in rows)
+    finally:
+        revoke_grant(_grant_id, by="test_cleanup")
+        astor_close_audit()
 
 
 def test_everyone_can_read_public():
@@ -421,15 +435,26 @@ def test_acl_first_admin_can_write_source(seeded_users):
 def test_acl_admin_role_can_read_other_users_private(seeded_users):
     """user_c (role=admin per plan §2624 power-user) can read user_a's private.
 
-    Per plan §2624, admin is "power user" — can read other users' private
-    for support purposes. This is a deliberate carve-out distinct from the
-    regular user role.
+    2026-08-16 strict-privacy ship: admin no longer has implicit
+    cross-user access. The data owner (user_a) must grant user_c access
+    first. Grant is tested via the new grant system.
     """
+    from astor_memory._internal.grants import create_grant
     client = _client(seeded_users)
     # Seed user_a's private.
     client.post("/v1/write", json={
         "user": "user_a", "tier": "private", "text": "user_a keeps secrets here",
     })
+    # user_a grants user_c (admin) read access. Revoke any prior grant first
+    # to avoid UNIQUE constraint failure (grants DB is shared across tests).
+    from astor_memory._internal.grants import list_grants, revoke_grant
+    for _g in list_grants(grantee="admin:user_c"):
+        if _g["grantor"] == "user_a" and _g["scope"] == "read" and not _g["revoked"]:
+            revoke_grant(_g["id"], by="test_fixture_cleanup")
+    _grant_id = create_grant(
+        grantor="user_a", grantee="admin:user_c", scope="read",
+        reason="support investigation test",
+    )
     # user_c (admin role) should be allowed to read it.
     r = client.post("/v1/read", json={
         "user": "user_c", "tier": "private", "user_id": "user_a", "query": "secrets",
