@@ -257,6 +257,12 @@ def cmd_version(args) -> int:
 def cmd_init(args) -> int:
     """Initialize astor-memory (creates 3 DBs: astor_bus.db, astor_forge.db, astor_nest.db)."""
     from .. import astor_bus as _astor_bus_func, astor_nest as _astor_nest_func, astor_forge as _astor_forge_func
+    from .._internal.acl import astor_init_acl
+
+    # 2026-08-16 fix: bind ACL first so subsequent bus/nest singleton
+    # creation doesn't trip on `astor_acl not initialized`. This makes
+    # `am init` work as a true process entry without a separate setup step.
+    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
 
     astor_dir = get_default_astor_dir()
     astor_dir.mkdir(parents=True, exist_ok=True)
@@ -326,9 +332,12 @@ def cmd_write(args) -> int:
 
 def cmd_recall(args) -> int:
     """Recall facts."""
-    from ..nest import astor_nest, astor_reset_nest
+    from .. import astor_nest  # wrapper from __init__.py (defaults tier='public')
+    from ..nest import astor_reset_nest
     from ..nest.embeddings import astor_get_embedding_model
 
+    # 2026-08-16 fix: use the wrapper astor_nest() from astor_memory top-level
+    # (defaults tier='public') rather than the lower-level (which requires tier).
     nest = astor_nest()
     model = astor_get_embedding_model()
     embeddings = list(model.embed([args.query]))
@@ -375,7 +384,7 @@ def cmd_doctor(args) -> int:
         locs = []
         locs.append(('source', Tier.SOURCE, None))
         locs.append(('admin', Tier.PRIVATE, 'admin'))
-        for u in ['sunday', 'user_c', 'user_a', 'user_d']:
+        for u in ['alice', 'bob', 'carol', 'dave']:
             locs.append((u, Tier.PRIVATE, u))
         for label, tier, user_id in locs:
             try:
@@ -1481,7 +1490,7 @@ def cmd_platform_verify(args) -> int:
     """Run 6 invariants on bot-binding.db."""
     import sqlite3
     _require_first_admin()
-    db_path = Path('<runtime_dir>bot-binding.db')
+    db_path = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') / 'bot-binding.db'
     con = sqlite3.connect(str(db_path))
     problems = []
     # Inv 1: TG/DC/feishu/webchat exactly 1 row

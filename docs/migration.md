@@ -103,7 +103,7 @@ After migration, you have:
 
 ### 4. Clean cutover (manual, v1.0+)
 
-**DO NOT delete `<mem_sys>/memory-bus/` automatically.** Per Plan § Week 5 step 4.8:
+**DO NOT delete your legacy source DB directory automatically.** Per Plan § Week 5 step 4.8:
 
 After verifying the migration worked (`am recall` returns expected facts, `am write` works as expected), the user manually cuts over:
 
@@ -118,7 +118,7 @@ am doctor --schema --memory
 # (check open processes: lsof | grep memory_bus OR Get-Process | findstr memory)
 
 # 3. Archive (don't delete) memory-bus legacy
-mv <mem_sys>/memory-bus <mem_sys>/memory-bus-archived-$(date +%Y-%m-%d)
+mv <legacy-dir>/memory-bus <legacy-dir>/memory-bus-archived-$(date +%Y-%m-%d)
 
 # 4. Update any code still referencing memory_bus
 # (grep your codebase: grep -rln "memory_bus" src/)

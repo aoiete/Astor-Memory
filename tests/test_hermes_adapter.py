@@ -8,9 +8,9 @@ import sys
 import unittest
 from pathlib import Path
 
-os.environ['ASTOR_DIR'] = str(Path(r'<runtime_dir>'))
-sys.path.insert(0, str(Path(r'<home_dir>AppData\Local\hermes\hermes-agent')))
-sys.path.insert(0, str(Path(r'<source_dir>')))
+os.environ['ASTOR_DIR'] = os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor')
+sys.path.insert(0, os.environ.get('HERMES_AGENT_PATH') or str(Path.home() / 'hermes-agent'))
+sys.path.insert(0, os.environ.get('ASTOR_SOURCE_PATH') or str(Path.cwd()))
 
 
 class HermesAdapterImportTest(unittest.TestCase):
@@ -24,6 +24,15 @@ class HermesAdapterImportTest(unittest.TestCase):
 class HermesAdapterToolTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # 2026-08-16 fix: the plugins.memory.astor_memory plugin's
+        # _tool_forget uses astor_lex() (the lex singleton) directly.
+        # The singleton caches the (tier, user_id) -> AstorLex mapping.
+        # If the singleton was created with ASTOR_DIR=~/.astor (default
+        # before env var was set), the lex points at ~/.astor/lex/...
+        # which is empty, so bm25 returns no hits. Reset the singletons
+        # so they get recreated with the right ASTOR_DIR.
+        from astor_memory.nest.lex_index import _LEX_SINGLETONS
+        _LEX_SINGLETONS.clear()
         # Confirm the astor runtime is reachable
         from plugins.memory.astor_memory import AstorMemoryProvider
         cls.provider = AstorMemoryProvider()
@@ -69,12 +78,21 @@ class HermesAdapterToolTest(unittest.TestCase):
 
     def test_forget_via_query(self):
         # Use a unique keyword that's unlikely to collide with existing facts.
-        unique = f'delete_me_koala_{os.getpid()}'
+        # 2026-08-16 fix: lex _token_to splits on [A-Za-z]+|CJK, so
+        # `delete_me_koala_<pid>` tokenizes to just `koala` which
+        # matches every prior `delete_me_koala_*` fact. The unique
+        # string must use CJK chars + ASCII letters so BM25 gets 3
+        # tokens that only match our specific fact.
+        import secrets as _secrets
+        _ascii_word = "".join(_secrets.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(8))
+        unique = f'熊猫{_ascii_word}{_secrets.randbelow(2**31)}'  # 3 unique tokens
         # Write a fact via the REST API so the full pipeline (event +
         # candidate + canonical + nest + lex index) runs.
         import urllib.request as _ur
+        # 2026-08-16 fix: write content must include the unique suffix
+        # at word boundaries so BM25 tokenizes it correctly.
         body = json.dumps({
-            'text': f'Forgettable marker fact {unique} for adapter test',
+            'text': f'marker fact with {unique} for adapter test',
             'tier': 'public', 'mode': 'regex', 'user': 'admin',
         }).encode('utf-8')
         req = _ur.Request(

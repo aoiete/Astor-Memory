@@ -107,8 +107,8 @@ def astor_init_acl(actor: str, role: str, tier: str, user_id: str | None = None)
         user_id: the active user_id when tier='private' (None otherwise)
 
     Example:
-        # bot entry point for user_e:
-        astor_init_acl(actor='user:user_e', role='user', tier='private', user_id='user_e')
+            # bot entry point for alice:
+            astor_init_acl(actor='user:alice', role='user', tier='private', user_id='alice')
         # first_admin CLI:
         astor_init_acl(actor='first_admin', role='first_admin', tier='source')
     """

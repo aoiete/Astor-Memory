@@ -8,11 +8,14 @@ import sys
 import unittest
 from pathlib import Path
 
-os.environ['ASTOR_DIR'] = str(Path(r'<runtime_dir>'))
-sys.path.insert(0, str(Path(r'<source_dir>')))
-for m in list(sys.modules):
-    if 'astor_memory' in m:
-        del sys.modules[m]
+os.environ['ASTOR_DIR'] = str(Path(r'D:\\AI\\Astor-Memory-Runtime'))
+sys.path.insert(0, str(Path(r'D:\\AI\\astor-memory')))
+# Do not purge astor_memory from sys.modules here.  Pytest imports test
+# modules during collection, and test_acl.py keeps references to its imported
+# ACL functions.  Purging the package creates a second ACL module instance
+# whose thread-local state is different from those references, causing order-
+# dependent false failures.  ASTOR_DIR is set above before the package is
+# first imported by this test process.
 
 
 class MergeCoreTests(unittest.TestCase):

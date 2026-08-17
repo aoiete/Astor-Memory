@@ -19,8 +19,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
-os.environ.setdefault('ASTOR_DIR', '<runtime_dir>')
-sys.path.insert(0, '<source_dir>')
+os.environ.setdefault('ASTOR_DIR', str(Path.home() / '.astor'))
+sys.path.insert(0, os.environ.get('ASTOR_SOURCE_PATH') or str(Path.cwd()))
 
 from astor_memory._internal.acl import astor_init_acl
 from astor_memory._internal.audit_logger import astor_audit
@@ -28,7 +28,7 @@ from astor_memory._internal.audit_logger import astor_audit
 astor_init_acl(actor='first_admin', role='first_admin', tier='public')
 
 
-def check_all(db_path: str = '<runtime_dir>bot-binding.db') -> tuple[int, list[str]]:
+def check_all(db_path: str = str(Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') / 'bot-binding.db')) -> tuple[int, list[str]]:
     if not Path(db_path).exists():
         return 1, [f'INV0: bot-binding.db does not exist at {db_path}']
     con = sqlite3.connect(db_path)
