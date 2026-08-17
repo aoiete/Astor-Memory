@@ -91,6 +91,18 @@ library code. Operators who need them can keep local copies in
 - ✓ Restart server: not needed (no behavior change); skip Step 6
 - ✓ Live ACL probe: not needed; skip Step 7
 
+### Fixed (post-ship) — sdist exclusion
+PyPI-build verification revealed the v1.2.7 tarball leaked `bots/README.md`
+because hatch's `include` does not whitelist — only adds. Added explicit
+`exclude` list to `[tool.hatch.build.targets.sdist]` covering
+`bots/`, `tests/`, `scripts/`, `.github/`, `backup_astor.py`,
+`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `dist/`, `build/`,
+`*.egg-info/`. Committed as `d2ab74b`.
+
+Re-verified: `python -m tarfile -l dist/astor_memory-1.2.7.tar.gz` now
+contains only the library + docs + LICENSE/README/CHANGELOG/ACKNOWLEDGEMENTS —
+no operator-internal paths.
+
 ---
 
 ## [v1.2.6] - 2026-08-16 — bots/ directory + bots design philosophy doc
