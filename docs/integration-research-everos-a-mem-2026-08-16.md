@@ -251,6 +251,7 @@ This is the **competitive moat** we should not regress on:
    - **Why**: fills the L2→L3 distillation gap (already noted in our memory architecture §4)
 
 4. **Zettelkasten auto-link at write time** (A-MEM pattern, audit-safe)
+   - ✅ **SHIPPED 2026-08-16 as v1.2.3** — `nest/auto_link.py` runs cosine > 0.85 lookup in write hot path, adds bidirectional provenance edges. 11 pytests covering edge creation, idempotency, same-kind filter, threshold filter, backfill audit + server endpoint.
    - On `/v1/write` success, run cosine search over `memory_canonical` for similar content (cosine > 0.85)
    - Insert a `provenance` row with `kind=auto_link`, NOT rewrite existing facts
    - Expose via `/v1/fact/<id>/provenance` (already exists)
