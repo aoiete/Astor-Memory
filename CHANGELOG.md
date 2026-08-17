@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.2.4] - 2026-08-16 — Promote-candidate stale orphan fix
+
+### Fixed — write bug where promote_candidate returned stale canonical_id
+
+**Bug**: when a stale canonical row with the same `candidate_id` but different
+content existed (e.g. from a prior failed promote + re-insert cycle),
+`promote_candidate` returned the OLD canonical_id with stale content
+instead of writing the new fact. The caller (POST /v1/write) saw a
+200 response with `fact_ids=[N]` but **the actual canonical row was
+never created** — the new fact was silently lost.
+
+Repro pattern:
+1. Insert candidate row A with content X.
+2. (Some prior failure) Insert canonical row with candidate_id=A.id
+   but content Y (stale orphan).
+3. promote_candidate(A) returns the OLD canonical_id (containing Y)
+   instead of writing a new canonical row with X.
+
+**Fix in bus/store.py:promote_candidate**:
+1. Content-aware dedup: only treat as idempotent if existing canonical
+   rows content matches the candidates content.
+2. If stale (content mismatch): DELETE the stale row before INSERT
+   (the UNIQUE constraint on candidate_id cannot be bypassed by
+   `UPDATE tombstoned=1` because the index still considers tombstoned
+   rows as existing).
+3. The INSERT then succeeds, the new canonical row is created, and
+   the candidates `promoted_to` is correctly populated.
+
+**Tests** (`tests/test_promote_candidate_bug.py` — 4 tests, all pass):
+- `test_promote_candidate_inserts_new_canonical_with_fresh_content` — baseline
+- `test_promote_candidate_idempotent_on_same_content` — true retry
+- `test_promote_candidate_handles_stale_orphan_canonical` — stale orphan recovery
+- `test_promote_candidate_writes_audit_on_stale_restore` — audit trail
+
+**Verified live**:
+- After restart, POST /v1/write with new content bug fix verified write bugfix_xyz999
+  → returned `fact_ids=[1135]` → DB has `id=1135, content=bug fix verified write bugfix_xyz999`,
+  candidates `promoted_to=1135`. Before the fix, this would have returned
+  a stale canonical_id and the new fact would be missing from the DB.
+
+**No regressions**: pytest 170 → 172 passing (+4 bug fix tests), 8 pre-existing
+failures unchanged. The 2 new ACL-related failures come from the users
+uncommitted strict-privacy ship (separate work in progress).
+
+---
+
 ## [v1.2.3] - 2026-08-16 — Zettelkasten auto-link (A-MEM pattern)
 
 ### Added — audit-safe auto-link edges in write hot path

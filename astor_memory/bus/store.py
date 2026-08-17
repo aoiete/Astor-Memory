@@ -20,6 +20,12 @@ from pathlib import Path
 from typing import Any
 
 from .schema import astor_init_schema, astor_verify_schema
+from datetime import datetime, timezone
+
+def _utc_now_iso() -> str:
+    """Return current UTC time as ISO 8601 string with microseconds."""
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%fZ')
+
 
 
 @dataclass
@@ -171,20 +177,29 @@ class AstorBus:
         After the INSERT, computes embedding via nest and stores it on the
         canonical row so recall() works (Plan § Write-time dedup).
         """
-        # P0-fix 2026-08-15: dedup check BEFORE INSERT. If candidate_id was
-        # already promoted (e.g. retried write), return existing canonical_id
-        # instead of crashing with UNIQUE constraint failure.
+        # P0-fix 2026-08-15: dedup check BEFORE INSERT.
+        # P1-fix 2026-08-16: **content-aware** dedup. We only treat the
+        # existing canonical row as idempotent if its content matches the
+        # candidate's content. Otherwise the existing row is a STALE
+        # ORPHAN from a previous failed promote + re-insert cycle — fall
+        # through to INSERT which DELETES the stale row first.
         existing_canonical_id = None
         with self.transaction() as c:
-            existing = c.execute(
-                "SELECT id FROM memory_canonical WHERE candidate_id = ?",
+            cand_row = c.execute(
+                "SELECT content FROM memory_candidates WHERE id = ?",
                 (candidate_id,),
             ).fetchone()
-            if existing is not None:
-                existing_canonical_id = existing[0]
+            _candidate_content = cand_row[0] if cand_row else None
+            existing = c.execute(
+                "SELECT id, content FROM memory_canonical WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if existing is not None and _candidate_content is not None:
+                if existing[1] == _candidate_content:
+                    existing_canonical_id = existing[0]
         if existing_canonical_id is not None:
-            # Already promoted — idempotent return. Audit must happen OUTSIDE
-            # the now-closed transaction (write_audit opens its own).
+            # True idempotent retried write — already promoted with matching
+            # content. Audit must happen OUTSIDE the now-closed transaction.
             self.write_audit(
                 event='promote_idempotent_replay',
                 actor=promoted_by or 'system',
@@ -211,6 +226,18 @@ class AstorBus:
                 meta_dict = {}
             kw_json = json.dumps(meta_dict.get('__keywords__') or [])
             ctx_text = str(meta_dict.get('__context__') or '')[:500]
+            # P1-fix 2026-08-16: if a STALE canonical row exists with the
+            # same candidate_id but different content, DELETE it before
+            # inserting fresh. The UNIQUE constraint on candidate_id cannot
+            # be bypassed by UPDATE tombstoned=1 (the index considers
+            # tombstoned=1 rows as still existing) so DELETE is required.
+            # Safe because we already verified the existing row has DIFFERENT
+            # content (it is a stale orphan from a previous failed promote
+            # + re-insert cycle).
+            c.execute(
+                "DELETE FROM memory_canonical WHERE candidate_id = ? AND content != ?",
+                (candidate_id, content),
+            )
             cur = c.execute(
                 """INSERT INTO memory_canonical
                    (candidate_id, event_id, namespace, content, kind, confidence, importance,
