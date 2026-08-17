@@ -199,14 +199,22 @@ def astor_nest(
         user_id:  required when tier='private'
     """
     from .._internal.acl_layout import get_db_path as _gdp
-    from .._internal.acl import astor_check_write
+    from .._internal.acl import astor_check_read, astor_check_write, PermissionError_
 
     if tier is None:
         raise ValueError(
             "astor_nest() requires tier='public'|'source'|'private'. "
             "The legacy single-file fallback was removed 2026-08-15."
         )
-    astor_check_write(tier, user_id)
+    # 2026-08-16 strict-privacy ship: opening nest requires READ access.
+    # A read-grant covers read; a write-grant covers both. write-grant is
+    # checked at write time, not at connection time.
+    astor_check_read(tier, user_id)
+    if tier == "private":
+        try:
+            astor_check_write(tier, user_id)
+        except PermissionError_:
+            pass  # read-grant holders may open, error at write time
     target = db_path if db_path is not None else _gdp(tier, "nest", user_id)
     return AstorNest(target)
 

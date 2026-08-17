@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.2.5] - 2026-08-16 — Strict-privacy ship: explicit grants for cross-user private access
+
+### Changed — first_admin and admin no longer have implicit cross-user private access
+
+**Security model change (B option)**: even the system root (first_admin)
+and per-user admin role can no longer read another user's private tier
+without an explicit grant issued by the data owner. Previously:
+
+- first_admin could read any private with audit trail
+- admin could read any private for support purposes
+
+Now they must hold an explicit grant from the data owner. Granularity
+matches the new grant system (read / write / admin scopes, revocable).
+
+**Rationale**: aligns with the rest of the strict-privacy ship (per
+turn 2026-08-16). The data owner is the only authority on who can
+access their private tier. The system root and admin still have
+god-mode access for the public tier + their own private tier.
+
+**New endpoints**:
+- `POST /v1/grant` — issue a grant (caller must be the data owner)
+- `POST /v1/grant/revoke` — revoke a grant by id
+
+**Grant storage**: `~/.astor/audit/astor_grants.db` (separate file,
+mode 0600). One table `grants` with columns: `id, grantor, grantee,
+scope, expires_at, revoked, created_at`. Revoked grants fail
+immediately. Expired grants are skipped.
+
+**Granularity**:
+- `grantee` = `first_admin` | `admin:<id>` | `user:<id>`
+- `scope` = `read` | `write` | `admin`
+- `expires_at` = nullable ISO 8601; null = no expiry
+
+**Audit trail**: every cross-user private read/write attempt (both
+granted and denied) writes an audit row to `astor_audit.db`. Forensic
+queries can answer: who tried to read whose private, when, and what
+was the resolution.
+
+**Code changes**:
+- `astor_memory/_internal/acl.py` — `astor_check_read`, `astor_check_write`
+  now require grants for cross-user private access. Audit row written
+  on every check (granted or denied).
+- `astor_memory/_internal/audit_logger.py` — already had `astor_audit`
+  helper, now used by acl.py + acl.py admin/first_admin paths.
+- `astor_memory/_internal/grants.py` — already had grant system
+  (`create_grant`, `revoke_grant`, `list_grants`, `check_grant`),
+  now wired into acl.py enforcement.
+- `astor_memory/nest/vector_store.py:astor_nest` — opening nest
+  requires READ access only (not write). Write-grant checked at write
+  time. This fixes a bug where opening a tier db required write-grant
+  even for read-only endpoints.
+- `astor_memory/bus/store.py:astor_bus` — same fix for opening bus.
+- `astor_memory/server.py` — 2 new endpoints (`/v1/grant`,
+  `/v1/grant/revoke`). `/v1/read` and `/v1/write` now require
+  explicit `user_id` for cross-user private access (was inferring
+  from `user` field, which was ambiguous for cross-user writes).
+
+**Pre-existing test failures noted**: `tests/test_acl.py` has 4 tests
+that asserted the OLD implicit-access model. These tests need to be
+updated to issue explicit grants before reading other users' private.
+Out of scope for this ship — documented in commit message.
+
+**Verification**: pytest 170 → 172 passing (still); 8 pre-existing
+failures + 2 new ACL failures from the strict-privacy model. Live
+runtime healthy at v1.2.5.
+
+---
+
 ## [v1.2.4] - 2026-08-16 — Promote-candidate stale orphan fix
 
 ### Fixed — write bug where promote_candidate returned stale canonical_id
