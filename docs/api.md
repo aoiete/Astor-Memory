@@ -18,24 +18,25 @@ For all POST endpoints, send `Content-Type: application/json`.
    - [`POST /v1/read`](#post-v1read)
    - [`POST /v1/forget`](#post-v1forget) — **opt3-6 (forget + dry-run + audit snapshot)**
    - [`POST /v1/read/multi`](#post-v1readmulti) — **opt3-6 (cross-tier parallel recall)**
-3. [Cascade write queue](#cascade-write-queue-v120--2026-08-16) — *(v1.2.0 — durable embed failure queue)*
-4. [Lifecycle: dedup + merge](#lifecycle-dedup--merge)
+3. [Auto-link (v1.2.3)](#auto-link-v123--2026-08-16) — *(Zettelkasten auto-link edges at write)*
+4. [Cascade write queue](#cascade-write-queue-v120--2026-08-16) — *(v1.2.0 — durable embed failure queue)*
+5. [Lifecycle: dedup + merge](#lifecycle-dedup--merge)
    - [`POST /v1/merge/find`](#post-v1mergefind) — **opt3-6 (cosine + LLM judge)**
    - [`POST /v1/merge/apply`](#post-v1mergeapply) — **opt3-6 (apply reviewed merges)**
-5. [Provenance graph (fact lineage)](#provenance-graph-fact-lineage)
+6. [Provenance graph (fact lineage)](#provenance-graph-fact-lineage)
    - [`GET /v1/fact/<id>/provenance`](#get-v1factidprovenance) — **opt3-6**
    - [`GET /v1/fact/<id>/lineage`](#get-v1factidlineage) — **opt3-6**
    - [`GET /v1/fact/<id>/graph.dot`](#get-v1factidgraphdot) — **opt3-6 (graphviz)**
    - [`POST /v1/fact/<id>/provenance`](#post-v1factidprovenance) — **opt3-6 (record parents)**
-6. [Versioning + restore](#versioning--restore)
+7. [Versioning + restore](#versioning--restore)
    - [`GET /v1/fact/<id>/versions`](#get-v1factidversions) — **opt3-6**
    - [`POST /v1/fact/<id>/restore`](#post-v1factidrestore) — **opt3-6**
    - [`GET /v1/snapshot/stats`](#get-v1snapshotstats) — **opt3-6 (daily snapshot stats)**
-7. [Stats + health](#stats--health)
+8. [Stats + health](#stats--health)
    - [`GET /v1/health`](#get-v1health)
    - [`GET /v1/viewer/stats`](#get-v1viewerstats) — v1.1.0 (MemoraX Viewer)
    - [`GET /v1/lex/stats`](#get-v1lexstats)
-8. [Admin + installer](#admin--installer)
+9. [Admin + installer](#admin--installer)
    - [`POST /v1/reload`](#post-v1reload) — first_admin only
    - [`POST /v1/install`](#post-v1install)
 
@@ -346,6 +347,83 @@ Losers are NOT deleted; they remain queryable via
 `/v1/fact/<id>/provenance` for audit purposes but drop out of standard
 recall (`/v1/read` filters `tombstoned=0`). You can restore a loser
 later via the existing `/v1/fact/<id>/restore` endpoint if needed.
+
+---
+
+## Auto-link (v1.2.3 — 2026-08-16)
+
+Zettelkasten-style provenance-edge insertion (A-MEM pattern). After every
+successful `POST /v1/write` (and the source-mirror path), the server
+runs an auto-link pass on the new fact: it computes the embedding,
+scans up to 200 existing facts of the same `kind` in the same tier,
+and adds bidirectional provenance edges to any with cosine > 0.85.
+
+**Audit-safe**: never rewrites existing facts — only adds edges to the
+provenance graph.
+
+### How it works (per write)
+
+1. New fact N is promoted. Embedding already computed by `nest.store`.
+2. Server scans `nest.search(embedding, limit=200)` for existing facts.
+3. Filter: same `kind` + cosine > 0.85 + exclude self.
+4. For each match M_i, append the edge in BOTH directions:
+   - `M_i.parent_fact_ids` += `[N]`
+   - `N.parent_fact_ids` += `[M_i]`
+   - Both rows get `provenance_kind='auto_link'` + `provenance_agent='nest.auto_link'`.
+5. Single audit row written per run (event=‘auto_link’) with `linked_to` list.
+
+**Default threshold**: 0.85. **Max links per fact**: 5. **Failure mode**:
+auto-link exceptions are caught and logged to stderr; the write
+succeeds regardless.
+
+### Querying auto-link edges
+
+Use the existing provenance endpoints — they now surface auto-link edges:
+
+```bash
+# Get all ancestors (incl. auto-link) of fact 359
+curl -X POST http://127.0.0.1:7803/v1/fact/359/provenance     -H "Content-Type: application/json" -d '{"tier": "public"}' | jq
+
+# Get all descendants (incl. auto-link) of fact 359
+curl -X POST http://127.0.0.1:7803/v1/fact/359/lineage     -H "Content-Type: application/json" -d '{"tier": "public"}' | jq
+```
+
+The rendered `provenance_kind` field tells you whether an edge is
+`auto_link` (cosine match) vs `extracted` (rule-driven) vs `merged`
+(reflection).
+
+### Backfill existing facts
+
+For one-shot population of edges between existing facts:
+
+```bash
+am auto-link backfill --tier public --limit 500 --cosine-threshold 0.85
+```
+
+This processes the most recent 500 non-tombstoned facts in the public
+tier and runs auto-link for each. Idempotent — re-running finds 0
+new edges because existing parent_fact_ids already contain the
+discoveries.
+
+### CLI flags
+
+```bash
+am auto-link backfill [--tier=public] [--user-id=...] [--limit=N]
+                     [--cosine-threshold=0.85] [--max-links-per-fact=5]
+```
+
+### Performance
+
+- **Per-write**: +1 nest.search (200 candidates) + up to 5 UPDATE
+  pairs. Adds ~50-200ms to a write.
+- **Backfill**: O(N) per fact in the limit. cron it weekly:
+  `am auto-link backfill --tier=public --limit=500` on Sun 04:00 UTC.
+
+### When to disable
+
+If you want zero auto-link overhead per write, set the threshold
+high (> 0.95) or pass `--max-links-per-fact=0` in the backfill
+(one-time disable). The write-path auto-link is unconditional in v1.2.3.
 
 ---
 

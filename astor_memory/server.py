@@ -323,6 +323,21 @@ def create_app(astor_dir: str | None = None) -> Flask:
             except Exception as _lex_exc:
                 import sys as _sys
                 print(f'[astor.server] lex index_fact failed (continuing): {_lex_exc}', file=_sys.stderr)
+            # v1.2.3: Zettelkasten auto-link (A-MEM pattern). After
+            # promote, find existing same-kind facts with cosine > 0.85
+            # and add bidirectional auto-link edges. Audit-safe (no
+            # rewrite of existing facts; only adds edges to provenance
+            # graph). Failures never block the write path.
+            try:
+                from .nest.auto_link import auto_link_for_fact as _auto_link
+                _auto_link(
+                    bus, new_fact_id=int(canon_id),
+                    content=f.content, kind=f.kind,
+                    tier=tier, user_id=bus_user_id,
+                )
+            except Exception as _auto_link_exc:
+                import sys as _sys
+                print(f'[astor.server] auto_link failed (continuing): {_auto_link_exc}', file=_sys.stderr)
         # P2-fix 2026-08-15: optional source-tier mirror. Best-effort — if
         # mirror fails (e.g. ACL denial for non-first_admin caller), the
         # primary write still succeeds.

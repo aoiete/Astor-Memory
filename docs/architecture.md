@@ -561,7 +561,9 @@ endpoint in docs/api.md)**, `keywords` + `context` schema columns
 **(SHIPPED 2026-08-16 as v1.2.1 — see `hybrid_merge` Jaccard boost + new
 canonical columns in docs/api.md)**. P2 #1 reflection orchestrator
 **(SHIPPED 2026-08-16 as v1.2.2 — see `nest/reflection.py` + `POST /v1/reflection/run`
-in docs/api.md)**. Only P2 #2 (Zettelkasten auto-link) remains. See the research
+in docs/api.md)**. P2 #2 Zettelkasten auto-link
+**(SHIPPED 2026-08-16 as v1.2.3 — see `nest/auto_link.py` + write hot path
+in docs/api.md)**. All P1 + P2 items shipped. See the research
 doc for full P1/P2/P3 priority list.
 
 ## Next
