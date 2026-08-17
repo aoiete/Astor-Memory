@@ -115,20 +115,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     return jsonify({'error': 'acl_init_failed', 'detail': str(exc)}), 403
                 if tier == 'private':
                     from ._internal.acl import astor_check_read as _acr, astor_check_write as _acw
+                    # 2026-08-16 fix: only enforce write ACL on write endpoints.
+                    # Read-only endpoints (e.g. /v1/read) must not require a
+                    # write-grant — they only need a read-grant.
+                    is_write_action = request.path not in {'/v1/read', '/v1/read/multi'}
                     try:
                         _acr(tier='private', user_id=target_user)
                     except PermissionError_:
                         return jsonify({'error': 'cross_user_forbidden', 'detail': (
                             f"user={body_user!r} (role={role!r}) cannot read private_<{target_user}>; "
-                            f"only first_admin/admin may access other users' private tier"
+                            f"user grant required (strict privacy model 2026-08-16)"
                         )}), 403
-                    try:
-                        _acw(tier='private', user_id=target_user)
-                    except PermissionError_:
-                        return jsonify({'error': 'cross_user_forbidden', 'detail': (
-                            f"user={body_user!r} (role={role!r}) cannot write private_<{target_user}>; "
-                            f"only first_admin/admin may write other users' private tier"
-                        )}), 403
+                    if is_write_action:
+                        try:
+                            _acw(tier='private', user_id=target_user)
+                        except PermissionError_:
+                            return jsonify({'error': 'cross_user_forbidden', 'detail': (
+                                f"user={body_user!r} (role={role!r}) cannot write private_<{target_user}>; "
+                                f"user write-grant required (strict privacy model 2026-08-16)"
+                            )}), 403
                 return
         # Default bind for GET endpoints + POST without JSON body.
         # GETs are read-only public-tier inspections; safe to bind as
@@ -232,7 +237,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
         # 2026-08-15 ship: respect tier from request body. Default 'public'.
         # v1.1: tier=repo passes user (= repo_id) to bus/nest/forge as user_id.
-        bus_user_id = user if tier in ('private', 'repo') else None
+        # 2026-08-16 strict-privacy: prefer explicit user_id over 'user' field
+        # so cross-user writes (e.g. admin writing alice's private) target
+        # the correct DB. 'user' identifies the caller; 'user_id' identifies
+        # the target.
+        explicit_uid = body.get('user_id')
+        if tier == 'private' and explicit_uid:
+            bus_user_id = explicit_uid
+        elif tier in ('private', 'repo'):
+            bus_user_id = user
+        else:
+            bus_user_id = None
         bus = astor_bus(tier=tier, user_id=bus_user_id)
         forge = astor_forge()
 
@@ -282,9 +297,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
             content=text,
         )
         # 2. Extract facts (forge) — now writes llm_call_log audit row
+        # 2026-08-16 strict-privacy: pass explicit user_id (target) over
+        # 'user' (caller) for forge extraction. forge_log_call writes to
+        # the per-tier forge DB; private_<admin> requires a grant on
+        # grantor='admin', which the caller may not hold.
         facts = forge.astor_extract_facts(
             text, mode=mode, tier=tier,
-            user_id=user if tier == 'private' else None,
+            user_id=bus_user_id if tier == 'private' else None,
             actor='rest_api',
         )
         if not facts:
@@ -1318,6 +1337,125 @@ def create_app(astor_dir: str | None = None) -> Flask:
     @app.errorhandler(404)
     def not_found(e):
         return jsonify({'error': 'not found', 'path': request.path}), 404
+
+    # === Grant endpoints (2026-08-16 strict-privacy ship) ===
+
+    @app.route('/v1/grant', methods=['POST'])
+    def grant_create():
+        """
+        Issue a cross-user private-tier grant.
+
+        Body: {
+          "grantor":    "<user_id>",      # data owner (the caller if 'user' role)
+          "grantee":    "first_admin" | "admin:<id>" | "user:<id>",
+          "scope":      "read" | "write" | "admin",
+          "expires_at": ISO 8601 or null (default null),
+          "reason":     free text (optional)
+        }
+
+        Auth: caller MUST be the grantor (user role) — i.e. a user can only
+        authorize access to their own private data.
+        """
+        from ._internal.grants import create_grant as _create_grant
+        from ._internal.acl import astor_current_acl
+        from ._internal.audit_logger import astor_audit
+
+        body = request.get_json(force=True) or {}
+        grantor = body.get('grantor')
+        grantee = body.get('grantee')
+        scope = body.get('scope', 'read')
+        expires_at = body.get('expires_at')
+        reason = body.get('reason')
+
+        if not grantor or not grantee:
+            return jsonify({'error': 'missing grantor/grantee'}), 400
+
+        ctx = astor_current_acl()
+        if ctx.role == 'user':
+            if ctx.user_id != grantor:
+                astor_audit(
+                    actor=ctx.actor, tier='private', action='admin_op',
+                    user_id=grantor, target='grant_create_denied',
+                    reason='user can only grant on own private',
+                    metadata={"requested_grantee": grantee},
+                )
+                return jsonify({
+                    'error': 'forbidden',
+                    'detail': 'user can only authorize access to their own private data',
+                }), 403
+        elif ctx.role != 'first_admin':
+            # admin cannot forge a grant on a user's behalf
+            astor_audit(
+                actor=ctx.actor, tier='private', action='admin_op',
+                user_id=grantor, target='grant_create_denied',
+                reason='admin cannot forge grant on user behalf',
+                metadata={"requested_grantee": grantee},
+            )
+            return jsonify({
+                'error': 'forbidden',
+                'detail': 'admin cannot create grants on behalf of users',
+            }), 403
+
+        try:
+            gid = _create_grant(grantor=grantor, grantee=grantee, scope=scope,
+                                expires_at=expires_at, reason=reason)
+        except ValueError as exc:
+            return jsonify({'error': 'invalid_grant', 'detail': str(exc)}), 400
+        astor_audit(
+            actor=ctx.actor, tier='private', action='admin_op',
+            user_id=grantor, target='grant_created',
+            reason=f'grantee={grantee} scope={scope}',
+            metadata={"grant_id": gid, "grantee": grantee, "scope": scope},
+        )
+        return jsonify({'grant_id': gid, 'grantor': grantor, 'grantee': grantee,
+                        'scope': scope, 'expires_at': expires_at})
+
+    @app.route('/v1/grant/revoke', methods=['POST'])
+    def grant_revoke():
+        """Revoke a grant by id. Caller must own the grant (be the grantor)."""
+        from ._internal.grants import revoke_grant as _revoke_grant, list_grants as _list
+        from ._internal.acl import astor_current_acl
+        from ._internal.audit_logger import astor_audit
+
+        body = request.get_json(force=True) or {}
+        gid = body.get('grant_id')
+        if not gid:
+            return jsonify({'error': 'missing grant_id'}), 400
+
+        ctx = astor_current_acl()
+        rows = _list(grantee=None, include_revoked=True)
+        target = next((r for r in rows if r['id'] == int(gid)), None)
+        if not target:
+            return jsonify({'error': 'grant_not_found'}), 404
+        if ctx.role == 'user' and ctx.user_id != target['grantor']:
+            return jsonify({'error': 'forbidden',
+                            'detail': 'only the grantor can revoke their grant'}), 403
+
+        ok = _revoke_grant(int(gid), by=ctx.actor)
+        astor_audit(
+            actor=ctx.actor, tier='private', action='admin_op',
+            user_id=target['grantor'], target='grant_revoked',
+            reason=f'grantee={target["grantee"]}',
+            metadata={"grant_id": int(gid)},
+        )
+        return jsonify({'ok': ok, 'grant_id': int(gid)})
+
+    @app.route('/v1/grant/list', methods=['GET'])
+    def grant_list():
+        """List grants scoped to caller role (first_admin=all, admin=incoming, user=outgoing)."""
+        from ._internal.grants import list_grants as _list
+        from ._internal.acl import astor_current_acl
+
+        ctx = astor_current_acl()
+        include_revoked = request.args.get('include_revoked', 'false').lower() == 'true'
+
+        if ctx.role == 'first_admin':
+            grants_out = _list(include_revoked=include_revoked)
+        elif ctx.role == 'admin':
+            grants_out = _list(grantee=ctx.actor, include_revoked=include_revoked)
+        else:
+            grants_out = _list(grantor=ctx.user_id, include_revoked=include_revoked)
+        return jsonify({'grants': grants_out, 'count': len(grants_out)})
 
     @app.errorhandler(500)
     def internal_error(e):
