@@ -291,6 +291,64 @@ weights can pull up lower-ranked hits in their scope.
 
 ---
 
+## Reflection orchestrator  *(v1.2.2 — 2026-08-16)*
+
+Episodic consolidation pipeline (EverOS `memory/reflection/` pattern,
+simplified for astor's SQLite stack). Finds clusters of similar
+canonical facts in a tier, merges them into a single winner, and
+tombstones losers. Frees recall from noisy duplicates + reduces audit
+trail bloat.
+
+### `POST /v1/reflection/run`  *(v1.2.2)*
+
+Run the reflection pipeline. **First_admin only** — destructive
+(can rewrite many rows at once).
+
+**Body**
+
+
+
+**Response 200**
+
+
+
+**Pipeline** (Select → Merge → Deprecate):
+1. **Select** — group facts by (kind, scope_type); cluster facts sharing
+   ≥3 distinctive tokens (length ratio ≤ 2x as sanity check).
+2. **Merge** — for each cluster, pick the winner (highest importance,
+   then most recent, then highest confidence, then lowest id); compose
+   merged content by joining distinct member content with `
+---
+`.
+3. **Deprecate** — tombstone all losers (`tombstoned=1`); write audit row
+   per deprecation with full `old_state` JSON.
+
+**Errors**: `403 reflection_run requires first_admin`.
+
+**Idempotency**: second run returns 0 clusters (losers are tombstoned
+and filtered out by the SQL query). Safe to invoke weekly via cron.
+
+### When to use
+
+- **Weekly cron**: `am reflection run --tier=public --max-clusters=200` on
+  Sunday 03:00 UTC (evergreen; keeps public tier tidy).
+- **Post-migration**: after importing legacy data, run once per tier to
+  collapse near-duplicates.
+- **Per-tier blast control**: run public, source, admin separately.
+
+### CLI equivalent
+
+
+
+### Retrieval impact
+
+Losers are NOT deleted; they remain queryable via
+`/v1/fact/<id>/provenance` for audit purposes but drop out of standard
+recall (`/v1/read` filters `tombstoned=0`). You can restore a loser
+later via the existing `/v1/fact/<id>/restore` endpoint if needed.
+
+---
+
 ## Cascade write queue  *(v1.2.0 — 2026-08-16)*
 
 Durable queue for failed embed writes. When `nest.store()` fails inside

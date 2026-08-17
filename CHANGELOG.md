@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.2.2] - 2026-08-16 — Episodic reflection orchestrator (EverOS pattern)
+
+### Added — Select → Merge → Deprecate pipeline
+
+Pattern adopted from EverOS `memory/reflection/` (simplified for
+astor's SQLite stack; heuristic-mode only in v1.2.2, LLM-mode future).
+
+Purpose: episodic consolidation. When many similar facts accumulate
+in a tier (e.g. user preferences rephrased over time, risk rules
+stated multiple ways), reflection merges them into a single winner
+fact and tombstones the duplicates. Reduces recall noise + audit
+trail bloat.
+
+1. **`astor_memory/nest/reflection.py`** (new, 270 lines):
+   - `select_episode_clusters(bus, tier, user_id, ...)` — find clusters
+     of facts in the same (kind, scope_type) group sharing ≥3 distinctive
+     tokens, with length-similarity sanity check (max 2x).
+   - `merge_narrative(facts)` — pick winner (highest importance, then
+     most recent, then highest confidence, then lowest id), compose
+     merged content by joining distinct member content with `
+---
+`
+     separator. Bumps importance by +0.1 (capped at 1.0).
+   - `deprecate_old_facts(bus, losers, winner_id, actor)` — tombstone
+     losers + write audit row (`reflection_deprecated`) with full
+     `old_state` JSON of the deprecated fact.
+   - `apply_merge(bus, winner_id, ...)` — update winner content +
+     importance + `promoted_at` + `last_confirmed_at` + write audit
+     row (`reflection_merged`).
+   - `run_reflection(bus, tier, user_id, ...)` — orchestrator, returns
+     summary `{clusters_found, clusters_merged, facts_deprecated, merge_log}`.
+
+2. **`POST /v1/reflection/run`** (server endpoint, first_admin only)
+   — same semantics as CLI, writes audit row `reflection_run` per run.
+   Body: `{tier, user_id, min_size, max_clusters, kinds}`.
+
+3. **`am reflection run [--tier=...] [--user-id=...] [--min-size=N]
+   [--max-clusters=N] [--kinds=...]`** — CLI equivalent.
+
+4. **`tests/test_reflection.py`** (11 tests) + `tests/test_reflection_server.py`
+   (2 tests) covering: select empty/similar/kinds/length-mismatch,
+   merge winner selection + content concatenation, deprecate audit
+   row, apply_merge winner update, full pipeline + idempotency,
+   kinds filter, server endpoint first_admin + 403 for regular user.
+
+**Verified**: pytest 146 → 159 passing (+13 reflection tests), no regressions
+in pre-existing 8 failures.
+
+### Safety / idempotency
+
+- **Idempotent**: second run returns 0 clusters (losers are tombstoned
+  and filtered out by the SQL query in `select_episode_clusters`).
+- **Audit trail**: every deprecated fact + every merged winner writes
+  an audit row (`old_state``/`new_state`` in metadata JSON).
+- **Destructive**: tombstones are reversible via existing
+  `/v1/fact/<id>/restore` (sets `tombstoned=0`); no data is hard-deleted.
+- **First_admin only**: reflection can rewrite many rows at once.
+- **Length sanity**: 2x max-length ratio prevents merging very different
+  facts even if they share tokens.
+
+### When to run
+
+- **Cron**: weekly (Sun 03:00 UTC) via `am reflection run --tier=public
+  --max-clusters=200` to keep the public tier tidy.
+- **Manual**: after a batch import of legacy data (e.g. fresh migration
+  from memory-bus).
+- **Per-tier**: the orchestrator is tier-scoped; run separately for
+  public/source/admin to control blast radius.
+
+---
+
 ## [v1.2.1] - 2026-08-16 — A-MEM-style structured fields + hybrid_merge rerank boost
 
 ### Added — keywords + context columns (P1 #2 from A-MEM research)
