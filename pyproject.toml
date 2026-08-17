@@ -81,6 +81,7 @@ packages = ["astor_memory"]
 include = [
     "astor_memory/",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE",
     "ACKNOWLEDGEMENTS.md",
     "CHANGELOG.md",
