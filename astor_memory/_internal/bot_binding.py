@@ -147,6 +147,7 @@ def _init_schema(con: sqlite3.Connection) -> None:
 # ============================================================
 
 def list_platforms(enabled_only: bool = False) -> list[dict]:
+    """Return all platform rows (or only enabled=True when enabled_only=True)."""
     con = _connect()
     sql = "SELECT * FROM platforms"
     if enabled_only:
@@ -156,6 +157,7 @@ def list_platforms(enabled_only: bool = False) -> list[dict]:
 
 
 def get_platform(account_id_or_platform_id: str) -> dict | None:
+    """Look up one platform row by platform_id (or None)."""
     con = _connect()
     row = con.execute(
         "SELECT * FROM platforms WHERE account_id = ? OR platform_id = ?",
@@ -201,6 +203,7 @@ def upsert_platform(
 
 
 def set_platform_enabled(platform_id: str, enabled: bool) -> None:
+    """Flip a platform's enabled flag (0 or 1) — used by `am platform disable/enable`."""
     con = _connect()
     con.execute("UPDATE platforms SET enabled = ?, updated_at = ? WHERE platform_id = ?",
                 (int(enabled), _now_iso(), platform_id))
@@ -218,6 +221,7 @@ def set_platform_enabled(platform_id: str, enabled: bool) -> None:
 # ============================================================
 
 def list_users(active_only: bool = True) -> list[dict]:
+    """Return all user_meta rows."""
     con = _connect()
     sql = "SELECT * FROM user_meta"
     if active_only:
@@ -227,6 +231,7 @@ def list_users(active_only: bool = True) -> list[dict]:
 
 
 def get_user(user_id_or_alias: str) -> dict | None:
+    """Look up one user_meta row by user_id or short_alias."""
     con = _connect()
     row = con.execute(
         "SELECT * FROM user_meta WHERE user_id = ? OR short_alias = ?",
@@ -246,6 +251,7 @@ def upsert_user(
     active: bool = True,
     source: str = "manual",
 ) -> None:
+    """Insert or update a user_meta row. Returns user_id."""
     con = _connect()
     now = _now_iso()
     con.execute("""
@@ -360,6 +366,7 @@ def upsert_binding(
 
 
 def revoke_binding(binding_id: str, revoked_by: str = "first_admin") -> None:
+    """Mark a binding as inactive (soft delete) + audit row."""
     con = _connect()
     con.execute("""
         UPDATE bindings SET active = 0, revoked_at = ?, revoked_by = ?
@@ -379,6 +386,7 @@ def revoke_binding(binding_id: str, revoked_by: str = "first_admin") -> None:
 # ============================================================
 
 def close() -> None:
+    """Close the bot-binding.db singleton connection."""
     global _con
     if _con is not None:
         _con.close()

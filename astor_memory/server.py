@@ -905,6 +905,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.route('/v1/fact/<int:fact_id>/provenance', methods=['GET'])
     def fact_provenance(fact_id):
+        """Return the citation lineage for one fact_id (which event(s) produced it)."""
         from .nest.provenance import get_provenance
         tier = request.args.get('tier', 'public')
         user_id = request.args.get('user_id')
@@ -917,6 +918,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.route('/v1/fact/<int:fact_id>/lineage', methods=['GET'])
     def fact_lineage(fact_id):
+        """Return all revisions of a fact_id over time (audit trail)."""
         from .nest.provenance import get_lineage
         tier = request.args.get('tier', 'public')
         user_id = request.args.get('user_id')
@@ -929,6 +931,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.route('/v1/fact/<int:fact_id>/graph.dot', methods=['GET'])
     def fact_graph_dot(fact_id):
+        """Return the provenance graph for a fact as Graphviz DOT text."""
         from .nest.provenance import graph_dot
         direction = request.args.get('direction', 'both')
         tier = request.args.get('tier', 'public')
@@ -943,6 +946,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.route('/v1/fact/<int:fact_id>/provenance', methods=['POST'])
     def fact_record_provenance(fact_id):
+        """Manually record a provenance edge between two fact_ids (admin-only)."""
         from .nest.provenance import record_provenance
         body = request.get_json(force=True)
         result = record_provenance(
@@ -958,6 +962,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.route('/v1/fact/<int:fact_id>/versions', methods=['GET'])
     def fact_versions(fact_id):
+        """List all revision_ids for a fact_id (chronological)."""
         from .nest.versioning import list_versions
         tier = request.args.get('tier', 'public')
         user_id = request.args.get('user_id')
@@ -972,6 +977,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.route('/v1/fact/<int:fact_id>/restore', methods=['POST'])
     def fact_restore(fact_id):
+        """Restore a fact to a prior revision (creates a new revision pointing back; never destructive)."""
         from .nest.versioning import restore_fact
         body = request.get_json(force=True) if request.is_json else {}
         try:
@@ -991,6 +997,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.route('/v1/snapshot/stats', methods=['GET'])
     def snapshot_stats():
+        """Return system-wide stats: facts by tier/scope, event count, db sizes."""
         from .nest.versioning import daily_snapshot_stats
         date_str = request.args.get('date')
         if not date_str:
@@ -1336,6 +1343,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.errorhandler(404)
     def not_found(e):
+        """Flask 404 handler that emits a structured JSON error."""
         return jsonify({'error': 'not found', 'path': request.path}), 404
 
     # === Grant endpoints (2026-08-16 strict-privacy ship) ===
@@ -1459,6 +1467,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.errorhandler(500)
     def internal_error(e):
+        """Flask 500 handler that emits a structured JSON error + audit row."""
         return jsonify({'error': 'internal error', 'detail': str(e)}), 500
 
     return app

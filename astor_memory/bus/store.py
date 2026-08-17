@@ -62,6 +62,7 @@ class AstorBus:
 
     @property
     def conn(self) -> sqlite3.Connection:
+        """Get the bus SQLite connection (lazy-init, schema applied)."""
         if self._conn is None:
             self._open()
         assert self._conn is not None
@@ -323,6 +324,7 @@ class AstorBus:
             return audit_id
 
     def close(self) -> None:
+        """Close the bus SQLite connection (used by CLI teardown)."""
         if self._conn is not None:
             self._conn.close()
             self._conn = None

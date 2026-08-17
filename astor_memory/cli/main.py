@@ -250,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def cmd_version(args) -> int:
+    """Print astor-memory version + python + platform info."""
     print(f'astor-memory {__version__}')
     return 0
 
@@ -1329,6 +1330,7 @@ def cmd_platform_list(args) -> int:
 
 
 def cmd_platform_list_users(args) -> int:
+    """`am platform list-users` — print all user_meta rows."""
     from .._internal.bot_binding import list_users
     _require_first_admin()
     rows = list_users(active_only=False)
@@ -1344,6 +1346,7 @@ def cmd_platform_list_users(args) -> int:
 
 
 def cmd_platform_list_bindings(args) -> int:
+    """`am platform list-bindings` — print all chat_id→user_id bindings."""
     from .._internal.bot_binding import list_bindings
     _require_first_admin()
     rows = list_bindings(active_only=not args.all)
@@ -1360,6 +1363,7 @@ def cmd_platform_list_bindings(args) -> int:
 
 
 def cmd_platform_resolve(args) -> int:
+    """`am platform resolve <plat_id> <chat_id>` — reverse-lookup: chat_id → user_id."""
     from .._internal.bot_binding import resolve_chat_to_user
     _require_first_admin()
     r = resolve_chat_to_user(args.platform_id, args.chat_id)
@@ -1378,6 +1382,7 @@ def cmd_platform_resolve(args) -> int:
 
 
 def cmd_platform_token_get(args) -> int:
+    """`am platform token-get <platform_kind>` — print token, write audit row."""
     from .._internal.platform_bridge import astor_get_token
     from .._internal.bot_binding import get_platform
     _require_first_admin()
@@ -1410,6 +1415,7 @@ def cmd_platform_token_get(args) -> int:
 
 
 def cmd_platform_token_set(args) -> int:
+    """`am platform token-set <platform_kind> <token>` — upsert token into bot-binding.db."""
     from .._internal.bot_binding import get_platform, upsert_platform
     _require_first_admin()
     if ':' not in args.platform_id:
@@ -1434,6 +1440,7 @@ def cmd_platform_token_set(args) -> int:
 
 
 def cmd_platform_bind(args) -> int:
+    """`am platform bind <platform_id> <chat_id> <user_id>` — create a chat→user binding."""
     from .._internal.bot_binding import upsert_binding
     _require_first_admin()
     bid = upsert_binding(
@@ -1450,6 +1457,7 @@ def cmd_platform_bind(args) -> int:
 
 
 def cmd_platform_unbind(args) -> int:
+    """`am platform unbind <binding_id>` — revoke a binding (soft delete; audit row written)."""
     from .._internal.bot_binding import resolve_chat_to_user, revoke_binding
     _require_first_admin()
     # find binding_id from chat_id
@@ -1463,6 +1471,7 @@ def cmd_platform_unbind(args) -> int:
 
 
 def cmd_platform_add_user(args) -> int:
+    """`am platform add-user <user_id> --role <role>` — create a user_meta row + per-user private db layout."""
     from .._internal.bot_binding import upsert_user
     from .._internal.acl_layout import _validate_user_id
     _require_first_admin()

@@ -122,11 +122,13 @@ def select_episode_clusters(
         # Pairwise clustering: union-find
         parent = {f['id']: f['id'] for f in facts}
         def find(x):
+            """Find episodic reflection candidates (facts that recurred across sessions)."""
             while parent[x] != x:
                 parent[x] = parent[parent[x]]
                 x = parent[x]
             return x
         def union(a, b):
+            """Consolidate episodic reflections into a single rule-tier fact."""
             ra, rb = find(a), find(b)
             if ra != rb:
                 parent[ra] = rb

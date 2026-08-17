@@ -140,9 +140,11 @@ class AstorLex:
 
     @property
     def conn(self) -> sqlite3.Connection:
+        """Get the SQLite connection for the lexical (FTS5) index."""
         return self._conn
 
     def close(self) -> None:
+        """Close the lex index connection (CLI teardown)."""
         if self._conn is not None:
             self._conn.close()
             self._conn = None
@@ -333,6 +335,7 @@ class AstorLex:
 
     # ---------- maintenance ----------
     def stats(self) -> dict:
+        """Return lex index stats: row count, vocabulary size, last rebuild timestamp."""
         with self._lock:
             docs = self._conn.execute(
                 'SELECT COUNT(*) FROM documents WHERE tombstoned = 0'

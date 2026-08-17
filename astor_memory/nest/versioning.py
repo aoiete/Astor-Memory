@@ -343,5 +343,6 @@ def daily_snapshot_stats(
 
 # Helpers
 def struct_pack_floats(arr) -> bytes:
+    """Pack a list[float] into SQLite BLOB (native endian, fixed size)."""
     import struct
     return struct.pack(f'{len(arr)}f', *arr)

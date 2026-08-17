@@ -91,9 +91,11 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
     # -- Required ABC methods ---------------------------------------------
 
     def name(self) -> str:
+        """Return adapter name used in hermes plugin registry ('astor_memory')."""
         return "astor_memory"
 
     def is_available(self) -> bool:
+        """Check if astor is reachable (server up + ASTOR_DIR set)."""
         if not _ASTOR_IMPORT_OK or not _HERMES_ABC_OK:
             return False
         # ASTOR_DIR must point to a real dir with the 9-db layout.
@@ -222,6 +224,7 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
         ]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs: Any) -> str:
+        """Dispatch a hermes tool call (recall/forget/write) to astor REST."""
         import json
         if tool_name == "astor_recall":
             return self._tool_recall(args)
@@ -368,6 +371,7 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
             logger.warning("astor_memory sync_turn failed: %s", exc)
 
     def shutdown(self) -> None:
+        """Clean up the hermes adapter — flush pending writes, close pools."""
         logger.info("astor_memory: shutdown (session=%s, turns=%d)",
                     self._session_id, self._turn_count)
         self._turn_count = 0
