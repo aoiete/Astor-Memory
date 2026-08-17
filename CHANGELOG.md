@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.2.1] - 2026-08-16 — A-MEM-style structured fields + hybrid_merge rerank boost
+
+### Added — keywords + context columns (P1 #2 from A-MEM research)
+
+Pattern adopted from A-MEM (`agiresearch/A-mem`, arXiv:2502.12110): each
+fact carries structured fields beyond just `content` + `tags`. Two new
+columns on `memory_canonical`:
+
+- **`keywords`** (TEXT JSON array) — 3-7 distinct keywords/phrases extracted
+  by LLM at write time (regex mode derives heuristically). Used by
+  `hybrid_merge` rerank via Jaccard boost on the query.
+- **`context`** (TEXT 1-2 sentence) — human-readable summary. Returned in
+  `/v1/read` response for caller explanation; used by future viewer
+  + admin audit.
+
+**Why**: A-MEM's research shows that structured fields give 5-10% precision
+gain in fact retrieval. For astor specifically: keyword Jaccard boost
+helps when the embedding model doesn't catch keyword-level intent (e.g.
+proper nouns, short queries like "coffee preference").
+
+1. **`bus/schema.py`** — schema v4 → v5. New columns + `_astor_upgrade_v4_to_v5`
+   migration (`ALTER TABLE ADD COLUMN`, idempotent via PRAGMA probe).
+   `astor_upgrade_all_tier_dbs` + `astor_init_schema` wired.
+2. **`forge/extractor.py`** — `AstorFact` dataclass gains `keywords: list[str]`
+   + `context: str` fields. Regex mode derives heuristically (kind + top
+   5 distinctive words ≥4 chars + first 120 chars of input text). LLM
+   mode reads them from the model response (prompt updated).
+3. **`forge/llm_extract.py`** — prompt now asks for `keywords` + `context`
+   per fact, with safe fallbacks for older models.
+4. **`bus/store.py`** — `insert_candidate` accepts `keywords=` + `context=`,
+   stashes them in candidate metadata JSON as `__keywords__` / `__context__`
+   (avoids needing a candidate-schema migration). `promote_candidate`
+   reads them back + writes to the new canonical columns; safe defaults
+   (`[]` / `''`) for legacy candidates.
+5. **`nest/lex_index.py:hybrid_merge`** — adds 2 optional params:
+   `keyword_hits: dict[int, list[str]]` + `query_keywords: list[str]`.
+   Score += `keyword_boost` (default 0.15) × Jaccard(fact_kw, query_kw).
+   **Backward compatible**: when neither param is supplied, behavior is
+   byte-identical to legacy.
+6. **`server.py:read`** — loads per-fact keywords from canonical for the
+   current candidate set, tokenizes the query (cheap, no LLM), passes
+   both into `hybrid_merge`. Response includes `keywords` + `context`
+   per result (defaults `[]` / `''` for pre-v1.2.1 facts).
+7. **`cli/main.py:write`** — threads `keywords` + `context` through
+   `insert_candidate`.
+8. **`tests/test_keywords_context.py`** — 11 new tests covering schema
+   migration, extraction (regex), insert, promote (with legacy
+   fallback), hybrid_merge boost behavior, backward compat.
+
+**Verified**: pytest 135 → 146 passing (+11), no regressions in
+pre-existing 8 failures.
+
+### Migration v4 → v5
+
+Server restart auto-runs `_astor_upgrade_v4_to_v5` on every tier DB.
+Existing rows get `keywords='[]'` + `context=''` (safe defaults). No
+manual SQL needed.
+
+### Backward compatibility
+
+- Pre-v1.2.1 facts: `keywords='[]'`, `context=''` → no rerank boost
+  applied (treated as no keywords)
+- Pre-v1.2.1 callers of `hybrid_merge` (without new args): unchanged
+  behavior, same byte output
+- Pre-v1.2.1 callers of `/v1/read`: response gains new `keywords` and
+  `context` fields with default values; existing fields unchanged
+
+---
+
 ## [v1.2.0] - 2026-08-16 — Async cascade write queue + crash recovery
 
 ### Added — durable embed-write crash recovery (P1 from EverOS research)

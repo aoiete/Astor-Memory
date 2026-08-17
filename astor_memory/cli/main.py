@@ -285,6 +285,9 @@ def cmd_write(args) -> int:
             confidence=f.confidence,
             importance=f.importance,
             tags=f.tags or [],
+            # v1.2.0: thread A-MEM-style structured fields from extractor.
+            keywords=f.keywords or [],
+            context=f.context or '',
         )
         canon_id = bus.promote_candidate(
             cand_id, promoted_by='cli.write', user_id=args.user, tier=args.tier,
