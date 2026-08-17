@@ -359,7 +359,7 @@ def astor_bus(
         ValueError if tier is None.
     """
     from .._internal.acl_layout import get_db_path as _gdp
-    from .._internal.acl import astor_check_write
+    from .._internal.acl import astor_check_read, astor_check_write, PermissionError_
 
     if tier is None:
         raise ValueError(
@@ -367,7 +367,18 @@ def astor_bus(
             "The legacy single-file fallback was removed 2026-08-15; "
             "see migrate_root_legacy_to_3tier.py for migration context."
         )
-    astor_check_write(tier, user_id)
+    # 2026-08-16 strict-privacy ship: opening bus requires READ access
+    # (a read-grant covers read; a write-grant also covers read). Write
+    # authorization is checked separately at write time, since read
+    # endpoints (e.g. /v1/read) don't need write permission.
+    astor_check_read(tier, user_id)
+    if tier == 'private':
+        try:
+            astor_check_write(tier, user_id)
+        except PermissionError_:
+            # Read-grant holders pass through — caller may still get an
+            # error at write time, but opening the bus for read is OK.
+            pass
     if tier == "private" and user_id is None:
         raise ValueError("astor_bus(tier='private') requires user_id")
     target = db_path if db_path is not None else _gdp(tier, "bus", user_id)
