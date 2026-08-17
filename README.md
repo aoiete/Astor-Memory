@@ -72,7 +72,24 @@ If you've felt any of these, Astor-Memory is built for you.
 
 Single-user mode = `public + self-private`. Multi-user mode = `am bot on` creates `private × N` on demand.
 
----
+### Bots (multi-platform) design
+
+astor treats **people** (user_id) and **bots** (platform_id) as two independent dimensions. Relationship is many-to-many:
+
+- 1 person can have N bots (e.g. TG on phone + DC on desktop + WX for friends, all bind to the same user_id)
+- 1 bot can serve M persons (e.g. one WeChat bot where 12 friends each DM independently, each chat_id binds to a different user_id)
+- 1 person can have N chat_ids per bot (DMs, groups, threads)
+
+That is why `bot-binding.db` has TWO separate tables:
+
+- `platforms` -- per-bot config (token, base_url, enabled)
+- `bindings`  -- per-chat-id → user_id mapping
+
+Why WeChat is special: the `im.bot` protocol is 1:1, meaning one bot serves N users via separate DM chats (chat_id = user). Telegram / Discord are 1:N (one bot, many users, parallel chats).
+
+See `$ASTOR_DIR/bots/DESIGN.md` for the full treatment including the four canonical scenarios (solo / multi-channel / bot-operator / multi-platform-service).
+
+The bots/ directory also holds retired single-platform DBs (archive/) and reserved space for future session history (sessions/) and checks (check/).
 
 ## Inspired by, not copied from
 
