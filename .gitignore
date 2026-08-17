@@ -7,3 +7,6 @@ build/
 *.egg-info/
 .DS_Store
 .env
+bots/archive/*.db
+bots/sessions/*.db
+bots/check/*.py

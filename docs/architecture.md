@@ -426,6 +426,46 @@ The CLI command `am bot on` triggers the structure creation; the code path is id
 
 ---
 
+### Bots design philosophy — 1xNxM many-to-many
+
+astor treats **people** (user_id) and **bots** (platform_id) as two
+independent dimensions. The relationship is genuinely many-to-many:
+
+    1 person --> 1..N bots (different platforms for the same person)
+    1 bot    --> 1..N persons (different users via different chat_ids)
+
+That is why  has TWO separate tables:
+
+-  -- per-bot config (token, base_url, enabled)
+-   -- per-chat-id -> user_id mapping
+
+Not one combined table, because the relationships are independent.
+
+**Why WeChat is special (1 chat = 1 user typically):** WeChat's 
+protocol only allows 1:1 DMs, so a single WeChat bot instance serves many
+users via separate DM chats. Each DM's  binds to one .
+
+**Telegram / Discord are 1:N (one bot, many users):** Both platforms
+support many parallel chats from one bot token. One Telegram bot maps
+to many bindings, each with a different chat_id.
+
+**The bot process has NO special privilege over private data.** Once a
+ binding is established, the bot is just transport:
+
+    Telegram DM (chat_id=C, bound to user_id=alice)
+      -> astor_init_acl(actor=user:alice, role=user, tier=private_alice)
+      -> acl_check_read passes
+      -> reads/writes alice's private DB
+
+If bob's chat_id D sends a read for alice's private:
+
+      -> astor_init_acl(actor=user:bob, role=user, tier=private_alice)
+      -> acl_check_read DENIES (user_id mismatch)
+      -> 401 user grant required (strict privacy model 2026-08-16)
+
+See  for the full
+treatment (anti-patterns, four canonical scenarios, why two tables).
+
 ## 10. Process model
 
 ### Before (legacy 3-server architecture)
