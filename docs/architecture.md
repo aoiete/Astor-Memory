@@ -557,8 +557,10 @@ For a research-backed comparison against the two leading open-source agent-memor
 
 P1 follow-ups identified: async cascade write with crash-recovery queue
 **(SHIPPED 2026-08-16 as v1.2.0 — see `cascade_state` table + `/v1/cascade/replay`
-endpoint in docs/api.md)**, `keywords` + `context` schema columns (P1 #2, not yet
-shipped). See the research doc for full P1/P2/P3 priority list.
+endpoint in docs/api.md)**, `keywords` + `context` schema columns
+**(SHIPPED 2026-08-16 as v1.2.1 — see `hybrid_merge` Jaccard boost + new
+canonical columns in docs/api.md)**. See the research doc for full P1/P2/P3
+priority list.
 
 ## Next
 
