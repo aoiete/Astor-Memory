@@ -25,6 +25,7 @@ def _bus_db_path(tier: str, user_id: str | None) -> Path:
 
 
 def rebuild(tier: str, user_id: str | None = None, drop: bool = True) -> dict:
+    """Drop + recreate the FTS5 index from canonical facts. Run after bulk imports."""
     bus_path = _bus_db_path(tier, user_id)
     if not bus_path.exists():
         return {'tier': tier, 'user_id': user_id, 'skipped': 'no bus db'}
@@ -93,6 +94,7 @@ def rebuild(tier: str, user_id: str | None = None, drop: bool = True) -> dict:
 
 
 def main() -> int:
+    """CLI entry: rebuild the FTS5 index for the configured ASTOR_DIR."""
     ap = argparse.ArgumentParser(description='Rebuild lex inverted index from bus')
     ap.add_argument('--tier', default='public',
                     choices=['public', 'source', 'private', 'repo', 'all'])

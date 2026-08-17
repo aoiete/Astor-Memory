@@ -236,11 +236,13 @@ def find_duplicate_groups(
     pair_scores: list[tuple[int, int, float]] = []  # (i, j, sim)
     parent: list[int] = list(range(n))  # union-find
     def find(x: int) -> int:
+        """Find candidate duplicate fact_ids (cosine >= threshold) for one anchor fact."""
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
     def union(a: int, b: int) -> None:
+        """Merge two fact_ids into one (preserves both revision chains)."""
         ra, rb = find(a), find(b)
         if ra != rb:
             parent[ra] = rb

@@ -49,6 +49,7 @@ class TokenResolution:
         return f"TokenResolution(token={'***' if self.token else 'EMPTY'}, source={self.source!r}, account={self.account_id!r})"
 
     def to_dict(self):
+        """Serialize the TokenResolution to a plain dict (for JSON / debug printing)."""
         return {
             "token_set": bool(self.token),
             "token_preview": (self.token[:6] + "...") if self.token else "",
@@ -209,6 +210,7 @@ def _audit_lookup(platform_kind: str, account_id: str | None, source: str, resul
 # ============================================================
 
 def smoke_test() -> None:
+    """Developer helper: print token resolution for every platform_kind × account_id combo."""
     print("=== platform_bridge smoke test ===")
     for kind in ("weixin", "telegram", "discord", "feishu"):
         for acct in (None, "<your_bot_account_id>@im.bot"):

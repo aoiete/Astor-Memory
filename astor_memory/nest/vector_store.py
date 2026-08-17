@@ -63,9 +63,11 @@ class AstorNest:
 
     @property
     def conn(self) -> sqlite3.Connection:
+        """Get the SQLite connection for vector store (embeddings table)."""
         return self._conn
 
     def close(self) -> None:
+        """Close the vector store connection (CLI teardown)."""
         if self._conn is not None:
             self._conn.close()
             self._conn = None
