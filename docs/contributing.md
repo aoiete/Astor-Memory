@@ -539,3 +539,80 @@ Once approved, maintainers will squash-merge. Your branch can be deleted after m
 - [`docs/architecture.md`](./architecture.md) — design deep dive
 - [`docs/faq.md`](./faq.md) — frequently asked questions
 - [`docs/troubleshooting.md`](./troubleshooting.md) — common errors and fixes
+
+
+---
+
+## 11. Forking Astor-Memory
+
+This section is for maintainers of derivative works (forks). If you fork this repo to add features, change the layout, or adapt it for a different agent framework, this guide tells you what to read first, what's safe to change, and what's load-bearing.
+
+### What to read first (in order)
+
+1. **[`README.md`](../README.md)** — entry point, install, first-run.
+2. **[`docs/architecture.md`](architecture.md)** — the *why* of every component. Skip no sections.
+3. **[`bots/README.md`](../bots/README.md)** — if your fork involves multi-platform bots.
+4. **Module-level docstrings** in `astor_memory/` — each module's purpose is in the first ~20 lines.
+5. **`tests/`** — the behavior specification. Any change must keep `pytest tests/` green.
+
+### Safe to change
+
+- **All CLI command names + their help text.** Just update `docs/api.md` accordingly.
+- **LLM provider list** in `astor_memory/forge/llm_extract.py`. Add a new provider by implementing the 4-method protocol.
+- **Embedding model** in `astor_memory/nest/embeddings.py` — any `fastembed`-compatible model works.
+- **Tier count** (currently 3) — schema migration is supported via `am migrate --add-tier <name>`. See `docs/migration.md`.
+- **Plugin adapters** in `astor_memory/installer/handlers.py` — add a new agent (Cursor, Continue, etc.) by implementing the 2-method handler.
+
+### Load-bearing — think twice before changing
+
+- **`astor_memory/bus/schema.py`** — the canonical fact table. Changes ripple to every store.
+- **`astor_memory/_internal/acl.py`** — ACL enforcement. Any change here is security-sensitive. Add a test in `tests/test_acl.py` BEFORE editing.
+- **`astor_memory/_internal/bot_binding.py`** — the bot ↔ user binding table. Multi-platform agents depend on the schema. Migration tool exists but is one-way.
+- **`astor_memory/nest/vector_store.py`** + **`lex_index.py`** — vector + FTS5 indices. Schema bump = full rebuild required.
+- **`pyproject.toml` `[tool.hatch.build.targets.sdist]`** — sdist include/exclude list. Removing items accidentally ships private data to PyPI.
+
+### PII hygiene for forks
+
+If your fork will be published and installed by other operators:
+
+1. **Search for hardcoded operator data** before each release:
+   ```bash
+   grep -rnE "(user_e|user_c|user_a|user_d|operator|11d658|8263b17|o9cq80|C:\\Users\\operator|D:\\AI\\Astor-Memory)" \
+     --include="*.py" --include="*.md" --include="*.yaml" --include="*.toml" .
+   ```
+   Should return zero matches (excluding `CHANGELOG.md`).
+
+2. **Verify fresh install is empty.** `am init` should create only the schema, no seed user/platform/binding data.
+
+3. **Verify sdist is clean.**
+   ```bash
+   python -m build --sdist
+   python -m tarfile -l dist/astor_memory-*.tar.gz | grep -E "(bots|tests|scripts|backup_astor|\.db)"
+   ```
+   Should return no matches.
+
+4. **Verify tests are isolated.** `tests/test_platform_bridge.py` was the canonical example — it used to depend on the operator's real bot-binding.db. The fixed version uses a `fresh_db` fixture with synthetic fake tokens. Apply the same pattern to any new integration test.
+
+5. **Anonymize the author** in `pyproject.toml`. The default is `flopworld with AI`. Change it before publishing if your fork is under a different maintainer name.
+
+### When to bump the version
+
+- **Patch** (1.2.6 → 1.2.7): bug fix, PII cleanup, doc update, no behavior change.
+- **Minor** (1.2.6 → 1.3.0): new endpoint, new CLI command, new schema column with backward-compat read path.
+- **Major** (1.x → 2.0): schema migration required, breaking API change, default tier change.
+
+### Rebranding checklist (if you fork under a different name)
+
+- [ ] `pyproject.toml` `name=` field
+- [ ] `pyproject.toml` `authors=` field
+- [ ] `README.md` repo URL
+- [ ] `pyproject.toml` `[project.urls]` (Homepage, Repository, Issues, etc.)
+- [ ] `bots/README.md` any references to `flopworld` operator path
+- [ ] `ACKNOWLEDGEMENTS.md` Authors section
+- [ ] `CHANGELOG.md` add a "Forked as <name>" entry at the top
+
+### Where to ask for help
+
+- **General questions:** open a GitHub Discussion on the upstream repo.
+- **Bug reports:** GitHub Issues with `pytest -v` output + `astor doctor` report.
+- **Security issues:** email maintainer (see `pyproject.toml` authors). Do NOT open a public issue.
