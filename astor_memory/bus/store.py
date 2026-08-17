@@ -207,18 +207,37 @@ class AstorBus:
         # P0-fix 2026-08-15: pass tier + user_id so embedding lands in the correct
         # per-tier nest DB. Previously called astor_nest() with no args which
         # raised ValueError (tier required) and silently swallowed embedding.
+        # P1-fix 2026-08-16: on embed failure, enqueue to cascade_state queue
+        # for replay (EverOS md_change_state pattern). Without this, fact
+        # lives forever with no embedding and recall returns empty.
         try:
             from ..nest import astor_nest
             nest = astor_nest(tier=tier, user_id=user_id)
             nest.store(canonical_id, content)
         except Exception as e:
-            # Embedding failure should not block fact storage; log to audit.
+            # Embedding failure should not block fact storage; queue for
+            # replay + write audit row.
+            try:
+                from . import cascade as _cascade
+                _cascade.enqueue(
+                    self,
+                    fact_id=canonical_id,
+                    operation='embed_insert',
+                    tier=tier,
+                    user_id=user_id,
+                    payload={'content': content},
+                    error=str(e),
+                )
+            except Exception:
+                # If even enqueue fails (e.g. cascade_state missing),
+                # fall back to bare audit row so we still see the failure.
+                pass
             self.write_audit(
                 event='embedding_failed',
                 actor=promoted_by or 'system',
                 target_type='canonical',
                 target_id=canonical_id,
-                metadata={'error': str(e)},
+                metadata={'error': str(e), 'queued_for_replay': True},
             )
 
         with self.transaction() as c:
