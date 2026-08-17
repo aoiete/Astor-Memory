@@ -16,7 +16,7 @@ Tables:
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 -- Pragmas set at connection time (bus/store.py:connect)
@@ -159,11 +159,41 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY,
     applied_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- Cascade write queue (added in v1.2.0 schema v4, 2026-08-16).
+-- When nest.store() fails during promote_candidate (e.g. embedding model
+-- OOM, LanceDB unavailable), the fact_id + content + tier + user_id
+-- are queued here for retry. A separate replay pass (manual via
+-- `am cascade replay` / `POST /v1/cascade/replay`, or scheduled cron)
+-- processes pending rows and re-attempts the embed.
+--
+-- Design (EverOS md_change_state pattern, simplified for astor's
+-- SQLite-only stack): durable queue inside the same bus DB; status
+-- transitions pending -> succeeded | failed; failed rows are kept for
+-- post-mortem and cleared by am cascade purge.
+CREATE TABLE IF NOT EXISTS cascade_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fact_id INTEGER NOT NULL,
+    operation TEXT NOT NULL,                   -- 'embed_insert' | 'lex_index' | 'provenance_link'
+    tier TEXT NOT NULL,                        -- public | source | private_<user> | repo_<id>
+    user_id TEXT,                              -- NULL for public/source; user_id for private/repo
+    payload TEXT NOT NULL DEFAULT '{}',        -- JSON: {"content": "...", "scope": "long_term"}
+    enqueued_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_attempt_at DATETIME,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    status TEXT NOT NULL DEFAULT 'pending'     -- pending | succeeded | failed
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_pending
+    ON cascade_state(status, enqueued_at)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_cascade_fact ON cascade_state(fact_id);
 """
 
 
 def astor_upgrade_all_tier_dbs() -> None:
-    """Run v1→v2 and v2→v3 migrations across all known (tier, user_id)
+    """Run v1→v2, v2→v3, v3→v4 migrations across all known (tier, user_id)
     scope DBs (public, source, every private_<user>, every repo_<id>).
 
     Called once at server startup so all 9 schema files share the same
@@ -188,6 +218,7 @@ def astor_upgrade_all_tier_dbs() -> None:
             try:
                 _astor_upgrade_v1_to_v2(conn)
                 _astor_upgrade_v2_to_v3(conn)
+                _astor_upgrade_v3_to_v4(conn)
                 conn.commit()
             finally:
                 conn.close()
@@ -209,6 +240,7 @@ def astor_init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     _astor_upgrade_v1_to_v2(conn)
     _astor_upgrade_v2_to_v3(conn)
+    _astor_upgrade_v3_to_v4(conn)
     # Index that depends on the publishable column must be created AFTER the column exists.
     # The executescript above emits CREATE INDEX inside the same script as the table,
     # which works for fresh DBs but errors on v1 databases because the column doesn't exist yet.
@@ -304,6 +336,47 @@ def _astor_upgrade_v2_to_v3(conn: sqlite3.Connection) -> None:
             )
         except Exception:
             pass
+
+
+def _astor_upgrade_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """
+    2026-08-16: cascade write queue for embed-write failures.
+
+    Creates cascade_state table if absent. SQLite has no `CREATE TABLE IF
+    NOT EXISTS` issue (unlike ADD COLUMN), so the SCHEMA_SQL block already
+    creates the table on fresh DBs. This migration handles the upgrade case
+    where an existing v3 DB doesn't yet have the table.
+
+    Idempotent — safe to call multiple times.
+    """
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cascade_state (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fact_id INTEGER NOT NULL,
+                operation TEXT NOT NULL,
+                tier TEXT NOT NULL,
+                user_id TEXT,
+                payload TEXT NOT NULL DEFAULT '{}',
+                enqueued_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                last_attempt_at DATETIME,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cascade_pending "
+            "ON cascade_state(status, enqueued_at) WHERE status = 'pending'"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cascade_fact ON cascade_state(fact_id)"
+        )
+    except Exception:
+        # Best-effort — table creation may fail if locked, etc.
+        pass
 
 
 def astor_verify_schema(conn: sqlite3.Connection) -> dict:

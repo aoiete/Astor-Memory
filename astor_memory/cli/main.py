@@ -97,14 +97,33 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument('--batch-size', type=int, default=32, help='Batch size for model.embed()')
     sub.set_defaults(func=cmd_reembed)
 
+    # v1.2.0 (2026-08-16): am cascade — replay the cascade write queue.
+    # When nest.store() failed during promote_candidate (e.g. embedding
+    # model OOM), the (fact_id, content, tier, user_id) is queued in
+    # cascade_state. `am cascade replay` drains it; `am cascade stats`
+    # shows counts. Equivalent to POST /v1/cascade/{replay,stats}.
+    sub = subparsers.add_parser('cascade', help='Replay cascade write queue (embed failures)')
+    cascade_sub = sub.add_subparsers(dest='cascade_action', required=True)
+    cascade_replay_p = cascade_sub.add_parser('replay', help='Replay pending cascade rows')
+    cascade_replay_p.add_argument('--limit', type=int, default=100, help='Max rows to process (default 100)')
+    cascade_replay_p.add_argument('--max-attempts', type=int, default=5, help='Per-row max retry count (default 5)')
+    cascade_replay_p.set_defaults(func=cmd_cascade_replay)
+    cascade_stats_p = cascade_sub.add_parser('stats', help='Show cascade queue counts')
+    cascade_stats_p.set_defaults(func=cmd_cascade_stats)
+    cascade_purge_p = cascade_sub.add_parser('purge', help='Delete old succeeded/failed rows')
+    cascade_purge_p.add_argument('--status', choices=['succeeded', 'failed', 'pending'], default='succeeded')
+    cascade_purge_p.add_argument('--older-than-days', type=int, default=7, help='Default 7 days')
+    cascade_purge_p.set_defaults(func=cmd_cascade_purge)
+
     # v1.1: am mcp — Model Context Protocol server (stdio JSON-RPC 2.0).
     # Per Plan § v1.1 MCP integration. No external deps — implements the
     # minimal MCP handshake (initialize + tools/list + tools/call) so any
-    # MCP-compatible client (Claude Desktop, Cursor, etc.) can use astor
+    # MCP-compatible client (Claude Desktop, Cursor, Continue, etc.) can use astor
     # as a tool provider. Run with: `am mcp serve`
     sub = subparsers.add_parser('mcp', help='MCP server (Model Context Protocol)')
     mcp_sub = sub.add_subparsers(dest='mcp_action', required=True)
     mcp_serve = mcp_sub.add_parser('serve', help='Run MCP stdio server')
+
     mcp_serve.add_argument('--transport', default='stdio', choices=['stdio'],
                            help='MCP transport (only stdio supported in v1.1)')
     mcp_serve.set_defaults(func=cmd_mcp_serve)
@@ -662,6 +681,51 @@ def cmd_reembed(args) -> int:
         bus_con.close(); nest_con.close()
 
     print(f'✅ Re-embedded {grand_total} facts across all tiers')
+    return 0
+
+
+def cmd_cascade_replay(args) -> int:
+    """v1.2.0: Replay pending cascade write queue (embed failures).
+
+    When nest.store() failed during promote_candidate (e.g. embedding model
+    OOM), the (fact_id, content, tier, user_id) is queued in cascade_state.
+    This command drains pending rows and re-attempts the embed.
+    """
+    from ..bus import cascade as _cascade
+    bus = astor_bus(tier='public', user_id='admin')
+    result = _cascade.replay_pending(
+        bus,
+        limit=int(getattr(args, 'limit', 100) or 100),
+        max_attempts=int(getattr(args, 'max_attempts', 5) or 5),
+    )
+    import json as _json
+    print(_json.dumps(result, indent=2, ensure_ascii=False))
+    if result['failed'] > 0:
+        print(f"[cascade] {result['failed']} row(s) still failing; check "
+              "`am cascade stats` and recent log entries.", file=__import__('sys').stderr)
+    return 0
+
+
+def cmd_cascade_stats(args) -> int:
+    """v1.2.0: Show cascade queue counts."""
+    from ..bus import cascade as _cascade
+    bus = astor_bus(tier='public', user_id='admin')
+    stats = _cascade.stats(bus)
+    import json as _json
+    print(_json.dumps(stats, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_cascade_purge(args) -> int:
+    """v1.2.0: Delete old cascade rows by status + age."""
+    from ..bus import cascade as _cascade
+    bus = astor_bus(tier='public', user_id='admin')
+    deleted = _cascade.purge(
+        bus,
+        status=str(getattr(args, 'status', 'succeeded')),
+        older_than_days=int(getattr(args, 'older_than_days', 7) or 7),
+    )
+    print(f"[cascade] purged {deleted} row(s)")
     return 0
 
 

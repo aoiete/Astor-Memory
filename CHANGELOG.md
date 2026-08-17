@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.2.0] - 2026-08-16 — Async cascade write queue + crash recovery
+
+### Added — durable embed-write crash recovery (P1 from EverOS research)
+
+**Bug fixed**: when `nest.store()` failed inside `promote_candidate` (e.g.
+embedding model OOM, fastembed import error, LanceDB unavailable), the
+fact was written to `memory_canonical` BUT the embedding was silently
+dropped — the fact lived forever with no vector, recall returned empty
+for it, and the only trace was a `embedding_failed` audit row.
+
+Pattern adopted from EverOS `md_change_state` (simplified for astor's
+SQLite-only stack):
+
+1. **`bus/cascade.py`** — new module. Durable queue for failed writes:
+   `enqueue()`, `list_pending()`, `replay_one()`, `replay_pending()`,
+   `purge()`. Each row tracks `fact_id`, `operation` (`embed_insert` /
+   `lex_index` / `provenance_link`), `tier`, `user_id`, `payload` (JSON
+   blob with `content` for replay), `enqueued_at`, `attempt_count`,
+   `last_error`, `status` (`pending` / `succeeded` / `failed`).
+2. **`bus/schema.py`** — schema v3 → v4. New `cascade_state` table +
+   indexes (`idx_cascade_pending`, `idx_cascade_fact`). `_astor_upgrade_v3_to_v4`
+   migration runs on every known tier DB at server start.
+3. **`bus/store.py:promote_candidate`** — on embed failure, now enqueues to
+   `cascade_state` instead of just writing the audit row. Audit row
+   metadata gets `queued_for_replay: True`.
+4. **`POST /v1/cascade/replay`** (server endpoint, first_admin only) —
+   drain pending rows. Body: `{"limit": 100, "max_attempts": 5}`. Returns
+   `{processed, succeeded, failed, still_pending, results: [...]}`.
+5. **`GET /v1/cascade/stats`** — aggregate counts + last_attempt_at.
+6. **`am cascade replay [--limit=N --max-attempts=N]`** — CLI equivalent
+   of the POST endpoint.
+7. **`am cascade stats`** / **`am cascade purge [--status=… --older-than-days=N]`** — CLI helpers.
+8. **`tests/test_cascade.py`** — 11 new tests covering enqueue, stats,
+   FIFO list, replay success/failure/max-attempts, multi-row drain,
+   purge old rows + protect pending, full server endpoint roundtrip
+   including ACL enforcement.
+
+**Failure modes that route to cascade queue**:
+- Embedding model not loaded (lazy load failed first time)
+- OOM during batched embed
+- SQLite disk full / I/O error
+- fastembed / numpy version mismatch
+
+**What does NOT route** (write fails loud instead):
+- ACL permission denied → caller sees 403
+- Schema corruption → write fails fast, audit row written
+- Schema version mismatch → write fails fast
+
+**Verified**: pytest 124 → 135 passing (+11), no regressions in pre-existing
+8 failures. Live runtime verified at `v1.2.0` after restart.
+
+### Migration v3 → v4
+
+For existing v1.1.x DBs, server restart auto-runs `_astor_upgrade_v3_to_v4`
+on every tier DB. No manual SQL needed.
+
+### Security note
+
+Replay is **first_admin only** — destructive operation touching many nest DBs.
+ACL check is enforced in both the REST endpoint and the CLI.
+
+---
+
 ## [v1.1.1] - 2026-08-16 — P0 ACL fix + SQLite thread safety
 
 ### Fixed — P0 ACL: per-request actor resolved from bot-binding.db
