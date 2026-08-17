@@ -6,7 +6,7 @@ astor-memory: Self-owned memory system for AI agents.
 See: https://github.com/flopworld/astor-memory/blob/main/docs/architecture.md
 """
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 # Top-level singleton accessors. Per Plan § Naming:
 # astor_bus() / astor_forge() / astor_nest() are the unified public API entry points.

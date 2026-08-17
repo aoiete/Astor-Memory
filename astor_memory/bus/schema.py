@@ -16,7 +16,7 @@ Tables:
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 -- Pragmas set at connection time (bus/store.py:connect)
@@ -78,6 +78,12 @@ CREATE TABLE IF NOT EXISTS memory_canonical (
     importance REAL NOT NULL DEFAULT 0.5,
     tags TEXT NOT NULL DEFAULT '[]',
     metadata TEXT NOT NULL DEFAULT '{}',
+    -- v1.2.0 schema v5 (2026-08-16): A-MEM-style structured fields. Extracted by
+    -- forge (LLM mode for v1.2.0; regex mode derives heuristically). keywords
+    -- powers hybrid_merge rerank Jaccard boost; context gives human-readable
+    -- "what is this fact about" used by viewer + admin audit.
+    keywords TEXT NOT NULL DEFAULT '[]',
+    context TEXT NOT NULL DEFAULT '',
     promoted_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     promoted_by TEXT,
     last_confirmed_at DATETIME,
@@ -193,7 +199,7 @@ CREATE INDEX IF NOT EXISTS idx_cascade_fact ON cascade_state(fact_id);
 
 
 def astor_upgrade_all_tier_dbs() -> None:
-    """Run v1→v2, v2→v3, v3→v4 migrations across all known (tier, user_id)
+    """Run v1→v2, v2→v3, v3→v4, v4→v5 migrations across all known (tier, user_id)
     scope DBs (public, source, every private_<user>, every repo_<id>).
 
     Called once at server startup so all 9 schema files share the same
@@ -219,6 +225,7 @@ def astor_upgrade_all_tier_dbs() -> None:
                 _astor_upgrade_v1_to_v2(conn)
                 _astor_upgrade_v2_to_v3(conn)
                 _astor_upgrade_v3_to_v4(conn)
+                _astor_upgrade_v4_to_v5(conn)
                 conn.commit()
             finally:
                 conn.close()
@@ -241,6 +248,7 @@ def astor_init_schema(conn: sqlite3.Connection) -> None:
     _astor_upgrade_v1_to_v2(conn)
     _astor_upgrade_v2_to_v3(conn)
     _astor_upgrade_v3_to_v4(conn)
+    _astor_upgrade_v4_to_v5(conn)
     # Index that depends on the publishable column must be created AFTER the column exists.
     # The executescript above emits CREATE INDEX inside the same script as the table,
     # which works for fresh DBs but errors on v1 databases because the column doesn't exist yet.
@@ -377,6 +385,39 @@ def _astor_upgrade_v3_to_v4(conn: sqlite3.Connection) -> None:
     except Exception:
         # Best-effort — table creation may fail if locked, etc.
         pass
+
+
+def _astor_upgrade_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """
+    2026-08-16 (v1.2.0 ship): keywords + context columns on memory_canonical.
+
+    Pattern adopted from A-MEM (agiresearch/A-mem, arXiv:2502.12110):
+    - `keywords` — JSON array of 3-7 keywords/phrases extracted by LLM
+      (regex mode derives heuristically). Powers hybrid_merge rerank via
+      Jaccard boost.
+    - `context` — 1-2 sentence human-readable summary. Used by viewer +
+      admin audit for context at-a-glance.
+
+    Idempotent — uses PRAGMA table_info to probe + ALTER TABLE ADD COLUMN.
+    """
+    try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(memory_canonical)"
+        ).fetchall()}
+    except Exception:
+        return
+    alters = []
+    if "keywords" not in cols:
+        alters.append(("keywords", "TEXT NOT NULL DEFAULT '[]'"))
+    if "context" not in cols:
+        alters.append(("context", "TEXT NOT NULL DEFAULT ''"))
+    for col, decl in alters:
+        try:
+            conn.execute(
+                f"ALTER TABLE memory_canonical ADD COLUMN {col} {decl}"
+            )
+        except Exception:
+            pass
 
 
 def astor_verify_schema(conn: sqlite3.Connection) -> dict:

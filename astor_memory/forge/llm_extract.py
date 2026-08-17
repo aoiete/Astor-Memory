@@ -30,11 +30,21 @@ def _call_openai(text: str, api_key: str, base_url: str = 'https://api.openai.co
     body = {
         'model': model,
         'messages': [
-            {'role': 'system', 'content': 'You extract facts. Output raw JSON only. No markdown. No explanation.'},
-            {'role': 'user', 'content': f'Extract structured facts from: {text}\nReturn as JSON array with fields: content, kind, confidence, importance, tags.'},
+            {'role': 'system', 'content': (
+                'You extract structured facts. Output raw JSON only. No markdown. No explanation.\n\n'
+                'Each fact object has fields:\n'
+                '  - content: short factual statement (1-2 sentences)\n'
+                '  - kind: one of (fact, user_preference, decision, event, trading_fact)\n'
+                '  - confidence: 0.0-1.0\n'
+                '  - importance: 0.0-1.0\n'
+                '  - tags: list of short strings\n'
+                '  - keywords: list of 3-7 distinct keywords/phrases that summarize the fact (for search rerank)\n'
+                '  - context: 1-2 sentence summary explaining what this fact is about'
+            )},
+            {'role': 'user', 'content': f'Extract structured facts from: {text}\nReturn as JSON array.'},
         ],
         'temperature': 0.1,
-        'max_tokens': 600,
+        'max_tokens': 800,
     }
     headers = {
         'Authorization': f'Bearer {api_key}',
@@ -219,6 +229,11 @@ def astor_llm_extract(text: str, primary: str = 'm3', fallback_chain: list[str] 
                         confidence=f.get('confidence', 0.7),
                         importance=f.get('importance', 0.5),
                         tags=f.get('tags', []),
+                        # v1.2.0: A-MEM-style structured fields. LLM providers
+                        # that don't yet return them (legacy prompts, smaller
+                        # models) get safe fallbacks.
+                        keywords=f.get('keywords') or [],
+                        context=str(f.get('context', '') or '')[:500],
                     )
                     for f in raw_facts
                 ]

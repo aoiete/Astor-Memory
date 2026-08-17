@@ -305,6 +305,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 confidence=f.confidence,
                 importance=f.importance,
                 tags=f.tags or [],
+                # v1.2.1: thread A-MEM-style structured fields from extractor
+                # through candidate → canonical. Promoted to top-level
+                # canonical columns during promote_candidate.
+                keywords=f.keywords or [],
+                context=f.context or '',
             )
             canon_id = bus.promote_candidate(
                 cand_id, promoted_by='rest.write', user_id=user, tier=tier,
@@ -340,6 +345,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         content=f.content, kind=f.kind,
                         confidence=f.confidence, importance=f.importance,
                         tags=f.tags or [],
+                        # v1.2.1: same structured fields as primary write
+                        keywords=f.keywords or [],
+                        context=f.context or '',
                     )
                     # Mirror uses its own dedup scope (source/long_term etc)
                     # so it doesn't collide with the primary public write.
@@ -403,6 +411,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
         from .nest.embeddings import astor_get_embedding_model, astor_get_model_name_for_ram
 
         model = astor_get_embedding_model()
+
+        # v1.2.0: local helper for safely parsing JSON-encoded fields.
+        import json as _safe_json_loads_json_mod
+        def _safe_json_loads(s):
+            try:
+                v = _safe_json_loads_json_mod.loads(s) if s else []
+                return v if isinstance(v, list) else []
+            except Exception:
+                return []
         embeddings = list(model.embed([query]))
         query_emb = embeddings[0]
 
@@ -417,12 +434,37 @@ def create_app(astor_dir: str | None = None) -> Flask:
             lex = _astor_lex(tier=tier, user_id=user_id)
             vector_hits = nest.search(query_emb, limit=oversample)
             bm25_hits = lex.bm25_search(query, limit=oversample)
+            # v1.2.0: load per-fact keywords from canonical + compute
+            # Jaccard boost. O(oversample) - fine for top_k <= 50.
+            candidate_fids = sorted({f for f, _ in bm25_hits}
+                                    | {f for f, _ in vector_hits})
+            keyword_hits = {}
+            if candidate_fids:
+                placeholders = ','.join('?' * len(candidate_fids))
+                kw_rows = bus.conn.execute(
+                    f"SELECT id, keywords FROM memory_canonical "
+                    f"WHERE id IN ({placeholders})",
+                    candidate_fids,
+                ).fetchall()
+                for fid, kw_json in kw_rows:
+                    try:
+                        import json as _json
+                        kws = _json.loads(kw_json) if kw_json else []
+                        if kws:
+                            keyword_hits[int(fid)] = kws
+                    except Exception:
+                        pass
+            # Query keywords = tokens of the query (cheap; no LLM call).
+            from .nest.lex_index import _tokenize
+            query_keywords = _tokenize(query)
             merged = _hybrid_merge(
                 bm25_hits=bm25_hits,
                 vector_hits=vector_hits,
                 bm25_weight=bm25_weight,
                 vec_weight=vec_weight,
                 limit=oversample,
+                keyword_hits=keyword_hits if keyword_hits else None,
+                query_keywords=query_keywords,
             )
             results = merged[:top_k]
             # If hybrid returned nothing (empty lex AND empty nest), fall
@@ -433,7 +475,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         enriched = []
         for fact_id, sim in results:
             row = bus.conn.execute(
-                "SELECT id, content, kind, confidence, importance, tags, namespace, user_id FROM memory_canonical WHERE id = ?",
+                "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context "
+                "FROM memory_canonical WHERE id = ?",
                 (fact_id,),
             ).fetchone()
             if row is None:
@@ -452,6 +495,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # pure-cosine ('cosine') or hybrid ('hybrid'). Hermes
                 # adapter uses this for sorting/debug.
                 'score_kind': 'hybrid' if use_hybrid else 'cosine',
+                # v1.2.0: include keywords + context in response so callers
+                # (e.g. hermes_adapter) can render fact titles / explain
+                # recall. Empty defaults for pre-v1.2 facts.
+                'keywords': _safe_json_loads(row[8]) if len(row) > 8 else [],
+                'context': (row[9] if len(row) > 9 and row[9] else '')[:500],
             })
         return jsonify({'results': enriched, 'count': len(enriched)})
 

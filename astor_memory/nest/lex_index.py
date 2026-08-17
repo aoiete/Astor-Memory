@@ -345,6 +345,9 @@ def hybrid_merge(
     bm25_weight: float = 0.4,
     vec_weight: float = 0.6,
     limit: int = 10,
+    keyword_boost: float = 0.15,
+    keyword_hits: dict[int, list[str]] | None = None,
+    query_keywords: list[str] | None = None,
 ) -> list[tuple[int, float]]:
     """Reciprocal-rank-fusion-style score normalization.
 
@@ -354,15 +357,37 @@ def hybrid_merge(
     Fact only in one list still receives a score (we just zero the missing
     channel). This means a strong BM25 keyword hit can rescue a fact whose
     embedding is far from the query vector.
+
+    v1.2.0 (2026-08-16): optional keyword Jaccard boost. When both
+    `keyword_hits` (fact_id → list of keywords stored at write time) and
+    `query_keywords` are provided, score += keyword_boost × jaccard(fact_kw,
+    query_kw). Jaccard is in [0,1] so boost is bounded. Disabled when either
+    side is None/empty (backward compat).
     """
     bm25_max = max((s for _, s in bm25_hits), default=0.0) or 1.0
     # Cosine is already 0-1 so don't re-normalize; just keep raw.
     bm25 = {fid: (s / bm25_max) for fid, s in bm25_hits}
     vec  = dict(vector_hits)
     candidates = set(bm25) | set(vec)
+    # Compute Jaccard boost per fact once (avoids recomputation in loop).
+    qk_set = set(k.lower() for k in (query_keywords or []) if k)
+    jaccard_boost = {}
+    if qk_set and keyword_hits:
+        for fid, fkws in keyword_hits.items():
+            if not fkws:
+                continue
+            fk_set = set(k.lower() for k in fkws if k)
+            if not fk_set:
+                continue
+            inter = fk_set & qk_set
+            union = fk_set | qk_set
+            if union:
+                jaccard_boost[fid] = len(inter) / len(union)
     merged = []
     for fid in candidates:
         s = bm25_weight * bm25.get(fid, 0.0) + vec_weight * vec.get(fid, 0.0)
+        if jaccard_boost:
+            s += keyword_boost * jaccard_boost.get(fid, 0.0)
         merged.append((fid, s))
     merged.sort(key=lambda x: x[1], reverse=True)
     return merged[:limit]

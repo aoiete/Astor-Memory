@@ -28,26 +28,44 @@ PATTERNS = [
 
 @dataclass
 class AstorFact:
-    """Extracted fact from text (before storage)."""
+    """Extracted fact from text (before storage).
+
+    v1.2.0 (2026-08-16): added keywords + context fields. LLM mode
+    populates them via prompt; regex mode derives heuristically.
+    """
     content: str
     kind: str
     confidence: float = 0.7
     importance: float = 0.5
     tags: list[str] | None = None
+    keywords: list[str] | None = None   # A-MEM-style; JSON-encoded into DB
+    context: str = ''                  # A-MEM-style; human-readable 1-2 sentences
 
 
 def astor_regex_extract(text: str) -> list[AstorFact]:
-    """Extract facts using regex patterns. No LLM."""
+    """Extract facts using regex patterns. No LLM.
+
+    v1.2.0: also derives keywords + context heuristically:
+    - keywords = [kind, ...content_words] (top-5 distinctive tokens)
+    - context = first 120 chars of input text
+    """
+    import re as _re
     facts = []
     for pattern, kind in PATTERNS:
-        m = re.match(pattern, text, re.IGNORECASE)
+        m = _re.match(pattern, text, _re.IGNORECASE)
         if m:
+            # Heuristic keywords: kind + up to 5 longest words >3 chars
+            content_part = m.group(1).strip()
+            words = _re.findall(r'[a-zA-Z一-鿿]{4,}', content_part)
+            distinct_words = list(dict.fromkeys(words))[:5]  # preserve order, dedup
             facts.append(AstorFact(
-                content=m.group(1).strip(),
+                content=content_part,
                 kind=kind,
                 confidence=0.7,
                 importance=0.5,
                 tags=[kind, 'auto_extracted'],
+                keywords=[kind] + distinct_words,
+                context=text[:120].strip(),
             ))
             break  # one fact per match
     return facts

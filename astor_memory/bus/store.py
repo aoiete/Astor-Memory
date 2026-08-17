@@ -115,8 +115,24 @@ class AstorBus:
         tags: list[str] | None = None,
         metadata: dict | None = None,
         scene: str = 'casual',
+        keywords: list[str] | None = None,
+        context: str = '',
     ) -> int:
-        """Insert a candidate fact. Returns candidate_id."""
+        """Insert a candidate fact. Returns candidate_id.
+
+        v1.2.0: keywords + context are v2 schema columns. We store them in
+        the candidate's metadata JSON blob (existing column) so the
+        promotion path can read them back without needing a v5 candidate
+        schema migration. promote_candidate re-reads metadata and pulls
+        keywords/context out.
+        """
+        # v1.2.0: merge keywords + context into metadata JSON for storage.
+        # This avoids needing a separate column on memory_candidates.
+        meta = dict(metadata or {})
+        if keywords is not None:
+            meta['__keywords__'] = list(keywords)
+        if context:
+            meta['__context__'] = str(context)[:500]
         with self.transaction() as c:
             cur = c.execute(
                 """INSERT INTO memory_candidates
@@ -131,7 +147,7 @@ class AstorBus:
                     confidence,
                     importance,
                     json.dumps(tags or []),
-                    json.dumps(metadata or {}),
+                    json.dumps(meta),
                     scene,
                 ),
             )
@@ -187,15 +203,25 @@ class AstorBus:
             if row is None:
                 raise ValueError(f"Candidate {candidate_id} not found")
             event_id, namespace, content, kind, confidence, importance, tags, metadata, scene = row
+            # v1.2.0: pull keywords/context out of metadata JSON. Older
+            # candidates without these get safe defaults ('[]' / '').
+            try:
+                meta_dict = json.loads(metadata) if metadata else {}
+            except Exception:
+                meta_dict = {}
+            kw_json = json.dumps(meta_dict.get('__keywords__') or [])
+            ctx_text = str(meta_dict.get('__context__') or '')[:500]
             cur = c.execute(
                 """INSERT INTO memory_canonical
                    (candidate_id, event_id, namespace, content, kind, confidence, importance,
-                    tags, metadata, promoted_by, user_id, tier, scope_type, verdict,
+                    tags, metadata, keywords, context,
+                    promoted_by, user_id, tier, scope_type, verdict,
                     origin_session_id, stable_id, embedding_version)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     candidate_id, event_id, namespace, content, kind, confidence, importance,
-                    tags, metadata, promoted_by, user_id, tier, scope_type, verdict,
+                    tags, metadata, kw_json, ctx_text,
+                    promoted_by, user_id, tier, scope_type, verdict,
                     origin_session_id, stable_id, 1,
                 ),
             )

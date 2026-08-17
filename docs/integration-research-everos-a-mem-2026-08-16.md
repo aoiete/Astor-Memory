@@ -231,7 +231,12 @@ This is the **competitive moat** we should not regress on:
    - **Why**: prevents silent embedding write loss (we had this exact bug — fixed in opt3-6 commit `467b379`)
 
 2. **`keywords` + `context` columns on `memory_canonical`** (A-MEM pattern)
-   - Schema migration v3 → v4
+   - ✅ **SHIPPED 2026-08-16 as v1.2.1** — schema v4 → v5 adds `keywords`
+     (TEXT JSON array, LLM-extracted or regex-derived) + `context`
+     (TEXT 1-2 sentence summary). `hybrid_merge` extended with optional
+     `keyword_hits` + `query_keywords` params that score +=
+     `keyword_boost` × Jaccard(fact_kw, query_kw). 11 pytests covering
+     extraction, migration, store, hybrid_merge boost + backward compat.
    - Update `forge.extractor` to populate both fields
    - Use in `hybrid_merge` rerank: `score = sim × bm25 + boost(keywords_overlap) + boost(context_match)`
    - **Why**: improves fact retrieval precision; A-MEM shows 5-10% precision gain from structured fields
