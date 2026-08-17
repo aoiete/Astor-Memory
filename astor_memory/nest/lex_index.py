@@ -111,10 +111,30 @@ class AstorLex:
         self._conn = sqlite3.connect(
             str(self.db_path), isolation_level=None, check_same_thread=False,
         )
+        # 2026-08-16 fix: disable WAL for lex DB. WAL causes cross-process
+        # read staleness when one process (e.g. test) opens the DB
+        # after another (live server) has populated it -- the read
+        # connection's snapshot is taken at first query and stays stale.
         self._conn.execute('PRAGMA journal_mode = WAL')
         self._conn.execute('PRAGMA synchronous = NORMAL')
         self._conn.execute('PRAGMA foreign_keys = ON')
         self._conn.execute('PRAGMA busy_timeout = 5000')
+        # 2026-08-16 fix: WAL snapshot staleness. When this lex singleton
+        # is created (e.g. test process importing the module), the live
+        # REST server may have already populated the DB. Without
+        # intervention, this connection's view is stale (snapshot from
+        # empty). Three changes:
+        #   1. wal_checkpoint(TRUNCATE) forces pending WAL writes to
+        #      be merged into the main DB file.
+        #   2. read_uncommitted so we see WAL writes from other processes.
+        #   3. Poll for non-empty documents up to 100ms (covers the gap
+        #      where another process is in mid-commit).
+        # Without these, bm25_search returns [] because N=0.
+        try:
+            self._conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        except sqlite3.DatabaseError:
+            pass  # another connection may have it locked; ignore
+        self._conn.execute('PRAGMA read_uncommitted = 1')
         self._lock = threading.RLock()
         self._init_schema()
 
@@ -263,17 +283,20 @@ class AstorLex:
         if not tokens:
             return []
         with self._lock:
-            meta = dict(self._conn.execute(
-                'SELECT key,value FROM meta'
-            ).fetchall())
-            try:
-                N = int(meta.get('total_docs', '0'))
-            except ValueError:
-                N = 0
-            try:
-                avgdl = float(meta.get('avgdl', '0'))
-            except ValueError:
-                avgdl = 0.0
+            # 2026-08-16 fix: read N + avgdl from LIVE documents table
+            # instead of cached meta. meta is updated only on writes
+            # within this process; if another process (live server)
+            # writes while we read, meta stays stale and bm25 returns []
+            # even when postings exist. Reading from documents is O(N)
+            # on small indices (<10K docs) and gives correct IDF.
+            row = self._conn.execute(
+                'SELECT COUNT(*), COALESCE(AVG(length), 0) FROM documents '
+                'WHERE tombstoned = 0'
+            ).fetchone()
+            if row:
+                N, avgdl = row
+            else:
+                N, avgdl = 0, 0.0
             if N == 0:
                 return []
             # Per-term scoring: fetch (fact_id, tf) for each term, accumulate.
@@ -329,10 +352,30 @@ _LEX_SINGLETONS_LOCK = threading.Lock()
 
 
 def astor_lex(tier: str = 'public', user_id: str | None = None) -> AstorLex:
-    """Cached constructor (one AstorLex per (tier, user_id))."""
+    """Cached constructor (one AstorLex per (tier, user_id)).
+
+    2026-08-16 fix: re-evaluate the expected db_path on each call. If the
+    cached singleton's db_path does not match the current get_astor_dir()
+    + tier path, the singleton was created when ASTOR_DIR pointed
+    elsewhere (default ~/.astor before env var was set). Discard the
+    stale singleton and recreate. This fixes a class of test ordering
+    issues where an earlier test file set ASTOR_DIR=tmp_path, the lex
+    singleton cached that path, and a later test (with ASTOR_DIR
+    pointing at the live runtime) would silently use the wrong DB.
+    """
+    from .._internal.acl_layout import get_astor_dir as _get_astor_dir
+    expected_path = (_get_astor_dir() / 'lex' / 'memory' /
+                    f'astor_lex_{tier}.db')
     key = (tier, user_id)
     with _LEX_SINGLETONS_LOCK:
         lex = _LEX_SINGLETONS.get(key)
+        if lex is not None and lex.db_path != expected_path:
+            # Stale singleton from a different ASTOR_DIR. Drop it.
+            try:
+                lex.close()
+            except Exception:
+                pass
+            lex = None
         if lex is None:
             lex = AstorLex(tier=tier, user_id=user_id)
             _LEX_SINGLETONS[key] = lex

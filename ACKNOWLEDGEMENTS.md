@@ -228,7 +228,7 @@ The full ship history is preserved in the Hermes agent project for archival purp
 
 ## 6. Authors
 
-### T <AUTHOR> L
+### <AUTHOR> with AI
 
 **Role**: project lead, all architectural decisions, iron rule definitions
 

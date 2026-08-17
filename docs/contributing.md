@@ -257,7 +257,7 @@ vendor_neutral:
 
 ### Personal (4 rules, opt-in via config)
 
-Reference implementation for the "<AUTHOR> workflow" — NOT default. See [Style reference](#6-style-reference-p-conf-003-implementation).
+Reference implementation for the project maintainer's workflow — NOT default. See [Style reference](#6-style-reference-p-conf-003-implementation).
 
 ---
 
@@ -280,7 +280,7 @@ The Core runtime rule P-CONF-003 says: "avoid filler and redundant status narrat
 - Code snippets when code is the answer
 - Tables when tabular data is the answer
 
-### Style choices (<AUTHOR> reference)
+### Style choices (project reference)
 
 This is a personal style guide for one specific workflow. Most open-source projects should ignore this section; it's here for transparency about how one contributor prefers to write.
 
@@ -298,7 +298,7 @@ If you're a contributor, write in the style that suits your audience. The Core r
 
 The Core runtime rule says: "analyze via available knowledge sources (memory, tools, retrieval indices) before LLM synthesize."
 
-This section gives the reference implementation (<AUTHOR>'s stack) and the abstract pattern for other stacks.
+This section gives the reference implementation (the project's stack) and the abstract pattern for other stacks.
 
 ### Abstract pattern (universal)
 
@@ -324,16 +324,16 @@ def analyze(question: str) -> Answer:
 
 The principle: **don't ask LLM to generate from scratch when knowledge sources exist**.
 
-### Oldowner reference implementation
+### Project reference implementation
 
-The <AUTHOR> stack uses 3 specific knowledge sources:
+The reference stack uses 3 specific knowledge sources:
 
 1. **skill** — hermes-agent skill library (`~/.hermes/skills/`)
-2. **wiki** — personal knowledge base (`<ASTOR_RUNTIME_DIR>`)
+2. **wiki** — personal knowledge base (`~/wiki/`)
 3. **memory** — Astor-Memory itself (the system you're contributing to)
 
 ```python
-# Oldowner's analyze():
+# Reference analyze() implementation:
 def analyze(question: str) -> Answer:
     skill_hits = hermes_skills.match(question)      # skill
     wiki_hits = wiki.search(question)               # wiki
