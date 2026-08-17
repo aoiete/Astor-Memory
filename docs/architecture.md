@@ -555,7 +555,10 @@ For a research-backed comparison against the two leading open-source agent-memor
 - **A-MEM** (`agiresearch/A-mem`, 1149 ★, MIT, arXiv:2502.12110): Zettelkasten-style auto-linking, evolution_history per memory, ChromaDB+BM25. Interesting ideas but single-namespace + no ACL.
 - **astor-memory moat**: 4-tier × 4-role ACL (no one else does this), cross-platform token binding (Telegram/Discord/WeChat/Feishu), per-fact provenance graph with DOT export, dry-run forget, versioning + restore, repo tier for per-git-repo memory.
 
-P1 follow-ups identified: async cascade write with crash-recovery queue, `keywords` + `context` schema columns. See the research doc for full P1/P2/P3 priority list.
+P1 follow-ups identified: async cascade write with crash-recovery queue
+**(SHIPPED 2026-08-16 as v1.2.0 — see `cascade_state` table + `/v1/cascade/replay`
+endpoint in docs/api.md)**, `keywords` + `context` schema columns (P1 #2, not yet
+shipped). See the research doc for full P1/P2/P3 priority list.
 
 ## Next
 

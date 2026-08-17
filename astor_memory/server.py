@@ -923,6 +923,69 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except FileNotFoundError as e:
             return jsonify({'error': str(e)}), 404
 
+    @app.route('/v1/cascade/replay', methods=['POST'])
+    def cascade_replay():
+        """Replay pending cascade write queue (2026-08-16 v1.2.0 ship).
+
+        When nest.store() failed during a promote_candidate (e.g. embedding
+        model OOM, LanceDB unavailable), the (fact_id, content, tier, user_id)
+        was queued in cascade_state. This endpoint processes pending rows
+        and re-attempts the embed. First_admin only — this is a destructive
+        operation (can write to many nest DBs at once).
+
+        Body JSON (all optional):
+          limit: int (default 100) — max rows to process this call
+          max_attempts: int (default 5) — per-row max retry count
+
+        Returns:
+          {processed, succeeded, failed, still_pending, results: [...]}
+        """
+        try:
+            ctx = astor_current_acl()
+            if ctx.role != 'first_admin':
+                return jsonify({'error': 'cascade_replay requires first_admin'}), 403
+        except Exception:
+            pass
+        body = request.get_json(force=True) if request.is_json else {}
+        limit = int(body.get('limit', 100))
+        max_attempts = int(body.get('max_attempts', 5))
+        # Run replay against public tier (caller is first_admin, can write
+        # any tier; cross-tier rows are routed by their own tier/user_id
+        # inside cascade.replay_pending).
+        bus = astor_bus(tier='public', user_id='admin')
+        from .bus import cascade as _cascade
+        result = _cascade.replay_pending(
+            bus, limit=limit, max_attempts=max_attempts,
+        )
+        # Also write an audit row so replay is traceable.
+        try:
+            bus.write_audit(
+                event='cascade_replay',
+                actor='first_admin',
+                target_type='system',
+                target_id='cascade_state',
+                metadata={
+                    'limit': limit, 'max_attempts': max_attempts,
+                    'succeeded': result['succeeded'],
+                    'failed': result['failed'],
+                    'still_pending': result['still_pending'],
+                },
+            )
+        except Exception:
+            pass
+        return jsonify(result)
+
+    @app.route('/v1/cascade/stats', methods=['GET'])
+    def cascade_stats():
+        """Aggregate stats on cascade write queue. No body required.
+
+        Returns:
+          {pending, succeeded, failed, last_attempt_at}
+        """
+        bus = astor_bus(tier='public', user_id='admin')
+        from .bus import cascade as _cascade
+        return jsonify(_cascade.stats(bus))
+
     @app.route('/v1/install', methods=['POST'])
     def install():
         """Plan an install into another agent (returns file changes, does not write).
