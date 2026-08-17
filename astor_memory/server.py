@@ -39,7 +39,7 @@ def _astor_resolve_actor(user_id: str | None) -> tuple[str, str]:
     Otherwise returns ('admin:<id>', 'admin') for role='admin', or
     ('user:<id>', 'user') for role='user'.
 
-    2026-08-16 ACL fix (P0): was hardcoded to first_admin, allowing user_a
+    2026-08-16 ACL fix (P0): was hardcoded to first_admin, allowing any user
     to write source tier and any user to read another user's private DB.
     """
     if not user_id or user_id == 'admin':
@@ -76,7 +76,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
     # P2-fix 2026-08-15: rebind ACL per request, taking tier + actor from the
     # request body so per-tier writes use the correct role.
     # P0-fix 2026-08-16: actor/role now come from bot-binding.db user_meta.role
-    # based on `body.user` (was hardcoded to first_admin, allowing user_a → source
+    # based on `body.user` (was hardcoded to first_admin, allowing any user → source
     # write + cross-user private read). Also enforce cross-user protection:
     # if tier=private and user_id != actor, deny at the request boundary
     # instead of letting it reach `astor_check_write/read`.

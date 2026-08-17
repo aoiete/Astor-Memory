@@ -149,7 +149,7 @@ def get_db_path(
     Examples (default: ASTOR_DIR not set → ~/.astor/):
         get_db_path('public', 'bus') -> ~/.astor/public/memory/astor_bus_public.db
         get_db_path('source', 'nest') -> ~/.astor/source/memory/astor_nest_source.db
-        get_db_path('private', 'bus', 'user_e') -> ~/.astor/users/user_e/memory/astor_bus_sunny.db
+        get_db_path('private', 'bus', 'alice') -> ~/.astor/users/alice/memory/astor_bus_alice.db
 
     Raises ValueError if tier=private without user_id, or if user_id contains
     forbidden characters (path traversal protection).

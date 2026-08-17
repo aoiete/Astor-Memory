@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS audit (
         CHECK(tier IN ('public', 'source', 'private')),
     user_id TEXT,                          -- target user_id (the data being touched), may differ from actor
     action TEXT NOT NULL,                 -- 'read' | 'write' | 'delete' | 'compact' | 'migrate' | 'admin_op' | 'recall' | 'init'
-    target TEXT,                           -- free-form: 'memory_canonical/id=42' | 'astor_bus_sunny.db/embeddings' etc.
+    target TEXT,                           -- free-form: 'memory_canonical/id=42' | 'astor_bus_alice.db/embeddings' etc.
     reason TEXT,                           -- required for first_admin admin_op; optional otherwise
     metadata TEXT NOT NULL DEFAULT '{}'   -- JSON blob for op-specific extras
 );

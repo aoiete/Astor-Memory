@@ -1,6 +1,6 @@
 """Tests for _internal/bot_binding.py — covers 8 main functions + audit + invariants.
 
-Run via: cd <source_dir> && python -m pytest tests/test_bot_binding.py -v
+Run via: cd <repo> && python -m pytest tests/test_bot_binding.py -v
 """
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ from unittest.mock import patch
 
 import pytest
 
-os.environ.setdefault('ASTOR_DIR', '<runtime_dir>')
+os.environ.setdefault('ASTOR_DIR', os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor'))
 
 # 必须在 import astor_memory 之前
-sys.path.insert(0, '<source_dir>')
+sys.path.insert(0, os.environ.get('ASTOR_SOURCE_PATH') or str(Path.cwd()))
 
 from astor_memory._internal import bot_binding as bb
 from astor_memory._internal.audit_logger import astor_audit, _get_audit_conn
@@ -89,9 +89,9 @@ def test_upsert_and_get_user(fresh_db):
 def test_get_user_by_alias(fresh_db):
     """get_user works with both primary_id and short_alias."""
     bb._connect()
-    bb.upsert_user('sunday', 'user_b', real_name='Sunny Zhang', role='user')
-    u1 = bb.get_user('sunday')  # primary_id
-    u2 = bb.get_user('user_b')  # alias
+    bb.upsert_user('alice', 'alice_b', real_name='Alice Example', role='user')
+    u1 = bb.get_user('alice')  # primary_id
+    u2 = bb.get_user('alice_b')  # alias
     assert u1 is not None and u2 is not None
     assert u1['user_id'] == u2['user_id']
 
@@ -158,7 +158,7 @@ def test_invalid_user_id_rejected():
         _validate_user_id('a' * 100)
     # Valid: alphanumeric + dash + underscore
     _validate_user_id('admin')
-    _validate_user_id('user_e-zhang_021')
+    _validate_user_id('alice-bob_123')
 
 
 def test_audit_logged_on_upsert(fresh_db):
@@ -174,7 +174,7 @@ def test_audit_logged_on_upsert(fresh_db):
     bb.upsert_binding('weixin:a1', 'c1', 'u1', bound_by='first_admin')
 
     # Find audit rows; could come from real audit/astor_audit.db (production)
-    audit_db = Path('<runtime_dir>audit/astor_audit.db')
+    audit_db = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') / 'audit' / 'astor_audit.db'
     if not audit_db.exists():
         # OK — astor_audit logged nothing, silent fallback (best-effort)
         return

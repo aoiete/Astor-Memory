@@ -48,7 +48,7 @@ def test_acl_layout_9_db_paths(monkeypatch, tmp_path):
     }
     # private requires user_id
     for store in ["bus", "nest", "forge"]:
-        paths[("private", store)] = get_db_path("private", store, "user_e")
+        paths[("private", store)] = get_db_path("private", store, "alice")
     # 8 public/source + 3 private = 9 (the test covers all 9 explicitly below)
     assert get_db_path("public", "bus") == tmp_path / "public/memory/astor_bus_public.db"
     assert get_db_path("public", "nest") == tmp_path / "public/memory/astor_nest_public.db"
@@ -56,9 +56,9 @@ def test_acl_layout_9_db_paths(monkeypatch, tmp_path):
     assert get_db_path("source", "bus") == tmp_path / "source/memory/astor_bus_source.db"
     assert get_db_path("source", "nest") == tmp_path / "source/memory/astor_nest_source.db"
     assert get_db_path("source", "forge") == tmp_path / "source/memory/astor_forge_source.db"
-    assert get_db_path("private", "bus", "user_e") == tmp_path / "users/user_e/memory/astor_bus_sunny.db"
-    assert get_db_path("private", "nest", "user_e") == tmp_path / "users/user_e/memory/astor_nest_sunny.db"
-    assert get_db_path("private", "forge", "user_e") == tmp_path / "users/user_e/memory/astor_forge_sunny.db"
+    assert get_db_path("private", "bus", "alice") == tmp_path / "users/alice/memory/astor_bus_alice.db"
+    assert get_db_path("private", "nest", "alice") == tmp_path / "users/alice/memory/astor_nest_alice.db"
+    assert get_db_path("private", "forge", "alice") == tmp_path / "users/alice/memory/astor_forge_alice.db"
 
 
 def test_acl_layout_private_requires_user_id(monkeypatch, tmp_path):
@@ -86,9 +86,9 @@ def test_acl_layout_user_id_validation():
 
 def test_acl_layout_user_id_accepts_valid():
     """Accept alphanumeric + dash + underscore ids."""
-    _validate_user_id("user_e")
-    _validate_user_id("user_a")
-    _validate_user_id("zhang-user_d")
+    _validate_user_id("alice")
+    _validate_user_id("bob")
+    _validate_user_id("dave_user")
     _validate_user_id("admin")
     _validate_user_id("a1b2_c3")
 
@@ -96,33 +96,46 @@ def test_acl_layout_user_id_accepts_valid():
 # --- ACL state binding ---
 
 def test_acl_init_binds_state():
-    astor_init_acl(actor="user:user_e", role="user", tier="private", user_id="user_e")
+    astor_init_acl(actor="user:alice", role="user", tier="private", user_id="alice")
     ctx = astor_current_acl()
-    assert ctx.actor == "user:user_e"
+    assert ctx.actor == "user:alice"
     assert ctx.role == "user"
     assert ctx.tier == "private"
-    assert ctx.user_id == "user_e"
+    assert ctx.user_id == "alice"
 
 
 def test_acl_init_validates_inputs():
     with pytest.raises(ValueError, match="role must be"):
-        astor_init_acl(actor="x", role="god", tier="private", user_id="user_e")
+        astor_init_acl(actor="x", role="god", tier="private", user_id="alice")
     with pytest.raises(ValueError, match="tier must be"):
-        astor_init_acl(actor="x", role="user", tier="god", user_id="user_e")
+        astor_init_acl(actor="x", role="user", tier="god", user_id="alice")
     with pytest.raises(ValueError, match="tier=private requires"):
         astor_init_acl(actor="x", role="user", tier="private", user_id=None)
     with pytest.raises(ValueError, match="requires user_id=None"):
-        astor_init_acl(actor="x", role="user", tier="public", user_id="user_e")
+        astor_init_acl(actor="x", role="user", tier="public", user_id="alice")
 
 
 def test_acl_uninit_raises_permission():
-    """Calling ACL checks without astor_init_acl → PermissionError_."""
-    # Reset thread-local to simulate fresh thread
+    """Calling ACL checks without astor_init_acl → PermissionError_.
+
+    2026-08-16 fix:
+    - Use tier=private (public returns BEFORE consulting ACL, so public
+      would never raise even with no ACL).
+    - Set then del the actor attribute to ensure it doesn't exist, even
+      if a previous test reloaded astor_memory._internal.acl (which
+      gives _CURRENT a fresh empty local -- hasattr returns False, but
+      we still need the read to fail).
+    """
     import astor_memory._internal.acl as acl_mod
-    if hasattr(acl_mod._CURRENT, "actor"):
-        del acl_mod._CURRENT.actor
+    # Always set then del so the attribute is definitively missing.
+    acl_mod._CURRENT.actor = 'simulated_fresh_init'
+    del acl_mod._CURRENT.actor
+    # Also clear role/tier/user_id for completeness.
+    for attr in ('role', 'tier', 'user_id'):
+        if hasattr(acl_mod._CURRENT, attr):
+            delattr(acl_mod._CURRENT, attr)
     with pytest.raises(PermissionError_):
-        astor_check_read("public")
+        astor_check_read("private", user_id="alice")
 
 
 # --- Permission matrix ---
@@ -133,7 +146,7 @@ def test_first_admin_can_read_source():
 
 
 def test_user_cannot_read_source():
-    astor_init_acl(actor="user:user_e", role="user", tier="private", user_id="user_e")
+    astor_init_acl(actor="user:alice", role="user", tier="private", user_id="alice")
     with pytest.raises(PermissionError_, match="only first_admin"):
         astor_check_read("source")
 
@@ -141,20 +154,20 @@ def test_user_cannot_read_source():
 def test_admin_cannot_read_source():
     """Plan §2570 + 2624: admin is essentially a user with extra privileges —
     CANNOT read source.db. Distinction from first_admin."""
-    astor_init_acl(actor="admin:user_a", role="admin", tier="private", user_id="user_a")
+    astor_init_acl(actor="admin:bob", role="admin", tier="private", user_id="bob")
     with pytest.raises(PermissionError_, match="only first_admin"):
         astor_check_read("source")
 
 
 def test_user_can_read_own_private():
-    astor_init_acl(actor="user:user_e", role="user", tier="private", user_id="user_e")
-    astor_check_read("private", "user_e")  # own — allowed
+    astor_init_acl(actor="user:alice", role="user", tier="private", user_id="alice")
+    astor_check_read("private", "alice")  # own — allowed
 
 
 def test_user_cannot_read_other_private():
-    astor_init_acl(actor="user:user_e", role="user", tier="private", user_id="user_e")
+    astor_init_acl(actor="user:alice", role="user", tier="private", user_id="alice")
     with pytest.raises(PermissionError_, match="only own private"):
-        astor_check_read("private", "user_a")
+        astor_check_read("private", "bob")
 
 
 def test_first_admin_can_read_other_private_with_audit():
@@ -166,22 +179,22 @@ def test_first_admin_can_read_other_private_with_audit():
     """
     from astor_memory._internal.grants import create_grant, revoke_grant
     astor_close_audit()  # clean state
-    # Sunny (data owner) grants first_admin read access to her private.
+    # Alice (data owner) grants first_admin read access to her private.
     _grant_id = create_grant(
-        grantor="user_e", grantee="first_admin", scope="read",
+        grantor="alice", grantee="first_admin", scope="read",
         reason="GDPR investigation test",
     )
     try:
-        astor_init_acl(actor="first_admin", role="first_admin", tier="private", user_id="user_a")
+        astor_init_acl(actor="first_admin", role="first_admin", tier="private", user_id="bob")
         # allowed (grant exists)
-        astor_check_read("private", "user_e")
+        astor_check_read("private", "alice")
         # then write audit row
         astor_audit(
             actor="first_admin", tier="private", action="read",
-            user_id="user_e", target="memory_canonical/all",
+            user_id="alice", target="memory_canonical/all",
             reason="GDPR investigation",
         )
-        rows = astor_query_audit(user_id="user_e")
+        rows = astor_query_audit(user_id="alice")
         assert any(r["actor"] == "first_admin" for r in rows)
         assert any(r["reason"] == "GDPR investigation" for r in rows)
     finally:
@@ -192,11 +205,11 @@ def test_first_admin_can_read_other_private_with_audit():
 def test_everyone_can_read_public():
     for role, actor in [
         ("first_admin", "first_admin"),
-        ("admin", "admin:user_a"),
-        ("user", "user:user_e"),
+        ("admin", "admin:bob"),
+        ("user", "user:alice"),
     ]:
         if role == "user":
-            astor_init_acl(actor=actor, role=role, tier="private", user_id="user_e")
+            astor_init_acl(actor=actor, role=role, tier="private", user_id="alice")
         else:
             astor_init_acl(actor=actor, role=role, tier="public")
         astor_check_read("public")  # never raises
@@ -206,7 +219,7 @@ def test_only_first_admin_can_write_source():
     astor_init_acl(actor="first_admin", role="first_admin", tier="source")
     astor_check_write("source")
     # user denied
-    astor_init_acl(actor="user:user_e", role="user", tier="private", user_id="user_e")
+    astor_init_acl(actor="user:alice", role="user", tier="private", user_id="alice")
     with pytest.raises(PermissionError_):
         astor_check_write("source")
 
@@ -214,10 +227,10 @@ def test_only_first_admin_can_write_source():
 def test_only_first_admin_runs_bot_admin():
     astor_init_acl(actor="first_admin", role="first_admin", tier="source")
     astor_check_bot_admin()  # OK
-    astor_init_acl(actor="user:user_e", role="user", tier="private", user_id="user_e")
+    astor_init_acl(actor="user:alice", role="user", tier="private", user_id="alice")
     with pytest.raises(PermissionError_):
         astor_check_bot_admin()
-    astor_init_acl(actor="admin:user_a", role="admin", tier="private", user_id="user_a")
+    astor_init_acl(actor="admin:bob", role="admin", tier="private", user_id="bob")
     with pytest.raises(PermissionError_):
         astor_check_bot_admin()
 
@@ -231,7 +244,7 @@ def test_audit_admin_op_requires_reason(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="requires reason"):
         astor_audit(
             actor="first_admin", tier="private", action="admin_op",
-            user_id="user_e", target=None, reason=None,
+            user_id="alice", target=None, reason=None,
         )
 
 
@@ -240,14 +253,14 @@ def test_audit_writes_and_reads(monkeypatch, tmp_path):
     monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
     astor_close_audit()
     astor_audit(
-        actor="user:user_e", tier="private", action="write",
-        user_id="user_e", target="memory_canonical/id=42",
+        actor="user:alice", tier="private", action="write",
+        user_id="alice", target="memory_canonical/id=42",
         metadata={"k": "v", "n": 1},
     )
-    rows = astor_query_audit(user_id="user_e", action="write")
+    rows = astor_query_audit(user_id="alice", action="write")
     assert len(rows) >= 1
-    row = next(r for r in rows if r["user_id"] == "user_e")
-    assert row["actor"] == "user:user_e"
+    row = next(r for r in rows if r["user_id"] == "alice")
+    assert row["actor"] == "user:alice"
     assert row["tier"] == "private"
     assert row["target"] == "memory_canonical/id=42"
     assert row["metadata"] == {"k": "v", "n": 1}
@@ -258,7 +271,7 @@ def test_audit_file_mode_0600(monkeypatch, tmp_path):
     """Audit db file is created with 0600 on POSIX-like systems."""
     monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
     astor_close_audit()
-    astor_audit(actor="user:user_e", tier="private", action="init", user_id="user_e")
+    astor_audit(actor="user:alice", tier="private", action="init", user_id="alice")
     path = get_audit_path()
     assert path.exists()
     if os.name == "posix":
@@ -292,23 +305,21 @@ def test_astor_bus_for_private_requires_user_id(monkeypatch, tmp_path):
 def test_astor_bus_for_user_cannot_open_other_user(monkeypatch, tmp_path):
     """User opening astor_bus_for('private', 'other_user') → PermissionError_."""
     monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
-    astor_init_acl(actor="user:user_e", role="user", tier="private", user_id="user_e")
+    astor_init_acl(actor="user:alice", role="user", tier="private", user_id="alice")
     from astor_memory.bus.store import astor_bus_for
     with pytest.raises(PermissionError_):
-        astor_bus_for("private", "user_a")
+        astor_bus_for("private", "bob")
 
 
-def test_astor_bus_legacy_backward_compat(monkeypatch, tmp_path):
-    """astor_bus() with no args still resolves to legacy `astor_bus.db` path."""
-    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
-    # Don't init ACL — legacy singleton path bypasses ACL
-    from astor_memory.bus.store import astor_bus, astor_reset_bus
-    astor_reset_bus()
-    bus = astor_bus()
-    assert Path(bus.db_path).name == "astor_bus.db"
-    assert Path(bus.db_path).parent == tmp_path
-    astor_reset_bus()
-
+# 2026-08-16: test_astor_bus_legacy_backward_compat removed.
+# This test asserted the legacy single-file astor_bus() behavior which
+# was REMOVED in v1.1.0 (2026-08-15 ship): the legacy fallback
+# silently regenerated a root db bypassing 3-tier ACL. astor_bus() now
+# requires explicit tier= and the test's no-args call raises ValueError
+# (intentional, this is the safety check). Keeping a passing test for
+# behavior we explicitly removed would be lying to future readers.
+# The replacement (test_astor_bus_for_path_resolution) covers the
+# legitimate 'give me a bus handle' path.
 
 def test_astor_dir_name_env_overrides_default(monkeypatch, tmp_path):
     """ASTOR_DIR_NAME=foo → get_astor_dir() = ~/foo (relative to home)."""
@@ -333,7 +344,7 @@ def test_db_paths_resolve_under_astor_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("ASTOR_DIR", str(target))
     # Reimport — uses ASTOR_DIR at call time, so no reimport needed for this case
     assert get_db_path("public", "bus") == target / "public/memory/astor_bus_public.db"
-    assert get_db_path("private", "nest", "user_e") == target / "users/user_e/memory/astor_nest_sunny.db"
+    assert get_db_path("private", "nest", "alice") == target / "users/alice/memory/astor_nest_alice.db"
     assert get_audit_path() == target / "audit/astor_audit.db"
 
 
@@ -348,7 +359,7 @@ def test_db_paths_resolve_under_astor_dir(monkeypatch, tmp_path):
 
 @pytest.fixture
 def seeded_users(tmp_path, monkeypatch):
-    """Seed bot-binding.db with admin (first_admin) + user_a (user) + user_c (admin)."""
+    """Seed bot-binding.db with admin (first_admin) + bob (user) + carol (admin)."""
     target = tmp_path / "astor"
     monkeypatch.setenv("ASTOR_DIR", str(target))
     # bot_binding uses _db_path() = ASTOR_DIR/bot-binding.db; reset singleton.
@@ -356,9 +367,9 @@ def seeded_users(tmp_path, monkeypatch):
     monkeypatch.setattr(bb, "_con", None)
     # Seed users via the upsert API so role + active are correctly recorded.
     bb.upsert_user(user_id="admin", short_alias="admin", role="first_admin", subscription_plan="permanent")
-    bb.upsert_user(user_id="user_a", short_alias="user_a", role="user", subscription_plan="lifetime")
-    bb.upsert_user(user_id="user_c", short_alias="user_c", role="admin", subscription_plan="lifetime")
-    bb.upsert_user(user_id="sunday", short_alias="sunday", role="user", subscription_plan="lifetime")
+    bb.upsert_user(user_id="bob", short_alias="bob", role="user", subscription_plan="lifetime")
+    bb.upsert_user(user_id="carol", short_alias="carol", role="admin", subscription_plan="lifetime")
+    bb.upsert_user(user_id="alice", short_alias="alice", role="user", subscription_plan="lifetime")
     return target
 
 
@@ -367,56 +378,56 @@ def _client(target):
     return create_app(str(target)).test_client()
 
 
-def test_acl_yuqi_cannot_write_source(seeded_users):
-    """user_a (role=user) writing tier=source → 403.
+def test_acl_bob_cannot_write_source(seeded_users):
+    """bob (role=user) writing tier=source → 403.
 
     Regression for the 2026-08-16 P0 ACL bug: previously returned 200 because
     server before_request hardcoded first_admin.
     """
     client = _client(seeded_users)
     r = client.post("/v1/write", json={
-        "user": "user_a", "tier": "source", "text": "should be denied",
+        "user": "bob", "tier": "source", "text": "should be denied",
     })
     assert r.status_code == 403, r.get_data(as_text=True)
     body = r.get_json()
     assert body["error"] in ("permission_denied", "acl_init_failed")
 
 
-def test_acl_yuqi_cannot_read_other_users_private(seeded_users):
-    """user_a reading admin's private tier → 403 (cross-user denied).
+def test_acl_bob_cannot_read_other_users_private(seeded_users):
+    """bob reading admin's private tier → 403 (cross-user denied).
 
     Regression for the 2026-08-16 P0 ACL bug.
     """
     client = _client(seeded_users)
     r = client.post("/v1/read", json={
-        "user": "user_a", "tier": "private", "user_id": "admin", "query": "anything",
+        "user": "bob", "tier": "private", "user_id": "admin", "query": "anything",
     })
     assert r.status_code == 403, r.get_data(as_text=True)
     body = r.get_json()
     assert body["error"] == "cross_user_forbidden"
-    assert "user_a" in body["detail"]
+    assert "bob" in body["detail"]
     assert "admin" in body["detail"]
 
 
-def test_acl_yuqi_can_write_own_private(seeded_users):
-    """user_a writing to her own private tier → 200 (allowed)."""
+def test_acl_bob_can_write_own_private(seeded_users):
+    """bob writing to her own private tier → 200 (allowed)."""
     client = _client(seeded_users)
     r = client.post("/v1/write", json={
-        "user": "user_a", "tier": "private", "text": "I prefer dark roast",
+        "user": "bob", "tier": "private", "text": "I prefer dark roast",
     })
     assert r.status_code == 200, r.get_data(as_text=True)
     assert r.get_json().get("count", 0) >= 1
 
 
-def test_acl_yuqi_can_read_own_private(seeded_users):
-    """user_a reading her own private tier → 200 (allowed)."""
+def test_acl_bob_can_read_own_private(seeded_users):
+    """bob reading her own private tier → 200 (allowed)."""
     client = _client(seeded_users)
-    # First, seed something user_a can read back.
+    # First, seed something bob can read back.
     client.post("/v1/write", json={
-        "user": "user_a", "tier": "private", "text": "user_a likes oolong tea",
+        "user": "bob", "tier": "private", "text": "bob likes oolong tea",
     })
     r = client.post("/v1/read", json={
-        "user": "user_a", "tier": "private", "query": "tea preference", "top_k": 5,
+        "user": "bob", "tier": "private", "query": "tea preference", "top_k": 5,
     })
     assert r.status_code == 200
     results = r.get_json().get("results", [])
@@ -433,31 +444,31 @@ def test_acl_first_admin_can_write_source(seeded_users):
 
 
 def test_acl_admin_role_can_read_other_users_private(seeded_users):
-    """user_c (role=admin per plan §2624 power-user) can read user_a's private.
+    """carol (role=admin per plan §2624 power-user) can read bob's private.
 
     2026-08-16 strict-privacy ship: admin no longer has implicit
-    cross-user access. The data owner (user_a) must grant user_c access
+    cross-user access. The data owner (bob) must grant carol access
     first. Grant is tested via the new grant system.
     """
     from astor_memory._internal.grants import create_grant
     client = _client(seeded_users)
-    # Seed user_a's private.
+    # Seed bob's private.
     client.post("/v1/write", json={
-        "user": "user_a", "tier": "private", "text": "user_a keeps secrets here",
+        "user": "bob", "tier": "private", "text": "bob keeps secrets here",
     })
-    # user_a grants user_c (admin) read access. Revoke any prior grant first
+    # user_a grants carol (admin) read access. Revoke any prior grant first
     # to avoid UNIQUE constraint failure (grants DB is shared across tests).
     from astor_memory._internal.grants import list_grants, revoke_grant
-    for _g in list_grants(grantee="admin:user_c"):
-        if _g["grantor"] == "user_a" and _g["scope"] == "read" and not _g["revoked"]:
+    for _g in list_grants(grantee="admin:carol"):
+        if _g["grantor"] == "bob" and _g["scope"] == "read" and not _g["revoked"]:
             revoke_grant(_g["id"], by="test_fixture_cleanup")
     _grant_id = create_grant(
-        grantor="user_a", grantee="admin:user_c", scope="read",
+        grantor="bob", grantee="admin:carol", scope="read",
         reason="support investigation test",
     )
-    # user_c (admin role) should be allowed to read it.
+    # carol (admin role) should be allowed to read it.
     r = client.post("/v1/read", json={
-        "user": "user_c", "tier": "private", "user_id": "user_a", "query": "secrets",
+        "user": "carol", "tier": "private", "user_id": "bob", "query": "secrets",
     })
     assert r.status_code == 200, r.get_data(as_text=True)
 
@@ -466,8 +477,8 @@ def test_acl_resolve_actor_returns_correct_roles(seeded_users):
     """Direct unit test for _astor_resolve_actor — no HTTP roundtrip needed."""
     from astor_memory.server import _astor_resolve_actor
     assert _astor_resolve_actor("admin") == ("first_admin", "first_admin")
-    assert _astor_resolve_actor("user_c") == ("admin:user_c", "admin")
-    assert _astor_resolve_actor("user_a") == ("user:user_a", "user")
+    assert _astor_resolve_actor("carol") == ("admin:carol", "admin")
+    assert _astor_resolve_actor("bob") == ("user:bob", "user")
     assert _astor_resolve_actor(None) == ("first_admin", "first_admin")
     assert _astor_resolve_actor("") == ("first_admin", "first_admin")
     assert _astor_resolve_actor("ghost_user_not_in_db") == ("first_admin", "first_admin")

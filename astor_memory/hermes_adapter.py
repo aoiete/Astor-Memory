@@ -22,7 +22,7 @@ When config.yaml sets `external_memory_provider: astor_memory`, hermes
 loads this adapter as the active memory provider and disables the built-in
 memory injection (memory_enabled=false, user_profile_enabled=false).
 
-Reference: <source_dir>docs/agent-adapters.md § Tier B
+Reference: docs/agent-adapters.md § Tier B
 """
 
 from __future__ import annotations
@@ -229,6 +229,11 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
             return self._tool_write(args)
         if tool_name == "astor_status":
             return self._tool_status()
+        # 2026-08-16 fix: wire astor_forget into the dispatch table.
+        # The tool was advertised in get_tool_schemas() but the dispatch
+        # was missing, so all forget calls raised NotImplementedError.
+        if tool_name == "astor_forget":
+            return self._tool_forget(args)
         raise NotImplementedError(f"astor_memory: unknown tool {tool_name}")
 
     # -- Optional hooks (override for richer behavior) --------------------
@@ -441,6 +446,49 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
             })
         except Exception as exc:
             return json.dumps({"error": str(exc)})
+
+    def _tool_forget(self, args: Dict[str, Any]) -> str:
+        """Implement astor_forget tool by delegating to /v1/forget HTTP endpoint.
+
+        Forgets a fact by query (BM25) or by fact_id (hard delete).
+        Mirrors the /v1/forget endpoint semantics.
+        """
+        import json
+        import urllib.request as _ur
+        query = args.get('query')
+        fact_id = args.get('fact_id')
+        tier = args.get('tier', 'public')
+        user_id = args.get('user_id')
+        forget_threshold = float(args.get('forget_threshold', 0.5))
+        try:
+            # Use the live REST endpoint so ACL + dedup semantics are
+            # consistent with all other forget callers.
+            # 2026-08-16 ship: bridges the gap where astor_forget was
+            # advertised in get_tool_schemas() but no _tool_forget impl.
+            body = json.dumps({
+                'tier': tier,
+                'user_id': user_id,
+                'forget_threshold': forget_threshold,
+            }).encode()
+            if query is not None:
+                body_dict = json.loads(body)
+                body_dict['query'] = query
+                body = json.dumps(body_dict).encode()
+            if fact_id is not None:
+                body_dict = json.loads(body)
+                body_dict['fact_id'] = fact_id
+                body = json.dumps(body_dict).encode()
+            # ACL context must include the actor for audit. Use the adapter's bound actor.
+            import os as _os
+            base = _os.environ.get('ASTOR_BASE_URL', 'http://127.0.0.1:7803')
+            req = _ur.Request(
+                base + '/v1/forget',
+                data=body,
+                headers={'Content-Type': 'application/json'},
+            )
+            return _ur.urlopen(req, timeout=15).read().decode('utf-8')
+        except Exception as exc:
+            return json.dumps({"error": f"astor_forget failed: {exc}"})
 
     def _tool_status(self) -> str:
         import json

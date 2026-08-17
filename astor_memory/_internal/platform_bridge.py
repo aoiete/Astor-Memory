@@ -145,9 +145,17 @@ def _resolve_from_config_yaml(platform_kind: str, account_id: str | None) -> Tok
     """
     if platform_kind != "weixin":
         return TokenResolution(token="", source="none")
-    config_path = Path(os.environ.get("HERMES_HOME", "")) / "config.yaml"
+    # Try $HERMES_HOME/config.yaml first, then ~/.hermes/config.yaml, then
+    # platform-default locations. We never hardcode a specific username —
+    # the fallback uses Path.home() so the resolution works for any operator.
+    config_path = Path(os.environ.get("HERMES_HOME", "") or "") / "config.yaml"
     if not config_path.exists():
-        config_path = Path("<home_dir>AppData/Local/hermes/config.active.yaml")
+        config_path = Path.home() / ".hermes" / "config.yaml"
+    if not config_path.exists():
+        # Legacy location (Windows hermes install under AppData)
+        appdata = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
+        if appdata:
+            config_path = Path(appdata) / "hermes" / "config.yaml"
     if not config_path.exists():
         return TokenResolution(token="", source="none")
     try:
