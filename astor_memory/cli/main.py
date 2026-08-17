@@ -124,6 +124,19 @@ def main(argv: list[str] | None = None) -> int:
     mcp_sub = sub.add_subparsers(dest='mcp_action', required=True)
     mcp_serve = mcp_sub.add_parser('serve', help='Run MCP stdio server')
 
+    # v1.2.2 (2026-08-16): am reflection — episodic consolidation
+    # (EverOS pattern, simplified for SQLite stack). Merges clusters of
+    # similar facts into a single winner, tombstones losers.
+    sub = subparsers.add_parser('reflection', help='Episodic reflection (merge + tombstone)')
+    reflection_sub = sub.add_subparsers(dest='reflection_action', required=True)
+    reflection_run_p = reflection_sub.add_parser('run', help='Run reflection on a tier')
+    reflection_run_p.add_argument('--tier', default='public', help='Tier to reflect on (default public)')
+    reflection_run_p.add_argument('--user-id', default=None, help='User id (for private tier)')
+    reflection_run_p.add_argument('--min-size', type=int, default=2, help='Min cluster size (default 2)')
+    reflection_run_p.add_argument('--max-clusters', type=int, default=50, help='Max clusters to process (default 50)')
+    reflection_run_p.add_argument('--kinds', default=None, help='Comma-separated kinds to filter (default: all)')
+    reflection_run_p.set_defaults(func=cmd_reflection_run)
+
     mcp_serve.add_argument('--transport', default='stdio', choices=['stdio'],
                            help='MCP transport (only stdio supported in v1.1)')
     mcp_serve.set_defaults(func=cmd_mcp_serve)
@@ -716,6 +729,33 @@ def cmd_cascade_stats(args) -> int:
     stats = _cascade.stats(bus)
     import json as _json
     print(_json.dumps(stats, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_reflection_run(args) -> int:
+    """v1.2.2: Run episodic reflection (merge + tombstone).
+
+    Finds clusters of similar canonical facts in a tier, merges them
+    into a single winner + tombstones losers. First_admin only (destructive).
+    """
+    from ..bus import astor_bus
+    from ..nest import reflection as _reflection
+    tier = getattr(args, 'tier', 'public') or 'public'
+    user_id = getattr(args, 'user_id', None) or None
+    min_size = int(getattr(args, 'min_size', 2) or 2)
+    max_clusters = int(getattr(args, 'max_clusters', 50) or 50)
+    kinds_raw = getattr(args, 'kinds', None)
+    kinds = None
+    if kinds_raw:
+        kinds = [k.strip() for k in kinds_raw.split(',') if k.strip()]
+    bus = astor_bus(tier=tier, user_id=user_id)
+    result = _reflection.run_reflection(
+        bus, tier=tier, user_id=user_id,
+        min_size=min_size, max_clusters=max_clusters, kinds=kinds,
+        actor='cli',
+    )
+    import json as _json
+    print(_json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 
 
