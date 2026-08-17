@@ -872,6 +872,158 @@ read:
 
 ---
 
+## 8. Admin-tier ACL (cross-agent)
+
+Each agent that exposes a slash-command surface or tool-call surface to
+human users via a messaging bot needs an "admin vs user" tier split.
+Astor-memory is **not** in the deny-gate itself — it's the SSoT for the
+admin allow-list and the audit ledger. Each agent implements enforcement
+natively.
+
+### SSoT: `bot-binding.db`
+
+Path: `$ASTOR_DIR/bot-binding.db` (schema v1, applied
+2026-08-15). Tables:
+
+- `platforms(platform_id, platform_kind, account_id, account_token, base_url, enabled, notes, ...)`
+- `bindings(platform_id, chat_id, user_id, scope, role_inherit, ...)` — the
+  per-(platform, chat) → user_id mapping; `role_inherit='admin'` flags
+  the binding as admin.
+- `user_meta(user_id, short_alias, display_name, real_name, role, ...)` —
+  `role='admin'` is the canonical admin flag.
+
+**Read admin list:**
+
+```python
+import sqlite3
+con = sqlite3.connect(os.environ.get("ASTOR_DIR", "~/.astor") + "/bot-binding.db")
+cur = con.cursor()
+admins = cur.execute("""
+    SELECT b.chat_id, b.platform_id
+    FROM bindings b
+    JOIN user_meta u ON u.user_id = b.user_id
+    WHERE u.role = 'admin' AND b.active = 1
+""").fetchall()
+```
+
+> **Pitfall (verified 2026-08-17):** `bindings.user_id` (`admin`, `<other_admin>`,
+> ...) is the *logical* user ID — different from what the messaging
+> agent's `source.user_id` field carries. In Hermes, `source.user_id`
+> for **weixin** is the chat_id (looks like `<openid>@im.wechat`), not
+> `bindings.user_id`. For **telegram/discord** it's the numeric platform
+> ID. Always verify with the agent's `/whoami` command before wiring
+> the allow-list — don't blindly copy `bindings.user_id`.
+
+### Per-agent enforcement
+
+| Agent | Native mechanism | Config location | Shipped today? |
+|---|---|---|---|
+| **hermes-agent** | `gateway/slash_access.py` (built-in 0.20+) | `discord.allow_admin_from` / `user_allowed_commands`; same for `telegram`; `platforms.weixin.extra.allow_admin_from` / `user_allowed_commands` | ✅ yes (2026-08-17) |
+| **OpenClaw** | Workspace `AGENTS.md` instructions + session-start script gate | `~/.openclaw/workspace/AGENTS.md` + `~/.openclaw/openclaw.json` startup_script | ⏳ deferred — SSoT ready, adapter not built |
+| **Claude Desktop** | `mcp_config.json` tool allowlist + custom system prompt block | `~/Library/Application Support/Claude/claude_desktop_config.json` (`allowedTools`) | ⏳ deferred |
+| **Cursor** | `.cursorrules` + per-rule allowlist | workspace root `.cursorrules` | ⏳ deferred |
+| **LangChain / custom** | Python decorator `@requires_admin` | app-level | ⏳ deferred |
+
+**Today's ship covers hermes only.** The other rows are design
+intentions — `bot-binding.db` is already the SSoT they would read from,
+but no adapter code has been written for them. The hermes recipe below
+is the worked example to copy from when building the others.
+
+### Hermes recipe (the only one shipped today)
+
+`hermes config set` 8 calls total — no source patch, no new plugin:
+
+```bash
+# Backup
+cp ~/.hermes/config.yaml ~/.hermes/config.yaml.bak-pre-admin-tier-slash-gating-$(date +%Y%m%dT%H%M)
+
+# Discord + telegram (admin list pre-existing; expand user allowlist to union)
+UNION_LIST="agents,background,branch,calc,clear,commands,compress,crypto,fortune,goal,help,history,image,new,queue,remind,reminders,resume,retry,scrape,search,sessions,status,stock,stop,time,title,topic,undo,version,voice,whoami"
+hermes config set discord.user_allowed_commands "$UNION_LIST"
+hermes config set discord.group_user_allowed_commands "$UNION_LIST"
+hermes config set telegram.user_allowed_commands "$UNION_LIST"
+hermes config set telegram.group_user_allowed_commands "$UNION_LIST"
+
+# Weixin (new — was wide-open before).
+# Get <admin_chat_id> by running /whoami in your own admin weixin chat
+# and copying the "User ID:" value the bot reports back.
+hermes config set platforms.weixin.extra.allow_admin_from "<admin_chat_id>"
+hermes config set platforms.weixin.extra.group_allow_admin_from "<admin_chat_id>"
+hermes config set platforms.weixin.extra.user_allowed_commands "$UNION_LIST"
+hermes config set platforms.weixin.extra.group_user_allowed_commands "$UNION_LIST"
+
+# Disable feishu (if no longer used)
+hermes config set feishu.enabled false
+
+# Restart gateway (from external shell — gateway can't self-restart)
+hermes gateway restart
+```
+
+> **Pitfall (verified 2026-08-17):** Don't pass Python list literals
+> (`'["a","b"]'`) to `hermes config set` — it stores them as quoted strings,
+> and `_coerce_id_list` splits on `,` only. Pass plain comma-separated
+> strings without brackets.
+
+> **Pitfall:** The `patch` and `write_file` tools refuse to modify
+> `~/.hermes/config.yaml` (Hermes security guard). Always use
+> `hermes config set` CLI.
+
+### Verification (static unit test on `slash_access`)
+
+```python
+import yaml, pathlib
+from gateway.slash_access import policy_from_extra
+
+cfg = yaml.safe_load(pathlib.Path("~/.hermes/config.yaml").read_text())
+
+policies = {
+    p: policy_from_extra(cfg["platforms"][p]["extra"], "dm")
+    for p in ["weixin", "telegram", "discord"]
+}
+
+for plat, uid, is_admin in [
+    ("weixin", "<admin_chat_id>", True),
+    ("weixin", "<non_admin_chat_id>", False),  # any other user
+    ("telegram", "<admin_id>", True),
+    ("telegram", "<any_other_id>", False),
+    ("discord", "<admin_id>", True),
+    ("discord", "<any_other_id>", False),
+]:
+    pol = policies[plat]
+    assert pol.is_admin(uid) == is_admin
+    assert pol.can_run(uid, "model") == is_admin  # /model is admin-only
+    assert pol.can_run(uid, "new")    # /new is in user_allowed
+
+print("OK")
+```
+
+### Audit trail (interface reserved, not wired today)
+
+`slash_access.py` returns `None` on deny (silent). For an audit trail,
+wrap the dispatch in `gateway/run.py:18288` to additionally call
+astor_bus (interface reserved in `$ASTOR_DIR/`, not
+yet wired into `gateway/run.py`):
+
+```python
+# Pseudocode — NOT IMPLEMENTED. Reserve the interface here so other
+# agents (OpenClaw, Claude Desktop, etc.) can wire their own equivalent
+# without diverging on the audit schema.
+from astor_memory import astor_bus
+astor_bus(user_id='_system').write(
+    text=f"deny /{cmd} for {source.platform}:{source.user_id}",
+    kind="audit",
+    tier="source",
+)
+```
+
+Tier choice: `source` (system-internal, not for user-facing recall).
+
+**Today**: hermes ships with silent deny (no audit log). Other agents
+should follow the same reserve-the-interface pattern when they wire
+their own gates.
+
+---
+
 ## Next
 
 - [`docs/faq.md`](./faq.md) — frequently asked questions
