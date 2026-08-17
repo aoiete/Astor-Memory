@@ -244,6 +244,7 @@ This is the **competitive moat** we should not regress on:
 ### P2 (consider for v1.2)
 
 3. **Reflection orchestrator** (EverOS pattern, simplified)
+   - ✅ **SHIPPED 2026-08-16 as v1.2.2** — `nest/reflection.py` (Select → Merge → Deprecate). Heuristic-mode only (no LLM in v1.2.2; LLM-mode future). 13 pytests covering select / merge / apply / deprecate / idempotency / endpoint + ACL enforced.
    - `nest/reflection.py` — `select_episode_cluster() → merge_narrative() → deprecate_old_ids()`
    - Cron `astor-reflect-weekly-sun0300mdt` (analogous to astor's existing weekly cron)
    - Operates on `kind=episode` rows in public tier (or wherever episodic content lives)

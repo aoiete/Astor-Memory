@@ -1034,6 +1034,64 @@ def create_app(astor_dir: str | None = None) -> Flask:
         from .bus import cascade as _cascade
         return jsonify(_cascade.stats(bus))
 
+    @app.route('/v1/reflection/run', methods=['POST'])
+    def reflection_run():
+        """Run episodic reflection (v1.2.2 ship — EverOS pattern).
+
+        Finds clusters of similar canonical facts in (tier, user_id),
+        merges them into a single "winner" fact with concatenated content,
+        and tombstones the losers. Audit row written per deprecation.
+        First_admin only — destructive operation.
+
+        Body JSON (all optional):
+          tier: str (default 'public')
+          user_id: str | null (default null for public/source)
+          min_size: int (default 2) — minimum cluster size to merge
+          max_clusters: int (default 50) — cap to avoid runaway
+          kinds: list[str] | null (default null = all kinds)
+
+        Returns:
+          {clusters_found, clusters_merged, facts_deprecated, merge_log: [...]}
+        """
+        try:
+            ctx = astor_current_acl()
+            if ctx.role != 'first_admin':
+                return jsonify({'error': 'reflection_run requires first_admin'}), 403
+        except Exception:
+            pass
+        body = request.get_json(force=True) if request.is_json else {}
+        tier = body.get('tier', 'public')
+        user_id = body.get('user_id') or None
+        min_size = int(body.get('min_size', 2))
+        max_clusters = int(body.get('max_clusters', 50))
+        kinds = body.get('kinds') or None
+        from .nest import reflection as _reflection
+        bus = astor_bus(tier=tier, user_id=user_id)
+        result = _reflection.run_reflection(
+            bus, tier=tier, user_id=user_id,
+            min_size=min_size, max_clusters=max_clusters, kinds=kinds,
+            actor='first_admin',
+        )
+        # Audit row for the reflection run itself
+        try:
+            bus.write_audit(
+                event='reflection_run',
+                actor='first_admin',
+                target_type='system',
+                target_id='reflection',
+                metadata={
+                    'tier': tier, 'user_id': user_id,
+                    'min_size': min_size, 'max_clusters': max_clusters,
+                    'clusters_found': result['clusters_found'],
+                    'clusters_merged': result['clusters_merged'],
+                    'facts_deprecated': result['facts_deprecated'],
+                },
+                severity='info',
+            )
+        except Exception:
+            pass
+        return jsonify(result)
+
     @app.route('/v1/install', methods=['POST'])
     def install():
         """Plan an install into another agent (returns file changes, does not write).
