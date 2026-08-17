@@ -141,11 +141,32 @@ Recall similar facts via hybrid vector + BM25 search.
       "score_kind": "hybrid",
       "confidence": 0.9,
       "importance": 0.85,
-      "tags": null
+      "tags": null,
+      # v1.2.1: structured fields (A-MEM pattern). Empty defaults for
+      # pre-v1.2.1 facts. `keywords` is a JSON array of 3-7 keywords
+      # extracted at write time (LLM or regex). `context` is a 1-2 sentence
+      # summary. The keyword Jaccard boost in hybrid_merge uses these to
+      # improve ranking when embeddings miss keyword-level intent.
+      "keywords": ["coffee", "dark-roast", "preference"],
+      "context": "User stated preference for dark roast coffee over light."
     }
   ]
 }
 ```
+
+**v1.2.1 — keyword rerank**: When `hybrid=true` (default), the server
+loads `keywords` from each candidate canonical row + tokenizes the
+query, then passes both into `hybrid_merge`. The score becomes:
+
+```
+score = bm25_weight * bm25_normalized
+      + vec_weight * cosine
+      + keyword_boost * Jaccard(fact_keywords, query_keywords)
+```
+
+`keyword_boost` defaults to 0.15. The boost is bounded (Jaccard in [0,1]).
+When neither fact has keywords, behavior is byte-identical to legacy
+hybrid (the boost contributes 0).
 
 ---
 
