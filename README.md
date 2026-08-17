@@ -2,6 +2,8 @@
 
 > **Self-owned memory system for AI agents.** Three stores, three tiers, zero vendor lock-in.
 
+> **中文文档:** [README.zh-CN.md](README.zh-CN.md) | **Architecture 中文:** [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md) | **API 中文:** [docs/api.zh-CN.md](docs/api.zh-CN.md)
+
 ---
 
 ## Why we built this
