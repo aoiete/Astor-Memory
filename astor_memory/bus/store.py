@@ -393,7 +393,7 @@ def astor_bus_for(tier: str, user_id: str | None = None) -> AstorBus:
     Examples:
         astor_bus_for('public')
         astor_bus_for('source')           # first_admin only
-        astor_bus_for('private', 'user_e') # user_e's own db (or first_admin)
+        astor_bus_for('private', 'alice') # alice's own db (or first_admin)
     """
     return astor_bus(db_path=None, tier=tier, user_id=user_id)
 

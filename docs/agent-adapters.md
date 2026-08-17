@@ -683,7 +683,7 @@ This:
 
 1. Creates `plugins/memory/astor_memory/` and drops
    `astor_memory.hermes_adapter:AstorMemoryProvider` into `__init__.py`
-   (adapter ships at `<source_dir>astor_memory/hermes_adapter.py`).
+   (adapter ships at `<repo>/astor_memory/hermes_adapter.py`).
 2. Writes `plugins/memory/astor_memory/plugin.yaml` with `name: astor_memory`,
    schema for `astor_dir` and `default_tier`.
 3. Edits `~/.hermes/config.yaml`:
@@ -711,7 +711,7 @@ hermes-agent 0.20.0 commit `1649a4d7e`):**
 
 ```bash
 mkdir -p ~/.hermes/hermes-agent/plugins/memory/astor_memory
-cp <source_dir>astor_memory/hermes_adapter.py \
+cp <repo>/astor_memory/hermes_adapter.py \
    ~/.hermes/hermes-agent/plugins/memory/astor_memory/__init__.py
 
 cat > ~/.hermes/hermes-agent/plugins/memory/astor_memory/plugin.yaml <<'YAML'
