@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     plat_list_b.add_argument('--all', action='store_true', help='Include revoked bindings')
     plat_list_b.set_defaults(func=cmd_platform_list_bindings)
     plat_resolve = plat_sub.add_parser('resolve', help='Resolve a chat_id -> user_id')
-    plat_resolve.add_argument('platform_id', help='e.g. weixin:8263b17ef9c7@im.bot or telegram:bot1')
+    plat_resolve.add_argument('platform_id', help='e.g. weixin:<your_bot_id>@im.bot or telegram:bot1')
     plat_resolve.add_argument('chat_id', help='The chat/channel/wxid to resolve')
     plat_resolve.set_defaults(func=cmd_platform_resolve)
     plat_token_get = plat_sub.add_parser('token-get', help='Print platform token (audit row written)')
