@@ -1042,6 +1042,223 @@ their own gates.
 
 ---
 
+## 9. Bot-binding.db SSoT plugin (bot_binding_auth)
+
+`bot-binding.db` is the source of truth for who can talk to the bot.
+The `slash_access` policy (§ (8)) gates *what* a user can run; this
+section gates *whether* a user is allowed in at all.
+
+Without this plugin, hermes-agent reads per-platform env-var
+allowlists (`DISCORD_ALLOWED_USERS`, `TELEGRAM_ALLOWED_USERS`,
+`WEIXIN_ALLOWED_USERS`). With it installed, the database is the
+authority — `.env` no longer needs `*_ALLOWED_USERS` for any user
+present in `bindings`. Add a user by editing `bot-binding.db` and the
+change is live on the next message dispatch.
+
+### What the plugin does
+
+The plugin registers `pre_gateway_dispatch` (a built-in hermes hook).
+For each inbound message it reads `bindings` joined with `user_meta`,
+and returns:
+
+- `{"action": "authorized"}` — when the user has an active binding.
+  The gateway skips `_is_user_authorized` for this event.
+- `None` (no return) — when the user is not in the DB. The gateway
+  falls through to the env-var allowlist path unchanged.
+
+This means the env-var allowlist still works as a **fallback** for
+operators who haven't migrated to the DB yet. Both paths coexist.
+
+### Files
+
+| Path | Purpose |
+|---|---|
+| `~/.hermes/plugins/bot_binding_auth/__init__.py` | The plugin (~250 lines, no third-party deps) |
+| `~/.hermes/plugins/bot_binding_auth/plugin.yaml` | Manifest (name, hooks, metadata) |
+| `<runtime_dir>bot-binding.db` | DB (SSoT — same one astor-memory uses for tier resolution) |
+
+The plugin source is also bundled in this repo at
+[`docs/examples/bot_binding_auth_plugin.py`](./examples/bot_binding_auth_plugin.py)
+and the manifest at
+[`docs/examples/bot_binding_auth_plugin.yaml`](./examples/bot_binding_auth_plugin.yaml).
+The hermes-agent patch is at
+[`docs/examples/bot_binding_auth_hermes_patch.md`](./examples/bot_binding_auth_hermes_patch.md).
+
+The plugin path is operator-local (`~/.hermes/plugins/`), so disabling
+the plugin is a one-line `hermes plugins disable bot_binding_auth`
+(or just `rm` the directory). No restart required to disable — next
+plugin discovery sweep will pick up the absence.
+
+### Install
+
+```bash
+# 1. Copy plugin source into the user plugins dir
+mkdir -p ~/.hermes/plugins/bot_binding_auth
+# (write __init__.py and plugin.yaml — see Plugin source below)
+
+# 2. Enable via hermes CLI (one-time)
+hermes plugins enable bot_binding_auth
+
+# 3. (Optional) Verify the hook is registered
+hermes plugins list | grep bot_binding_auth
+```
+
+`enable` persists in `~/.hermes/config.yaml` under
+`plugins.entries.bot_binding_auth.enabled: true`.
+
+### Lookup rules (in priority order)
+
+1. `bindings.platform_id = <platform>:discord_main` (or
+   `telegram:hermes_bot`) **AND** `bindings.chat_id = inbound.chat_id`.
+   Direct match for Discord and Telegram where there is one bot
+   identity per installation.
+2. `bindings.platform_id LIKE 'weixin:%'` **AND**
+   `bindings.chat_id = inbound.chat_id`. WeChat may have multiple bot
+   accounts; the chat_id is the per-user `@im.wechat` openid.
+3. `bindings.user_id = inbound.user_id`. Catches WeChat DMs where the
+   adapter sends sender-user-id rather than chat-id.
+
+If none of the three return a row, the user is **not** in the DB and
+the plugin returns `None` (env-var path takes over).
+
+### Required minimal hermes-agent patch
+
+The plugin relies on a 6-line patch in `gateway/run.py` that:
+
+1. Adds `{"action": "authorized"}` to the existing `pre_gateway_dispatch`
+   action handler (alongside the existing `skip` / `rewrite` / `allow`
+   actions).
+2. Sets `_pre_dispatch_authorized = True` when this action is seen.
+3. Adds an `elif _pre_dispatch_authorized:` branch in the auth chain
+   that skips `_is_user_authorized` and proceeds straight to dispatch.
+
+The patch is **minimal and surgical**:
+
+- 1 new branch in the existing `if/elif/elif` chain.
+- 1 new variable.
+- ~10 lines of docstring + log line explaining why this exists.
+
+This patch is **NOT** part of any hermes-agent release — operators who
+want this functionality must apply it manually. The patch is
+documented at the top of `bot_binding_auth/__init__.py` so a future
+upstream PR can be copy-pasted into hermes-agent's source. Until
+upstream lands, treat the patch as a hermes-agent extension hook that
+ships separately.
+
+**To apply the patch:**
+
+```bash
+# The patch is auto-applied by `hermes plugins enable bot_binding_auth`
+# IF the source has been patched; otherwise enable fails with a clear
+# error message. See Plugin installation in troubleshooting below.
+```
+
+(As of 2026-08-18, the patch is applied to the local hermes-agent
+`.venv/Lib/site-packages/gateway/run.py`. Backup at
+`run.py.pre-pre-gateway-authorized-20260818`. Operators shipping this
+plugin need to re-apply the patch after every hermes-agent upgrade.)
+
+### Plugin source (compact)
+
+```python
+# ~/.hermes/plugins/bot_binding_auth/__init__.py
+
+PLUGIN_NAME = "bot_binding_auth"
+PLUGIN_VERSION = "1.0.0"
+
+def _lookup_user(platform, chat_id, user_id):
+    """bot-binding.db lookup, three priority levels."""
+    db = os.environ.get("HERMES_BOT_BINDING_DB") or \
+         r"<runtime_dir>bot-binding.db"
+    if not Path(db).exists():
+        return None
+    conn = sqlite3.connect(db, timeout=2.0)
+    # 1. exact platform_id + chat_id match
+    # 2. weixin LIKE 'weixin:%' + chat_id
+    # 3. user_id match
+    # see full source for SQL
+
+def _on_pre_gateway_dispatch(event, **kwargs):
+    src = event.source
+    user = _lookup_user(src.platform.value, src.chat_id, src.user_id)
+    if user is None or not user["active"]:
+            return None  # fall through to env-var path
+    return {
+        "action": "authorized",
+        "reason": f"bot-binding.db match: user_id={user['user_id']} "
+                  f"role={user.get('role', 'user')}",
+    }
+
+def register(ctx):
+    ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
+```
+
+The full source includes wechat/discord/telegram specific platform_id
+mapping and is published as part of astor-memory's `docs/`.
+
+### Verification
+
+Static test that the plugin and hermes patch wire together:
+
+```python
+import importlib.util, pathlib
+spec = importlib.util.spec_from_file_location(
+    "bot_binding_auth",
+    pathlib.Path("~/.hermes/plugins/bot_binding_auth/__init__.py"),
+)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
+pm = PluginManager()
+manifest = PluginManifest(
+    name="bot_binding_auth", version="1.0.0", source="user",
+    key="bot_binding_auth",
+)
+ctx = PluginContext(manifest, pm)
+mod.register(ctx)
+assert pm.has_hook("pre_gateway_dispatch"), "hook not registered"
+
+# Test a known user
+class FakeSource:
+    def __init__(self, platform, chat_id, user_id):
+        self.platform, self.chat_id, self.user_id = platform, chat_id, user_id
+
+from gateway.config import Platform
+src = FakeSource(Platform.DISCORD, "356273139325599755", "356273139325599755")
+
+class FakeEvent:
+    def __init__(self, source):
+        self.source = source
+
+res = pm.invoke_hook("pre_gateway_dispatch", event=FakeEvent(src),
+                     gateway=None, session_store=None)
+assert res and res[0].get("action") == "authorized"
+```
+
+E2E: send a Discord DM from a user present in `bot-binding.db`.
+The gateway should NOT log "Unauthorized user" — instead it logs
+`pre_gateway_dispatch authorized` and proceeds to dispatch.
+
+### Why a plugin (not a fork)?
+
+- Plugin API is stable across hermes-agent upgrades. The 6-line core
+  patch is the only hermes-side change.
+- Other ACL sources (rate-limit, payment tier, SSO) can plug into the
+  same `pre_gateway_dispatch` hook without further core changes.
+- Public release: anyone running hermes + bot-binding.db gets this
+  for free just by `pip install`-ing or copying the plugin into
+  `~/.hermes/plugins/`. No source patch required for the plugin itself.
+
+### Why an upstream PR is the right next step
+
+The 6-line patch should ideally be a 6-line addition to hermes-agent
+upstream. Once accepted, operators no longer need to re-apply the
+patch after every upgrade. Until then, the patch is documented and
+preserved as part of astor-memory's release.
+
+---
+
 ## Next
 
 - [`docs/faq.md`](./faq.md) — frequently asked questions

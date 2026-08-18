@@ -1,0 +1,28 @@
+name: bot_binding_auth
+description: >
+  Bot-binding.db SSoT plugin. Replaces per-platform env-var allowlists
+  with the unified bot-binding.db SQLite database. Fires on
+  pre_gateway_dispatch and returns action=authorized when the inbound
+  user has an active binding, short-circuiting the env-var
+  _is_user_authorized check.
+version: 1.0.0
+author: flopworld (2026-08-18)
+license: MIT
+entry_point: bot_binding_auth
+provides_hooks:
+  - pre_gateway_dispatch
+trust_level: trusted
+requires:
+  - bot-binding.db at HERMES_BOT_BINDING_DB or <runtime_dir>bot-binding.db
+env:
+  BOT_BINDING_DB_PATH:
+    description: Override bot-binding.db path
+    default: null
+  HERMES_BOT_BINDING_DB:
+    description: Alternate env var for the same path
+    default: null
+notes: |
+  Without this plugin, hermes-agent _is_user_authorized reads
+  DISCORD_ALLOWED_USERS / TELEGRAM_ALLOWED_USERS from .env. With this
+  plugin installed, .env no longer needs *_ALLOWED_USERS for users in
+  bot-binding.db. Remove this directory to revert to env-var allowlists.
