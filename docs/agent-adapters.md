@@ -918,7 +918,7 @@ admins = cur.execute("""
 
 | Agent | Native mechanism | Config location | Shipped today? |
 |---|---|---|---|
-| **hermes-agent** | `gateway/slash_access.py` (built-in 0.20+) | `discord.allow_admin_from` / `user_allowed_commands`; same for `telegram`; `platforms.weixin.extra.allow_admin_from` / `user_allowed_commands` | ✅ yes (2026-08-17) |
+| **hermes-agent** | `gateway/slash_access.py` (built-in 0.20+) | `discord.allow_admin_from` / `user_allowed_commands`; same for `telegram`; `platforms.weixin.extra.allow_admin_from` / `user_allowed_commands` | ✅ yes (2026-08-17 baseline; user allowlist restricted 2026-08-17 — `/stop`, `/agents`, `/goal`, `/background` removed) |
 | **OpenClaw** | Workspace `AGENTS.md` instructions + session-start script gate | `~/.openclaw/workspace/AGENTS.md` + `~/.openclaw/openclaw.json` startup_script | ⏳ deferred — SSoT ready, adapter not built |
 | **Claude Desktop** | `mcp_config.json` tool allowlist + custom system prompt block | `~/Library/Application Support/Claude/claude_desktop_config.json` (`allowedTools`) | ⏳ deferred |
 | **Cursor** | `.cursorrules` + per-rule allowlist | workspace root `.cursorrules` | ⏳ deferred |
@@ -937,8 +937,19 @@ is the worked example to copy from when building the others.
 # Backup
 cp ~/.hermes/config.yaml ~/.hermes/config.yaml.bak-pre-admin-tier-slash-gating-$(date +%Y%m%dT%H%M)
 
-# Discord + telegram (admin list pre-existing; expand user allowlist to union)
-UNION_LIST="agents,background,branch,calc,clear,commands,compress,crypto,fortune,goal,help,history,image,new,queue,remind,reminders,resume,retry,scrape,search,sessions,status,stock,stop,time,title,topic,undo,version,voice,whoami"
+# Discord + telegram (admin list pre-existing; user allowlist is RESTRICTED subset).
+#
+# User level (any role=user) CANNOT run: /stop, /agents, /goal, /background.
+# Rationale (locked 2026-08-17, user flopworld):
+#   /stop        — non-admin could kill an in-flight agent mid-task (DD cascade risk,
+#                  lost trades, abandoned cron jobs)
+#   /agents      — sub-agent invocation can spawn persistent sessions / delegate work
+#                  that the user can't audit; admin-only
+#   /goal        — long-running background goal with auto-loop, could quietly drain
+#                  tokens or commit actions over hours; admin-only
+#   /background  — same family as /goal (long-lived background work); admin-only
+# Admin (role=admin) bypasses user_allowed_commands entirely via SlashAccessPolicy.
+UNION_LIST="branch,clear,commands,compress,help,history,image,new,queue,resume,retry,sessions,status,title,undo,version,voice,whoami"
 hermes config set discord.user_allowed_commands "$UNION_LIST"
 hermes config set discord.group_user_allowed_commands "$UNION_LIST"
 hermes config set telegram.user_allowed_commands "$UNION_LIST"
