@@ -918,7 +918,7 @@ admins = cur.execute("""
 
 | Agent | Native mechanism | Config location | Shipped today? |
 |---|---|---|---|
-| **hermes-agent** | `gateway/slash_access.py` (built-in 0.20+) | `discord.allow_admin_from` / `user_allowed_commands`; same for `telegram`; `platforms.weixin.extra.allow_admin_from` / `user_allowed_commands` | ✅ yes (2026-08-17 baseline; user allowlist refined 2026-08-18 — removed CLI-only dead commands `/clear`, `/history`, added `/context`, `/profile`; `/stop`, `/agents`, `/goal`, `/background` already removed 2026-08-17) |
+| **hermes-agent** | `gateway/slash_access.py` (built-in 0.20+) | `discord.allow_admin_from` / `user_allowed_commands`; same for `telegram`; `platforms.weixin.extra.allow_admin_from` / `user_allowed_commands` | ✅ yes (2026-08-17 baseline; user allowlist refined 2026-08-18 — removed CLI-only dead commands `/clear`, `/history`, `/image`, added `/context`, `/profile`; `/stop`, `/agents`, `/goal`, `/background` already removed 2026-08-17) |
 | **OpenClaw** | Workspace `AGENTS.md` instructions + session-start script gate | `~/.openclaw/workspace/AGENTS.md` + `~/.openclaw/openclaw.json` startup_script | ⏳ deferred — SSoT ready, adapter not built |
 | **Claude Desktop** | `mcp_config.json` tool allowlist + custom system prompt block | `~/Library/Application Support/Claude/claude_desktop_config.json` (`allowedTools`) | ⏳ deferred |
 | **Cursor** | `.cursorrules` + per-rule allowlist | workspace root `.cursorrules` | ⏳ deferred |
@@ -956,7 +956,7 @@ cp ~/.hermes/config.yaml ~/.hermes/config.yaml.bak-pre-admin-tier-slash-gating-$
 #                  category breakdown, /profile shows active profile name + home)
 #
 # Admin (role=admin) bypasses user_allowed_commands entirely via SlashAccessPolicy.
-UNION_LIST="branch,commands,compress,context,help,image,new,profile,queue,resume,retry,sessions,status,title,undo,version,voice,whoami"
+UNION_LIST="branch,commands,compress,context,help,new,profile,queue,resume,retry,sessions,status,title,undo,version,voice,whoami"
 hermes config set discord.user_allowed_commands "$UNION_LIST"
 hermes config set discord.group_user_allowed_commands "$UNION_LIST"
 hermes config set telegram.user_allowed_commands "$UNION_LIST"
