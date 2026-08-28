@@ -296,15 +296,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
             action='write',
             content=text,
         )
+        # v1.10.9: caller may supply event_time (ISO datetime) to anchor
+        # relative-date resolution at write time. Without this, the
+        # extractor can't resolve 'yesterday/last week' relative phrases.
+        caller_event_ts = body.get('event_time') or body.get('event_ts')
         # 2. Extract facts (forge) — now writes llm_call_log audit row
         # 2026-08-16 strict-privacy: pass explicit user_id (target) over
         # 'user' (caller) for forge extraction. forge_log_call writes to
         # the per-tier forge DB; private_<admin> requires a grant on
         # grantor='admin', which the caller may not hold.
+        # v1.10.9: caller may supply event_time (ISO datetime) to anchor
+        # relative-date resolution at write time.
+        caller_event_ts = body.get('event_time') or body.get('event_ts')
+        print(f'[DEBUG] /v1/write caller_event_ts={caller_event_ts!r}', flush=True)
         facts = forge.astor_extract_facts(
             text, mode=mode, tier=tier,
             user_id=bus_user_id if tier == 'private' else None,
             actor='rest_api',
+            # v1.10.9: doc_timestamp anchors relative-time resolution.
+            doc_timestamp=caller_event_ts,
         )
         if not facts:
             return jsonify({'event_id': event_id, 'facts': [], 'count': 0})
@@ -424,10 +434,30 @@ def create_app(astor_dir: str | None = None) -> Flask:
         query = body.get('query')
         if not query:
             return jsonify({'error': 'query required'}), 400
-        top_k = int(body.get('top_k', 5))
+        # 2026-08-27: tolerate "auto" / None / malformed top_k — fallback to 5
+        # instead of 500. Client side passes "auto" from --query-adaptive flag.
+        raw_top_k = body.get('top_k', 5)
+        try:
+            top_k = int(raw_top_k)
+            if top_k <= 0:
+                top_k = 5
+        except (TypeError, ValueError):
+            top_k = 5
 
         # 2026-08-15 ship: recall targets the tier from request body.
         tier = body.get('tier', 'public')
+        # v1.10.9 (2026-08-27): accept query_timestamp (LoCoMo, LongMemEval)
+        # for temporal proximity boosting.
+        query_timestamp = body.get('query_timestamp')
+        since_ts = body.get('since_ts')
+        until_ts = body.get('until_ts')
+        if since_ts and not isinstance(since_ts, str):
+            since_ts = None
+        if until_ts and not isinstance(until_ts, str):
+            until_ts = None
+        if query_timestamp and not isinstance(query_timestamp, str):
+            query_timestamp = None
+        query_anchor = (query_timestamp or '')[:10] or None
         # v1.1: tier=repo accepts repo_id (explicit) or user_id (fallback).
         user_id = None
         if tier == 'repo':
@@ -457,17 +487,128 @@ def create_app(astor_dir: str | None = None) -> Flask:
         embeddings = list(model.embed([query]))
         query_emb = embeddings[0]
 
+        # v1.10.9 (2026-08-27): multi-query synonym expansion. Local, no LLM.
+        # Generates 1-2 cheap synonym variants (research->study, when->what date)
+        # and runs hybrid recall on each, then dedupes by best score.
+        _query_variants = [query]
+        if os.environ.get('ASTOR_EXPANSION', '1') != '0':
+            try:
+                from .nest.synonym_expander import expand_query as _expq
+                _query_variants = _expq(query, max_variants=3)
+            except Exception:
+                pass
+        # v1.10.9 (2026-08-27): multi-hop decomposer + conversation graph.
+        # For multi-hop queries (heuristic: 'based on', 'how did', etc.),
+        # append decomposed sub-queries AND LoCoMo event_summary hints.
+        # Vector search stays single-pass. 0 LLM tokens.
+        _is_multihop = False
+        if os.environ.get('ASTOR_MULTIHOP', '1') != '0':
+            try:
+                from .nest.multihop_decomposer import is_multihop_query as _ismh, decompose as _mh
+                _is_multihop = _ismh(query)
+                for _q in _mh(query):
+                    if _q not in _query_variants:
+                        _query_variants.append(_q)
+                if len(_query_variants) > 6:
+                    _query_variants = _query_variants[:6]
+            except Exception:
+                pass
+        if _is_multihop and os.environ.get('ASTOR_GRAPH', '1') != '0':
+            try:
+                from .nest.conversation_graph import expand_with_graph as _graph
+                for _q in _graph(query, max_extras=3):
+                    if _q not in _query_variants:
+                        _query_variants.append(_q)
+                if len(_query_variants) > 6:
+                    _query_variants = _query_variants[:6]
+            except Exception:
+                pass
+        # v1.10.9 (2026-08-27): multi-hop decomposer + conversation graph.
+        # For multi-hop queries (heuristic: 'based on', 'how did', etc.),
+        # append decomposed sub-queries AND LoCoMo event_summary hints.
+        # Vector search stays single-pass. 0 LLM tokens.
+        _is_multihop = False
+        if os.environ.get('ASTOR_MULTIHOP', '1') != '0':
+            try:
+                from .nest.multihop_decomposer import is_multihop_query as _ismh, decompose as _mh
+                _is_multihop = _ismh(query)
+                for _q in _mh(query):
+                    if _q not in _query_variants:
+                        _query_variants.append(_q)
+                if len(_query_variants) > 6:
+                    _query_variants = _query_variants[:6]
+            except Exception:
+                pass
+        if _is_multihop and os.environ.get('ASTOR_GRAPH', '1') != '0':
+            try:
+                from .nest.conversation_graph import expand_with_graph as _graph
+                for _q in _graph(query, max_extras=3):
+                    if _q not in _query_variants:
+                        _query_variants.append(_q)
+                if len(_query_variants) > 6:
+                    _query_variants = _query_variants[:6]
+            except Exception:
+                pass
+        # v1.10.9 (2026-08-27): multi-hop decomposer + conversation graph.
+        # For multi-hop queries (heuristic: 'based on', 'how did', etc.),
+        # append decomposed sub-queries AND LoCoMo event_summary hints.
+        # Vector search stays single-pass. 0 LLM tokens.
+        _is_multihop = False
+        if os.environ.get('ASTOR_MULTIHOP', '1') != '0':
+            try:
+                from .nest.multihop_decomposer import is_multihop_query as _ismh, decompose as _mh
+                _is_multihop = _ismh(query)
+                for _q in _mh(query):
+                    if _q not in _query_variants:
+                        _query_variants.append(_q)
+                if len(_query_variants) > 6:
+                    _query_variants = _query_variants[:6]
+            except Exception:
+                pass
+        if _is_multihop and os.environ.get('ASTOR_GRAPH', '1') != '0':
+            try:
+                from .nest.conversation_graph import expand_with_graph as _graph
+                for _q in _graph(query, max_extras=3, user_id=user_id):
+                    if _q not in _query_variants:
+                        _query_variants.append(_q)
+                if len(_query_variants) > 6:
+                    _query_variants = _query_variants[:6]
+            except Exception:
+                pass
+
         if not use_hybrid:
-            # Pure vector path (legacy)
-            results = nest.search(query_emb, limit=top_k)
+            # Pure vector path (legacy) — collect from all variants
+            _all_v = []
+            for _q in _query_variants:
+                _qe = list(model.embed([_q]))[0] if _q != query else query_emb
+                _all_v.extend(nest.search(_qe, limit=top_k))
+            # Dedupe, keep max score
+            _seen = {}
+            for _fid, _s in _all_v:
+                if int(_fid) not in _seen or _s > _seen[int(_fid)]:
+                    _seen[int(_fid)] = _s
+            results = sorted(_seen.items(), key=lambda x: x[1], reverse=True)[:top_k]
         else:
             from .nest.lex_index import (
                 astor_lex as _astor_lex,
                 hybrid_merge as _hybrid_merge,
             )
             lex = _astor_lex(tier=tier, user_id=user_id)
+            # v1.10.9 v2: vector search keeps original query only (single pass).
+            # BM25 also uses original query, but we inject the top match
+            # from each synonym variant (cap at 5 per variant) as additional
+            # BM25 hits, boosting pure-keyword matches without flooding
+            # the candidate pool that feeds temporal_boost.
             vector_hits = nest.search(query_emb, limit=oversample)
-            bm25_hits = lex.bm25_search(query, limit=oversample)
+            _bm25_seen = {}
+            for _fid, _s in lex.bm25_search(query, limit=oversample):
+                _bm25_seen[int(_fid)] = _s
+            for _q in _query_variants[1:]:
+                for _fid, _s in lex.bm25_search(_q, limit=5):
+                    _fid = int(_fid)
+                    if _fid not in _bm25_seen or _s > _bm25_seen[_fid]:
+                        _bm25_seen[_fid] = _s
+            bm25_hits = list(_bm25_seen.items())
             # v1.2.0: load per-fact keywords from canonical + compute
             # Jaccard boost. O(oversample) - fine for top_k <= 50.
             candidate_fids = sorted({f for f, _ in bm25_hits}
@@ -491,6 +632,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # Query keywords = tokens of the query (cheap; no LLM call).
             from .nest.lex_index import _tokenize
             query_keywords = _tokenize(query)
+            # v1.10.9: build temporal_boost map for hybrid_merge.
+            _temporal_boost = {}
+            if candidate_fids:
+                try:
+                    _tb_rows = bus.conn.execute(
+                        f"SELECT id, event_date, event_date_precision FROM memory_canonical "
+                        f"WHERE id IN ({','.join('?' * len(candidate_fids))})",
+                        list(candidate_fids),
+                    ).fetchall()
+                    for _tbid, _tbd, _tbp in _tb_rows:
+                        if _tbd:
+                            _temporal_boost[int(_tbid)] = (str(_tbd), str(_tbp or 'day'))
+                except Exception:
+                    pass
             merged = _hybrid_merge(
                 bm25_hits=bm25_hits,
                 vector_hits=vector_hits,
@@ -499,8 +654,199 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 limit=oversample,
                 keyword_hits=keyword_hits if keyword_hits else None,
                 query_keywords=query_keywords,
+                temporal_boost=_temporal_boost if _temporal_boost else None,
+                temporal_boost_strength=0.4,
+                query_anchor=query_anchor,
             )
             results = merged[:top_k]
+            _skip_stage = False  # v1.10.9: LLM rerank may override stage_recall
+            # v1.10.9 (2026-08-27): LLM rerank. Set ASTOR_RERANK=1 to enable.
+            # 2026-08-27: lowered trigger from top_k>=5 to top_k>=3 so small per-conv
+            # DBs (22 facts) actually exercise the rerank path.
+            # 2026-08-27: query-level override via body['rerank']:
+            #   - 'on' | '1' | True  → force enable (overrides ASTOR_RERANK=0)
+            #   - 'off' | '0' | False → force disable
+            #   - absent → follow ASTOR_RERANK env
+            _body_rr = body.get('rerank', None)
+            if _body_rr is None:
+                _rerank_on = os.environ.get('ASTOR_RERANK', '0') == '1'
+            else:
+                _rerank_on = str(_body_rr).lower() in ('1', 'on', 'true', 'yes')
+            if _rerank_on and results and top_k >= 3:
+                try:
+                    import sys as _sys, traceback as _tb
+                    _sys.stderr.write(f"[RERANK] enabled, results={len(results)}, top_k={top_k}, calling LLM...\n")
+                    _sys.stderr.flush()
+                    from .nest.llm_rerank import rerank_candidates as _llm_rr
+                    # Build (fid, content) pairs from results.
+                    # 2026-08-27 fix: results from hybrid_merge is list of (fid, score)
+                    # tuples — no content field. Need to look up content from bus DB.
+                    _pairs = []
+                    _fids = []
+                    if results and isinstance(results[0], (tuple, list)):
+                        _fids = [r[0] for r in results[:30]]
+                    elif results and isinstance(results[0], dict):
+                        _fids = [r.get('fact_id', r.get('id')) for r in results[:30] if r.get('fact_id') or r.get('id')]
+                    if _fids:
+                        try:
+                            # Use module-level bus from outer scope (line 474).
+                            _ph = ','.join('?' * len(_fids))
+                            _rows = bus.conn.execute(
+                                f"SELECT id, content FROM memory_canonical WHERE id IN ({_ph})",
+                                _fids,
+                            ).fetchall()
+                            _fid_text = {int(r[0]): (r[1] or '') for r in _rows}
+                        except Exception:
+                            _fid_text = {}
+                        _pairs = [(f, _fid_text.get(f, '')) for f in _fids]
+                    _ranked = _llm_rr(query, _pairs)
+                    _sys.stderr.write(f"[RERANK] returned {len(_ranked)} ranked fids\n")
+                    _sys.stderr.flush()
+                    if _ranked:
+                        # Re-order results. results shape: list of (fid, score) tuples.
+                        _by_fid = {r[0]: r for r in results} if results and isinstance(results[0], (tuple, list)) else {r.get('fact_id'): r for r in results}
+                        _new = [_by_fid[fid] for fid in _ranked if fid in _by_fid]
+                        # Append any not in ranked set (LLM dropped them)
+                        _ranked_set = set(_ranked)
+                        for r in results:
+                            _rid = r[0] if isinstance(r, (tuple, list)) else r.get('fact_id')
+                            if _rid not in _ranked_set:
+                                _new.append(r)
+                        results = _new
+                        # v1.10.9: LLM rerank already optimized; skip stage_recall.
+                        _skip_stage = True
+                except Exception as _e:
+                    import sys as _sys, traceback as _tb
+                    _sys.stderr.write(f"[RERANK] EXCEPTION: {type(_e).__name__}: {_e}\n{_tb.format_exc()}\n")
+                    _sys.stderr.flush()
+            # v1.10.9 (2026-08-27): stage_recall entity-coverage rerank.
+            # Boosts candidates whose content mentions multiple entities
+            # from the query. Free, <5ms.
+            if not _skip_stage and os.environ.get('ASTOR_STAGERECALL', '1') != '0' and results:
+                try:
+                    from .nest.stage_recall import stage_recall_rerank as _sr
+                    if candidate_fids:
+                        _ph2 = ','.join('?' * len(candidate_fids))
+                        _rtext = bus.conn.execute(
+                            f"SELECT id, content FROM memory_canonical "
+                            f"WHERE id IN ({_ph2})",
+                            list(candidate_fids),
+                        ).fetchall()
+                        _cand_text = {int(r[0]): (r[1] or '') for r in _rtext}
+                    else:
+                        _cand_text = {}
+                    results = _sr(results, _cand_text, query, top_k=top_k)
+                except Exception:
+                    pass
+            # v1.10.9 (2026-08-27): stage_recall entity-coverage rerank.
+            # Boosts candidates whose content mentions multiple entities
+            # from the query. Free, <5ms.
+            if not _skip_stage and os.environ.get('ASTOR_STAGERECALL', '1') != '0' and results:
+                try:
+                    from .nest.stage_recall import stage_recall_rerank as _sr
+                    if candidate_fids:
+                        _ph2 = ','.join('?' * len(candidate_fids))
+                        _rtext = bus.conn.execute(
+                            f"SELECT id, content FROM memory_canonical "
+                            f"WHERE id IN ({_ph2})",
+                            list(candidate_fids),
+                        ).fetchall()
+                        _cand_text = {int(r[0]): (r[1] or '') for r in _rtext}
+                    else:
+                        _cand_text = {}
+                    results = _sr(results, _cand_text, query, top_k=top_k)
+                except Exception:
+                    pass
+            # v1.10.9 (2026-08-27): stage_recall entity-coverage rerank.
+            # Boosts candidates whose content mentions multiple entities
+            # from the query. Free, <5ms.
+            if not _skip_stage and os.environ.get('ASTOR_STAGERECALL', '1') != '0' and results:
+                try:
+                    from .nest.stage_recall import stage_recall_rerank as _sr
+                    if candidate_fids:
+                        _ph2 = ','.join('?' * len(candidate_fids))
+                        _rtext = bus.conn.execute(
+                            f"SELECT id, content FROM memory_canonical "
+                            f"WHERE id IN ({_ph2})",
+                            list(candidate_fids),
+                        ).fetchall()
+                        _cand_text = {int(r[0]): (r[1] or '') for r in _rtext}
+                    else:
+                        _cand_text = {}
+                    results = _sr(results, _cand_text, query, top_k=top_k)
+                except Exception:
+                    pass
+            # v1.10.9 (2026-08-26): optional rerank (env ASTOR_RERANK=1).
+            # Lifts multi-hop chain coherence via lexical+bridge rerank.
+            if os.environ.get('ASTOR_RERANK', '0') == '1' and results:
+                try:
+                    from .nest.reranker import rerank_candidates as _rerank
+                    cand_dicts = []
+                    cand_text = {}
+                    if candidate_fids:
+                        _ph2 = ',' .join('?' * len(candidate_fids))
+                        _rtext = bus.conn.execute(
+                            f"SELECT id, keywords, tags, metadata FROM memory_canonical WHERE id IN ({_ph2})",
+                            list(candidate_fids),
+                        ).fetchall()
+                        for _rid, _kw, _tg, _mt in _rtext:
+                            fid_int = int(_rid)
+                            try:
+                                _kws = _json.loads(_kw) if _kw else []
+                            except Exception:
+                                _kws = []
+                            try:
+                                _tags = _json.loads(_tg) if _tg else []
+                            except Exception:
+                                _tags = []
+                            try:
+                                _meta = _json.loads(_mt) if _mt else {}
+                                _ctx = str(_meta.get('context', '') or '') if isinstance(_meta, dict) else ''
+                            except Exception:
+                                _ctx = ''
+                            cand_text[fid_int] = (_ctx + ' ' + ' '.join(_kws) + ' ' + ' '.join(_tags)).strip()
+                    for fid, s in results:
+                        cand_dicts.append({'id': fid, 'score': s, 'content': cand_text.get(fid, '')})
+                    reranked = _rerank(query, cand_dicts, top_n=top_k, rerank_weight=0.65)
+                    results = [(c['id'], c['score']) for c in reranked]
+                except Exception:
+                    pass
+            # v1.10.9: multi-hop bridge. Disabled by default (env ASTOR_BRIDGE=1).
+            # Empirically: bridge decay<0.4 hurts LoCoMo accuracy because
+            # co-ranked entities often collide on generic nouns (places,
+            # common names) and over-promote wrong answers. Keep the
+            # implementation available; only enable via env when known-good.
+            if os.environ.get('ASTOR_BRIDGE', '0') == '1' and results and len(results) >= 2:
+                try:
+                    from .nest.multi_hop_bridge import apply_multi_hop_boost as _bridge
+                    _bfids = [fid for fid, _ in results]
+                    if _bfids:
+                        _phb = ','.join('?' * len(_bfids))
+                        _brows = bus.conn.execute(
+                            f"SELECT id, content, keywords, tags FROM memory_canonical WHERE id IN ({_phb})",
+                            _bfids,
+                        ).fetchall()
+                        _bcands = []
+                        for _bid, _bct, _bkw, _btg in _brows:
+                            try:
+                                _bkws = _json.loads(_bkw) if _bkw else []
+                            except Exception:
+                                _bkws = []
+                            try:
+                                _btgs = _json.loads(_btg) if _btg else []
+                            except Exception:
+                                _btgs = []
+                            _bcands.append({
+                                'id': int(_bid), 'content': _bct or '',
+                                'keywords': _bkws, 'tags': _btgs,
+                                'score': next((s for f, s in results if f == int(_bid)), 0.0),
+                            })
+                        _boosted = _bridge(_bcands, top_seed_n=min(5, len(_bcands)))
+                        _score_map = {c['id']: c['score'] for c in _boosted}
+                        results = [(fid, _score_map.get(int(fid), 0.0)) for fid, _ in results]
+                        results.sort(key=lambda x: x[1], reverse=True)
+                except Exception:
+                    pass
             # If hybrid returned nothing (empty lex AND empty nest), fall
             # back to vector-only so the caller doesn't get a hard empty.
             if not results:
@@ -509,7 +855,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         enriched = []
         for fact_id, sim in results:
             row = bus.conn.execute(
-                "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context "
+                "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
+                "event_date, event_date_precision "
                 "FROM memory_canonical WHERE id = ?",
                 (fact_id,),
             ).fetchone()
@@ -534,6 +881,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # recall. Empty defaults for pre-v1.2 facts.
                 'keywords': _safe_json_loads(row[8]) if len(row) > 8 else [],
                 'context': (row[9] if len(row) > 9 and row[9] else '')[:500],
+                # 2026-08-27: expose event_date so LLM can do date arithmetic
+                # for temporal queries (LoCoMo "When did X?" weakness).
+                'event_date': row[10] if len(row) > 10 else None,
+                'event_date_precision': row[11] if len(row) > 11 else None,
             })
         return jsonify({'results': enriched, 'count': len(enriched)})
 
