@@ -234,6 +234,15 @@ class AstorLex:
                     'UPDATE terms SET df = df + 1 WHERE term = ?',
                     (term,)
                 )
+            # 2026-08-27 (v1.11): rebuild FTS5 contentless index. Without
+            # this, lex_fts_data remains empty and bm25_search_tokens
+            # returns []. Contentless FTS5 (content='documents') expects
+            # auto-sync, but manual `INSERT INTO lex_fts(rowid, content)`
+            # bypasses the index build. Rebuild pulls from documents.
+            try:
+                self._conn.execute("INSERT INTO lex_fts(lex_fts) VALUES('rebuild')")
+            except Exception:
+                pass
             self._refresh_stats()
 
     def remove_fact(self, fact_id: int) -> None:
