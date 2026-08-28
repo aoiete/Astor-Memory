@@ -28,8 +28,6 @@ from .schema import astor_init_forge_schema, astor_verify_forge_schema, FORGE_SC
 
 import sqlite3
 import threading
-from pathlib import Path
-
 __all__ = [
     'astor_extract_facts', 'AstorFact', 'AstorExtractMode',
     'astor_regex_extract', 'astor_choose_extract_mode', 'astor_detect_capture_intent',

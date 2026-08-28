@@ -13,7 +13,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Literal
-
 AstorExtractMode = Literal['auto', 'none', 'regex', 'llm']
 
 # Regex patterns for fact categorization (Plan § Forge regex patterns)
@@ -32,6 +31,18 @@ class AstorFact:
 
     v1.2.0 (2026-08-16): added keywords + context fields. LLM mode
     populates them via prompt; regex mode derives heuristically.
+
+    v1.3.0 (2026-08-25): added event_date + event_date_precision fields.
+    Enables temporal rerank during recall: "when did X happen" queries can
+    be matched against fact event_date, and facts without a date can be
+    ranked lower for temporal queries. The LLM extractor (llm_extract.py)
+    populates these via prompt; regex mode leaves them None.
+
+    v1.6.0 (2026-08-25): added abstract (L0) + overview (L1) fields for
+    OpenViking-style progressive loading. The system prompt only loads
+    L0 abstracts (~50 tokens each); agent drills into L1/L2 only when
+    needed. LLM mode populates via prompt; regex mode derives heuristically
+    (abstract = first sentence, overview = first 240 chars).
     """
     content: str
     kind: str
@@ -40,6 +51,10 @@ class AstorFact:
     tags: list[str] | None = None
     keywords: list[str] | None = None   # A-MEM-style; JSON-encoded into DB
     context: str = ''                  # A-MEM-style; human-readable 1-2 sentences
+    event_date: str | None = None      # ISO-8601 date 'YYYY-MM-DD' if applicable
+    event_date_precision: str = 'none'  # 'day'|'month'|'year'|'none'
+    abstract: str = ''                 # L0: ≤80 tokens, one-sentence summary
+    overview: str = ''                 # L1: ≤300 tokens, structured digest
 
 
 def astor_regex_extract(text: str) -> list[AstorFact]:
@@ -48,6 +63,10 @@ def astor_regex_extract(text: str) -> list[AstorFact]:
     v1.2.0: also derives keywords + context heuristically:
     - keywords = [kind, ...content_words] (top-5 distinctive tokens)
     - context = first 120 chars of input text
+
+    v1.6.0: derives abstract (L0) + overview (L1) heuristically:
+    - abstract = first sentence (split by . / 。 / newline, ≤80 tokens)
+    - overview = first 240 chars of full text (≤300 tokens)
     """
     import re as _re
     facts = []
@@ -58,6 +77,12 @@ def astor_regex_extract(text: str) -> list[AstorFact]:
             content_part = m.group(1).strip()
             words = _re.findall(r'[a-zA-Z一-鿿]{4,}', content_part)
             distinct_words = list(dict.fromkeys(words))[:5]  # preserve order, dedup
+            # v1.6.0: derive L0 abstract from first sentence of input text
+            # (not content_part, since content_part may be a clause not a sentence)
+            abstract = _re.split(r'[.!?。！？\n]', text.strip(), maxsplit=1)[0].strip()
+            # Cap abstract at ~80 tokens (very rough heuristic: 4 chars/token)
+            if len(abstract) > 320:
+                abstract = abstract[:317] + "..."
             facts.append(AstorFact(
                 content=content_part,
                 kind=kind,
@@ -66,6 +91,8 @@ def astor_regex_extract(text: str) -> list[AstorFact]:
                 tags=[kind, 'auto_extracted'],
                 keywords=[kind] + distinct_words,
                 context=text[:120].strip(),
+                abstract=abstract,
+                overview=text[:240].strip(),
             ))
             break  # one fact per match
     return facts
@@ -105,11 +132,19 @@ def astor_extract_facts(
     tier: str = 'public',
     user_id: str | None = None,
     actor: str = 'system',
+    why: str | None = None,
+    outcome: Literal['success', 'error', 'neutral'] = 'neutral',
+    doc_timestamp: str | None = None,
 ) -> list[AstorFact]:
     """Extract facts based on mode.
 
     P1-fix 2026-08-15: also persist an llm_call_log row to the per-tier forge
     DB so the audit trail is complete. Latency/model/provider tracked.
+
+    v1.2.7 (2026-08-19): added `why` + `outcome` parameters per bus-mem-1042
+    pattern — distinguish "do X" (success recipe) from "avoid X" (error
+    pattern) at write time so recall ranking can boost successes and
+    suppress errors. Default outcome='neutral' for backward compat.
     """
     import hashlib, time as _time, json as _json
     from . import astor_forge_log_call
@@ -118,35 +153,127 @@ def astor_extract_facts(
     if mode == 'auto':
         mode = astor_choose_extract_mode(text)
 
+    # v1.9.1 (2026-08-25): validate mode. Without this, an unknown mode
+    # silently fell through with facts=[], provider='regex_fallback',
+    # success=1 — caller saw count=0 with no error and assumed "nothing
+    # to extract" instead of "you sent wrong_mode_xyz".
+    if mode not in ('none', 'regex', 'llm'):
+        raise ValueError(f"invalid mode {mode!r}: must be 'none'|'regex'|'llm'|'auto'")
+
     facts: list[AstorFact] = []
     success = 1
     error_msg = None
+    # v1.10.8 (2026-08-26): mode='none' no longer short-circuits before audit
+    # log. Previously `if mode == 'none': return []` left zero audit trail for
+    # raw-event store mode (long-text blocks where regex/llm don't apply).
+    # Now we set provider='none' and let the path fall through to audit.
     provider = 'regex_fallback'
     model_name = None
 
     try:
         if mode == 'none':
-            return []  # Store raw event, no fact extraction
-
-        if mode == 'regex':
+            provider = 'none'
+        elif mode == 'regex':
+            # v1.10.8: capture_intent handling moved to unified post-process
+            # block (after this if/elif) so llm + regex_fallback also get it.
             facts = astor_regex_extract(text)
-            # Insight 17: capture-intent auto-detection
-            if astor_detect_capture_intent(text):
-                for f in facts:
-                    f.confidence = 0.95  # user wants remembered
-                    if f.tags is None:
-                        f.tags = []
-                    f.tags.append('capture_intent')
 
         elif mode == 'llm':
-            # LLM extract (lazy import to avoid loading requests when not needed)
+            # v1.10.9 fix: import astor_llm_extract only (the _with_provider
+            # variant is a NESTED function in llm_extract.py and cannot be
+            # imported at module level — calling it here would NameError).
             from .llm_extract import astor_llm_extract
-            provider = 'llm'
-            facts = astor_llm_extract(text)
+            # v1.10.9: when caller passes doc_timestamp, prefix the text with
+            # an explicit anchor marker so the LLM resolves 'yesterday/last
+            # week' against the correct calendar date.
+            _text_for_llm = text
+            if doc_timestamp:
+                _text_for_llm = (
+                    f"[Doc timestamp: {doc_timestamp[:10]}] Treat this as 'today' "
+                    f"when resolving 'yesterday/last week/3 days ago' etc.\n\n"
+                    f"{text}"
+                )
+            # v1.10.9: pass OPENAI_BASE_URL / ASTOR_LLM_MODEL env so the
+            # 'openai' provider routes through OpenRouter (default m3 has no
+            # key in most deployments, was silently failing).
+            import os as _os_e
+            import sys as _sys_d
+            _facts = astor_llm_extract(
+                _text_for_llm,
+                fallback_chain=['openai'],
+                base_url=_os_e.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
+                model=_os_e.environ.get('ASTOR_LLM_MODEL', 'google/gemini-3.7-flash'),
+            )
+            _sys_d.stderr.write(f"[EXTRACT_DEBUG] mode=llm facts={len(_facts)} text_len={len(text)} text_preview={text[:80]!r}\n")
+            _sys_d.stderr.flush()
+            # v1.11 (2026-08-27): astor_llm_extract may now return a mix of
+            # AstorFact (from the rich dict-array code path) and dict (from
+            # the flat string-array fallback wrapper). Normalize to AstorFact
+            # so downstream code (which uses `f.content`, `f.kind`, ...) works.
+            facts = []
+            for f in _facts:
+                if isinstance(f, dict) and not isinstance(f, AstorFact):
+                    facts.append(AstorFact(
+                        content=f.get('content', ''),
+                        kind=f.get('kind', 'fact'),
+                        confidence=f.get('confidence', 0.7),
+                        importance=f.get('importance', 0.5),
+                        tags=f.get('tags') or [],
+                        keywords=f.get('keywords') or [],
+                        context=str(f.get('context', '') or '')[:500],
+                        event_date=f.get('event_date') or None,
+                        event_date_precision=str(f.get('event_date_precision') or 'none')[:16],
+                        abstract=str(f.get('abstract', '') or '')[:500],
+                        overview=str(f.get('overview', '') or '')[:1500],
+                    ))
+                else:
+                    facts.append(f)
+            # Audit honesty: if we know openai was used, record it.
+            provider = 'openai' if facts else 'regex_fallback'
+            model_name = None  # populated by llm_extract internals if available
     except Exception as exc:
         success = 0
         error_msg = str(exc)[:200]
         facts = []
+
+    # v1.2.7: tag facts with outcome + why for downstream recall ranking
+    # v1.10.9: anchor-based relative-date resolution. If the caller passed
+    # a document timestamp (e.g. event.ts for /v1/write), normalize all
+    # 'yesterday/last week' references into absolute YYYY-MM-DD so temporal
+    # queries can match them later.
+    if facts and doc_timestamp:
+        try:
+            from .relative_date import resolve_relative_dates_batch
+            dict_facts = [f.__dict__ for f in facts]
+            resolved = resolve_relative_dates_batch(dict_facts, doc_timestamp[:10])
+            for f, src in zip(facts, resolved):
+                if src.get("event_date") and not f.event_date:
+                    f.event_date = src.get("event_date")
+                if src.get("event_date_precision") and f.event_date_precision == "none":
+                    f.event_date_precision = src.get("event_date_precision")
+        except Exception:
+            pass
+    if facts and (why or outcome != 'neutral'):
+        for f in facts:
+            if f.tags is None:
+                f.tags = []
+            if outcome != 'neutral' and outcome not in f.tags:
+                f.tags.append(f'outcome:{outcome}')
+            if why:
+                f.context = (f.context + f'\n[why] {why}').strip() if f.context else f'[why] {why}'
+
+    # v1.10.8: capture-intent boost moved OUT of the regex branch — now applies
+    # uniformly to regex, llm, and the all-providers-failed regex_fallback path.
+    # Previously only `mode == 'regex'` got the 0.95 confidence + 'capture_intent'
+    # tag, so a user saying "remember this" while the LLM was the active extractor
+    # silently lost the boost.
+    if facts and astor_detect_capture_intent(text):
+        for f in facts:
+            f.confidence = 0.95  # user wants remembered
+            if f.tags is None:
+                f.tags = []
+            if 'capture_intent' not in f.tags:
+                f.tags.append('capture_intent')
 
     # P1-fix 2026-08-15: log the extraction call. Audit row is mandatory per
     # ACL plan even if extraction itself produced 0 facts (records the attempt).
@@ -165,7 +292,7 @@ def astor_extract_facts(
             success=success,
             error_msg=error_msg,
             latency_ms=int((_time.time() - t0) * 1000),
-            reason=f'mode={mode}',
+            reason=why or f'mode={mode};outcome={outcome}',
         )
     except Exception as log_exc:
         # Audit failure must not block write path; surface to stderr.
