@@ -1,0 +1,20 @@
+name: astor_memory
+version: 1.11.0
+description: >-
+  Astor Memory — 3-tier × 3-store SQLite memory system with hybrid recall.
+  HTTP-only client; server runs in separate venv at $ASTOR_SERVER_URL.
+hooks:
+  - on_session_start
+  - on_pre_compress
+  - on_tool_call
+  - on_session_end
+env:
+  ASTOR_SERVER_URL:
+    description: Astor server base URL
+    default: http://127.0.0.1:7803
+  ASTOR_USER_ID:
+    description: Canonical user identifier for ACL scoping
+    default: admin
+  ASTOR_TIMEOUT_S:
+    description: HTTP request timeout seconds
+    default: 8
