@@ -1,0 +1,20 @@
+name: astor_memory
+version: 1.11.0
+description: "Astor Memory — 3-tier × 3-store SQLite memory system with hybrid recall (vector + BM25 + jaccard). Hermes Agent plugin that wraps the astor_memory runtime REST API (http://127.0.0.1:7803) and exposes it through the Hermes MemoryProvider ABC."
+hooks:
+  - on_pre_compress
+astor_compat:
+  runtime: "1.11.0"
+  source_release: "1.2.7"
+  api_contract: "v1"
+depends_on:
+  - python: ">=3.10"
+  - numpy: ">=1.24"
+  - "ASTOR_SERVER_URL"  # env var, default http://127.0.0.1:7803
+  - "ASTOR_USER_ID"     # env var, default admin
+install:
+  pip: "pip install numpy"   # only dep plugin needs (HTTP-only client)
+  copy_to: "${HERMES_HOME}/plugins/memory/astor_memory/"   # inside hermes-agent venv
+notes: |
+  See README.md for the full MemoryProvider ABC + lifecycle integration.
+  Plugin version must match server version (see ../../RULES_astor_version_sync.md).
