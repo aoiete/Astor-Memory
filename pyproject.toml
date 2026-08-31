@@ -4,7 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astor-memory"
-version = "1.2.7"
+# Version unified 2026-08-31 to match <runtime_dir>astor_memory/__init__.py:__version__.
+# Source release was 1.2.7 (2026-08-17, PII cleanup); runtime has been 1.11.0 since 2026-08-26 (v1.11 LLM extract).
+# Both axes merged into 1.11.0 — next release will bump the unified label together.
+version = "1.11.0"
 description = "Self-owned memory system for AI agents: 3-tier × 3-store × 3-scope = 9+ SQLite layout, multi-user ACL, WeChat/Telegram/Discord token manager, MCP server"
 readme = "README.md"
 license = "MIT"
