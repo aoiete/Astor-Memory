@@ -274,39 +274,50 @@ LLM call > 30 seconds. Either:
 
 ## Migration errors
 
-### `am migrate from-memory-bus` fails with "schema version mismatch"
+### `migrate_from_mem0()` reports zero memories migrated
 
-Your legacy `bus.db` is from a version before schema v2. Upgrade legacy first:
+Your mem0 client credentials are read-only, or your `user_id` filter
+does not match any users. Verify with:
 
-```bash
-# Run legacy's migration tool first
-memory-bus migrate --to=v2
-# Then re-run Astor-Memory migration
-am migrate from-memory-bus --source=~/.memory-bus/bus.db
+```python
+from mem0 import MemoryClient
+client = MemoryClient(api_key="<key>")
+print(client.list_users())  # should list your user_ids
 ```
 
-### Row count mismatch after migration
+Then re-run with the matching `user_id` field on each `write()` call.
 
-Some rows were skipped due to schema differences. Run with verbose:
+### `migrate_from_letta()` crashes with `sqlite3.OperationalError`
 
-```bash
-am migrate from-memory-bus --source=... --target=... --verbose
+Letta's `blocks` table does not exist if you are on Letta < 0.5. Run
+the latest Letta version first, or fall back to a direct SQL query
+against your Letta PostgreSQL DB and emit `astor_write` calls manually.
+
+### `migrate_from_chroma()` raises "embedding dimension mismatch"
+
+Astor-Memory defaults to `BAAI/bge-base-en-v1.5` (768 dim). If your
+Chroma collection was built with a different model, omit the
+`embedding` arg:
+
+```python
+write(doc, user_id=user_id, metadata={...})  # no embedding= arg
 ```
 
-Look for "skipped" lines. Common reasons:
-- Events with unknown `kind` (legacy had 47 kinds; Astor-Memory has 12)
-- Events with malformed references
-- Events from before 2024 (timestamp format change)
+Astor re-embeds with the configured model on first recall.
 
-To include all, force:
+### Source row count higher than Astor-Memory row count
 
-```bash
-am migrate from-memory-bus --source=... --target=... --include-skipped
-```
+Some rows are intentionally filtered out: bot-binding tables, audit
+logs, runtime state. See
+[`docs/migration.md`](./migration.md) § "Pitfall 6: Importing
+bot-bound data as facts" for the canonical skip list.
 
 ### Import cutover broke my code
 
-`astor-migrate-imports` rewrote imports but your code used advanced features (e.g. `auto_route_v2.write_async` doesn't have a 1:1 mapping).
+If you used the bulk `astor-migrate-imports` style rewrite on a
+non-trivial codebase, advanced call patterns (e.g. async writes,
+custom event hooks, plugin loaders) may not map 1:1. Review the diff
+and call sites that use features beyond simple `write()` / `read()`.
 
 Check [`docs/migration.md`](./migration.md#side-by-side-reference) for the full mapping table. Common gotchas:
 
