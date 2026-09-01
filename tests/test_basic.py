@@ -195,10 +195,16 @@ def test_llm_extract_no_keys_falls_back_to_regex(monkeypatch):
     for key in ('MINIMAX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_API_KEY', 'DEEPSEEK_API_KEY', 'ZHIPU_API_KEY'):
         monkeypatch.delenv(key, raising=False)
 
-    facts = astor_llm_extract('I prefer dark roast coffee', primary='m3', fallback_chain=['openai', 'anthropic'])
+    facts_tuple = astor_llm_extract('I prefer dark roast coffee', primary='m3', fallback_chain=['openai', 'anthropic'])
+    # astor_llm_extract returns (facts_list, provider_name) tuple.
+    facts = facts_tuple[0] if isinstance(facts_tuple, tuple) else facts_tuple
     # Should fall back to regex (which extracts "dark roast coffee" as user_preference)
     assert len(facts) >= 1
-    assert any(f.kind == 'user_preference' for f in facts)
+    # astor_llm_extract may return AstorFact or dict depending on path; tolerate both
+    assert any(
+        (getattr(f, 'kind', None) or f.get('kind')) == 'user_preference'
+        for f in facts
+    )
 
 
 def test_llm_provider_env_keys():
@@ -502,5 +508,14 @@ def test_e2e_integration(tmp_path, monkeypatch):
     # 7. install CLI plan (dry-run)
     assert cli_main(['install', '--ide', 'cursor', '--mode', 'coexist']) == 0
 
-    # 8. learn CLI (smoke test that the new subcommand is registered)
-    assert cli_main(['learn', '--help']) == 0
+    # 8. learn CLI subcommand registered (use --help to verify, since help exits 0)
+    import contextlib
+    import io as _io
+    captured_help = _io.StringIO()
+    with contextlib.redirect_stdout(captured_help), contextlib.redirect_stderr(captured_help):
+        try:
+            cli_main(['learn', '--help'])
+        except SystemExit as e:
+            assert e.code == 0
+    assert '--tier' in captured_help.getvalue()
+    assert '--threshold' in captured_help.getvalue()
