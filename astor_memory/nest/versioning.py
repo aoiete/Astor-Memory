@@ -25,9 +25,7 @@ Strategy:
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -263,12 +261,30 @@ def restore_fact(
                 # Embed and store
                 from .embeddings import astor_get_embedding_model
                 model = astor_get_embedding_model()
+                # v1.10.8 (2026-08-26): use the SAME model that wrote the original
+                # embedding. Check audit_log.metadata for an embedding_model
+                # hint; fall back to the active RAM model. The previous code
+                # had `astor_get_model_name_for_ram() if False else 'BAAI/bge-small-en-v1.5'`
+                # which always evaluated to the hard-coded string and risked a
+                # dim mismatch if the original embedding came from bge-base.
+                model_name = 'BAAI/bge-base-en-v1.5'  # default
+                try:
+                    meta_row = conn.execute(
+                        "SELECT metadata FROM audit_log WHERE target_type='fact' AND target_id=? AND event='fact_written' ORDER BY id DESC LIMIT 1",
+                        (str(fact_id_int),),
+                    ).fetchone()
+                    if meta_row and meta_row[0]:
+                        import json as _json_v
+                        meta_obj = _json_v.loads(meta_row[0])
+                        if isinstance(meta_obj, dict) and 'embedding_model' in meta_obj:
+                            model_name = meta_obj['embedding_model']
+                except Exception:
+                    pass  # metadata lookup is best-effort
                 emb = list(model.embed([content]))[0]
                 emb_blob = struct_pack_floats(emb)
                 nest.conn.execute(
                     "INSERT OR REPLACE INTO embeddings(fact_id, embedding, model_name) VALUES (?,?,?)",
-                    (fact_id_int, emb_blob,
-                     astor_get_model_name_for_ram() if False else 'BAAI/bge-small-en-v1.5'),
+                    (fact_id_int, emb_blob, model_name),
                 )
                 nest.conn.commit()
                 nest_re = 'ok'

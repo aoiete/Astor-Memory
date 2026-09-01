@@ -15,12 +15,8 @@ flagged via audit metadata.
 """
 from __future__ import annotations
 
-import json
 import os
-import sqlite3
 from pathlib import Path
-
-from .acl_layout import get_astor_dir
 
 # ============================================================
 # Env var names — current hermes 2026.x convention

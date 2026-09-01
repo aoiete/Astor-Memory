@@ -16,6 +16,20 @@ This module exposes:
 """
 from __future__ import annotations
 
+# v1.10.8 (2026-08-26): canonical provenance_kind enum. Previously
+# only documented in docstring; auto_link wrote 'auto_link' which was
+# missing, and versioning.py had no place to write 'restored'. Centralize
+# here so reflection/auto_link/versioning/provenance all agree.
+PROVENANCE_KINDS = frozenset({
+    'rule',          # user-defined explicit rule
+    'extracted',     # forge regex/llm produced this fact
+    'inferred',      # derivation via graph traversal
+    'manual',        # user-inserted via /v1/write directly
+    'merged',        # reflection merge winner
+    'auto_link',     # auto_link.py added an edge
+    'restored',      # versioning.py restore_fact()
+    'reflection_merge',  # legacy alias for 'merged'
+})
 import json
 import sqlite3
 from pathlib import Path
@@ -86,24 +100,26 @@ def _iter_descendants(
 ) -> list[dict]:
     """Find facts whose parent_fact_ids JSON contains parent_id.
 
-    NOTE: SQLite JSON search requires LIKE on a normalised JSON string,
-    which works for small lists. For lists > 100 parents per fact, this
-    is slow — but typical usage is 1-3 parents per fact.
+    v1.10.8 (2026-08-26): use json_each() instead of LIKE matching. Previous
+    implementation searched for `[{parent_id}]` and `,{parent_id}` substrings,
+    but json.dumps([1, 2]) produces `'[1, 2]'` (comma + space). That meant
+    multi-element arrays like `[23, 1]` or `[1, 23]` silently failed to
+    match the parent_id in non-first position — only single-element arrays
+    were reliably found. json_each unrolls the JSON array per row, then a
+    simple `je.value = ?` filters correctly regardless of position or
+    whitespace. Available since SQLite 3.38, which is universally shipped
+    in modern systems.
     """
     conn = _open_conn(tier, user_id)
     try:
-        # Use LIKE with bracket-quoted int — JSON arrays serialise as
-        # either "[id]" or "[id, id2, ...]". Both contain the int with
-        # comma/bracket delimiters.
-        target_str = f'[{parent_id}]'  # exact single-element array
-        target_str2 = f',{parent_id}'   # multi-element array
         rows = conn.execute(
-            "SELECT id, content, kind, parent_fact_ids, provenance_kind, "
-            "provenance_agent, provenance_depth, promoted_at "
-            "FROM memory_canonical "
-            "WHERE parent_fact_ids LIKE ? OR parent_fact_ids LIKE ? "
-            "ORDER BY id",
-            (f'%{target_str}%', f'%{target_str2}%'),
+            "SELECT m.id, m.content, m.kind, m.parent_fact_ids, "
+            "m.provenance_kind, m.provenance_agent, m.provenance_depth, "
+            "m.promoted_at "
+            "FROM memory_canonical m, json_each(m.parent_fact_ids) je "
+            "WHERE je.value = ? "
+            "ORDER BY m.id",
+            (int(parent_id),),
         ).fetchall()
     finally:
         conn.close()
@@ -196,6 +212,7 @@ def get_provenance(
                             f'cross-tier probe: {tier}/{user_id} -> {t2}/{u2}'
                         )
                         scopes_searched.append((t2, u2))
+                        seen.add(cur_id)  # ensure not re-walked
                         break
             if anc is None:
                 out['chain_broken'] = True
@@ -331,7 +348,29 @@ def record_provenance(
             if row is not None:
                 max_par_depth = max(max_par_depth, int(row[0] or 0))
         depth = max_par_depth + 1
-    parents_json = json.dumps(sorted(set(int(p) for p in parents)))
+    # v1.10.8 (2026-08-26): MERGE into existing parent_fact_ids instead of
+    # overwriting. Previously `SET parent_fact_ids = ?` would wipe out any
+    # auto_link edges auto_link.py had added. Now we read existing parents,
+    # union with new parents, dedupe, sort, then UPDATE.
+    row = bus.conn.execute(
+        "SELECT parent_fact_ids, provenance_kind, provenance_agent "
+        "FROM memory_canonical WHERE id = ?",
+        (int(fact_id),),
+    ).fetchone()
+    existing_parents = []
+    if row and row[0]:
+        try:
+            existing_parents = json.loads(row[0])
+        except Exception:
+            existing_parents = []
+    merged = sorted(set(int(p) for p in existing_parents) | set(int(p) for p in parents))
+    merged_json = json.dumps(merged)
+    # v1.10.8: also preserve existing provenance_kind/agent if set, same as
+    # auto_link fix. Only update if both columns are currently empty.
+    existing_kind = (row[1] if row else None) or ''
+    existing_agent = (row[2] if row else None) or ''
+    final_kind = existing_kind or kind
+    final_agent = existing_agent or agent
     bus.conn.execute(
         "UPDATE memory_canonical SET "
         "parent_fact_ids = ?, "
@@ -340,12 +379,31 @@ def record_provenance(
         "provenance_depth = ?, "
         "provenance_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
         "WHERE id = ?",
-        (parents_json, kind, agent, int(depth), fact_id),
+        (merged_json, final_kind, final_agent, int(depth), fact_id),
     )
     bus.conn.commit()
+    # v1.10.8 (2026-08-26): write audit row so provenance changes are traceable.
+    # Previously the system claimed "audit-safe" but provenance was the one path
+    # that bypassed write_audit.
+    try:
+        bus.write_audit(
+            event='provenance_recorded',
+            actor='nest.provenance',
+            target_type='fact',
+            target_id=str(fact_id),
+            new_state={'parents': merged, 'kind': final_kind,
+                       'agent': final_agent, 'depth': int(depth)},
+            reason=f'record_provenance: {len(parents)} new parent(s)',
+            severity='info',
+        )
+    except Exception as _e:
+        # Never block on audit failures; log only
+        import sys as _sys_p
+        print(f'[astor.provenance] audit log failed (non-fatal): {_e}',
+              file=_sys_p.stderr)
     return {
-        'fact_id': fact_id, 'parents': json.loads(parents_json),
-        'provenance_kind': kind, 'provenance_agent': agent,
+        'fact_id': fact_id, 'parents': merged,
+        'provenance_kind': final_kind, 'provenance_agent': final_agent,
         'provenance_depth': int(depth),
     }
 
@@ -366,39 +424,90 @@ def graph_dot(
       direction: 'up' (ancestors), 'down' (descendants), 'both'
       max_depth: cap traversal depth
     Returns: a multi-line DOT string.
+
+    v1.10.8 (2026-08-26):
+      - Draw chain-style edges instead of star: each ancestor's parent
+        is its direct upstream (not the root). Fixes depth>1 chains being
+        rendered as a hub-and-spoke pattern that misleads visual debugging.
+      - Guard against fact=None when ancestors exist (previous code crashed
+        with `f{fact["id"]}` on a None fact).
     """
     out = ['digraph provenance {', '  rankdir=LR;',
            f'  node [shape=record, style="filled,rounded", fillcolor=white];']
+
+    def _node_label(fid: int, kind, agent) -> str:
+        k = kind if kind is not None else '?'
+        a = agent if agent is not None else '?'
+        return f'  f{fid} [label="{{{fid}|{k}|{a}}}"];'
+
+    # v1.10.8: maintain a depth-indexed map of rendered fact_ids to draw
+    # chain-style edges (parent -> grandparent -> ..., not root -> everyone).
+    rendered: dict[int, int] = {}  # fact_id -> parent_id (for chain edges)
+
     if direction in ('up', 'both'):
         up = get_provenance(fact_id, tier=tier, user_id=user_id,
                             max_depth=max_depth)
         fact = up.get('fact')
         if fact:
-            out.append(
-                f'  f{fact["id"]} [label="{{{fact["id"]}|{fact.get("provenance_kind","?")}|{fact.get("provenance_agent","?")}}}"];'
-            )
+            out.append(_node_label(fact['id'],
+                                    fact.get('provenance_kind'),
+                                    fact.get('provenance_agent')))
+            rendered[fact['id']] = fact_id  # root has no parent
         for a in up.get('ancestors', []):
             af = a['fact']
-            out.append(
-                f'  f{af["id"]} [label="{{{af["id"]}|{af.get("provenance_kind","?")}|{af.get("provenance_agent","?")}}}"];'
-            )
-            out.append(f'  f{fact["id"]} -> f{af["id"]} [label="parent depth={a["depth"]}"];')
+            if af is None:
+                continue
+            out.append(_node_label(af['id'],
+                                    af.get('provenance_kind'),
+                                    af.get('provenance_agent')))
+            # v1.10.8: draw edge from ancestor's depth-parent, not from root.
+            # If we don't know the ancestor's parent, draw from the previous
+            # depth-1 ancestor in this walk (chain-style fallback).
+            par_id = a.get('parent_id')
+            if par_id and par_id in rendered:
+                out.append(f'  f{par_id} -> f{af["id"]} [label="parent depth={a["depth"]}"];')
+            elif par_id is None:
+                # parent_id not present in returned dict — fall back to root
+                root = fact_id if fact else par_id
+                if root:
+                    out.append(f'  f{root} -> f{af["id"]} [label="parent depth={a["depth"]}"];')
+            rendered[af['id']] = par_id or 0
+
     if direction in ('down', 'both'):
-        down = get_lineage(fact_id, tier=tier, user_id=user_id,
-                            max_depth=max_depth)
+        # v1.10.8: make sure `fact` is populated before drawing descendant edges
         if 'fact' not in locals() or fact is None:
             try:
                 fact = _read_fact(tier, user_id, fact_id)
                 if fact:
-                    out.append(
-                        f'  f{fact["id"]} [label="{{{fact["id"]}|{fact.get("provenance_kind","?")}|{fact.get("provenance_agent","?")}}}"];'
-                    )
+                    out.append(_node_label(fact['id'],
+                                            fact.get('provenance_kind'),
+                                            fact.get('provenance_agent')))
             except Exception:
                 pass
+        down = get_lineage(fact_id, tier=tier, user_id=user_id,
+                            max_depth=max_depth)
+        prev_depth_node: dict[int, int] = {}  # depth -> most recent fact_id
+        if fact:
+            prev_depth_node[0] = fact['id']
         for d in down.get('descendants', []):
-            out.append(
-                f'  f{d["fact_id"]} [label="{{{d["fact_id"]}|{d.get("provenance_kind","?")}|{d.get("agent","?")}}}"];'
-            )
-            out.append(f'  f{fact["id"]} -> f{d["fact_id"]} [label="child depth={d["depth"]}"];')
+            fid = d.get('fact_id')
+            if fid is None:
+                continue
+            out.append(_node_label(fid,
+                                    d.get('provenance_kind'),
+                                    d.get('agent')))
+            # v1.10.8: chain edge from depth-1 ancestor (parent), not from root
+            par_depth = d['depth'] - 1
+            if par_depth in prev_depth_node:
+                par_id = prev_depth_node[par_depth]
+                out.append(f'  f{par_id} -> f{fid} [label="child depth={d["depth"]}"];')
+            elif fact:
+                # fallback when no parent at depth-1 (root only)
+                out.append(f'  f{fact["id"]} -> f{fid} [label="child depth={d["depth"]}"];')
+            # Track this fact as the latest at its depth
+            if d['depth'] in prev_depth_node:
+                prev_depth_node[d['depth']] = fid
+            else:
+                prev_depth_node[d['depth']] = fid
     out.append('}')
     return "\n".join(out)

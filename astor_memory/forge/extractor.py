@@ -55,6 +55,11 @@ class AstorFact:
     event_date_precision: str = 'none'  # 'day'|'month'|'year'|'none'
     abstract: str = ''                 # L0: ≤80 tokens, one-sentence summary
     overview: str = ''                 # L1: ≤300 tokens, structured digest
+    # v1.12.0 (2026-08-29): hierarchical extraction per Mem0 2026 lesson.
+    # topic groups facts into session-level themes for retrieval scoping;
+    # session_id identifies the conversation this fact originated from.
+    topic: str = ''
+    session_id: str = ''
 
 
 def astor_regex_extract(text: str) -> list[AstorFact]:
@@ -93,9 +98,77 @@ def astor_regex_extract(text: str) -> list[AstorFact]:
                 context=text[:120].strip(),
                 abstract=abstract,
                 overview=text[:240].strip(),
+                # v1.12.0: derive topic from first noun phrase (≤5 words) and
+                # session_id from doc-timestamp marker if present. Regex path
+                # has no LLM, so heuristics must suffice.
+                topic=_derive_topic_heuristic(text, content_part),
+                session_id=_derive_session_id_heuristic(text),
             ))
             break  # one fact per match
     return facts
+
+
+def _derive_topic_heuristic(full_text: str, content_part: str, max_words: int = 5) -> str:
+    """v1.12.0: Heuristic topic extraction for regex extractor (no LLM).
+
+    Strategy:
+      1. Strip meta markers ([Doc timestamp: ...]) and trailing metadata.
+      2. Try to find capitalized proper-noun sequences (e.g. "AXTI", "OpenAI").
+      3. Fall back to first 2-4 distinctive content words.
+      4. Filter out stop words and the regex 'Test step N' boilerplate.
+    """
+    import re as _re
+    # Strip meta markers so [Doc timestamp: ...] doesn't pollute the topic
+    clean = _re.sub(r'\[Doc timestamp:[^\]]+\]\s*', '', full_text)
+    clean = _re.sub(r'topic:\s*[\w-]+', '', clean)
+    clean = _re.sub(r'session:\s*[\w-]+', '', clean)
+
+    # Try capitalized-proper-noun sequences first (most distinctive)
+    proper = _re.findall(r'\b([A-Z][A-Za-z0-9]{2,}(?:\s+[A-Z][A-Za-z0-9]{2,})*)\b', clean)
+    if proper:
+        # Prefer the first 2-word sequence (avoids "Doc Timestamp" noise)
+        candidate = proper[0]
+        # If single-word candidate is generic ("Doc", "Test"), skip
+        if candidate.lower() not in ('doc', 'test', 'note', 'example', 'step',
+                                       'note timestamp', 'doc timestamp'):
+            return candidate
+
+    # Fall back to distinctive content words (lowercase + filter stop words)
+    stop = {'this', 'that', 'with', 'from', 'have', 'been', 'were', 'they',
+            'them', 'what', 'when', 'where', 'which', 'their', 'there',
+            'each', 'every', 'into', 'about', 'before', 'after', 'because',
+            'also', 'only', 'very', 'just', 'than', 'more', 'less',
+            'the', 'and', 'for', 'but', 'not', 'you', 'are', 'was',
+            'step', 'test', 'heuristic', 'heuristics', 'final', 'with'}
+    words = _re.findall(r'\b[A-Za-z]{3,}\b', content_part)
+    distinct = []
+    seen = set()
+    for w in words:
+        wl = w.lower()
+        if wl in stop or wl in seen:
+            continue
+        seen.add(wl)
+        distinct.append(w.capitalize())
+        if len(distinct) >= max_words:
+            break
+    if not distinct:
+        return ''
+    return ' '.join(distinct[:4])  # cap at 4 words for readability
+
+
+def _derive_session_id_heuristic(text: str) -> str:
+    """v1.12.0: Extract session_id from [Doc timestamp: ...] marker or ISO date.
+
+    Returns '' if no marker found. Format: 'doc-YYYY-MM-DD'.
+    """
+    import re as _re
+    m = _re.search(r'\[Doc timestamp:\s*(\d{4}-\d{2}-\d{2})', text)
+    if m:
+        return f'doc-{m.group(1)}'
+    m2 = _re.search(r'\b(\d{4}-\d{2}-\d{2})\b', text)
+    if m2:
+        return f'doc-{m2.group(1)}'
+    return ''
 
 
 def astor_detect_capture_intent(text: str) -> bool:

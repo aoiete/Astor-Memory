@@ -14,9 +14,7 @@ Tables:
 """
 
 import sqlite3
-from pathlib import Path
-
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """
 -- Pragmas set at connection time (bus/store.py:connect)
@@ -113,7 +111,7 @@ CREATE TABLE IF NOT EXISTS memory_canonical (
     -- 'private_<user>' = explicit per-user private (e.g. 'private_alice').
     tier TEXT NOT NULL DEFAULT 'public'
             CHECK(tier IN ('public', 'source', 'private', 'repo')
-                  OR tier LIKE 'private\_%' ESCAPE '\'),
+                  OR tier LIKE 'private\\_%' ESCAPE '\\'),
     -- Stable ID for dedup (Plan § dedup)
     stable_id TEXT,
     -- Embedding cache invalidation (Plan § Embedding cache invalidation)
@@ -124,6 +122,11 @@ CREATE TABLE IF NOT EXISTS memory_canonical (
     -- (thin + publishable=true publishes with thin verdict, not auto-promoted)
     publishable INTEGER NOT NULL DEFAULT 0
         CHECK(publishable IN (0, 1)),
+    -- v1.10.0: temporal boost support. event_date = ISO-8601 (YYYY-MM-DD
+    -- or YYYY-MM); event_date_precision = day|month|year|none.
+    event_date TEXT,
+    event_date_precision TEXT NOT NULL DEFAULT 'none'
+        CHECK(event_date_precision IN ('day', 'month', 'year', 'none')),
     FOREIGN KEY (candidate_id) REFERENCES memory_candidates(id),
     FOREIGN KEY (event_id) REFERENCES events(id),
     FOREIGN KEY (parent_revision_id) REFERENCES memory_canonical(id),
@@ -195,6 +198,35 @@ CREATE INDEX IF NOT EXISTS idx_cascade_pending
     ON cascade_state(status, enqueued_at)
     WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_cascade_fact ON cascade_state(fact_id);
+
+-- v1.6.0 schema v6 (2026-08-25): memory_experience table (OpenClaw Experience-inspired).
+-- Captures "what the agent tried + what happened + what to do next time" as a
+-- distinct first-class record. Distinct from memory_canonical facts:
+-- canonical = static knowledge (e.g. "user prefers coffee"); experience =
+-- dynamic reflection (e.g. "last 3 times user said stop, we ignored 'cancel';
+-- next time, abort immediately"). outcome tag on canonical fact is the
+-- TRIGGER; experience is the LEARNED REFLECTION.
+CREATE TABLE IF NOT EXISTS memory_experience (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    namespace TEXT NOT NULL,                -- 'public' | 'source' | 'private:<user>' | 'repo:<id>'
+    user_id TEXT,                            -- owner of the experience (private_<user>)
+    outcome TEXT NOT NULL DEFAULT 'neutral', -- 'success' | 'partial' | 'failure' | 'neutral'
+    trigger_keywords TEXT NOT NULL DEFAULT '[]',  -- JSON array of keywords that triggered this experience
+    trigger_fact_ids TEXT NOT NULL DEFAULT '[]',  -- JSON array of fact_ids that caused this experience
+    action_summary TEXT NOT NULL DEFAULT '',      -- single-line: "what was tried"
+    context TEXT NOT NULL DEFAULT '',            -- what was happening when this happened
+    reflection TEXT NOT NULL DEFAULT '',          -- "why it failed/succeeded" (LLM-generated or manual)
+    next_step_hint TEXT NOT NULL DEFAULT '',      -- "next time, do X instead"
+    invocation_count INTEGER NOT NULL DEFAULT 0,  -- how many times this experience has been matched/invoked
+    last_invoked_at DATETIME,                     -- timestamp of last match
+    created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    source_session_id TEXT,                       -- session where this experience originated
+    importance REAL NOT NULL DEFAULT 0.7          -- mirrors memory_canonical.importance for hybrid ranking
+);
+CREATE INDEX IF NOT EXISTS idx_experience_namespace_user
+    ON memory_experience(namespace, user_id, outcome);
+CREATE INDEX IF NOT EXISTS idx_experience_outcome
+    ON memory_experience(outcome, importance);
 """
 
 
@@ -222,10 +254,18 @@ def astor_upgrade_all_tier_dbs() -> None:
                 continue
             conn = sqlite3.connect(str(p), timeout=5)
             try:
+                # v1.10.3: include v6→v7 (event_date) and v7→v8 (experience
+                # action_embedding). The original loop only ran up to
+                # v4→v5 which meant private_<user> DBs stayed at v5 while
+                # the public DB was on v6+ — out of sync, would fail the
+                # later migrations when the private path first ran.
                 _astor_upgrade_v1_to_v2(conn)
                 _astor_upgrade_v2_to_v3(conn)
                 _astor_upgrade_v3_to_v4(conn)
                 _astor_upgrade_v4_to_v5(conn)
+                _astor_upgrade_v5_to_v6(conn)
+                _astor_upgrade_v6_to_v7(conn)
+                _astor_upgrade_v7_to_v8(conn)
                 conn.commit()
             finally:
                 conn.close()
@@ -249,6 +289,9 @@ def astor_init_schema(conn: sqlite3.Connection) -> None:
     _astor_upgrade_v2_to_v3(conn)
     _astor_upgrade_v3_to_v4(conn)
     _astor_upgrade_v4_to_v5(conn)
+    _astor_upgrade_v5_to_v6(conn)
+    _astor_upgrade_v6_to_v7(conn)
+    _astor_upgrade_v7_to_v8(conn)
     # Index that depends on the publishable column must be created AFTER the column exists.
     # The executescript above emits CREATE INDEX inside the same script as the table,
     # which works for fresh DBs but errors on v1 databases because the column doesn't exist yet.
@@ -344,6 +387,87 @@ def _astor_upgrade_v2_to_v3(conn: sqlite3.Connection) -> None:
             )
         except Exception:
             pass
+
+
+def _astor_upgrade_v5_to_v6(conn: sqlite3.Connection) -> None:
+    """
+    2026-08-25 (v1.6.0 ship): memory_experience table (OpenClaw Experience-inspired).
+
+    The new table is created by SCHEMA_SQL (CREATE TABLE IF NOT EXISTS).
+    This upgrade function only handles:
+      - backfilling 'namespace' column on existing rows (default 'private:admin')
+        — there are no rows yet since the table is fresh.
+      - any future ALTER TABLE on memory_experience goes here.
+
+    Idempotent. Safe to call on a v5 DB — table just gets created via
+    SCHEMA_SQL on first run.
+    """
+    # No-op for now. Future ALTER TABLE goes here when columns are added.
+    pass
+
+
+
+def _astor_upgrade_v7_to_v8(conn: sqlite3.Connection) -> None:
+    """v1.10.3 (2026-08-26): precompute action_summary embeddings at write-time.
+
+    Why: /v1/read with reflect=true calls bus.match_experiences which, on
+    kw=0 hits, embeds the query + ~10 unmatched experience action_summaries
+    on every recall (~700-1100ms with bge-base). With this column, new
+    experiences store their action_embedding at insert time and
+    match_experiences just loads + matmuls (~5ms).
+
+    Migration: ADD COLUMN action_embedding BLOB. Idempotent. Legacy rows
+    (no embedding) still take the slow path until they're backfilled.
+    """
+    try:
+        conn.execute(
+            "ALTER TABLE memory_experience ADD COLUMN action_embedding BLOB"
+        )
+    except Exception:
+        pass  # column already exists
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_experience_emb_ready "
+            "ON memory_experience(namespace, outcome) WHERE action_embedding IS NOT NULL"
+        )
+    except Exception:
+        pass
+
+
+def _astor_upgrade_v6_to_v7(conn: sqlite3.Connection) -> None:
+    """v1.10.0 (2026-08-26): add event_date + event_date_precision columns
+    to memory_canonical.
+
+    Background: v1.3.0 (2026-08-25) shipped the AstorFact dataclass with
+    event_date/event_date_precision fields, but the corresponding DB columns
+    were NEVER added to memory_canonical — only stored in metadata. The
+    /v1/read endpoint reads event_date via SELECT column which silently
+    fails at runtime.
+
+    This migration adds the columns + indexes. Safe on fresh DBs (CREATE
+    TABLE already has them, ALTER TABLE errors silently via try/except).
+    """
+    # v1.10.0: temporal boost requires event_date column for hybrid_merge
+    cols_to_add = [
+        ("event_date", "TEXT"),
+        ("event_date_precision", "TEXT NOT NULL DEFAULT 'none'"),
+    ]
+    for col, decl in cols_to_add:
+        try:
+            conn.execute(
+                f"ALTER TABLE memory_canonical ADD COLUMN {col} {decl}"
+            )
+        except Exception:
+            pass  # column already exists
+    # Index: dates enable temporal filter / sorting
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canonical_event_date "
+            "ON memory_canonical(event_date)"
+        )
+    except Exception:
+        pass
+
 
 
 def _astor_upgrade_v3_to_v4(conn: sqlite3.Connection) -> None:

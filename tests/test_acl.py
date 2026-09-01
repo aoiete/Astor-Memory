@@ -481,4 +481,6 @@ def test_acl_resolve_actor_returns_correct_roles(seeded_users):
     assert _astor_resolve_actor("bob") == ("user:bob", "user")
     assert _astor_resolve_actor(None) == ("first_admin", "first_admin")
     assert _astor_resolve_actor("") == ("first_admin", "first_admin")
-    assert _astor_resolve_actor("ghost_user_not_in_db") == ("first_admin", "first_admin")
+    import pytest
+    with pytest.raises(Exception, match='unknown or inactive user'):
+        _astor_resolve_actor("ghost_user_not_in_db")

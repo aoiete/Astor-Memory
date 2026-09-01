@@ -32,14 +32,7 @@ Scope:
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
-import threading
-from typing import Any, Iterable, Optional
-
 import numpy as np
-
-from .._internal.acl_layout import get_astor_dir
 
 
 # ----- Tunables -----
@@ -175,7 +168,6 @@ def find_duplicate_groups(
       }
     """
     from . import vector_store as _vs   # AstorNest
-    from .embeddings import astor_get_embedding_model
     from .. import astor_bus
 
     bus = astor_bus(tier=tier, user_id=user_id)

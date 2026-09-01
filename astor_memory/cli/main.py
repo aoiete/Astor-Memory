@@ -13,6 +13,7 @@ Provides v1.0 minimal commands:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -246,6 +247,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
+
+    # v1.10.9 (2026-08-26): initialize ACL before dispatching. CLI runs as
+    # first_admin by default (highest privilege, since most commands are
+    # operational like cascade stats/replay). Individual commands can
+    # override this with `astor_init_acl` if they need a different role.
+    from .._internal.acl import astor_init_acl as _ia_cli
+    try:
+        _ia_cli(actor='first_admin', role='first_admin', tier='public', user_id=None)
+    except Exception:
+        pass  # if ACL already init'd (e.g. via server boot), skip
+
     return args.func(args)
 
 
@@ -271,14 +283,14 @@ def cmd_init(args) -> int:
     bus = _astor_bus_func()
     nest = _astor_nest_func()
     _forge_module = _astor_forge_func()  # forge is pure module; ensures it's importable
-    print(f'✅ Astor-Memory initialized at {astor_dir}')
+    print(f'[OK] Astor-Memory initialized at {astor_dir}')
     print(f'   - {bus.db_path.name} (bus: events + canonical facts)')
     print(f'   - {nest.db_path.name} (nest: vector embeddings)')
     print(f'   - astor_forge.db (forge: LLM extraction cache, v0.2+ LLM extract)')
     if args.migrate_from == 'memory-bus':
-        print('   Migration from memory-bus: TODO (v0.2)')
+        print('   Migration from memory-bus: planned for v0.2')
     elif args.migrate_from == 'user-md':
-        print('   Migration from USER.md/MEMORY.md: TODO (v0.2)')
+        print('   Migration from USER.md/MEMORY.md: planned for v0.2')
     print('   v0.1 ships schema + bus + cli skeleton.')
     print('   Next: v0.2 will add nest (vector store) + forge (LLM extract).')
     return 0
@@ -327,14 +339,13 @@ def cmd_write(args) -> int:
             cand_id, promoted_by='cli.write', user_id=args.user, tier=args.tier,
         )
         fact_ids.append(canon_id)
-    print(f'✅ Wrote {len(fact_ids)} fact(s): {fact_ids}')
+    print(f'[OK] Wrote {len(fact_ids)} fact(s): {fact_ids}')
     return 0
 
 
 def cmd_recall(args) -> int:
     """Recall facts."""
     from .. import astor_nest  # wrapper from __init__.py (defaults tier='public')
-    from ..nest import astor_reset_nest
     from ..nest.embeddings import astor_get_embedding_model
 
     # 2026-08-16 fix: use the wrapper astor_nest() from astor_memory top-level
@@ -351,7 +362,7 @@ def cmd_recall(args) -> int:
     if not results:
         print('No results found.')
         return 0
-    print(f'📚 Top {len(results)} results for "{args.query}":')
+    print(f'[astor] Top {len(results)} results for "{args.query}":')
     for i, (fact_id, sim) in enumerate(results):
         print(f'  [{i+1}] fact_id={fact_id} similarity={sim:.3f}')
     return 0
@@ -367,7 +378,7 @@ def cmd_doctor(args) -> int:
     from pathlib import Path
     process = psutil.Process()
     mem_mb = process.memory_info().rss / 1024 / 1024
-    print(f'🏥 astor-memory v{__version__} health check')
+    print(f'[astor] astor-memory v{__version__} health check')
     print(f'   PID: {process.pid}  Memory RSS: {mem_mb:.1f} MB')
 
     astor_dir = os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor')
@@ -416,7 +427,7 @@ def cmd_doctor(args) -> int:
 
     # bot-binding invariants
     print()
-    print('🔒 bot-binding.db invariants:')
+    print('[astor] bot-binding.db invariants:')
     if bb_path.exists():
         # Inline check (avoid subprocess)
         import sqlite3
@@ -433,12 +444,12 @@ def cmd_doctor(args) -> int:
             problems.append(f'INV6: {r[0]} no base_url')
         con.close()
         if not problems:
-            print('   ✅ all 6 invariants pass')
+            print('   [OK] all 6 invariants pass')
         else:
             for p in problems:
-                print(f'   ❌ {p}')
+                print(f'   [ERR] {p}')
     else:
-        print('   ⚠️ no bot-binding.db (run `am platform ...` to initialize)')
+        print('   [WARN] no bot-binding.db (run `am platform ...` to initialize)')
 
     # version check
     print()
@@ -472,7 +483,7 @@ def cmd_config(args) -> int:
             target = target.setdefault(p, {})
         target[parts[-1]] = args.value
         save_config(cfg)
-        print(f'✅ Set {args.key} = {args.value}')
+        print(f'[OK] Set {args.key} = {args.value}')
     else:
         print(f'Unknown action: {args.action}')
         return 1
@@ -501,14 +512,14 @@ def cmd_install(args) -> int:
     result = astor_install(args.ide, agent_dir, args.mode)
 
     if 'error' in result:
-        print(f"❌ {result['error']}")
+        print(f"[ERR] {result['error']}")
         if 'report' in result:
             print('   Verify report:')
             print(f"   {result['report']}")
         return 1
 
     if 'fallback' in result:
-        print(f"⚠️  {result['note']}")
+        print(f"[WARN]  {result['note']}")
 
     final = result.get('result', result)
     print(f"Agent: {final['agent']}")
@@ -529,7 +540,7 @@ def cmd_install(args) -> int:
             print(f"  - {note}")
 
     if final.get('requires_restart'):
-        print('⚠️  Restart required for changes to take effect.')
+        print('[WARN]  Restart required for changes to take effect.')
 
     if not args.apply:
         print('(Dry-run. Pass --apply to write files.)')
@@ -542,19 +553,19 @@ def cmd_install(args) -> int:
                 p.write_text(ch['content'], encoding='utf-8')
                 if ch.get('executable'):
                     p.chmod(0o755)
-                print(f"  ✅ Wrote {p}")
+                print(f"  [OK] Wrote {p}")
             elif ch.get('action') in ('append', 'patch_or_create'):
                 if p.exists():
                     existing = p.read_text(encoding='utf-8')
                     if ch['content'].strip() not in existing:
                         with open(p, 'a', encoding='utf-8') as f:
                             f.write(ch['content'])
-                        print(f"  ✅ Appended {p}")
+                        print(f"  [OK] Appended {p}")
                     else:
                         print(f"  �️  Already present in {p}")
                 else:
                     p.write_text(ch['content'], encoding='utf-8')
-                    print(f"  ✅ Created {p}")
+                    print(f"  [OK] Created {p}")
     return 0
 
 
@@ -568,18 +579,18 @@ def cmd_migrate(args) -> int:
 
     if source_type := args.source_type:
         if source_type != 'memory-bus':
-            print(f'❌ Unknown source type: {source_type}')
+            print(f'[ERR] Unknown source type: {source_type}')
             return 1
 
     if args.dry_run:
         print(f'� Dry run: migrate from {source}')
     else:
-        print(f'🚀 Migrating from {source}...')
+        print(f'[astor] Migrating from {source}...')
 
     report = astor_migrate_from_memory_bus(source, target, dry_run=args.dry_run)
 
     if report.errors:
-        print('❌ Errors:')
+        print('[ERR] Errors:')
         for err in report.errors:
             print(f'  - {err}')
         if not args.dry_run:
@@ -588,7 +599,7 @@ def cmd_migrate(args) -> int:
     if args.dry_run:
         print(f'Would migrate:')
     else:
-        print(f'✅ Migrated:')
+        print(f'[OK] Migrated:')
     print(f'  - events: {report.events_migrated}')
     print(f'  - candidates: {report.candidates_migrated}')
     print(f'  - canonical: {report.canonical_migrated}')
@@ -687,7 +698,7 @@ def cmd_reembed(args) -> int:
             continue
 
         where = f'{tier.value}/{user_id or "-"}'
-        print(f'🔄 [{where}] re-embedding {len(to_embed)} facts (batch={args.batch_size})...')
+        print(f'[astor] [{where}] re-embedding {len(to_embed)} facts (batch={args.batch_size})...')
 
         n_done = 0
         for i in range(0, len(to_embed), args.batch_size):
@@ -720,39 +731,88 @@ def cmd_reembed(args) -> int:
         grand_total += n_done
         bus_con.close(); nest_con.close()
 
-    print(f'✅ Re-embedded {grand_total} facts across all tiers')
+    print(f'[OK] Re-embedded {grand_total} facts across all tiers')
     return 0
 
 
 def cmd_cascade_replay(args) -> int:
     """v1.2.0: Replay pending cascade write queue (embed failures).
 
-    When nest.store() failed during promote_candidate (e.g. embedding model
-    OOM), the (fact_id, content, tier, user_id) is queued in cascade_state.
-    This command drains pending rows and re-attempts the embed.
+    v1.10.8 (2026-08-26): iterate every (tier, user_id) combination.
     """
-    from ..bus import cascade as _cascade
-    bus = astor_bus(tier='public', user_id='admin')
-    result = _cascade.replay_pending(
-        bus,
-        limit=int(getattr(args, 'limit', 100) or 100),
-        max_attempts=int(getattr(args, 'max_attempts', 5) or 5),
-    )
+    from ..bus import astor_bus, cascade as _cascade
+    from .._internal.acl_layout import enumerate_scopes_for_actor
+    scopes = enumerate_scopes_for_actor()
+    limit = int(getattr(args, 'limit', 100) or 100)
+    max_attempts = int(getattr(args, 'max_attempts', 5) or 5)
+    aggregate = {'processed': 0, 'succeeded': 0, 'failed': 0,
+                 'still_pending': 0, 'results': [], 'by_scope': []}
+    for tier, user_id in scopes:
+        bus = astor_bus(tier=tier, user_id=user_id)
+        per_scope = _cascade.replay_pending(bus, limit=limit, max_attempts=max_attempts)
+        for k in ('processed', 'succeeded', 'failed', 'still_pending'):
+            aggregate[k] += per_scope.get(k, 0)
+        aggregate['results'].extend(per_scope.get('results', []))
+        aggregate['by_scope'].append({'tier': tier, 'user_id': user_id, **per_scope})
     import json as _json
-    print(_json.dumps(result, indent=2, ensure_ascii=False))
-    if result['failed'] > 0:
-        print(f"[cascade] {result['failed']} row(s) still failing; check "
+    print(_json.dumps(aggregate, indent=2, ensure_ascii=False))
+    if aggregate['failed'] > 0:
+        print(f"[cascade] {aggregate['failed']} row(s) still failing; check "
               "`am cascade stats` and recent log entries.", file=__import__('sys').stderr)
     return 0
 
 
 def cmd_cascade_stats(args) -> int:
-    """v1.2.0: Show cascade queue counts."""
-    from ..bus import cascade as _cascade
-    bus = astor_bus(tier='public', user_id='admin')
-    stats = _cascade.stats(bus)
+    """v1.2.0: Show cascade queue counts (all scopes, v1.10.8)."""
+    from ..bus import astor_bus, cascade as _cascade
+    from .._internal.acl_layout import enumerate_scopes_for_actor
+    scopes = enumerate_scopes_for_actor()
+    aggregate = {
+        'pending': 0, 'processing': 0, 'succeeded': 0, 'failed': 0,
+        'last_attempt_at': None, 'by_scope': [],
+    }
     import json as _json
-    print(_json.dumps(stats, indent=2, ensure_ascii=False))
+    for tier, user_id in scopes:
+        try:
+            bus = astor_bus(tier=tier, user_id=user_id)
+            stats = _cascade.stats(bus)
+        except Exception as e:
+            stats = {'error': str(e)}
+        aggregate['pending'] += stats.get('pending', 0)
+        aggregate['processing'] += stats.get('processing', 0)
+        aggregate['succeeded'] += stats.get('succeeded', 0)
+        aggregate['failed'] += stats.get('failed', 0)
+        last = stats.get('last_attempt_at')
+        if last and (aggregate['last_attempt_at'] is None or last > aggregate['last_attempt_at']):
+            aggregate['last_attempt_at'] = last
+        aggregate['by_scope'].append({'tier': tier, 'user_id': user_id, **stats})
+    print(_json.dumps(aggregate, indent=2, ensure_ascii=False))
+    return 0
+
+def cmd_cascade_requeue(args) -> int:
+    """v1.10.8 (2026-08-26): requeue failed cascade rows after recovery."""
+    from ..bus import astor_bus, cascade as _cascade
+    from .._internal.acl_layout import enumerate_scopes_for_actor
+    row_id = getattr(args, 'row_id', None)
+    threshold = int(getattr(args, 'max_attempts_threshold', 5) or 5)
+    aggregate = {'requeued': [], 'by_scope': []}
+    if row_id is not None:
+        for tier, user_id in enumerate_all_scopes():
+            bus = astor_bus(tier=tier, user_id=user_id)
+            res = _cascade.requeue(bus, row_id=int(row_id))
+            if res.get('ok'):
+                aggregate['requeued'].extend(res.get('requeued', []))
+                aggregate['by_scope'].append({'tier': tier, 'user_id': user_id, **res})
+                break
+    else:
+        for tier, user_id in enumerate_all_scopes():
+            bus = astor_bus(tier=tier, user_id=user_id)
+            res = _cascade.requeue(bus, all_failed=True,
+                                    max_attempts_threshold=threshold)
+            aggregate['requeued'].extend(res.get('requeued', []))
+            aggregate['by_scope'].append({'tier': tier, 'user_id': user_id, **res})
+    import json as _json
+    print(_json.dumps(aggregate, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -811,15 +871,16 @@ def cmd_auto_link_backfill(args) -> int:
 
 
 def cmd_cascade_purge(args) -> int:
-    """v1.2.0: Delete old cascade rows by status + age."""
-    from ..bus import cascade as _cascade
-    bus = astor_bus(tier='public', user_id='admin')
-    deleted = _cascade.purge(
-        bus,
-        status=str(getattr(args, 'status', 'succeeded')),
-        older_than_days=int(getattr(args, 'older_than_days', 7) or 7),
-    )
-    print(f"[cascade] purged {deleted} row(s)")
+    """v1.2.0: Delete old cascade rows by status + age (all scopes, v1.10.8)."""
+    from ..bus import astor_bus, cascade as _cascade
+    from .._internal.acl_layout import enumerate_scopes_for_actor
+    status = str(getattr(args, 'status', 'succeeded'))
+    older_than_days = int(getattr(args, 'older_than_days', 7) or 7)
+    total = 0
+    for tier, user_id in enumerate_all_scopes():
+        bus = astor_bus(tier=tier, user_id=user_id)
+        total += _cascade.purge(bus, status=status, older_than_days=older_than_days)
+    print(f"[cascade] purged {total} row(s) across all scopes")
     return 0
 
 
@@ -1118,7 +1179,7 @@ def cmd_bot_on(args) -> int:
     state["mode"] = "multi-user"
     state.setdefault("tier", "multi-user")
     _write_install_state(state)
-    print(f'✅ Multi-user mode ENABLED. install-state.json updated.')
+    print(f'[OK] Multi-user mode ENABLED. install-state.json updated.')
     return 0
 
 
@@ -1128,7 +1189,7 @@ def cmd_bot_off(args) -> int:
     state = _read_install_state()
     state["mode"] = "single-user"
     _write_install_state(state)
-    print(f'⚠️  Multi-user mode DISABLED. Existing user dbs NOT deleted (use `am uninstall --purge-data` to clean).')
+    print(f'[WARN]  Multi-user mode DISABLED. Existing user dbs NOT deleted (use `am uninstall --purge-data` to clean).')
     return 0
 
 
@@ -1141,7 +1202,7 @@ def cmd_bot_add_user(args) -> int:
     try:
         _validate_user_id(args.user_id)
     except ValueError as e:
-        print(f'❌ {e}')
+        print(f'[ERR] {e}')
         return 1
     paths = []
     for store in Store:
@@ -1171,7 +1232,7 @@ def cmd_bot_add_user(args) -> int:
     roles = state.setdefault("roles", {})
     roles[args.user_id] = args.role
     _write_install_state(state)
-    print(f'✅ Added user {args.user_id!r} as {args.role}. 9-db layout created at users/{args.user_id}/memory/')
+    print(f'[OK] Added user {args.user_id!r} as {args.role}. 9-db layout created at users/{args.user_id}/memory/')
     return 0
 
 
@@ -1203,15 +1264,14 @@ def cmd_bot_list_users(args) -> int:
 def cmd_bot_promote(args) -> int:
     """Promote user -> admin."""
     _require_first_admin()
-    from .._internal.acl import astor_actor_id
     state = _read_install_state()
     if args.user_id == state.get("first_admin_user_id"):
-        print(f'❌ {args.user_id!r} is already first_admin (cannot promote — first_admin is permanent).')
+        print(f'[ERR] {args.user_id!r} is already first_admin (cannot promote — first_admin is permanent).')
         return 1
     roles = state.setdefault("roles", {})
     roles[args.user_id] = "admin"
     _write_install_state(state)
-    print(f'✅ Promoted {args.user_id!r} to admin role. Note: admin still cannot read source.db (plan §2624).')
+    print(f'[OK] Promoted {args.user_id!r} to admin role. Note: admin still cannot read source.db (plan §2624).')
     return 0
 
 
@@ -1220,12 +1280,12 @@ def cmd_bot_demote(args) -> int:
     _require_first_admin()
     state = _read_install_state()
     if args.user_id == state.get("first_admin_user_id"):
-        print(f'❌ {args.user_id!r} is first_admin (cannot demote — first_admin is permanent root, plan §2632).')
+        print(f'[ERR] {args.user_id!r} is first_admin (cannot demote — first_admin is permanent root, plan §2632).')
         return 1
     roles = state.setdefault("roles", {})
     roles[args.user_id] = "user"
     _write_install_state(state)
-    print(f'✅ Demoted {args.user_id!r} to user.')
+    print(f'[OK] Demoted {args.user_id!r} to user.')
     return 0
 
 
@@ -1236,10 +1296,10 @@ def cmd_bot_bind_platform(args) -> int:
     bindings = state.setdefault("platform_bindings", {})
     key = f"{args.platform}:{args.chat_id}"
     if key in bindings and bindings[key] != args.user_id:
-        print(f'⚠️  {key} was already bound to {bindings[key]!r}, replacing with {args.user_id!r}.')
+        print(f'[WARN]  {key} was already bound to {bindings[key]!r}, replacing with {args.user_id!r}.')
     bindings[key] = args.user_id
     _write_install_state(state)
-    print(f'✅ {key} -> {args.user_id!r}')
+    print(f'[OK] {key} -> {args.user_id!r}')
     return 0
 
 
@@ -1250,11 +1310,11 @@ def cmd_bot_unbind(args) -> int:
     bindings = state.setdefault("platform_bindings", {})
     key = f"{args.platform}:{args.chat_id}"
     if key not in bindings:
-        print(f'❌ No binding for {key}')
+        print(f'[ERR] No binding for {key}')
         return 1
     del bindings[key]
     _write_install_state(state)
-    print(f'✅ Unbound {key}')
+    print(f'[OK] Unbound {key}')
     return 0
 
 
@@ -1303,7 +1363,7 @@ def cmd_admin_whoami(args) -> int:
     from .._internal.acl_layout import get_admin_lock_path
     p = get_admin_lock_path()
     if not p.exists():
-        print(f'❌ No first_admin lock at {p}')
+        print(f'[ERR] No first_admin lock at {p}')
         return 1
     import json
     print(f"   lockfile: {p}")
@@ -1368,7 +1428,7 @@ def cmd_platform_resolve(args) -> int:
     _require_first_admin()
     r = resolve_chat_to_user(args.platform_id, args.chat_id)
     if r is None:
-        print(f'❌ no active binding for {args.platform_id} : {args.chat_id}')
+        print(f'[ERR] no active binding for {args.platform_id} : {args.chat_id}')
         return 1
     print(f'   platform_id:  {args.platform_id}')
     print(f'   chat_id:      {args.chat_id}')
@@ -1393,21 +1453,21 @@ def cmd_platform_token_get(args) -> int:
         kind, account_id = args.platform_id.split(':', 1)
         r = astor_get_token(kind, account_id)
         if not r.token:
-            print(f'❌ no token found for {args.platform_id} (source={r.source})')
+            print(f'[ERR] no token found for {args.platform_id} (source={r.source})')
             return 1
-        print(f'✅ {args.platform_id}')
+        print(f'[OK] {args.platform_id}')
         print(f'   source:  {r.source}')
         print(f'   token:   {r.token[:12]}...{r.token[-6:]} (len={len(r.token)})')
         print(f'   account: {r.account_id}')
         return 0
     if p is None:
-        print(f'❌ no platform row for {args.platform_id}')
+        print(f'[ERR] no platform row for {args.platform_id}')
         return 1
     # Direct row hit
     if not p.get('account_token'):
-        print(f'❌ platform {args.platform_id} has empty token')
+        print(f'[ERR] platform {args.platform_id} has empty token')
         return 1
-    print(f'✅ {args.platform_id}')
+    print(f'[OK] {args.platform_id}')
     print(f'   source:  db (direct row lookup, no audit)')
     print(f'   token:   {p["account_token"][:12]}...{p["account_token"][-6:]} (len={len(p["account_token"])})')
     print(f'   account: {p["account_id"]}')
@@ -1419,7 +1479,7 @@ def cmd_platform_token_set(args) -> int:
     from .._internal.bot_binding import get_platform, upsert_platform
     _require_first_admin()
     if ':' not in args.platform_id:
-        print(f'❌ bad platform_id: {args.platform_id}')
+        print(f'[ERR] bad platform_id: {args.platform_id}')
         return 1
     kind, account_id = args.platform_id.split(':', 1)
     existing = get_platform(account_id)
@@ -1435,7 +1495,7 @@ def cmd_platform_token_set(args) -> int:
         notes=notes,
         source='cli:token-set',
     )
-    print(f'✅ {args.platform_id} token updated (len={len(args.token)})')
+    print(f'[OK] {args.platform_id} token updated (len={len(args.token)})')
     return 0
 
 
@@ -1452,7 +1512,7 @@ def cmd_platform_bind(args) -> int:
         bound_by='first_admin',
         notes='cli bind',
     )
-    print(f'✅ binding created: {bid[:8]}... ({args.platform_id} : {args.chat_id} -> {args.user_id})')
+    print(f'[OK] binding created: {bid[:8]}... ({args.platform_id} : {args.chat_id} -> {args.user_id})')
     return 0
 
 
@@ -1463,10 +1523,10 @@ def cmd_platform_unbind(args) -> int:
     # find binding_id from chat_id
     r = resolve_chat_to_user(args.platform_id, args.chat_id)
     if r is None:
-        print(f'❌ no active binding for {args.platform_id} : {args.chat_id}')
+        print(f'[ERR] no active binding for {args.platform_id} : {args.chat_id}')
         return 1
     revoke_binding(r['binding_id'], revoked_by='first_admin')
-    print(f'✅ unbound: {args.platform_id} : {args.chat_id} (binding_id={r["binding_id"][:8]}...)')
+    print(f'[OK] unbound: {args.platform_id} : {args.chat_id} (binding_id={r["binding_id"][:8]}...)')
     return 0
 
 
@@ -1478,7 +1538,7 @@ def cmd_platform_add_user(args) -> int:
     try:
         _validate_user_id(args.user_id)
     except ValueError as e:
-        print(f'❌ invalid user_id: {e}')
+        print(f'[ERR] invalid user_id: {e}')
         return 1
     upsert_user(
         user_id=args.user_id,
@@ -1488,7 +1548,7 @@ def cmd_platform_add_user(args) -> int:
         subscription_plan=args.plan,
         source='cli:add-user',
     )
-    print(f'✅ user_meta upserted: {args.user_id} (alias={args.short_alias}, role={args.role})')
+    print(f'[OK] user_meta upserted: {args.user_id} (alias={args.short_alias}, role={args.role})')
     # NOTE: 9-db layout creation = call `am bot add-user` (different subcommand).
     # We could call cmd_bot_add_user programmatically but skip here to avoid audit duplication.
     print('   (run `am bot add-user <user_id>` separately to create 9-db layout)')
@@ -1522,11 +1582,11 @@ def cmd_platform_verify(args) -> int:
         problems.append(f'INV6: weixin {r["platform_id"]} no base_url')
     con.close()
     if problems:
-        print(f'❌ {len(problems)} violations:')
+        print(f'[ERR] {len(problems)} violations:')
         for p in problems:
             print(f'  - {p}')
         return 1
-    print('✅ all 6 invariants pass')
+    print('[OK] all 6 invariants pass')
     return 0
 
 

@@ -14,6 +14,10 @@ echo Loaded OPENROUTER_API_KEY (first 15 chars): !OPENROUTER_API_KEY:~0,15!
 set "OPENAI_API_KEY=!OPENROUTER_API_KEY!"
 set "OPENAI_BASE_URL=https://openrouter.ai/api/v1"
 echo OPENAI_API_KEY first 15 chars: !OPENAI_API_KEY:~0,15!
+rem 2026-08-27: pin the LLM model so the 'openai' provider hits OpenRouter
+rem with gemini-3.7-flash (cheaper + faster than gpt-4o-mini default).
+if "%ASTOR_LLM_MODEL%"=="" set "ASTOR_LLM_MODEL=google/gemini-3.7-flash"
+echo ASTOR_LLM_MODEL: !ASTOR_LLM_MODEL!
 rem 2026-08-27: enable LLM rerank by default. Toggle ASTOR_RERANK in .env to disable.
 if "%ASTOR_RERANK%"=="" set "ASTOR_RERANK=1"
 echo ASTOR_RERANK: !ASTOR_RERANK!
