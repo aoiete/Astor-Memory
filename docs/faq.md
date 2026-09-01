@@ -48,7 +48,7 @@ Python 3.10 or higher, lower than 3.14. We test against 3.10, 3.11, 3.12, 3.13.
 < 50 MB. Compare to:
 - chromadb: ~80 MB
 - transformers + torch: ~3 GB
-- memu.ai SDK + deps: ~200 MB
+- Heavy proprietary memory SDKs (varies, typically 100-300 MB)
 
 ### Does it work on Windows / macOS / Linux?
 

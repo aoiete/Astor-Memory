@@ -14,7 +14,7 @@ Astor-Memory adopts Tencent's 4-tier memory model (`D:/AI/wiki/entities/01-tence
 | L0 | Raw | `bus_discrete` per-turn log | Every message + tool call + observation |
 | L1 | Fact | `memory_canonical` (SQLite) | Extracted structured facts |
 | **L2** | **Scenario** | **`scenarios.db` (SQLite)** | **Clustered facts by topic/project — this layer is what TencentDB calls "scenario clustering"** |
-| L3 | Profile | `memu` (memU SDK) | Long-term user persona + stable preferences |
+| L3 | Profile | `memory_canonical` long-term tier | Long-term user persona + stable preferences |
 
 **L2 is the gap we filled 2026-07-31** via `scripts/scenario_clustering.py`. Without L2, recall is per-fact (noisy). With L2, recall queries top-N scenarios first, then drill down to the facts within those scenarios.
 
@@ -31,7 +31,8 @@ top-3 scenarios returned (relevance × decay × importance × access_count)
   ↓
 drill down: each scenario's fact_ids → bus details
   ↓
-memu (L3) profile layered on top if user-specific
+L3 is a query-time view over L1/L2 (recency-decayed, importance-weighted facts);
+no separate store.
 ```
 
 This is what `recall_3store.py` session_start routine calls `<active_scenarios>` block.

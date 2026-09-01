@@ -58,7 +58,7 @@ CREATE TABLE scenarios (
 CREATE TABLE scenario_links (
     scenario_id TEXT NOT NULL,
     fact_id TEXT NOT NULL,
-    fact_source TEXT,                -- 'bus' or 'memu'
+    fact_source TEXT,                -- 'bus' or 'forge' or 'public'
     added_at REAL,
     PRIMARY KEY (scenario_id, fact_id)
 );
@@ -126,7 +126,7 @@ Output rendered as `<active_scenarios>` block in the system prompt.
 |---|---|
 | Recent (0-7 days) | L1 (bus) is enough — facts are still fresh in context |
 | Older (7-30 days) | **L2 (scenarios)** — patterns emerge, helps recall |
-| Ancient (>30 days) | L3 (memu) profile — long-term user pattern |
+| Ancient (>30 days) | L3 (long-term profile view) — recency-decayed, importance-weighted facts |
 
 **Layer 2 shines when**: you have similar topics winding back across multiple sessions, and you want to see the running history rather than just today's facts.
 
