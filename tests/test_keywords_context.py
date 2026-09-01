@@ -63,8 +63,9 @@ def _insert_with_keywords_context(bus, *, content: str, keywords: list[str], con
 
 
 def test_schema_version_is_5():
-    """SCHEMA_VERSION constant reflects v5 (keywords + context added)."""
-    assert SCHEMA_VERSION == 5
+    """SCHEMA_VERSION is currently 8 (post-v1.12 ACL hardening).
+    Test was originally written for v5; updated as schema bumped."""
+    assert SCHEMA_VERSION == 8
 
 
 def test_canonical_has_keywords_and_context_columns(fresh_bus):

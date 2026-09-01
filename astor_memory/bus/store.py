@@ -288,12 +288,27 @@ class AstorBus:
         if existing_canonical_id is not None:
             # True idempotent retried write — already promoted with matching
             # content. Audit must happen OUTSIDE the now-closed transaction.
+            # v1.13.1 (2026-09-02): initialize ev_date/ev_prec here (they
+            # are only assigned in the INSERT branch above). Without this,
+            # the idempotent-path audit logic below raises UnboundLocalError.
+            ev_date = None
+            ev_prec = 'none'
             # v1.10.9 (2026-08-26): also patch event_date on the existing row
             # when it was missing. The caller may have added metadata.event_date
             # in a later ingest (e.g. LoCoMo session timestamps were not
-            # threaded through until v1.10.9). Without this patch, an OMB
-            # re-ingest of stale conv-X data leaves event_date NULL even though
-            # we'd extract it from metadata on a fresh write.
+            # threaded through until v1.10.9).
+            cand_row = c.execute(
+                "SELECT metadata FROM memory_candidates WHERE id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if cand_row and cand_row[0]:
+                try:
+                    cand_meta = json.loads(cand_row[0])
+                    if isinstance(cand_meta, dict):
+                        ev_date = cand_meta.get('__event_date__')
+                        ev_prec = cand_meta.get('__event_date_precision__') or 'none'
+                except Exception:
+                    pass
             if ev_date:
                 self.conn.execute(
                     "UPDATE memory_canonical SET event_date = ?, "
