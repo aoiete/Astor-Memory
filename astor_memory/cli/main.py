@@ -40,7 +40,6 @@ def main(argv: list[str] | None = None) -> int:
 
     # am init
     sub = subparsers.add_parser('init', help='Initialize astor-memory')
-    sub.add_argument('--from', dest='migrate_from', help='Migrate from (memory-bus | user-md)')
     sub.set_defaults(func=cmd_init)
 
     # am write
@@ -82,15 +81,6 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument('--agent-dir', default='~', help='Agent config dir (default: ~)')
     sub.add_argument('--apply', action='store_true', help='Actually write files (default: dry-run)')
     sub.set_defaults(func=cmd_install)
-
-    # am migrate
-    sub = subparsers.add_parser('migrate', help='Migrate from legacy memory-bus')
-    sub.add_argument('--from', dest='source_type', required=True,
-                     choices=['memory-bus'], help='Source system')
-    sub.add_argument('--source', required=True, help='Source DB path (e.g. ~/.memory-bus/bus.db)')
-    sub.add_argument('--target', default=None, help='Target astor dir (default: ASTOR_DIR or ~/.astor)')
-    sub.add_argument('--dry-run', action='store_true', help='Report what would happen without writing')
-    sub.set_defaults(func=cmd_migrate)
 
     # am reembed
     sub = subparsers.add_parser('reembed', help='Compute + persist embeddings for all canonical facts')
@@ -287,10 +277,6 @@ def cmd_init(args) -> int:
     print(f'   - {bus.db_path.name} (bus: events + canonical facts)')
     print(f'   - {nest.db_path.name} (nest: vector embeddings)')
     print(f'   - astor_forge.db (forge: LLM extraction cache, v0.2+ LLM extract)')
-    if args.migrate_from == 'memory-bus':
-        print('   Migration from memory-bus: planned for v0.2')
-    elif args.migrate_from == 'user-md':
-        print('   Migration from USER.md/MEMORY.md: planned for v0.2')
     print('   v0.1 ships schema + bus + cli skeleton.')
     print('   Next: v0.2 will add nest (vector store) + forge (LLM extract).')
     return 0
@@ -566,52 +552,6 @@ def cmd_install(args) -> int:
                 else:
                     p.write_text(ch['content'], encoding='utf-8')
                     print(f"  [OK] Created {p}")
-    return 0
-
-
-def cmd_migrate(args) -> int:
-    """Migrate from legacy memory-bus."""
-    from pathlib import Path
-    from .migrate import astor_migrate_from_memory_bus
-
-    source = Path(args.source).expanduser()
-    target = Path(args.target).expanduser() if args.target else None
-
-    if source_type := args.source_type:
-        if source_type != 'memory-bus':
-            print(f'[ERR] Unknown source type: {source_type}')
-            return 1
-
-    if args.dry_run:
-        print(f'� Dry run: migrate from {source}')
-    else:
-        print(f'[astor] Migrating from {source}...')
-
-    report = astor_migrate_from_memory_bus(source, target, dry_run=args.dry_run)
-
-    if report.errors:
-        print('[ERR] Errors:')
-        for err in report.errors:
-            print(f'  - {err}')
-        if not args.dry_run:
-            return 1
-
-    if args.dry_run:
-        print(f'Would migrate:')
-    else:
-        print(f'[OK] Migrated:')
-    print(f'  - events: {report.events_migrated}')
-    print(f'  - candidates: {report.candidates_migrated}')
-    print(f'  - canonical: {report.canonical_migrated}')
-    print(f'  - embeddings: {report.embeddings_migrated}')
-    print(f'  - skipped (existing): {report.skipped_existing}')
-
-    if not args.dry_run:
-        target_dir = target or Path('~/.astor').expanduser()
-        print(f'   Target: {target_dir}/')
-        print(f'   - astor_bus.db (events + canonical)')
-        print(f'   - astor_nest.db (embeddings — separate DB)')
-        print(f'   Note: embeddings NOT migrated (legacy format uncertain). Run `am recall` to trigger re-embedding on demand.')
     return 0
 
 
