@@ -2,8 +2,8 @@
 
 > Move into Astor-Memory from any of the common AI memory stacks.
 
-This guide covers five source-system families people ask about most
-often: **mem0**, **memu.ai SDK**, **Letta / Zep / MemGPT**, **ChromaDB /
+This guide covers the source-system families people ask about most
+often: **mem0**, **Letta / Zep / MemGPT**, **ChromaDB /
 Pinecone / Weaviate**, and **plain file/JSON archives**. Plan for
 ~2 hours of focused work and a 1–2 week parallel-run window before
 cutover.
@@ -16,7 +16,6 @@ cutover.
 2. [Source-system compatibility matrix](#source-system-compatibility-matrix)
 3. [Common 5-step migration](#common-5-step-migration)
 4. [From mem0](#from-mem0)
-5. [From memu.ai SDK](#from-memu-ai-sdk)
 6. [From Letta / Zep / MemGPT](#from-letta--zep--memgpt)
 7. [From ChromaDB / Pinecone / Weaviate](#from-chromadb--pinecone--weaviate)
 8. [From plain file or JSON archives](#from-plain-file-or-json-archives)
@@ -39,7 +38,6 @@ If you are evaluating whether to migrate, the question to ask is:
 | If your current stack is... | Migration value | Why |
 |---|---|---|
 | mem0 | **High** | Same per-user isolation goal, but multi-tenant SaaS only; Astor gives you a self-owned DB per user on a single server |
-| memu.ai SDK | **None — do not migrate data** | memu.ai is shutting down; you can wrap astor under the same call sites in one PR |
 | Letta / Zep / MemGPT | **High** | These give agents long-term memory, but every user shares a single DB; Astor adds per-user ACL by design |
 | ChromaDB / Pinecone / Weaviate | **Medium** | You have a vector store, not an agent memory system; Astor adds facts/scenarios/profile + ACL on top of the same vectors |
 | Plain files / JSON | **Low but useful** | You get version tracking, dedup, decay, scenario clustering — all the things plain JSON lacks |
@@ -57,7 +55,6 @@ Quick check of what each source system maps to in Astor-Memory:
 | Source system | Where data lives | Astor equivalent | One-shot CLI? |
 |---|---|---|---|
 | mem0 | `mem0/vectors/` + per-user JSON | `private_<user>.db` (bus + nest) | `am migrate from-mem0` (v1.3+) |
-| memu.ai SDK | cloud (no local file) | wrap with `astor_write`/`astor_read` in code | No CLI needed |
 | Letta | PostgreSQL or SQLite | `private_<user>.db` (bus + forge + nest) | `am migrate from-letta` (v1.4+) |
 | Zep | Zep cloud or local Docker | `private_<user>.db` | `am migrate from-zep` (v1.4+) |
 | MemGPT | SQLite | `private_<user>.db` | `am migrate from-memgpt` (v1.4+) |
@@ -229,35 +226,6 @@ for user_id in client.list_users():
 
 > Pricing: mem0 charges per-write; pulling all memories is one read
 > per user, so this is cheap regardless of memory count.
-
----
-
-## From memu.ai SDK
-
-[memu.ai](https://memu.ai) is **discontinued**. There is no production
-data to migrate.
-
-If you have call sites that imported `memu` directly:
-
-```python
-# Before
-from memu import MemoryClient
-client = MemoryClient(api_key="...")
-client.add("user prefers concise replies", user_id="alice")
-hits = client.search("user preferences", user_id="alice")
-```
-
-Replace with:
-
-```python
-# After
-from astor_memory import write, read
-write("user prefers concise replies", user_id="alice")
-hits = read("user preferences", user_id="alice")
-```
-
-That is the entire migration. There is no data path because there is
-no data — the SDK never persisted anything you can recover.
 
 ---
 
