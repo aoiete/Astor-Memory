@@ -11,3 +11,51 @@ bots/archive/*.db
 bots/archive/*.db.*
 bots/sessions/*.db
 bots/check/*.py
+
+# --- 2026-08-31 publish cleanup ---
+# Runtime logs (don't ship)
+*.log
+server.*.log
+!docs/**/*.log
+
+# Backup files (preserve during dev, ignore at publish)
+*.bak
+*.bak-*
+*.py.bak-*
+
+# Legacy archive dirs (kept locally for emergency rollback, not for source dist)
+_archive_pickup/
+archive/
+
+# Build artifacts (already ignored dist/ but explicit)
+*.egg-info/
+build/
+
+# Bot runtime state
+bots/sessions/*.db
+bots/sessions/*.db-*
+bots/check/*.py
+bots/archive/*.db
+bots/archive/*.db.*
+bots/archive/*.bak
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
+.mypy_cache/
+
+# Build (already in dist/)
+dist/
