@@ -317,6 +317,28 @@ def resolve_chat_to_user(platform_id: str, chat_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def list_admin_chat_ids() -> list[tuple[str, str]]:
+    """Return [(platform_id, chat_id), ...] for all active bindings whose user
+    has role in (first_admin, admin).
+
+    This is the canonical lookup for "who is the operator across all
+    platforms". Callers must NOT hardcode any chat_id; instead they should
+    ask this function at runtime.
+
+    Used by ACL when an inbound message arrives without explicit user_id
+    (e.g. just a chat_id from a platform webhook) — ACL needs to know
+    which user that chat maps to.
+    """
+    con = _connect()
+    rows = con.execute("""
+        SELECT b.platform_id AS platform_id, b.chat_id AS chat_id
+        FROM bindings b
+        JOIN user_meta u ON b.user_id = u.user_id
+        WHERE b.active = 1 AND u.role IN ('first_admin', 'admin')
+    """).fetchall()
+    return [(r["platform_id"], r["chat_id"]) for r in rows]
+
+
 def upsert_binding(
     platform_id: str,
     chat_id: str,
