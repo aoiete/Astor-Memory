@@ -1,4 +1,45 @@
 
+## v1.13.0 (2026-09-02)
+
+### Success-pattern auto-detect + auto-promote
+- `astor_memory/forge/pattern_detector.py` (~290 LOC, new module)
+  - `astor_detect_success_pattern(text)` — heuristic regex detection (18 zh + 11 en patterns)
+  - `astor_score_success_strength(text)` — 0.0-1.0 strength score
+  - `astor_count_similar_success_facts(content, tier)` — Jaccard similarity count
+  - `astor_promote_recurring_success(fact_id, threshold=3)` — auto-promote to public on recurrence
+- Audit log row written on every promotion (`event='promote_recurring_success'`)
+- Tier-isolated (private_<user> scope does not pollute public counts)
+- No LLM cost (regex only)
+
+### `am learn <text>` CLI subcommand
+- One-line workflow: write + auto-detect success + auto-promote recurring
+- Flags: `--tier` (default `private`), `--threshold` (default 3), `--no-promote`
+- Output: outcome + strength + fact_ids + promotion status
+
+### Documentation
+- `docs/pattern-detector.md` + `docs/pattern-detector.zh-CN.md` (full EN + ZH)
+- `docs/architecture.md`: cross-link to pattern-detector in "Related design docs"
+
+### Tests
+- `tests/test_pattern_detector.py` — 36 unit + integration tests, all passing
+- Includes success-phrase detection, scoring, jaccard similarity, recurrence
+  counting, threshold gating, idempotent promote, audit log writes,
+  tier-isolation, tombstone filtering
+
+### Documentation cleanup (carried over from 2026-09-01 push)
+- `docs/migration.md`: removed `From memu.ai SDK` section + TOC + matrix entry
+  (memu SDK discontinued, no data to migrate)
+- `docs/fact-lifecycle.md` + `.zh-CN.md`: L3 Profile row now describes
+  `memory_canonical` long-term tier (was memu SDK); recall-flow diagram
+  updated
+- `docs/scenario-layered-recall.md` + `.zh-CN.md`: SQL schema `fact_source`
+  comment changed (was `'bus' or 'memu'`); L3 usage row generalized
+- `docs/faq.md`: install-footprint comparison uses generic phrasing
+- `README.md`: § Why we built this — comparison row + bullet points
+  generalized (no more naming memu SDK specifically)
+- ACKNOWLEDGEMENTS.md + CHANGELOG.md historical references preserved
+  per user "contributions belong in acknowledgements, not docs" rule
+
 ## v1.12.0 (2026-09-01)
 
 ### ACL v1.2 hardening (security, no behavior change for canonical callers)
