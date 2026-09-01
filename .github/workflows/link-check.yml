@@ -41,8 +41,8 @@ jobs:
             --exclude 'https://twitter.com/*'
             --exclude 'https://x.com/*'
             --exclude 'https://localhost:*'
-            --exclude 'https://github.com/<AUTHOR>/astor-memory/issues/new*'
-            --exclude 'https://github.com/<AUTHOR>/astor-memory/discussions/new*'
+            --exclude 'https://github.com/<repo-owner>/ASTOR-Memory/issues/new*'
+            --exclude 'https://github.com/<repo-owner>/ASTOR-Memory/discussions/new*'
             --max-concurrency 16
             --timeout 20
             --accept 200,203,206
