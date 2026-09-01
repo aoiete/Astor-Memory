@@ -6,7 +6,7 @@ description: >
   user has an active binding, short-circuiting the env-var
   _is_user_authorized check.
 version: 1.0.0
-author: flopworld (2026-08-18)
+author: Astor-Memory Maintainers (2026-08-18)
 license: MIT
 entry_point: bot_binding_auth
 provides_hooks:

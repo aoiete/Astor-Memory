@@ -41,8 +41,8 @@ jobs:
             --exclude 'https://twitter.com/*'
             --exclude 'https://x.com/*'
             --exclude 'https://localhost:*'
-            --exclude 'https://github.com/flopworld/astor-memory/issues/new*'
-            --exclude 'https://github.com/flopworld/astor-memory/discussions/new*'
+            --exclude 'https://github.com/aoiete/ASTOR-Memory/issues/new*'
+            --exclude 'https://github.com/aoiete/ASTOR-Memory/discussions/new*'
             --max-concurrency 16
             --timeout 20
             --accept 200,203,206

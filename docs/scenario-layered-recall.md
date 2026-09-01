@@ -194,4 +194,4 @@ If these become problems, options:
 ## Change history
 
 - 2026-07-31: initial ship (<mem_sys>/memory-bus/scenario_clustering.py)
-- 2026-08-19: discovered original in `D:/AI/users/_system/`, moved to `~/.astor-memory (source)\scripts\` canonical source, synced to runtime, documented here
+- 2026-08-19: discovered original in local system scripts dir, moved to `~/.astor-memory (source)\scripts\` canonical source, synced to runtime, documented here
