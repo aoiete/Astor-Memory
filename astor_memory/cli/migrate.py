@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import struct
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,8 +32,6 @@ from ..config import (
 )
 from ..bus.schema import astor_init_schema
 from ..nest.schema import astor_init_nest_schema
-from ..nest.embeddings import astor_get_model_name_for_ram
-
 
 @dataclass
 class MigrationReport:
