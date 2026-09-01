@@ -9,7 +9,7 @@ What it does:
 - On cold-start, query top-N scenarios by (relevance × decay × importance × access_count)
 
 Schema differences from v1:
-- BUS_DB points to astor_bus_public.db (not memory_bus.db)
+- BUS_DB points to astor_bus_public.db (the canonical public bus file)
 - memory_canonical schema: namespace, content, kind, confidence, importance, tags,
   promoted_at, last_confirmed_at, access_count, tombstoned (no `scene` or `stable_id`)
 - Scenarios stored under ASTOR_DIR/public/scenarios.db (resolved at runtime
