@@ -14,7 +14,7 @@ bot,bot 给每个人回话时**只记得他们自己的事**。设计优先级�
 
 1. **数据隔离是默认**。一个用户**绝不能**看到别人的事实,即使 bot 都
    存着。ACL 在 matrix 层强制 — 不靠 caller 自觉(见
-   [ACL v1.2 加固](acl-v1.2-hardening.md) 的 threat model)。
+   [ACL v1.2 加固](acl-v1.2-hardening.zh-CN.md) 的 threat model)。
 
 2. **一个共享 public 知识库**。所有用户都受益于 admin 整理的 skills、
    rules、reference。private tier 是 per-user 私有。
