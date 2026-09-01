@@ -6,6 +6,44 @@
 
 ---
 
+## Who this is for
+
+You run one bot server. **Your family and friends each get their own private
+agent** — they DM the bot from their own WeChat / Telegram / Discord account
+and the bot talks back with **a memory that only they can see**. Mom's
+birthday notes never leak to the friend group, and the poker-game brief
+you wrote for a buddy does not contaminate your cousin's career advice.
+
+The deployment shape that this enables is the one we actually run
+ourselves and ship-tested first:
+
+```
++--------------------------------------+
+|  One astor-memory server (port 7803) |
+|                                       |
+|   first_admin    first_admin tier     |
+|   mom            private_mom tier     |
+|   friend_a       private_friend_a     |
+|   friend_b       private_friend_b     |
+|   cousin         private_cousin       |
+|                                       |
+|   shared memory = public + source     |
+|   per-user memory = private_<user_id> |
++--------------------------------------+
+```
+
+Each user has their own SQLite database, their own ACL grants, their own
+bazi/trading/personal facts, and (their own bot binding). The admin (you)
+sees source.db (the agent's own self-pattern + general skills) plus any
+private tier the user has explicitly granted.
+
+This is not a multi-tenant SaaS. It is **a single-server memory for a small
+group of people who trust each other enough to share the bot**. Privacy
+is enforced by ACL at the matrix level (see [ACL v1.2 hardening](docs/acl-v1.2-hardening.md)),
+not by trusting each user to behave.
+
+---
+
 ## Why we built this
 
 Modern AI agents need memory. The current options all force a trade-off:

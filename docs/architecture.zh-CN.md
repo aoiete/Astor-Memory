@@ -6,6 +6,29 @@
 
 ---
 
+## 设计目标
+
+Astor-Memory 是为**一台服务器共享给一个小圈子**设计的 —
+你和家人朋友共用一个 bot,各自用自己的微信/Telegram/Discord 账号 DM
+bot,bot 给每个人回话时**只记得他们自己的事**。设计优先级由此而来:
+
+1. **数据隔离是默认**。一个用户**绝不能**看到别人的事实,即使 bot 都
+   存着。ACL 在 matrix 层强制 — 不靠 caller 自觉(见
+   [ACL v1.2 加固](acl-v1.2-hardening.md) 的 threat model)。
+
+2. **一个共享 public 知识库**。所有用户都受益于 admin 整理的 skills、
+   rules、reference。private tier 是 per-user 私有。
+
+3. **零供应商锁定**。每个用户的记忆就是 SQLite 文件在
+   `~/.astor/users/<id>/` 下。可以 `git pull` 备份、`sqlite3` 查、迁移
+   到另一个 install。无 proprietary storage。
+
+4. **admin 也是 user**。first_admin 本身是一个 tier (source),不是特权
+   "root" 在 model 之外。同一个 ACL matrix 适用。
+
+**不是 SaaS 记忆服务**。没有按席位计费、没有跨区复制、没有 per-customer
+定制。是你为熟人运维的一个单机工具。
+
 ## 目录
 
 1. [3 存储三元组](#1-3-存储三元组)
@@ -507,7 +530,7 @@ curl -X POST http://127.0.0.1:7803/v1/write -d '{"text":"...","tier":"public"}'
 
 ### 个人类别 (opt-in)
 
-- P-CONT-006 — "继续" token 工作流 (flopworld-with-AI 参考)
+- P-CONT-006 — "继续" token 工作流 (operator-neutral 参考)
 
 ### 披露策略
 

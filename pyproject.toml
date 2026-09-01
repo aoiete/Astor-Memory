@@ -4,17 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astor-memory"
-# Version unified 2026-08-31 to match <runtime_dir>astor_memory/__init__.py:__version__.
-# Source release was 1.2.7 (2026-08-17, PII cleanup); runtime has been 1.11.0 since 2026-08-26 (v1.11 LLM extract).
-# Both axes merged into 1.11.0 — next release will bump the unified label together.
-version = "1.11.0"
+# Version unified across source, runtime, hooks, plugins.
+version = "1.12.0"
 description = "Self-owned memory system for AI agents: 3-tier × 3-store × 3-scope = 9+ SQLite layout, multi-user ACL, WeChat/Telegram/Discord token manager, MCP server"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10,<3.14"
 authors = [
-    {name = "flopworld with AI", email = "astor-memory@users.noreply.github.com"},
+    {name = "Astor-Memory Maintainers", email = "astor-memory@users.noreply.github.com"},
 ]
 keywords = [
     "memory",
@@ -68,11 +66,11 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/flopworld/astor-memory"
-Repository = "https://github.com/flopworld/astor-memory.git"
-Issues = "https://github.com/flopworld/astor-memory/issues"
-Discussions = "https://github.com/flopworld/astor-memory/discussions"
-Changelog = "https://github.com/flopworld/astor-memory/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/aoiete/ASTOR-Memory"
+Repository = "https://github.com/aoiete/ASTOR-Memory.git"
+Issues = "https://github.com/aoiete/ASTOR-Memory/issues"
+Discussions = "https://github.com/aoiete/ASTOR-Memory/discussions"
+Changelog = "https://github.com/aoiete/ASTOR-Memory/blob/main/CHANGELOG.md"
 
 [project.scripts]
 am = "astor_memory.cli:main"

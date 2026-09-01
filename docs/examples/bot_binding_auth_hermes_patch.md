@@ -121,7 +121,7 @@ PATCHED BLOCK (after)
     #     if is_internal:
     #         pass
     #     elif _pre_dispatch_authorized:
-    #         # 2026-08-18 flopworld: a plugin (e.g. bot_binding_auth)
+    #         # 2026-08-18 the maintainer: a plugin (e.g. bot_binding_auth)
     #         # has authoritative knowledge of this user via
     #         # bot-binding.db. Skip _is_user_authorized. The plugin is
     #         # responsible for any audit logging.

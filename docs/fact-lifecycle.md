@@ -185,8 +185,8 @@ For Python implementation details — see `contributing.md` section 6 ("Style re
 
 ## PR / change workflow
 
-1. **Source of truth**: `<source_dir>docs\fact-lifecycle.md` (this file)
-2. **Runtime copy**: `<runtime_dir>docs\fact-lifecycle.md` (synced via `astor_dev_watch.py`)
+1. **Source of truth**: `~/.astor-memory (source)\docs\fact-lifecycle.md` (this file)
+2. **Runtime copy**: `$ASTOR_DIR (runtime)\docs\fact-lifecycle.md` (synced via `astor_dev_watch.py`)
 3. **Change process**: edit source → file watcher auto-syncs + restart → becomes live
 4. **Backwards compat**: any change here must be additive — never break existing fields
 

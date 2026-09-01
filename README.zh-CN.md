@@ -4,6 +4,39 @@
 
 ---
 
+## 这是给谁的
+
+**一台服务器,服务一个朋友圈**。你和家人朋友共用一个 bot,各自用
+自己的微信/Telegram/Discord DM bot,bot 给每个人回话时**只记得他们自己的事**。
+妈妈的生日提醒不会泄到朋友圈;你给哥们写的 poker 牌运分析不会污染表妹的职业建议。
+
+实际部署形态就是这样(我们自己跑、自己测的):
+
+```
++--------------------------------------+
+|  一个 astor-memory server (7803)      |
+|                                       |
+|   first_admin    first_admin tier     |
+|   妈妈           private_mom tier     |
+|   朋友A          private_friend_a     |
+|   朋友B          private_friend_b     |
+|   表妹           private_cousin       |
+|                                       |
+|   共享记忆 = public + source         |
+|   个人记忆 = private_<user_id>       |
++--------------------------------------+
+```
+
+每个用户独立 SQLite db、独立 ACL grant、独立八字/交易/私人事实、
+独立 bot binding。admin(你)看 source.db(agent 自己的 self-pattern + 通
+用技能)+ 任何用户显式 grant 给你看的 private。
+
+**不是 SaaS 多租户**,是**为熟人共享的小圈子设计**。隐私由 ACL 在
+matrix 层强制(见 [ACL v1.2 加固](docs/acl-v1.2-hardening.md)),
+不靠用户自觉。
+
+---
+
 ## 为什么我们做这个
 
 现代 AI 智能体需要记忆。现有的方案都强迫你在"能力 vs. 自主权"之间二选一:
@@ -267,7 +300,7 @@ MIT — 详见 [LICENSE](LICENSE)。
 ## 致谢
 
 - 灵感来自 Mem-π、PowerContext RFCs、CoALA 框架、A-MEM 论文、Anthropic / Google ADK 风格指南。
-- 项目维护者:**flopworld with AI** ([ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md))。
+- 项目维护者:**the maintainer** ([ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md))。
 - 由 33 次 ship 周期和 50+ 定时任务的生产经验驱动。
 
 ---

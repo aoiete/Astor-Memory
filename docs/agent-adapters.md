@@ -940,7 +940,7 @@ cp ~/.hermes/config.yaml ~/.hermes/config.yaml.bak-pre-admin-tier-slash-gating-$
 # Discord + telegram (admin list pre-existing; user allowlist is RESTRICTED subset).
 #
 # User level (any role=user) CANNOT run: /stop, /agents, /goal, /background.
-# Rationale (locked 2026-08-17, user flopworld):
+# Rationale (locked 2026-08-17, the maintainer):
 #   /stop        — non-admin could kill an in-flight agent mid-task (DD cascade risk,
 #                  lost trades, abandoned cron jobs)
 #   /agents      — sub-agent invocation can spawn persistent sessions / delegate work
