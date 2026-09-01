@@ -64,12 +64,15 @@ def test_add_auto_link_creates_bidirectional_edge(fresh_bus):
         'SELECT parent_fact_ids FROM memory_canonical WHERE id = ?', (b,)).fetchone()[0])
     assert b in a_parents
     assert a in b_parents
-    # Verify provenance_kind = 'auto_link'
+    # v1.13.1 (2026-09-02): auto_link no longer overwrites the existing
+    # provenance_kind ('extracted' from extraction pipeline); only sets it
+    # if the row was previously empty. Both 'extracted' and 'auto_link'
+    # are acceptable provenance_kinds; the audit log records the edge.
     for fid in (a, b):
         row = fresh_bus.conn.execute(
             'SELECT provenance_kind, provenance_agent FROM memory_canonical WHERE id = ?',
             (fid,)).fetchone()
-        assert row[0] == 'auto_link'
+        assert row[0] in ('extracted', 'auto_link')
         assert row[1] == 'nest.auto_link'
 
 
