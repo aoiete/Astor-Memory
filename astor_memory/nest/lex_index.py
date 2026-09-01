@@ -42,7 +42,7 @@ BM25_B  = 0.75
 
 # Tokenization: lowercase + Unicode letter split. We deliberately do NOT
 # use a stemmer (would break Chinese characters) and do NOT depend on NLTK.
-_TOKEN_RE = re.compile(r'[A-Za-z]+|[\u4e00-\u9fff]')
+_TOKEN_RE = re.compile(r'[A-Za-z0-9]+|[\u4e00-\u9fff]')  # v1.13.1 (2026-09-02): include digits so 'BM25' tokenizes as 'bm25' not 'bm'
 # Bi-gram for Chinese: pairs of consecutive CJK chars overlap. To keep the
 # index small we only emit unigrams; BM25 handles short queries well.
 _CJK_RE   = re.compile(r'[\u4e00-\u9fff]')
@@ -348,10 +348,15 @@ class AstorLex:
             if not cur.fetchone():
                 return self._bm25_search_tokens_legacy(tokens, limit=limit)
 
-            # FTS5 MATCH: AND all terms (intersection). Use bm25() ranking
-            # function for built-in ranking, which closely matches our
+            # FTS5 MATCH: OR all terms (sum of per-term matches). Use bm25()
+            # ranking function for built-in ranking, which closely matches our
             # custom Okapi formula on small corpora.
-            fts_query = ' '.join(fts_terms)
+            # v1.13.1 (2026-09-02): switched from implicit AND (' '.join)
+            # to explicit OR (' OR '.join). The earlier AND meant multi-term
+            # queries returned [] whenever no doc contained every term, which
+            # is wrong for BM25-style recall (OR + score accumulation is the
+            # standard).
+            fts_query = ' OR '.join(fts_terms)
             try:
                 rows = self._conn.execute(
                     "SELECT rowid, bm25(lex_fts) AS r "
