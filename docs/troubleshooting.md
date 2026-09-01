@@ -2,7 +2,7 @@
 
 > Common errors and fixes for Astor-Memory.
 
-If your error isn't here, file an issue at https://github.com/flopworld/astor-memory/issues with:
+If your error isn't here, file an issue at https://github.com/aoiete/ASTOR-Memory/issues with:
 - Output of `am doctor --verbose`
 - Output of `am --version`
 - Reproducible steps
@@ -360,7 +360,7 @@ Check the server log:
 ```bash
 tail -50 ~/.astor/logs/astor_server.log  # Linux/Mac
 # or
-Get-Content <runtime_dir>logs\astor_server.log -Tail 50  # PowerShell
+Get-Content $ASTOR_DIR (runtime)\logs\astor_server.log -Tail 50  # PowerShell
 ```
 
 The `astor_check_*` failure detail includes the actor, role, tier, and
@@ -394,7 +394,7 @@ seeing 403 after the v1.1.1 ACL fix, restart the server so the new
 the old ACL bind.
 
 ```bash
-python <runtime_dir>restart.py restart
+python $ASTOR_DIR (runtime)\restart.py restart
 ```
 
 ---
