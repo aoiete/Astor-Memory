@@ -1066,3 +1066,34 @@ For users of the precursor `memory-bus` system (Hermes agent P0-P36):
 
 [Unreleased]: https://github.com/flopworld/astor-memory/compare/v0.1.0.dev0...HEAD
 [0.1.0.dev0]: https://github.com/flopworld/astor-memory/releases/tag/v0.1.0.dev0
+
+## v1.11.0 (2026-08-31)
+
+### Version unification
+- All version strings (source, runtime, plugins, hooks) collapsed to single 1.11.0
+- Source 1.2.7 → 1.11.0 (skipping 1.3-1.10 to align with deployed runtime)
+
+### New modules (nest scenario-layered recall)
+- query_rewriter, query_expander, stage_recall, reranker, synonym_expander
+- multihop_decomposer, multi_hop_bridge, conversation_graph
+- forge/relative_date (date parsing helper)
+
+### ACL hardening
+- 4-level ACL (public/half_public/admin_only/private) with per-rule per-user grants
+- 9-DB layout per tier for 15+ real users
+
+### Bus + forge
+- FTS5 root cause fix (contentless index rebuild)
+- LLM fact extraction v1.11 (gemini-flash default, 87% extraction accuracy)
+- Auto-promote threshold = 0 (immediate)
+
+### Removed
+- forge/extractor_main.py (merged into forge/extractor.py)
+
+### Benchmark
+- LoCoMo long-context: 83.1% (1279/1540), GitHub #3
+
+### Cleanup
+- 27 files modified, 1 deleted, 3 backups removed, .gitignore updated
+- New: docs/releases/v1.11.0-release-notes.md
+
