@@ -64,6 +64,21 @@ source ~/.astor-venv/bin/activate  # or Windows equivalent
 pip install astor-memory
 ```
 
+### One-shot install on Linux / macOS
+
+Use the bundled install script (handles venv creation, GitHub fetch,
+data-dir init, and PATH setup in one step):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash
+# or with a specific version
+curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash -s v1.13.1
+```
+
+After install: `am doctor` to verify. See `scripts/install.sh` for
+details, options (`--check`, `--uninstall`), and override env vars
+(`ASTOR_HOME`, `PYTHON`).
+
 ---
 
 ## Usage
