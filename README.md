@@ -386,7 +386,6 @@ provenance, versioning, restore): see [`docs/api.md`](./docs/api.md).
 | `am doctor` | Health check: bus/forge/nest status, event count, latency |
 | `am config <key>=<value>` | Set runtime config (provider, dedup window, etc.) |
 | `am compact` | Run lifecycle: decay + merge + promote |
-| `am migrate from-memory-bus` | One-shot migrate legacy `memory-bus` SQLite → 9-db layout |
 
 ### Multi-user bot management (`am bot ...`)
 | Command | Purpose |
@@ -495,7 +494,7 @@ MIT — see [`LICENSE`](./LICENSE).
 ## See also
 
 - [`docs/architecture.md`](./docs/architecture.md) — deep dive on 3-store × 3-tier + 11 absorbed insights
-- [`docs/migration.md`](./docs/migration.md) — upgrade guide from old `memory-bus` system
+- [`docs/migration.md`](./docs/migration.md) — migrate from mem0 / Letta / Zep / MemGPT / ChromaDB / Pinecone / Weaviate / plain files
 - [`docs/agent-adapters.md`](./docs/agent-adapters.md) — MCP / LangChain / REST / Python integration
 - [`docs/faq.md`](./docs/faq.md) — frequently asked questions
 - [`docs/troubleshooting.md`](./docs/troubleshooting.md) — common errors and fixes

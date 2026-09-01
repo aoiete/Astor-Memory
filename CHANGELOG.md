@@ -1126,17 +1126,6 @@ mv <mem_sys>/memory-bus <mem_sys>/memory-bus-archived-2026-08-15
 
 ---
 
-## Migration notes
-
-For users of the precursor `memory-bus` system (Hermes agent P0-P36):
-
-- Env vars (`MEMU_URL`, `MEMPALACE_URL`, `BUS_URL`) are aliased and continue to work
-- Data migration tool: `am migrate from-memory-bus --source=~/.memory-bus/bus.db`
-- Parallel-run mode: `am init --parallel --port=7804`
-- Full guide: [`docs/migration.md`](./docs/migration.md)
-
----
-
 [Unreleased]: https://github.com/flopworld/astor-memory/compare/v0.1.0.dev0...HEAD
 [0.1.0.dev0]: https://github.com/flopworld/astor-memory/releases/tag/v0.1.0.dev0
 
