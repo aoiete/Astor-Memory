@@ -13,11 +13,18 @@ sys.path.insert(0, os.environ.get('HERMES_AGENT_PATH') or str(Path.home() / 'her
 sys.path.insert(0, os.environ.get('ASTOR_SOURCE_PATH') or str(Path.cwd()))
 
 
+def _load_provider():
+    """Load the external Hermes plugin when available, else test source adapter."""
+    try:
+        from plugins.memory.astor_memory import AstorMemoryProvider
+    except ModuleNotFoundError:
+        from astor_memory.hermes_adapter import AstorMemoryProvider
+    return AstorMemoryProvider
+
+
 class HermesAdapterImportTest(unittest.TestCase):
     def test_adapter_imports(self):
-        from plugins.memory.astor_memory import (
-            AstorMemoryProvider,
-        )
+        AstorMemoryProvider = _load_provider()
         self.assertTrue(callable(AstorMemoryProvider))
 
 
@@ -34,7 +41,7 @@ class HermesAdapterToolTest(unittest.TestCase):
         from astor_memory.nest.lex_index import _LEX_SINGLETONS
         _LEX_SINGLETONS.clear()
         # Confirm the astor runtime is reachable
-        from plugins.memory.astor_memory import AstorMemoryProvider
+        AstorMemoryProvider = _load_provider()
         cls.provider = AstorMemoryProvider()
         cls.provider.initialize(session_id='test-suite', platform='unit-test')
         cls.provider.is_available()
@@ -136,7 +143,7 @@ class HermesAdapterToolTest(unittest.TestCase):
 
 class HermesToolSchemaTest(unittest.TestCase):
     def test_schemas_present(self):
-        from plugins.memory.astor_memory import AstorMemoryProvider
+        AstorMemoryProvider = _load_provider()
         p = AstorMemoryProvider()
         schemas = p.get_tool_schemas()
         names = {s['name'] for s in schemas}
@@ -146,7 +153,7 @@ class HermesToolSchemaTest(unittest.TestCase):
         self.assertIn('astor_status', names)
 
     def test_recall_schema_has_hybrid_field(self):
-        from plugins.memory.astor_memory import AstorMemoryProvider
+        AstorMemoryProvider = _load_provider()
         p = AstorMemoryProvider()
         for s in p.get_tool_schemas():
             if s['name'] == 'astor_recall':
@@ -157,7 +164,7 @@ class HermesToolSchemaTest(unittest.TestCase):
         self.fail('astor_recall schema not found')
 
     def test_forget_schema_has_query_and_fact_id(self):
-        from plugins.memory.astor_memory import AstorMemoryProvider
+        AstorMemoryProvider = _load_provider()
         p = AstorMemoryProvider()
         for s in p.get_tool_schemas():
             if s['name'] == 'astor_forget':

@@ -6,7 +6,7 @@ astor-memory: Self-owned memory system for AI agents.
 See: https://github.com/flopworld/astor-memory/blob/main/docs/architecture.md
 """
 
-__version__ = "1.2.7"
+__version__ = '1.11.0'  # 2026-08-26: see CHANGELOG for full version history
 
 # Top-level singleton accessors. Per Plan § Naming:
 # astor_bus() / astor_forge() / astor_nest() are the unified public API entry points.
@@ -32,6 +32,23 @@ def astor_nest(tier: str = "public", user_id: str | None = None):
     return _astor_nest_func(tier=tier, user_id=user_id)
 
 
+def _cleanup_nest_singleton(instance) -> None:
+    """v1.10.8 (2026-08-26): remove `instance` from the nest singleton dict.
+
+    Called from AstorNest.close() so that subsequent astor_nest() calls
+    with the same (tier, user_id, db_path) key rebuild the handle instead
+    of returning a closed instance whose _conn is None.
+    """
+    from .nest import vector_store as _vs
+    with _vs._nest_lock:
+        singleton = _vs._nest_singleton
+        if isinstance(singleton, dict):
+            # Walk all keys, remove those pointing to `instance`
+            stale = [k for k, v in singleton.items() if v is instance]
+            for k in stale:
+                del singleton[k]
+
+
 def astor_forge():
     """Return the forge module (LLM fact extraction).
 
@@ -42,3 +59,5 @@ def astor_forge():
 
 
 __all__ = ['__version__', 'astor_bus', 'astor_nest', 'astor_forge']
+
+
