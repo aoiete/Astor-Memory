@@ -475,17 +475,7 @@ astor 把**人** (`user_id`) 和 **bots** (`platform_id`) 当作两个独立的�
 
 ## 10. 进程模型
 
-### 之前 (旧 3 服务器架构)
-
-```
-bus_server.py:7803       # 事件日志
-memu_server.py:7801      # LLM 抽取
-mempalace_server.py:7802 # 向量库
-```
-
-3 个独立进程、3 个端口、3 个健康检查、3 个部署单元。
-
-### 之后 (Astor-Memory 单守护进程)
+Astor-Memory 支持三种部署模式 — 单守护进程、库模式、或 REST 服务器:
 
 ```
 astord                  # 进程内 bus + forge + nest
@@ -593,7 +583,7 @@ Astor-Memory 整合了 11 篇已发表的研究 / 框架的精华。每个洞察
 - [`README.md`](../README.md) — 入口、为什么、安装、快速开始
 - [`docs/api.md`](api.md) — 18 个 REST 端点 + schema
 - [`docs/contributing.md`](contributing.md) — 修代码、提 PR
-- [`docs/migration.md`](migration.md) — 从 memory-bus 升级
+- [`docs/migration.md`](migration.md) — 从 mem0 / Letta / Zep / MemGPT / ChromaDB / Pinecone / Weaviate / 普通文件 迁移
 - [`docs/troubleshooting.md`](troubleshooting.md) — 常见错误 + 调试
 - [`docs/agent-adapters.md`](agent-adapters.md) — 集成到 hermes / OpenClaw / Claude / Cursor
 - [`bots/README.md`](../bots/README.md) — 多平台 bot 设计哲学

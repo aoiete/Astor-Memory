@@ -1,142 +1,83 @@
 # Migration Guide
 
-> Upgrade from the legacy `memory-bus` system to Astor-Memory.
+> Move into Astor-Memory from any of the common AI memory stacks.
 
-This guide walks through a 5-step migration. Plan for ~2 hours of focused work and a 1-2 week parallel-run window before cutover.
+This guide covers five source-system families people ask about most
+often: **mem0**, **memu.ai SDK**, **Letta / Zep / MemGPT**, **ChromaDB /
+Pinecone / Weaviate**, and **plain file/JSON archives**. Plan for
+~2 hours of focused work and a 1–2 week parallel-run window before
+cutover.
 
 ---
 
 ## Table of contents
 
 1. [Why migrate](#why-migrate)
-2. [Compatibility promise](#compatibility-promise)
-3. [The 5-step migration](#the-5-step-migration)
-4. [Side-by-side reference](#side-by-side-reference)
-5. [Rollback procedure](#rollback-procedure)
-6. [Common pitfalls](#common-pitfalls)
+2. [Source-system compatibility matrix](#source-system-compatibility-matrix)
+3. [Common 5-step migration](#common-5-step-migration)
+4. [From mem0](#from-mem0)
+5. [From memu.ai SDK](#from-memu-ai-sdk)
+6. [From Letta / Zep / MemGPT](#from-letta--zep--memgpt)
+7. [From ChromaDB / Pinecone / Weaviate](#from-chromadb--pinecone--weaviate)
+8. [From plain file or JSON archives](#from-plain-file-or-json-archives)
+9. [Side-by-side API reference](#side-by-side-api-reference)
+10. [Rollback procedure](#rollback-procedure)
+11. [Common pitfalls](#common-pitfalls)
 
 ---
 
 ## Why migrate
 
-The legacy `memory-bus` system was a 3-server architecture (bus_server, memu_server, mempalace_server) that ran for 33 ship sessions and ~6 months. It worked, but accumulated pain points:
+Astor-Memory is built for one specific deployment shape:
 
-| Pain point | Impact | How Astor-Memory fixes it |
+> **One bot server, many isolated users.** Mom's birthday notes never
+> leak to the friend group, and the poker brief you wrote for a buddy
+> does not contaminate your cousin's career advice.
+
+If you are evaluating whether to migrate, the question to ask is:
+
+| If your current stack is... | Migration value | Why |
 |---|---|---|
-| 3 GB venv (transformers + torch) | Disk space, slow install | No local LLM stack; < 50 MB install |
-| 3 server processes | 3 health checks, 3 restarts, 3 ports | 1 daemon or pure library mode |
-| chromadb 80 MB transitive deps | Slow upgrades, frequent breakages | SQLite + NumPy; 12 MB |
-| memu.ai SDK proprietary | Cloud coupling | Vendor-neutral LLM adapter |
-| No revision tracking | Silent overwrites on update | Append-only + `revision_id` |
-| No citation in recall output | Hallucination cascades | `<ref>` embedded in every hit |
-| No lifecycle (decay/merge/promote) | Unbounded memory growth | Self-evolving with `am compact` |
+| mem0 | **High** | Same per-user isolation goal, but multi-tenant SaaS only; Astor gives you a self-owned DB per user on a single server |
+| memu.ai SDK | **None — do not migrate data** | memu.ai is shutting down; you can wrap astor under the same call sites in one PR |
+| Letta / Zep / MemGPT | **High** | These give agents long-term memory, but every user shares a single DB; Astor adds per-user ACL by design |
+| ChromaDB / Pinecone / Weaviate | **Medium** | You have a vector store, not an agent memory system; Astor adds facts/scenarios/profile + ACL on top of the same vectors |
+| Plain files / JSON | **Low but useful** | You get version tracking, dedup, decay, scenario clustering — all the things plain JSON lacks |
 
-If you've been hitting any of these, migration is worth it.
+If you are not sure which bucket you fit, see
+[`docs/architecture.md`](./architecture.md) for what Astor-Memory actually
+is.
 
 ---
 
-## Compatibility promise
+## Source-system compatibility matrix
 
-Astor-Memory v1.0 maintains **3 compatibility layers** to make migration gradual:
+Quick check of what each source system maps to in Astor-Memory:
 
-### 1. Env-var compat (zero-effort)
+| Source system | Where data lives | Astor equivalent | One-shot CLI? |
+|---|---|---|---|
+| mem0 | `mem0/vectors/` + per-user JSON | `private_<user>.db` (bus + nest) | `am migrate from-mem0` (v1.3+) |
+| memu.ai SDK | cloud (no local file) | wrap with `astor_write`/`astor_read` in code | No CLI needed |
+| Letta | PostgreSQL or SQLite | `private_<user>.db` (bus + forge + nest) | `am migrate from-letta` (v1.4+) |
+| Zep | Zep cloud or local Docker | `private_<user>.db` | `am migrate from-zep` (v1.4+) |
+| MemGPT | SQLite | `private_<user>.db` | `am migrate from-memgpt` (v1.4+) |
+| ChromaDB | local directory or server | `private_<user>.db` (nest only — you keep your vector DB) | `am migrate from-chroma` (v1.3+) |
+| Pinecone | cloud index | `private_<user>.db` (bus + forge; nest points at Pinecone) | manual |
+| Weaviate | local server | same as Pinecone | manual |
+| Plain JSON / YAML / Markdown | local directory | `private_<user>.db` (bus) | `am migrate from-files` (v1.3+) |
 
-The old system used env vars like `MEMU_URL`, `MEMPALACE_URL`, `BUS_URL`. Astor-Memory keeps these as aliases:
-
-| Old env var | New env var | Behavior |
-|---|---|---|
-| `MEMU_URL` | `ASTOR_FORGE_URL` | Both work; old is silently redirected |
-| `MEMPALACE_URL` | `ASTOR_NEST_URL` | Same |
-| `BUS_URL` | `ASTOR_BUS_URL` | Same |
-
-Existing cron jobs that set `MEMU_URL=http://localhost:7801` will continue to work after `pip install astor-memory` — no env var changes required.
-
-### 2. Import compat (cutover)
-
-Old code:
-
-```python
-from memory_bus import auto_route_v2
-
-auto_route_v2.write("user prefers concise replies")
-hits = auto_route_v2.read_all("user preferences")
-```
-
-New code (preferred):
-
-```python
-from astor_memory import write, read
-
-write("user prefers concise replies")
-hits = read("user preferences")
-```
-
-For projects with 10+ import sites, see [Step 3: Bulk import cutover](#step-3-bulk-import-cutover).
-
-### 3. Data compat (DB migration)
-
-The old `memory_bus.db` SQLite schema is **not** directly compatible with Astor-Memory's `astor_bus.db`. A one-time migration CLI is shipped in v0.3+:
-
-```bash
-# Dry-run first to see what would migrate (no writes)
-am migrate from-memory-bus --source=~/.memory-bus/bus.db --dry-run
-
-# Actual migration
-am migrate from-memory-bus --source=~/.memory-bus/bus.db --target=~/.astor
-```
-
-This:
-- Reads old `events` / `memory_candidates` / `memory_canonical` tables
-- Maps legacy `status` field (active/contested/archived) → astor `verdict` (settled/contested/thin)
-- Creates new rows in `astor_bus.db` (events + candidates + canonical + audit_log)
-- Preserves `stable_id` for idempotency (re-running skips already-migrated rows)
-- Disables FK during migration (legacy rows may have FK refs to rows that migrate later)
-- Embeddings NOT migrated (legacy format uncertain — user can re-embed via `am recall` on demand)
-
-After migration, you have:
-```
-~/.astor/
-├── astor_bus.db    # new events + canonical (with verdict, no embedding BLOB)
-├── astor_nest.db   # NEW vector embeddings (1 row per fact, model_name indexed)
-└── astor_forge.db  # placeholder; forge is pure-functions module in v0.x
-```
-
-### 4. Clean cutover (manual, v1.0+)
-
-**DO NOT delete your legacy source DB directory automatically.** Per Plan § Week 5 step 4.8:
-
-After verifying the migration worked (`am recall` returns expected facts, `am write` works as expected), the user manually cuts over:
-
-```bash
-# 1. Verify migration worked
-am doctor --schema --memory
-# → Memory RSS: ~50 MB
-# → Schema: OK
-# → Memory: N canonical, N events, N embeddings
-
-# 2. Stop any process reading from memory-bus
-# (check open processes: lsof | grep memory_bus OR Get-Process | findstr memory)
-
-# 3. Archive (don't delete) memory-bus legacy
-mv <legacy-dir>/memory-bus <legacy-dir>/memory-bus-archived-$(date +%Y-%m-%d)
-
-# 4. Update any code still referencing memory_bus
-# (grep your codebase: grep -rln "memory_bus" src/)
-# → Replace with astor_memory equivalents (auto_route_write → astor_write, etc.)
-```
-
-**v1.0 ships with migration tool but does NOT auto-delete legacy.** User decision required.
-
-Data integrity is verified after migration via row-count comparison.
+CLI flags shown are planned; if a CLI does not exist yet for your
+source system, use the per-system walkthrough below.
 
 ---
 
-## The 5-step migration
+## Common 5-step migration
 
-### Step 1: Install Astor-Memory alongside legacy
+Most migrations, regardless of source system, follow this skeleton:
+
+### Step 1 — Install Astor-Memory alongside your current stack
 
 ```bash
-# Old system continues running (don't stop it yet)
 pip install astor-memory
 ```
 
@@ -144,103 +85,64 @@ Verify install:
 
 ```bash
 am --version
-# → am 0.1.0 (astor-memory 0.1.0)
-
 am doctor
 # → bus: NOT INITIALIZED (expected; not yet running)
 # → forge: NOT INITIALIZED
 # → nest: NOT INITIALIZED
 ```
 
-This installs Astor-Memory without affecting the legacy system. Both can run side-by-side.
+Your existing stack is untouched. Both can run side-by-side.
 
-### Step 2: Initialize Astor-Memory in parallel mode
+### Step 2 — Initialize Astor-Memory in parallel mode
 
 ```bash
 am init --parallel --port=7804
 ```
 
-The `--parallel` flag tells Astor-Memory to use a different port range (7804-7806) than the legacy system (7801-7803). Both systems run concurrently.
+The `--parallel` flag tells Astor-Memory to use ports 7804–7806 so it
+does not collide with anything you have on 7801–7803.
 
 You now have:
 
 ```
-7801 memu_server (legacy)
-7802 mempalace_server (legacy)
-7803 bus_server (legacy)
-7804 astor_forge (new)
-7805 astor_nest (new)
-7806 astor_bus (new)
+7801–7803   your existing stack (mem0 / Letta / Chroma / etc.)
+7804        astor_forge
+7805        astor_nest
+7806        astor_bus
 ```
 
-### Step 3: Bulk import cutover (if you have 10+ import sites)
+### Step 3 — Migrate data (one-time)
 
-For projects with 10+ import sites, use `astor-migrate-imports`:
+Run the per-system migration (see the dedicated section below for
+your source). Always `--dry-run` first.
 
 ```bash
-astor-migrate-imports /path/to/your/codebase \
-  --from "from memory_bus import auto_route_v2" \
-  --to "from astor_memory import write, read"
+# example shape
+am migrate from-<source-system> --source=<old-path> --dry-run
+am migrate from-<source-system> --source=<old-path>
 ```
 
-This rewrites all imports in-place. Review the diff:
-
-```bash
-git diff --stat
-# → 10 files changed, 23 insertions(+), 23 deletions(-)
-```
-
-Verify behavior is identical:
-
-```python
-# Before
-auto_route_v2.write("test")
-hits = auto_route_v2.read_all("test")
-
-# After (rewritten)
-write("test")
-hits = read("test")
-```
-
-For projects with < 10 import sites, manual rewriting is faster.
-
-### Step 4: Migrate data (one-time)
-
-```bash
-# Dry-run first
-am migrate from-memory-bus --source=~/.memory-bus/bus.db --dry-run
-
-# Actual migration
-am migrate from-memory-bus --source=~/.memory-bus/bus.db --target=~/.astor/astor.db
-```
-
-Expected output:
+After migration:
 
 ```
-Reading legacy bus.db...
-  → 1,247 events found
-Mapping kinds...
-  → 1,189 facts (kind=fact)
-  → 47 rules (kind=rule)
-  → 11 candidates (kind=candidate)
-Writing to ~/.astor/astor.db...
-  → 1,247 rows inserted
-Verifying...
-  → row count match: ✓
-  → timestamp preservation: ✓
-  → reference integrity: ✓
-Migration complete.
+~/.astor/
+├── astor_bus.db      # facts + events + audit
+├── astor_nest.db     # vector embeddings + lex index
+└── astor_forge.db    # extracted structured facts
 ```
 
-### Step 5: Cut over and verify
+If your source system already kept per-user separation (Letta,
+mem0 with their `user_id` field), Astor preserves the user boundary.
+If your source system had a single shared store (ChromaDB,
+plain files), Astor infers per-user separation from a `user_id`
+metadata field if present, otherwise falls back to one admin-private
+DB until you tag your data.
 
-Once parallel-run has been stable for 1-2 weeks:
+### Step 4 — Cut over (1–2 weeks later)
 
 ```bash
 # Stop legacy services
-systemctl stop memory-bus.service
-systemctl stop memu-server.service
-systemctl stop mempalace-server.service
+<your stack stop command>
 
 # Switch Astor-Memory to canonical ports
 am config bus.port=7803
@@ -255,9 +157,9 @@ Verify health:
 
 ```bash
 am doctor
-# → bus: OK (1,247 events migrated)
+# → bus: OK (N events migrated)
 # → forge: OK (provider=openai, latency=320ms)
-# → nest: OK (847 docs indexed, 5 KB vector cache)
+# → nest: OK (N docs indexed, X KB vector cache)
 ```
 
 Run your existing test suite:
@@ -266,43 +168,289 @@ Run your existing test suite:
 pytest tests/
 ```
 
-All tests should pass. If any fail, see [Rollback procedure](#rollback-procedure).
+If any tests fail, see [Rollback procedure](#rollback-procedure).
+
+### Step 5 — Archive the old stack (do not delete)
+
+```bash
+mv <legacy-dir> <legacy-dir>-archived-$(date +%Y-%m-%d)
+```
+
+Astor-Memory ships with the migration tool but does NOT auto-delete
+legacy data. The decision is yours.
 
 ---
 
-## Side-by-side reference
+## From mem0
+
+[mem0](https://mem0.ai) is a multi-tenant SaaS for AI agent memory.
+Per-user isolation is enforced at the API layer; data lives in
+mem0's cloud. Migration to Astor-Memory is **high value** because you
+get a self-owned per-user DB on a single server, no SaaS dependency.
+
+### What maps
+
+| mem0 concept | Astor equivalent |
+|---|---|
+| `Memory.add(messages, user_id="alice")` | `write(text, user_id="alice")` |
+| `Memory.search(query, user_id="alice")` | `read(query, user_id="alice")` |
+| `user_id` field | `user_id` field (same) |
+| `agent_id` field | `metadata["agent_id"]` |
+| `run_id` field | `metadata["run_id"]` |
+| `created_at` timestamp | `created_at` (same) |
+
+### Migration script
+
+```python
+# scripts/migrate_from_mem0.py
+from mem0 import MemoryClient
+from astor_memory import write, init
+
+init(actor="first_admin", role="first_admin")
+
+client = MemoryClient(api_key="<your-mem0-key>")
+
+for user_id in client.list_users():
+    memories = client.get_all(user_id=user_id, limit=10000)
+    for mem in memories:
+        write(
+            mem["memory"],
+            user_id=user_id,
+            scope="long_term",
+            metadata={
+                "agent_id": mem.get("agent_id"),
+                "run_id": mem.get("run_id"),
+                "migrated_from": "mem0",
+                "mem0_id": mem["id"],
+            },
+        )
+    print(f"{user_id}: {len(memories)} memories migrated")
+```
+
+> Pricing: mem0 charges per-write; pulling all memories is one read
+> per user, so this is cheap regardless of memory count.
+
+---
+
+## From memu.ai SDK
+
+[memu.ai](https://memu.ai) is **discontinued**. There is no production
+data to migrate.
+
+If you have call sites that imported `memu` directly:
+
+```python
+# Before
+from memu import MemoryClient
+client = MemoryClient(api_key="...")
+client.add("user prefers concise replies", user_id="alice")
+hits = client.search("user preferences", user_id="alice")
+```
+
+Replace with:
+
+```python
+# After
+from astor_memory import write, read
+write("user prefers concise replies", user_id="alice")
+hits = read("user preferences", user_id="alice")
+```
+
+That is the entire migration. There is no data path because there is
+no data — the SDK never persisted anything you can recover.
+
+---
+
+## From Letta / Zep / MemGPT
+
+These three are the closest competitors to Astor-Memory: they all
+provide **agent-managed long-term memory** with blocks, archival
+memory, and recall. The main difference is they all share one DB
+across users; Astor splits per-user by default.
+
+### Letta → Astor
+
+Letta stores agents and their blocks in PostgreSQL or SQLite. Each
+agent has its own block set.
+
+```python
+# scripts/migrate_from_letta.py
+import sqlite3  # or psycopg2 for Postgres
+from astor_memory import write, init
+
+init(actor="first_admin", role="first_admin")
+
+conn = sqlite3.connect("<your-letta-db>.sqlite")
+agents = conn.execute("SELECT id, user_id, name FROM agents").fetchall()
+
+for agent_id, user_id, name in agents:
+    blocks = conn.execute(
+        "SELECT label, value, created_at FROM blocks "
+        "WHERE agent_id = ?", (agent_id,)
+    ).fetchall()
+    for label, value, created_at in blocks:
+        write(
+            value,
+            user_id=user_id,
+            scope="long_term",
+            metadata={
+                "agent_id": agent_id,
+                "block_label": label,
+                "created_at": created_at,
+                "migrated_from": "letta",
+            },
+        )
+    print(f"agent={name} user={user_id}: {len(blocks)} blocks migrated")
+```
+
+Letta's `user_id` field, if set, becomes Astor's `user_id`. If your
+Letta deployment shared one user across all agents, treat the whole
+import as belonging to `first_admin` and re-tag later.
+
+### Zep → Astor
+
+Zep stores sessions and messages per `user_id` in their Docker
+container.
+
+```bash
+docker exec <zep-container> sqlite3 /data/zep.db \
+  ".dump sessions" > zep_sessions.sql
+```
+
+Then walk the SQL dump and emit `astor_write` calls — pattern is
+identical to the Letta script.
+
+### MemGPT → Astor
+
+MemGPT persists everything in a single SQLite file. Migration is
+a direct table walk: read `messages`, read `archival_memory`, emit
+`astor_write` per row with `user_id` extracted from your MemGPT
+agent config.
+
+---
+
+## From ChromaDB / Pinecone / Weaviate
+
+These are **vector databases**, not agent memory systems. You have
+embeddings; you do not have facts, scenarios, profiles, decay, or
+ACL. Migration brings those.
+
+### ChromaDB
+
+ChromaDB persists to a local directory. Each collection has its own
+SQLite file.
+
+```python
+# scripts/migrate_from_chroma.py
+import chromadb
+from astor_memory import write, init
+
+init(actor="first_admin", role="first_admin")
+
+client = chromadb.PersistentClient(path="<chroma-dir>")
+for collection in client.list_collections():
+    coll = client.get_collection(collection.name)
+    results = coll.get(include=["documents", "metadatas", "embeddings"])
+
+    for doc, metadata, embedding in zip(
+        results["documents"], results["metadatas"], results["embeddings"]
+    ):
+        user_id = metadata.get("user_id") or "first_admin"
+        write(
+            doc,
+            user_id=user_id,
+            scope="long_term",
+            metadata={
+                "chroma_collection": collection.name,
+                "chroma_id": metadata.get("id"),
+                **metadata,
+            },
+            embedding=embedding,  # pass through if model matches
+        )
+```
+
+> **Important**: Astor-Memory embeds using a specific model (default
+> `BAAI/bge-base-en-v1.5`). If your Chroma collection used a different
+> model, omit the `embedding` arg and let Astor re-embed on first recall.
+
+### Pinecone / Weaviate
+
+These are cloud / network vector stores. Same pattern: walk the
+index, emit `astor_write` per vector with metadata, optionally
+re-embed if model differs.
+
+Astor can also **delegate nest (vector storage) to Pinecone or
+Weaviate** via `am config nest.backend=pinecone`. In that mode, the
+bus + forge still live in SQLite, but embeddings live in your
+existing Pinecone index. Useful when you already pay for Pinecone
+and want to keep the vectors in place.
+
+---
+
+## From plain file or JSON archives
+
+You have a folder of `.json`, `.yaml`, or `.md` files. There is no
+structure, no dedup, no decay. Astor will give you all of those.
+
+### Markdown / Obsidian vault
+
+```bash
+am migrate from-files \
+  --source ~/notes/alice.md \
+  --user-id alice \
+  --format markdown
+```
+
+Astor splits on `## ` (level-2 heading), treats each section as a
+fact, and preserves frontmatter as metadata.
+
+### JSON Lines / array
+
+```bash
+am migrate from-files \
+  --source ~/notes/alice.jsonl \
+  --user-id alice \
+  --format jsonl
+```
+
+Each line is a fact. If the JSON has `user_id` / `created_at`
+fields, Astor uses them; otherwise it tags with the `--user-id`
+you provided and the migration timestamp.
+
+### YAML frontmatter (Obsidian-style)
+
+Same as Markdown, but frontmatter fields become metadata directly
+rather than text.
+
+---
+
+## Side-by-side API reference
 
 ### Write
 
-| Old (memory-bus) | New (astor-memory) |
+| Source | New (astor-memory) |
 |---|---|
-| `auto_route_v2.write("text")` | `write("text")` |
-| `auto_route_v2.write("text", kind="fact")` | `write("text", scope="long_term", tier="public")` |
-| Returns `None` (fire-and-forget) | Returns `FactId` (immediate; extraction async) |
+| `mem0.add(text, user_id="alice")` | `write(text, user_id="alice")` |
+| `letta.agent.block_add(value)` | `write(value, user_id=<agent.user_id>)` |
+| `chroma.add(documents=[text])` | `write(text)` (chroma has no user concept) |
+| `json.dump({...})` to file | `write(text, metadata={...})` |
 
 ### Read
 
-| Old (memory-bus) | New (astor-memory) |
+| Source | New (astor-memory) |
 |---|---|
-| `auto_route_v2.read_all("query")` | `read("query")` |
-| `auto_route_v2.read_user("query", user_id="alice")` | `read("query", user_id="alice")` |
-| Returns list of dicts (no structure) | Returns list of `Hit` objects with `.content`, `.references`, `.confidence` |
-
-### Config
-
-| Old (memory-bus) | New (astor-memory) |
-|---|---|
-| `MEMU_URL=http://localhost:7801` | `ASTOR_FORGE_URL=http://localhost:7801` (or legacy `MEMU_URL`) |
-| `~/.memory-bus/config.yaml` | `~/.astor/config.yaml` |
-| No priority order | CLI flag > env > yaml > defaults |
+| `mem0.search(query, user_id="alice")` | `read(query, user_id="alice")` |
+| `letta.agent.block_list()` | `read(query, user_id=<agent.user_id>)` |
+| `chroma.query(query_texts=[q])` | `read(q)` (chroma returns vectors; astor returns facts with refs) |
+| `json.load(open(file))` | `read(query, user_id=<from-filename-or-arg>)` |
 
 ### Health check
 
-| Old (memory-bus) | New (astor-memory) |
+| Source | New (astor-memory) |
 |---|---|
-| `curl localhost:7801/health` | `am doctor` |
-| `curl localhost:7802/health` | (combined in doctor) |
-| `curl localhost:7803/health` | (combined in doctor) |
+| `mem0.health()` (SaaS ping) | `am doctor` |
+| `letta server status` | `am doctor` |
+| `chroma.heartbeat()` | `am doctor` (covers bus + forge + nest) |
 
 ---
 
@@ -322,12 +470,12 @@ Or if running in systemd:
 systemctl stop astor-memory.service
 ```
 
-### 2. Restart legacy services
+### 2. Restart your previous stack
 
 ```bash
-systemctl start memory-bus.service
-systemctl start memu-server.service
-systemctl start mempalace-server.service
+# mem0 / Letta / Zep: their normal start command
+# ChromaDB: docker start <container> or chroma run --path <dir>
+# Plain files: nothing to restart; data is still in the folder
 ```
 
 ### 3. Verify legacy is operational
@@ -337,68 +485,97 @@ curl localhost:7801/health
 # → {"status": "ok", ...}
 ```
 
-Your application continues to work because env vars are still set (`MEMU_URL`, `MEMPALACE_URL`, `BUS_URL`) and Astor-Memory's env-var compat kept them aliased.
+Your application continues to work because your old call sites were
+never modified during parallel-run.
 
 ### Data rollback
 
-If you need to roll back **data** (not just services):
+Astor-Memory data is in `~/.astor/`. Source data is in whatever path
+your previous stack used (untouched during parallel-run). To roll
+back **data** (not just services):
 
 ```bash
-# Astor-Memory data is in ~/.astor/
-# Legacy data is in ~/.memory-bus/ (untouched during parallel-run)
-
-# Switch env vars back
-export MEMU_URL=http://localhost:7801
-export MEMPALACE_URL=http://localhost:7802
-export BUS_URL=http://localhost:7803
-
-# Restart legacy services (above)
+# Re-export from astor back to source format
+am migrate to-<source-system> --source ~/.astor/astor.db --target <old-path>
+# (this CLI is planned; for now, you can re-run your migration in reverse manually)
 ```
-
-Since legacy data was never modified during parallel-run, this is safe.
 
 ---
 
 ## Common pitfalls
 
-### Pitfall 1: Forgetting the env-var compat layer
+### Pitfall 1: Skipping the dry-run
 
-After `pip install astor-memory`, the env vars still work. But if you explicitly set `ASTOR_FORGE_URL` to a different value than `MEMU_URL`, the env-var compat layer is bypassed.
+Always `--dry-run` first. Each source system has subtle schema
+differences (mem0's `agent_id` field, Chroma's embedding model,
+Letta's `block_label` taxonomy) that you want to verify before
+writing.
 
-**Fix**: Either set both to the same value, or set only the new var and unset the old.
+**Fix**: Read the dry-run report. Check user counts, fact counts,
+embedding-model compatibility.
 
-### Pitfall 2: Data migration without dry-run
+### Pitfall 2: Mixing per-user data into admin-private
 
-Don't run `am migrate` without `--dry-run` first. The legacy schema has subtle differences (e.g. `kind` taxonomy changed; old `kind="interaction"` maps to new `kind="event"`).
+If your source system had a single shared DB (plain files, single
+Chroma collection), the migration defaults `user_id` to
+`first_admin`. If you have multiple users in the same DB, tag them
+manually before running.
 
-**Fix**: Always dry-run, review the mapping table, then run for real.
+**Fix**: Add `--user-id-field` to point at the right metadata
+field, or pre-process your data with `user_id` injection.
 
-### Pitfall 3: Cutting over too fast
+### Pitfall 3: Embedding model mismatch
 
-Don't cut over after 1 day of parallel-run. Plan for 1-2 weeks minimum. Watch for:
-- Latency differences (Astor-Memory should be 10-100x faster in-process; slower if REST-only)
-- Citation format changes (any code that string-matches old format breaks)
+Astor-Memory embeds with `BAAI/bge-base-en-v1.5` (768 dim) by
+default. If your source used a different model (OpenAI `text-embedding-3-small`,
+`all-MiniLM-L6-v2`, etc.), the embedding pass-through is unsafe —
+similarity scores will be wrong.
+
+**Fix**: Either (a) re-embed by omitting the `embedding` arg, or
+(b) configure Astor to use the same embedding model
+(`am config forge.embedding_model=<your-model>`).
+
+### Pitfall 4: Cutting over too fast
+
+Do not cut over after 1 day of parallel-run. Plan for 1–2 weeks
+minimum. Watch for:
+
+- Latency differences (Astor-Memory should be 10–100× faster
+  in-process; slower if REST-only)
+- Citation format changes (any code that string-matches old format
+  breaks)
 - Cron jobs that depend on specific ports
 
-**Fix**: Use the 1-2 week parallel-run to observe and adjust.
+**Fix**: Use the 1–2 week parallel-run to observe and adjust.
 
-### Pitfall 4: Import cutover without diff review
+### Pitfall 5: Forgetting that you had multiple users
 
-`astor-migrate-imports` rewrites 10+ files in one shot. Always review the diff before committing.
+If your source had `user_id` and you did not realize, your
+migration will silently import everyone as `first_admin`. Then
+`read(query)` returns their data to the admin.
 
-**Fix**: Use `--dry-run` flag first to preview the changes, then commit incrementally.
+**Fix**: Always print a per-user fact count in the dry-run before
+running for real. If counts are off, fix the `--user-id-field` and
+re-run.
 
-### Pitfall 5: Skipping the doctor check
+### Pitfall 6: Importing bot-bound data as facts
 
-After migration, `am doctor` is your single source of truth for system health. Don't trust individual `curl localhost:7801/health` calls — use `am doctor` to see all three stores at once.
+If your source system stored bot-binding tables, audit logs, or
+runtime state alongside facts, those tables do not belong in
+Astor-Memory. They are infrastructure, not memory.
 
-**Fix**: Add `am doctor` to your monitoring/alerting pipeline.
+**Fix**: Skip non-fact tables in your migration. Filter at the SQL
+level: only emit `astor_write` for rows where the table is fact-like
+(`memories`, `blocks`, `archival_memory`, `messages`), not
+infra-like (`audit_log`, `bot_binding`, `sessions`).
 
 ---
 
 ## Next
 
-- [`docs/agent-adapters.md`](./agent-adapters.md) — MCP / LangChain / REST / Python integration
+- [`docs/agent-adapters.md`](./agent-adapters.md) — MCP / LangChain /
+  REST / Python integration
 - [`docs/faq.md`](./faq.md) — frequently asked questions
-- [`docs/troubleshooting.md`](./troubleshooting.md) — common errors and fixes
+- [`docs/troubleshooting.md`](./troubleshooting.md) — common errors
+  and fixes
 - [`docs/contributing.md`](./contributing.md) — for contributors

@@ -687,7 +687,7 @@ This:
 2. Writes `plugins/memory/astor_memory/plugin.yaml` with `name: astor_memory`,
    schema for `astor_dir` and `default_tier`.
 3. Edits `~/.hermes/config.yaml`:
-   - Sets `memory.provider: astor_memory` (replaces `memory_bus`).
+   - Sets `memory.provider: astor_memory`.
    - Sets `memory_enabled: false` + `user_profile_enabled: false` to
      disable built-in `MEMORY.md` / `USER.md` injection entirely.
 4. Verifies via `am doctor --check-priority`.
@@ -729,7 +729,7 @@ config_schema:
 YAML
 
 # In ~/.hermes/config.yaml under the `memory:` block:
-#   provider: astor_memory          # was: memory_bus
+#   provider: astor_memory
 #   memory_enabled: false           # was: true
 #   user_profile_enabled: false     # was: true
 
