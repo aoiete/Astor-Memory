@@ -29,9 +29,11 @@ See [`README.md`](../README.md#why-we-built-this) for the full comparison. Short
 
 ### Is this production-ready?
 
-Astor-Memory v1.0 is the first public release. We've run a precursor (the `memory-bus` system) in production for 33 ship sessions and ~6 months. v1.0 ships the lessons learned, rewritten from scratch with the lessons absorbed.
+Astor-Memory v1.0 is the first public release.
 
-For production use: pin the version (`astor-memory==1.0.0`), set up `am doctor` monitoring, and review the [migration guide](./migration.md) if upgrading from `memory-bus`.
+For production use: pin the version (`astor-memory==1.0.0`), set up
+`am doctor` monitoring. To migrate from another memory stack, see
+the [migration guide](./migration.md).
 
 ---
 
@@ -135,25 +137,33 @@ None known. Astor-Memory uses SQLite for durability (no in-memory unbounded grow
 
 ---
 
-## Migration from memory-bus
+## Migration from other memory stacks
 
-See [`docs/migration.md`](./migration.md) for the full 5-step guide. Quick answers:
+See [`docs/migration.md`](./migration.md) for the full guide covering
+mem0 / Letta / Zep / MemGPT / ChromaDB / Pinecone / Weaviate / plain
+files. Quick answers:
 
 ### Can I run both systems in parallel?
 
-Yes. `am init --parallel` uses ports 7804-7806 (vs legacy 7801-7803). Both run concurrently.
+Yes. `am init --parallel` uses ports 7804-7806 so it does not
+collide with the source system. Both run concurrently.
 
 ### Will my old cron jobs break?
 
-No. Env vars are aliased (`MEMU_URL` → `ASTOR_FORGE_URL`). Existing cron configs continue to work.
+No. Your existing cron configs continue to work because you can run
+both stacks side-by-side during the parallel-run window.
 
 ### How long does data migration take?
 
-~10 seconds per 1000 events. For a typical 10 K-event bus, expect ~2 minutes.
+Depends on the source system. mem0 → astor: ~10 seconds per 1000
+memories. Letta / Zep / Chroma: similar. Pinecone / Weaviate
+(network): dominated by network I/O. Plain files: ~1 second per
+100 facts.
 
 ### Can I roll back after migration?
 
-Yes. Three-step rollback: stop Astor-Memory, restart legacy services, verify. Data is preserved in `~/.memory-bus/` during parallel-run.
+Yes. Three-step rollback: stop Astor-Memory, restart your previous
+stack, verify. Your old data is untouched during parallel-run.
 
 ---
 
@@ -213,7 +223,7 @@ After v1.0, semantic versioning (semver.org). Minor versions every 1-3 months.
 ## Next
 
 - [`docs/architecture.md`](./architecture.md) — deep dive on 3-store × 3-tier
-- [`docs/migration.md`](./migration.md) — upgrade from `memory-bus`
+- [`docs/migration.md`](./migration.md) — migrate from mem0 / Letta / Zep / MemGPT / ChromaDB / Pinecone / Weaviate / plain files
 - [`docs/agent-adapters.md`](./agent-adapters.md) — MCP / LangChain / REST / Python
 - [`docs/troubleshooting.md`](./troubleshooting.md) — common errors and fixes
 - [`docs/contributing.md`](./contributing.md) — for contributors
