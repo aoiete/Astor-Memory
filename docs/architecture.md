@@ -6,6 +6,34 @@ This document explains *why* each component exists. For installation and usage, 
 
 ---
 
+## Vision
+
+Astor-Memory is built for **one server shared by a small group** —
+typically a household where you, your family, and a few friends each have
+their own agent identity but share the same bot process. The design
+priorities follow from that:
+
+1. **Data isolation by default.** A user MUST NOT see another user's
+   facts even if the bot has them stored. ACL enforces this at the
+   matrix level — no caller cooperation needed (see
+   [ACL v1.2 hardening](acl-v1.2-hardening.md) for the threat model).
+
+2. **One shared public knowledge base.** All users benefit from skills,
+   rules, and reference material that the admin curates. Public tier is
+   the answer; private tier is the per-user private tier.
+
+3. **No vendor lock-in.** Each user's memory is just a SQLite file under
+   `~/.astor/users/<id>/`. They can `git pull` to back up, `sqlite3` to
+   inspect, or move their data to another install. Nothing is
+   proprietary storage.
+
+4. **The admin is also a user.** first_admin is itself a tier (source),
+   not a privileged "root" outside the model. Same ACL matrix applies.
+
+This is **not** a SaaS memory service. There is no per-seat billing,
+no multi-region replication, no per-customer customization. It is a
+single-server tool you operate for the people you know.
+
 ## Table of contents
 
 1. [The 3-store triplet](#1-the-3-store-triplet)
@@ -537,7 +565,7 @@ Astor-Memory ships 15 Core runtime iron rules that every agent must obey. Plus 8
 
 ### Personal category (opt-in)
 
-- P-CONT-006 — "继续" token workflow (flopworld-with-AI reference)
+- P-CONT-006 — "继续" token workflow (operator-neutral reference)
 
 ### Disclosure policy
 
@@ -615,3 +643,8 @@ doc for full P1/P2/P3 priority list.
 - [`docs/faq.md`](./faq.md) — frequently asked questions
 - [`docs/troubleshooting.md`](./troubleshooting.md) — common errors and fixes
 - [`docs/contributing.md`](./contributing.md) — for contributors
+
+
+## Related design docs
+
+- [ACL v1.2 hardening (2026-09-01)](acl-v1.2-hardening.md)

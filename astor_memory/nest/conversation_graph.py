@@ -19,15 +19,20 @@ subsequent requests take <1ms (cached).
 from __future__ import annotations
 
 import json
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-DATASET_PATHS = [
-    Path(r"D:\AI\agent-memory-benchmark-ll\.datasets\locomo\locomo10.json"),
-    Path(r"D:\AI\agent-memory-benchmark-ll\.datasets\locomo\locomo10.json"),
-]
+# 2026-09-01 cleanup: resolve dataset path from env (LOCOMO_DATASET) with a
+# public-data default. Hardcoding the operator's local D:/AI/... path is
+# forbidden — scripts must be portable across hosts.
+_DEFAULT_LOCOMO = Path("~/.cache/locomo/locomo10.json")
+LOCOMO_DATASET_PATH = Path(
+    os.environ.get("LOCOMO_DATASET", str(_DEFAULT_LOCOMO.expanduser()))
+)
+DATASET_PATHS = [LOCOMO_DATASET_PATH]
 
 _CAPITALIZED_RE = re.compile(r"\b([A-Z][a-z][a-zA-Z'-]{2,})\b")
 

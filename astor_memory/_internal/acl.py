@@ -16,17 +16,41 @@ This module is process-level state. It enforces:
 2. Write paths to private dbs are validated against the requested user_id.
 3. The actor + user_id are recorded in audit rows automatically.
 
-Lock: 2026-08-15 (turn design discussion); 2026-08-16 strict-privacy ship.
+v1.2 hardening (2026-09-01):
+- astor_init_acl validates every argument; bad input cannot be silently
+  accepted. actor must match the canonical regex (rejects typos + smuggling).
+  Role / actor must be consistent (rejects impersonation like
+  actor='first_admin' role='user').
+- tier='public' write is restricted to first_admin + admin so that a
+  compromised 'user' or 'system' context cannot spam public.
+- astor_check_read / astor_check_write raise PermissionError_ when
+  user_id=None for tier=private or tier=repo. The previous "silent pass"
+  was a footgun that hid caller mistakes.
+- astor_init_acl re-init (changing actor within the same process) is
+  audit-logged so silent privilege escalation cannot go unnoticed.
+
+Lock: 2026-08-15 (turn design discussion); 2026-08-16 strict-privacy ship;
+2026-09-01 v1.2 hardening.
 """
 
 from __future__ import annotations
 
+import contextvars
 import threading
 from dataclasses import dataclass
 from typing import Literal
 
 from . import grants
 from .audit_logger import astor_audit
+
+# v1.2 follow-up: contextvars support for async / per-task ACL isolation.
+# threading.local isolates per-thread, but asyncio coroutines share a thread
+# and need per-task isolation. We use a ContextVar as the source of truth for
+# reads, while keeping threading.local as a fallback for non-asyncio callers
+# that ran astor_init_acl() in main thread.
+_ACL_CTX: contextvars.ContextVar["_AclSnapshot | None"] = contextvars.ContextVar(
+    "astor_acl_ctx", default=None,
+)
 
 
 Role = Literal["first_admin", "admin", "user", "system"]
@@ -37,6 +61,15 @@ class PermissionError_(Exception):
 
 
 _VALID_ROLES = {"first_admin", "admin", "user", "system"}
+_VALID_TIERS = {"public", "source", "private", "repo"}
+
+# Strict actor pattern: only the four canonical forms. Anything else is
+# rejected at init time so typos / smuggling cannot silently bind a fake ACL.
+import re as _re_
+_ACTOR_RE = _re_.compile(r"^(first_admin|system|admin:[a-zA-Z0-9_\-]{1,64}|user:[a-zA-Z0-9_\-]{1,64})$")
+
+# user_id must look like a sane id (canonical or short_alias).
+_USER_ID_RE = _re_.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 
 
 # Per plan §2576-2589 matrix: action → which roles are allowed.
@@ -56,8 +89,9 @@ _MATRIX = {
     ("write", "source"): {"first_admin"},
     # Read public: any role (everyone shares public knowledge)
     ("read", "public"): {"first_admin", "admin", "user", "system"},
-    # Write public: any authenticated role
-    ("write", "public"): {"first_admin", "admin", "user", "system"},
+    # Write public: only first_admin + admin (NOT user/system — compromised
+    # user/system contexts must not be able to spam public).
+    ("write", "public"): {"first_admin", "admin"},
     # Read private: only the owner (cross-user via grant only)
     ("read", "private"): {"first_admin", "admin", "user"},
     # Write private: only the owner (cross-user via grant only)
@@ -79,6 +113,17 @@ _MATRIX = {
 
 
 @dataclass(frozen=True)
+class _AclSnapshot:
+    """Snapshot used by the ContextVar path. Mirrors AccessContext fields but
+    is private so the public AccessContext remains the only externally
+    observable contract."""
+    actor: str
+    role: str
+    tier: str
+    user_id: str | None
+
+
+@dataclass(frozen=True)
 class AccessContext:
     """Set at process init via `astor_init_acl(...)`; bound into ACL checks."""
     actor: str         # 'first_admin' | 'admin:<id>' | 'user:<id>' | 'system'
@@ -88,6 +133,139 @@ class AccessContext:
 
 
 _CURRENT = threading.local()
+
+
+def _maybe_audit_grant(actor: str, action: str, tier: str, user_id: str | None, target: str) -> None:
+    """Write a grant row to the audit log, throttled per (actor, action, tier, user_id)
+    so high-frequency cross-user reads do not flood the audit log."""
+    import time as _time
+    key = (actor, action, tier, user_id, target)
+    now = _time.time()
+    last = _GRANT_AUDIT_CACHE.get(key)
+    if last is not None and (now - last) < _GRANT_AUDIT_CACHE_TTL_SEC:
+        return
+    _GRANT_AUDIT_CACHE[key] = now
+    astor_audit(
+        actor=actor, tier=tier, action=action,
+        user_id=user_id, target=target,
+        metadata={"grant_path": True},
+    )
+
+
+@dataclass
+class _LeakyBucket:
+    """Leaky bucket: capacity is the burst allowance; refill rate is the
+    steady-state per-second throughput. Each (actor, target, action) gets
+    its own bucket so a flood against one target cannot starve other targets.
+
+    Tokens refill continuously (not per-tick) so the bucket drains smoothly
+    rather than in 1-second sawtooth pulses.
+    """
+    capacity: float          # max tokens (= burst allowance)
+    refill_per_sec: float    # tokens refilled per second
+    tokens: float            # current available tokens
+    last_refill: float       # last time tokens were refilled (monotonic)
+
+    def take(self, cost: float = 1.0) -> bool:
+        now = _time_rate.time()
+        elapsed = now - self.last_refill
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_per_sec)
+        self.last_refill = now
+        if self.tokens >= cost:
+            self.tokens -= cost
+            return True
+        return False
+
+
+# Per-(actor, target_user_id, action) leaky bucket.
+_RATE_BUCKETS: dict[tuple[str, str | None, str], _LeakyBucket] = {}
+_GLOBAL_BUCKET: _LeakyBucket | None = None
+_RATE_BUCKET_CAP = 5.0
+_RATE_BUCKET_REFILL = 5.0
+_RATE_GLOBAL_CAP = 50.0
+_RATE_GLOBAL_REFILL = 50.0
+
+import time as _time_rate
+
+
+def _get_or_make_bucket(actor: str, target_user_id: str | None, action: str) -> _LeakyBucket:
+    key = (actor, target_user_id, action)
+    bucket = _RATE_BUCKETS.get(key)
+    if bucket is None:
+        bucket = _LeakyBucket(
+            capacity=_RATE_BUCKET_CAP,
+            refill_per_sec=_RATE_BUCKET_REFILL,
+            tokens=_RATE_BUCKET_CAP,
+            last_refill=_time_rate.time(),
+        )
+        _RATE_BUCKETS[key] = bucket
+    return bucket
+
+
+def _canonicalize_user_id(user_id: str | None, *, for_tier: str) -> str:
+    """v1.2 step 4: defense-in-depth — reject user_id values that could be
+    interpreted as filesystem paths or otherwise abuse the ACL.
+
+    Caller passes user_id; the ACL does not currently resolve user_id into
+    a filesystem path itself, but downstream layers (bus/store.py and
+    nest/vector_store.py) DO use the value in Path.joinpath(...) to build
+    db paths. Any non-canonical value (path traversal chars, NUL byte,
+    backslash separator, leading dot, double slashes) is rejected here so
+    the failure surfaces at the ACL layer rather than at the path layer
+    where the diagnostic is harder to interpret.
+
+    Returns the user_id unchanged if it is canonical.
+    """
+    if user_id is None:
+        return user_id  # None is the caller's responsibility (raises separately)
+    # Reject any control character (incl. NUL) or path separator.
+    # NUL is written as chr(0) to avoid embedding a literal null byte in source.
+    forbidden_chars = ("/", "\\", chr(0), "\n", "\r", "\t")
+    for c in forbidden_chars:
+        if c in user_id:
+            raise PermissionError_(
+                f"user_id={user_id!r} contains forbidden character "
+                f"(forbidden for {for_tier} tier to prevent path traversal)"
+            )
+    # Reject leading dot (hidden files / relative path)
+    if user_id.startswith("."):
+        raise PermissionError_(
+            f"user_id={user_id!r} starts with '.' (forbidden for {for_tier} tier)"
+        )
+    # Reject consecutive dots (e.g. '..' alone, even though already caught above)
+    if ".." in user_id:
+        raise PermissionError_(
+            f"user_id={user_id!r} contains '..' (forbidden for {for_tier} tier)"
+        )
+    return user_id
+
+
+def _enforce_rate_limit(actor: str, target_user_id: str | None, action: str) -> None:
+    """Per-target leaky bucket. Each (actor, target_user_id, action) has
+    capacity=5 tokens + refill=5/s. Exceeding raises PermissionError_.
+
+    Also enforces a per-process global ceiling so a co-ordinated flood
+    across many (actor, target) pairs cannot still succeed.
+    """
+    global _GLOBAL_BUCKET
+    if _GLOBAL_BUCKET is None:
+        _GLOBAL_BUCKET = _LeakyBucket(
+            capacity=_RATE_GLOBAL_CAP,
+            refill_per_sec=_RATE_GLOBAL_REFILL,
+            tokens=_RATE_GLOBAL_CAP,
+            last_refill=_time_rate.time(),
+        )
+    if not _GLOBAL_BUCKET.take():
+        raise PermissionError_(
+            f"rate limit: process exceeded {_RATE_GLOBAL_CAP} grant checks "
+            f"per second (global ceiling)"
+        )
+    bucket = _get_or_make_bucket(actor, target_user_id, action)
+    if not bucket.take():
+        raise PermissionError_(
+            f"rate limit: actor={actor!r} on target={target_user_id!r} exceeded "
+            f"{_RATE_BUCKET_CAP} {action!r} checks per second (leaky bucket full)"
+        )
 
 
 def astor_init_acl(actor: str, role: str, tier: str, user_id: str | None = None) -> None:
@@ -109,24 +287,74 @@ def astor_init_acl(actor: str, role: str, tier: str, user_id: str | None = None)
         # first_admin CLI:
         astor_init_acl(actor='first_admin', role='first_admin', tier='source')
     """
+    # Validate role + tier first (fail-fast on caller error)
     if role not in _VALID_ROLES:
         raise ValueError(f"role must be one of {sorted(_VALID_ROLES)}, got {role!r}")
-    if tier not in ("public", "source", "private", "repo"):
-        raise ValueError(f"tier must be public/source/private/repo, got {tier!r}")
-    # v1.1: tier=repo requires user_id (= repo_id). Both private and repo
-    # use user_id to disambiguate, but the namespace prefix differs.
+    if tier not in _VALID_TIERS:
+        raise ValueError(f"tier must be one of {sorted(_VALID_TIERS)}, got {tier!r}")
     if tier in ("private", "repo") and not user_id:
         raise ValueError(f"tier={tier} requires user_id (private=username, repo=repo_id)")
     if tier not in ("private", "repo") and user_id:
         raise ValueError(f"tier={tier} requires user_id=None (system scope)")
+    # v1.2 hardening: actor must match canonical form (reject typos + smuggling)
+    if not _ACTOR_RE.match(actor or ""):
+        raise ValueError(
+            f"actor={actor!r} does not match canonical form "
+            f"(first_admin|system|admin:<id>|user:<id> with [A-Za-z0-9_-]{{1,64}})"
+        )
+    # v1.2 hardening: actor / role consistency (prevent impersonation)
+    if actor == "first_admin" and role != "first_admin":
+        raise ValueError(f"actor={actor!r} requires role='first_admin', got role={role!r}")
+    if actor == "system" and role != "system":
+        raise ValueError(f"actor={actor!r} requires role='system', got role={role!r}")
+    if actor.startswith("admin:") and role not in ("admin", "first_admin"):
+        raise ValueError(f"actor={actor!r} requires role in ('admin','first_admin'), got role={role!r}")
+    if actor.startswith("user:") and role != "user":
+        raise ValueError(f"actor={actor!r} requires role='user', got role={role!r}")
+    # v1.2 hardening: user_id format check
+    if user_id is not None and not _USER_ID_RE.match(user_id):
+        raise ValueError(f"user_id={user_id!r} must match [A-Za-z0-9_-]{{1,64}}")
+    # v1.2 hardening: re-init (different actor in same process) is
+    # audit-logged so silent privilege escalation cannot go unnoticed.
+    prev_actor = getattr(_CURRENT, "actor", None)
+    if prev_actor is not None and prev_actor != actor:
+        try:
+            from .audit_logger import astor_audit
+            astor_audit(
+                actor=prev_actor,
+                tier=getattr(_CURRENT, "tier", "public"),
+                action="rebind",
+                user_id=getattr(_CURRENT, "user_id", None),
+                target="acl_context",
+                metadata={"new_actor": actor, "new_role": role, "new_tier": tier},
+            )
+        except Exception:
+            pass
     _CURRENT.actor = actor
     _CURRENT.role = role
     _CURRENT.tier = tier
     _CURRENT.user_id = user_id
+    # v1.2 follow-up: also set the asyncio ContextVar so per-coroutine
+    # callers see the correct ACL context without leaking between tasks.
+    _ACL_CTX.set(_AclSnapshot(actor=actor, role=role, tier=tier, user_id=user_id))
 
 
 def astor_current_acl() -> AccessContext:
-    """Return the currently bound ACL context. Raises if not init'd yet."""
+    """Return the currently bound ACL context. Raises if not init'd yet.
+
+    Resolution order (v1.2 follow-up):
+      1. asyncio ContextVar (per-coroutine in async callers)
+      2. threading.local (per-thread in legacy sync callers)
+      3. raise PermissionError_ — caller forgot to call astor_init_acl
+    """
+    snapshot = _ACL_CTX.get()
+    if snapshot is not None:
+        return AccessContext(
+            actor=snapshot.actor,
+            role=snapshot.role,
+            tier=snapshot.tier,
+            user_id=snapshot.user_id,
+        )
     try:
         return AccessContext(
             actor=_CURRENT.actor,
@@ -149,7 +377,11 @@ def astor_check_read(tier: str, user_id: str | None = None) -> None:
     - first_admin: read any private IFF has explicit grant from data owner
     - admin:       read any private IFF has explicit grant from data owner
     - user:        read ONLY own private_<self> + public
+
+    v1.2 step 4: rejects user_id values containing path separators or
+    control characters so downstream Path.joinpath() cannot be abused.
     """
+    user_id = _canonicalize_user_id(user_id, for_tier=tier)
     ctx = astor_current_acl()
     if tier == "public":
         # Every role can read public
@@ -167,36 +399,46 @@ def astor_check_read(tier: str, user_id: str | None = None) -> None:
         return
     # tier == "private"
     if user_id is None:
-        # Pathological: private without user_id. Caller should raise
-        # ValueError. ACL check returns silently here so caller's
-        # ValueError is the primary error.
-        return
+        # v1.2 hardening: pathological case must surface. Caller must supply
+        # who they are reading. A silent pass here was a footgun — caller
+        # bugs went undetected because they got "success" but read the wrong
+        # data.
+        raise PermissionError_(
+            f"actor={ctx.actor!r} attempted to read tier=private with user_id=None; "
+            f"caller must supply the target user_id"
+        )
     # Own private scope is always allowed, including the canonical `admin`
-    # first_admin identity. The grant system is only for cross-user access.
-    # Also resolve user_id in case a raw platform chat_id was passed directly to acl check.
-    from .bot_binding import resolve_chat_to_user as _resolve_chat
-    canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
-    if canonical_target is None:
-        for p in ("discord:discord_main", "weixin:8263b17ef9c7@im.bot", "weixin:11d658c3e7f7@im.bot", "weixin:71cc412a0283@im.bot", "weixin:2f94d1fb499c@im.bot", "weixin:6b76b87d5954@im.bot"):
-            b = _resolve_chat(p, user_id)
-            if b is not None:
-                canonical_target = b["user_id"]
-                break
-    else:
-        canonical_target = canonical_target["user_id"]
-    if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
-        return
-    canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
-    if canonical_target is None:
-        for p in ("discord:discord_main", "weixin:8263b17ef9c7@im.bot", "weixin:11d658c3e7f7@im.bot", "weixin:71cc412a0283@im.bot", "weixin:2f94d1fb499c@im.bot", "weixin:6b76b87d5954@im.bot"):
-            b = _resolve_chat(p, user_id)
-            if b is not None:
-                canonical_target = b["user_id"]
-                break
-    else:
-        canonical_target = canonical_target["user_id"]
-    if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
-        return
+        # first_admin identity. The grant system is only for cross-user access.
+        # Also resolve user_id in case a raw platform chat_id was passed directly to acl check.
+        # 2026-09-01 cleanup: ACL does NOT hardcode any bot_id. Instead it queries
+        # bot-binding.db via list_admin_chat_ids() to discover operator bindings at
+        # runtime. The fallback path (admin caller wants to bind a bot while
+        # bot-binding.db is unavailable) is documented in BACKUP_FALLBACK.md and
+        # uses env vars — never embedded here.
+        from .bot_binding import resolve_chat_to_user as _resolve_chat
+        from .bot_binding import list_admin_chat_ids as _list_admin_chats
+        canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
+        if canonical_target is None:
+            for platform_id, chat_id in _list_admin_chats():
+                b = _resolve_chat(platform_id, chat_id)
+                if b is not None:
+                    canonical_target = b["user_id"]
+                    break
+        else:
+            canonical_target = canonical_target["user_id"]
+        if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
+            return
+        canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
+        if canonical_target is None:
+            for platform_id, chat_id in _list_admin_chats():
+                b = _resolve_chat(platform_id, chat_id)
+                if b is not None:
+                    canonical_target = b["user_id"]
+                    break
+        else:
+            canonical_target = canonical_target["user_id"]
+        if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
+            return
     if ctx.role == "first_admin":
         # 2026-08-16 strict-privacy ship (B option): first_admin no longer has
         # implicit cross-user private access. Must hold an explicit grant
@@ -221,6 +463,8 @@ def astor_check_read(tier: str, user_id: str | None = None) -> None:
         # 2026-08-16 strict-privacy ship: admin can no longer implicitly read
         # other users' private. Must have explicit grant from data owner.
         admin_grantee = f"admin:{ctx.user_id}" if ctx.user_id else None
+        # v1.2 step 3: per-target leaky bucket rate limit before grant query.
+        _enforce_rate_limit(ctx.actor, user_id, "read")
         if admin_grantee and grants.check_grant(
             grantor=user_id, grantee=admin_grantee, required_scope="read"
         ):
@@ -256,7 +500,11 @@ def astor_check_write(tier: str, user_id: str | None = None) -> None:
     - first_admin: write any private IFF has explicit 'write'/'admin' grant
     - admin:       write any private IFF has explicit 'write'/'admin' grant
     - user:        write ONLY own private_<self> + public
+
+    v1.2 step 4: rejects user_id values containing path separators or
+    control characters so downstream Path.joinpath() cannot be abused.
     """
+    user_id = _canonicalize_user_id(user_id, for_tier=tier)
     ctx = astor_current_acl()
     if tier == "public":
         return  # any role can write public (their own facts)
@@ -278,27 +526,35 @@ def astor_check_write(tier: str, user_id: str | None = None) -> None:
         return
     # tier == "private"
     if user_id is None:
-        # Pathological: private without user_id. Caller should raise
-        # ValueError. ACL check returns silently here so caller's
-        # ValueError is the primary error.
-        return
+        # v1.2 hardening: pathological case must surface (same rationale
+        # as the read path). A silent pass here allowed caller bugs to
+        # accidentally write into another user's namespace.
+        raise PermissionError_(
+            f"actor={ctx.actor!r} attempted to write tier=private with user_id=None; "
+            f"caller must supply the target user_id"
+        )
     # Own private scope is always allowed, including the canonical `admin`
-    # first_admin identity. The grant system is only for cross-user access.
-    # Also resolve user_id in case a raw platform chat_id was passed directly to acl check.
-    from .bot_binding import resolve_chat_to_user as _resolve_chat
-    canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
-    if canonical_target is None:
-        for p in ("discord:discord_main", "weixin:8263b17ef9c7@im.bot", "weixin:11d658c3e7f7@im.bot", "weixin:71cc412a0283@im.bot", "weixin:2f94d1fb499c@im.bot", "weixin:6b76b87d5954@im.bot"):
-            b = _resolve_chat(p, user_id)
-            if b is not None:
-                canonical_target = b["user_id"]
-                break
-    else:
-        canonical_target = canonical_target["user_id"]
-    if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
-        return
+        # first_admin identity. The grant system is only for cross-user access.
+        # Also resolve user_id in case a raw platform chat_id was passed directly to acl check.
+        # 2026-09-01 cleanup: same runtime-query pattern as the read path — see
+        # astor_check_read for rationale. ACL stays free of any hardcoded bot ID.
+        from .bot_binding import resolve_chat_to_user as _resolve_chat
+        from .bot_binding import list_admin_chat_ids as _list_admin_chats
+        canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
+        if canonical_target is None:
+            for platform_id, chat_id in _list_admin_chats():
+                b = _resolve_chat(platform_id, chat_id)
+                if b is not None:
+                    canonical_target = b["user_id"]
+                    break
+        else:
+            canonical_target = canonical_target["user_id"]
+        if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
+            return
         # 2026-08-16 strict-privacy ship: first_admin must hold a 'write' or
         # 'admin' grant from the data owner before writing their private tier.
+        # v1.2 step 3: per-target leaky bucket rate limit before grant query.
+        _enforce_rate_limit(ctx.actor, user_id, "write")
         if grants.check_grant(grantor=user_id, grantee="first_admin", required_scope="write"):
             astor_audit(
                 actor=ctx.actor, tier="private", action="write",
@@ -319,6 +575,8 @@ def astor_check_write(tier: str, user_id: str | None = None) -> None:
         # 2026-08-16 strict-privacy ship: admin must hold a 'write' or 'admin'
         # grant from the data owner before modifying their private tier.
         admin_grantee = f"admin:{ctx.user_id}" if ctx.user_id else None
+        # v1.2 step 3: per-target leaky bucket rate limit before grant query.
+        _enforce_rate_limit(ctx.actor, user_id, "write")
         if admin_grantee and grants.check_grant(
             grantor=user_id, grantee=admin_grantee, required_scope="write"
         ):

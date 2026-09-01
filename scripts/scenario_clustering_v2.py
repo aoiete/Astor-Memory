@@ -12,8 +12,8 @@ Schema differences from v1:
 - BUS_DB points to astor_bus_public.db (not memory_bus.db)
 - memory_canonical schema: namespace, content, kind, confidence, importance, tags,
   promoted_at, last_confirmed_at, access_count, tombstoned (no `scene` or `stable_id`)
-- Scenarios stored in `<runtime_dir>public\scenarios.db` (instead of
-  memory-bus/scenarios.db)
+- Scenarios stored under ASTOR_DIR/public/scenarios.db (resolved at runtime
+  via env ASTOR_DIR; no hardcoded absolute path)
 
 Usage:
     python scenario_clustering_v2.py cluster --since 7d
@@ -24,9 +24,13 @@ import sys, os, json, time, sqlite3, hashlib
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-# Astor 1.2.7 paths
-BUS_DB = r"<runtime_dir>public\memory\astor_bus_public.db"
-SCENARIO_STORE = Path(r"<runtime_dir>public\scenarios.db")
+# 2026-09-01 cleanup: resolve paths from env (ASTOR_DIR) with default pointing
+# to ~/.astor. Hardcoding the operator's local D:/AI/... path is forbidden —
+# scripts must be portable across hosts.
+import os as _os
+_ASTOR_DIR = Path(_os.environ.get("ASTOR_DIR", "~/.astor")).expanduser()
+BUS_DB = str(_ASTOR_DIR / "public" / "memory" / "astor_bus_public.db")
+SCENARIO_STORE = _ASTOR_DIR / "public" / "scenarios.db"
 
 
 def md5(s: str) -> str:

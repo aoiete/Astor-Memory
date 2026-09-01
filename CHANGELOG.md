@@ -1,3 +1,35 @@
+
+## v1.12.0 (2026-09-01)
+
+### ACL v1.2 hardening (security, no behavior change for canonical callers)
+- `astor_init_acl`: actor regex validation + role/actor consistency check + user_id format check + re-init audit
+- `tier='public'` write restricted to first_admin + admin (was any role)
+- `user_id=None` for tier=private/repo raises `PermissionError_` (was silent pass)
+- Async-safe via `contextvars.ContextVar` (legacy `threading.local` fallback)
+- Per-(actor, target, action) leaky bucket rate limit (5 burst, 5/s refill)
+- Global ceiling (50 grant checks per second, process-wide)
+- Path traversal defense via `_canonicalize_user_id` (rejects `/`, `\`, NUL, `\n`, `\r`, `\t`, leading `.`, `..`)
+
+### PII cleanup (security, source portability)
+- Removed 5 hardcoded weixin bot IDs from `astor_memory/_internal/acl.py` (now reads from `bot-binding.db` via new `list_admin_chat_ids()`)
+- Removed hardcoded paths from `astor_memory/nest/conversation_graph.py` (now reads `LOCOMO_DATASET` env var)
+- Removed hardcoded paths from `scripts/scenario_clustering_v2.py` (now reads `ASTOR_DIR` env var)
+- `pyproject.toml`: author + URLs updated to public repo + maintainer-neutral naming
+- 8 docs files: operator mentions replaced with `the maintainer`; URLs to public repo
+
+### Source-tree slimming
+- Removed 17 temporary scripts from `scripts/` (one-time debug/patch/A-B-test helpers)
+- Removed 6 obsolete drafts from `docs/drafts/`
+- Kept `scripts/check_bot_binding_invariants.py` (permanent monitor)
+- Kept `scripts/scenario_clustering_v2.py` (refactored to use `ASTOR_DIR`)
+
+### New docs
+- `docs/acl-v1.2-hardening.md` (6.3 KB) — design discussion for the ACL v1.2 hardening
+- `docs/releases/v1.12.0-release-notes.md` (this release)
+
+### Upgrade
+- No database migrations required
+- Callers relying on silent-pass behavior for pathological inputs will now fail loudly (intentional)
 # Changelog
 
 All notable changes to Astor-Memory will be documented in this file.

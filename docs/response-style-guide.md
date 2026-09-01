@@ -102,7 +102,7 @@ Don't end sentences with:
 
 ### Code references
 
-- File paths: `<source_dir>docs\fact-lifecycle.md` (backticks)
+- File paths: `~/.astor-memory (source)\docs\fact-lifecycle.md` (backticks)
 - Commands: `python scenario_clustering.py cluster --since 7d` (backticks)
 - Function names: `fetch_recent_facts()` (no backticks)
 
@@ -221,8 +221,8 @@ The same flow works for any user (admin, jaydon, BO, etc.) — not just Sunday.
 
 ## PR / change workflow
 
-1. **Source of truth**: `<source_dir>docs\response-style-guide.md` (this file)
-2. **Runtime copy**: `<runtime_dir>docs\response-style-guide.md` (synced via `astor_dev_watch.py`)
+1. **Source of truth**: `~/.astor-memory (source)\docs\response-style-guide.md` (this file)
+2. **Runtime copy**: `$ASTOR_DIR (runtime)\docs\response-style-guide.md` (synced via `astor_dev_watch.py`)
 3. **System prompt reference**: when `style=formal`, append summary block to system prompt
 4. **Backwards compat**: this guide is additive — only enforces tone, doesn't change semantics
 

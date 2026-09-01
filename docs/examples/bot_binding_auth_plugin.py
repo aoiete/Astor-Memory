@@ -66,7 +66,7 @@ def _platform_id_for(platform: str, chat_id: Optional[str]) -> Optional[str]:
     """Map hermes Platform enum value + chat_id to a bot-binding.db platform_id.
 
     bot-binding.db's ``platforms`` table has rows like
-    ``weixin:11d658c3e7f7@im.bot`` or ``discord:discord_main`` — only one per
+    ``weixin:<bot_account_id>@im.bot`` or ``discord:discord_main`` — only one per
     platform kind, so for Discord/Telegram the lookup is just the platform
     + a stable bot identifier. WeChat is special: there can be multiple
     ``weixin:<id>@im.bot`` rows; the chat_id alone is not enough. But for the

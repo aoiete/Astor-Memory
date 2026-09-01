@@ -228,7 +228,7 @@ The full ship history is preserved in the Hermes agent project for archival purp
 
 ## 6. Authors
 
-### flopworld with AI
+### the maintainer
 
 **Role**: project lead, all architectural decisions, iron rule definitions
 
@@ -265,4 +265,4 @@ Astor-Memory is MIT-licensed. See [`LICENSE`](../LICENSE).
 
 The Acknowledgements above do NOT grant additional rights beyond the MIT license of Astor-Memory itself. Each project's license applies to their own code, not to Astor-Memory's code.
 
-If you believe any part of Astor-Memory improperly incorporates copyrighted material, please open an issue at https://github.com/flopworld/astor-memory/issues.
+If you believe any part of Astor-Memory improperly incorporates copyrighted material, please open an issue at https://github.com/aoiete/ASTOR-Memory/issues.
