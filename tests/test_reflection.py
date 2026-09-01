@@ -162,16 +162,20 @@ def test_deprecate_old_facts_tombstones_and_audits(fresh_bus):
     assert row[1] is not None
     # Verify audit row
     audit = fresh_bus.conn.execute(
-        "SELECT actor, severity, metadata FROM audit_log "
+        "SELECT actor, severity, metadata, old_state, new_state FROM audit_log "
         "WHERE event='reflection_deprecated' AND target_id = ?",
         (str(f1),)).fetchone()
     assert audit is not None
     assert audit[0] == 'test'
     assert audit[1] == 'info'
-    meta = json.loads(audit[2])
-    assert 'old_state' in meta
-    assert json.loads(meta['old_state'])['content'].startswith('dark roast')
-    assert json.loads(meta['new_state'])['merged_into'] == f2
+    # v1.13.1 (2026-09-02): write_audit now uses dedicated 'old_state'
+    # and 'new_state' DB columns (not stuffed into 'metadata' anymore).
+    # Read from column indexes directly.
+    old_state = json.loads(audit[3])
+    assert 'columns' in old_state
+    assert old_state['columns']['content'].startswith('dark roast')
+    new_state = json.loads(audit[4])
+    assert new_state['merged_into'] == f2
 
 
 def test_apply_merge_updates_winner(fresh_bus):
