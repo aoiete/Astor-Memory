@@ -154,6 +154,16 @@ Install:
 pip install astor-memory
 ```
 
+On Linux / macOS, you can also use the bundled install script (creates
+a venv, fetches from GitHub, initializes data dir, sets up `am` in one
+step):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash
+# or pin a version:
+curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash -s v1.13.1
+```
+
 Initialize a single-user memory store:
 
 ```bash
