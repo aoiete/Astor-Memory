@@ -29,7 +29,7 @@ This document is the source of truth for:
 ## Quick start
 
 ```bash
-git clone https://github.com/<AUTHOR>/astor-memory.git
+git clone https://github.com/<repo-owner>/ASTOR-Memory.git
 cd astor-memory
 pip install -e .[dev]
 pytest tests/
@@ -577,7 +577,7 @@ If your fork will be published and installed by other operators:
 
 1. **Search for hardcoded operator data** before each release:
    ```bash
-   grep -rnE "(user_e|user_c|user_a|user_d|operator|<BOT_ID_PREFIX>|<BOT_ID_PREFIX>|<WECHAT_OPENID_PREFIX>|<HOME_DIR>|<ASTOR_RUNTIME_DIR>)" \
+   grep -rnE "(user_e|user_c|user_a|user_d|operator|bot-account|@im.wechat|<HOME_DIR>|<ASTOR_RUNTIME_DIR>)" \
      --include="*.py" --include="*.md" --include="*.yaml" --include="*.toml" .
    ```
    Should return zero matches (excluding `CHANGELOG.md`).
@@ -593,7 +593,7 @@ If your fork will be published and installed by other operators:
 
 4. **Verify tests are isolated.** `tests/test_platform_bridge.py` was the canonical example — it used to depend on the operator's real bot-binding.db. The fixed version uses a `fresh_db` fixture with synthetic fake tokens. Apply the same pattern to any new integration test.
 
-5. **Anonymize the author** in `pyproject.toml`. The default is `<AUTHOR> with AI`. Change it before publishing if your fork is under a different maintainer name.
+5. **Anonymize the author** in `pyproject.toml`. The default is `the maintainer`. Change it before publishing if your fork is under a different maintainer name.
 
 ### When to bump the version
 
@@ -607,7 +607,7 @@ If your fork will be published and installed by other operators:
 - [ ] `pyproject.toml` `authors=` field
 - [ ] `README.md` repo URL
 - [ ] `pyproject.toml` `[project.urls]` (Homepage, Repository, Issues, etc.)
-- [ ] `bots/README.md` any references to `<AUTHOR>` operator path
+- [ ] `bots/README.md` any references to the original maintainer path
 - [ ] `ACKNOWLEDGEMENTS.md` Authors section
 - [ ] `CHANGELOG.md` add a "Forked as <name>" entry at the top
 
