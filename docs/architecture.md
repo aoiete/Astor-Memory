@@ -631,7 +631,7 @@ doc for full P1/P2/P3 priority list.
 - [`docs/migration.md`](./migration.md) — migrate from mem0 / Letta / Zep / MemGPT / ChromaDB / Pinecone / Weaviate / plain files
 - [`docs/agent-adapters.md`](./agent-adapters.md) — MCP / LangChain / REST / Python integration
 - [`docs/faq.md`](./faq.md) — frequently asked questions
-- [`docs/troubleshooting.md`](./troubleshooting.md) — common errors and fixes
+- [`docs/troubleshooting.md`](./troubleshooting.md) · [中文](troubleshooting.zh-CN.md) — common errors and fixes
 - [`docs/contributing.md`](./contributing.md) — for contributors
 
 
