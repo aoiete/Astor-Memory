@@ -3,10 +3,10 @@ astor-memory: Self-owned memory system for AI agents.
 
 3-store triplet (bus + forge + nest) with 3-tier isolation.
 
-See: https://github.com/flopworld/astor-memory/blob/main/docs/architecture.md
+See: docs/architecture.md in this repository for the full architecture overview.
 """
 
-__version__ = '1.11.0'  # 2026-08-26: see CHANGELOG for full version history
+__version__ = '1.12.0'  # 2026-08-26: see CHANGELOG for full version history
 
 # Top-level singleton accessors. Per Plan § Naming:
 # astor_bus() / astor_forge() / astor_nest() are the unified public API entry points.

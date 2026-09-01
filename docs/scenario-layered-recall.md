@@ -166,9 +166,9 @@ Fits in cron job budget.
 
 ## Where it lives
 
-- **Source**: `<source_dir>scripts\scenario_clustering.py` (12.8 KB)
-- **Runtime**: `<runtime_dir>scripts\scenario_clustering.py` (synced via `astor_dev_watch.py`)
-- **Storage**: `D:\AI\memory-system\memory-bus\scenarios.db` (was created 2026-07-31, persists across sessions)
+- **Source**: `~/.astor-memory (source)\scripts\scenario_clustering.py` (12.8 KB)
+- **Runtime**: `$ASTOR_DIR (runtime)\scripts\scenario_clustering.py` (synced via `astor_dev_watch.py`)
+- **Storage**: `$MEMORY_BUS_DIR (legacy, pre-2026-07-14)\scenarios.db` (was created 2026-07-31, persists across sessions)
 - **Caller**: `recall_3store.py` session_start routine
 - **Wiki reference**: `D:/AI/wiki/entities/01-tencentdb-agent-memory.md`
 
@@ -186,12 +186,12 @@ If these become problems, options:
 
 ## PR / change workflow
 
-1. **Source of truth**: `<source_dir>docs\scenario-layered-recall.md` (this file) + `scripts/scenario_clustering.py`
-2. **Runtime copy**: `<runtime_dir>docs\` + `scripts\` (synced via `astor_dev_watch.py`)
+1. **Source of truth**: `~/.astor-memory (source)\docs\scenario-layered-recall.md` (this file) + `scripts/scenario_clustering.py`
+2. **Runtime copy**: `$ASTOR_DIR (runtime)\docs\` + `scripts\` (synced via `astor_dev_watch.py`)
 3. **Change process**: edit source → file watcher auto-syncs → restart server (only if you edited the script)
 4. **Backwards compat**: scenario_clustering.py arg API is stable since 2026-07-31
 
 ## Change history
 
 - 2026-07-31: initial ship (<mem_sys>/memory-bus/scenario_clustering.py)
-- 2026-08-19: discovered original in `D:/AI/users/_system/`, moved to `<source_dir>scripts\` canonical source, synced to runtime, documented here
+- 2026-08-19: discovered original in `D:/AI/users/_system/`, moved to `~/.astor-memory (source)\scripts\` canonical source, synced to runtime, documented here
