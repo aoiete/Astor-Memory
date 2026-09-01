@@ -54,15 +54,17 @@ Python 3.10 或更高，低于 3.14。CI 测试覆盖 3.10 / 3.11 / 3.12 / 3.13�
 
 支持。CI 主要在 Ubuntu 24.04 跑，同时测 macOS 14 和 Windows 11。代码库全程用 `pathlib.Path`，没有 shell-specific 假设。
 
-### 不需要 admin / sudo 能装吗？
+### 一键安装（Linux / macOS）
 
-可以。用 venv：
+用仓库里附带的安装脚本（一次性处理 venv 创建、GitHub 拉取、数据目录初始化和 PATH 设置）：
 
 ```bash
-python -m venv ~/.astor-venv
-source ~/.astor-venv/bin/activate  # Windows 等价命令
-pip install astor-memory
+curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash
+# 或指定版本
+curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash -s v1.13.1
 ```
+
+装完跑 `am doctor` 验证。详见 `scripts/install.sh`（支持 `--check` / `--uninstall`，环境变量 `ASTOR_HOME` / `PYTHON` 可覆盖）。
 
 ---
 
