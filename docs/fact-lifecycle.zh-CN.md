@@ -15,7 +15,7 @@ Astor-Memory 采用腾讯的 4 层记忆模型（参考 `D:/AI/wiki/entities/01-
 | L0 | Raw | `bus_discrete` 每事件日志 | 每条消息 + 工具调用 + 观察 |
 | L1 | Fact | `memory_canonical` (SQLite) | 抽取出的结构化事实 |
 | **L2** | **Scenario** | **`scenarios.db` (SQLite)** | **按主题/项目聚类的事实 — 这层就是腾讯DB说的 "scenario clustering"** |
-| L3 | Profile | `memu` (memU SDK) | 长期用户人设 + 稳定偏好 |
+| L3 | Profile | `memory_canonical` long-term tier | 长期用户人设 + 稳定偏好 |
 
 **L2 是 2026-07-31 通过 `scripts/scenario_clustering.py` 补上的空缺**。
 没有 L2，recall 是按事实粒度的（噪声大）。有 L2，recall 先查 top-N scenarios，
@@ -34,7 +34,8 @@ top-3 scenarios 返回（relevance × decay × importance × access_count）
   ↓
 下钻:每个 scenario 的 fact_ids → bus 详情
   ↓
-memu (L3) profile 加在最上面（如果 user-specific）
+L3 是对 L1/L2 的查询时视图（按 recency 衰减 + importance 加权的事实）；
+没有独立 store。
 ```
 
 这就是 `recall_3store.py` session_start routine 调用 `<active_scenarios>` 块。
