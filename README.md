@@ -54,13 +54,13 @@ Modern AI agents need memory. The current options all force a trade-off:
 | **Letta** (Memory Blocks) | Read-only protection + archival | Heavy runtime, opinionated architecture |
 | **mem0** (4-level ACL) | Multi-tenant + scope tags | Cloud-coupled, async-by-default |
 | **PowerContext / PowerMem** | Search↔context-pack separation | Pre-1.0, Chinese-language-first, no self-host |
-| **Hand-rolled** (chromadb + memu.ai SDK) | Total control | 3 GB venv, 3 server processes, fragile upgrades |
+| **Hand-rolled** (DIY vector + extract stack) | Total control | Heavy venv, multiple server processes, fragile upgrades |
 
 **Astor-Memory** exists because we hit all four pain points in production across 33 ship sessions and 50+ cron jobs running on a self-hosted agent. We learned:
 
 1. **Three stores are the minimum viable decomposition.** An append-only event log (`bus`), an LLM fact extractor (`forge`), and a vector store (`nest`) map cleanly onto "what happened → what to remember → what to recall." More layers create coordination overhead; fewer collapse semantics.
 2. **Three tiers of isolation match real ACL needs.** Public knowledge (skills, rules) + admin-private (agent sees, user doesn't) + per-user private (N isolated DBs) — no more, no less.
-3. **Vendor lock-in is the silent killer.** chromadb migrations, memu.ai SDK breaking changes, transformers eating 3 GB of venv — every dependency we picked bit us within 6 months. The lesson: own the code or own the risk.
+3. **Vendor lock-in is the silent killer.** Vector-DB migrations, proprietary SDK breaking changes, transformer runtime bloat — every dependency we picked bit us within 6 months. The lesson: own the code or own the risk.
 
 If you've felt any of these, Astor-Memory is built for you.
 
@@ -72,7 +72,7 @@ If you've felt any of these, Astor-Memory is built for you.
 |---|---|
 | **3-store triplet** | `bus` (append-only event log) + `forge` (LLM fact extraction) + `nest` (vector store). Each does one thing well. |
 | **3-tier isolation** | `public` + `source` (admin-private) + `private × N` (per-user). Opt into multi-user mode with one command. |
-| **Self-owned code** | Pure Python + SQLite + NumPy. No chromadb, no memu.ai SDK, no transformers, no torch. Install footprint < 50 MB. |
+| **Self-owned code** | Pure Python + SQLite + NumPy. No proprietary vector DB, no proprietary memory SDK, no transformer runtime, no torch. Install footprint < 50 MB. |
 | **Vendor-neutral LLM** | `forge` works with OpenAI / Anthropic / Gemini / DeepSeek / 智谱 / Ollama. Same recall output, any provider. |
 | **Citation-first** | Every context-pack output embeds `<ref memory_id revision_id>` so agents can verify what they read. |
 | **Lifecycle that self-evolves** | Ebbinghaus-style decay + cosine-merge + promote-after-3-occurrences. Agents actively forget, merge, and graduate facts to rules. |

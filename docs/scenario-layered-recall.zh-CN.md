@@ -64,7 +64,7 @@ CREATE TABLE scenarios (
 CREATE TABLE scenario_links (
     scenario_id TEXT NOT NULL,
     fact_id TEXT NOT NULL,
-    fact_source TEXT,                -- 'bus' 或 'memu'
+    fact_source TEXT,                -- 'bus' 或 'forge' 或 'public'
     added_at REAL,
     PRIMARY KEY (scenario_id, fact_id)
 );
@@ -133,7 +133,7 @@ active_scenarios = hydrate(query=session_query, top=3)
 |---|---|
 | 近期（0-7 天） | L1（bus）就够 — 事实还很新鲜 |
 | 较旧（7-30 天） | **L2（scenarios）** — 模式已浮现，recall 受用 |
-| 久远（>30 天） | L3（memu）profile — 长期用户模式 |
+| 久远（>30 天） | L3（长期 profile 视图）— 按 recency 衰减 + importance 加权的事实 |
 
 **L2 何时最亮眼**：你多次 session 里有相似主题绕回来，你想看运行的历史
 而不是只看今天的事实。
