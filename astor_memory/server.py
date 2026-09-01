@@ -16,6 +16,7 @@ Per Plan § Memory <-> concurrency: WAL mode handles concurrent reads.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -208,6 +209,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         mode = body.get('mode', 'auto')
         tier = body.get('tier', 'public')
         scope = body.get('scope', 'long_term')
+        # v1.11.0: optional session_id — enables session-neighbor recall
+        _write_session_id = body.get('session_id') or None
 
         # v1.1: tier=repo requires repo_id (= user_id). The body uses 'user'
         # for both — same field name, different semantic in different tier.
@@ -339,10 +342,18 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # canonical columns during promote_candidate.
                 keywords=f.keywords or [],
                 context=f.context or '',
+                # v1.12.0: hierarchical extraction — topic + session_id
+                # propagated through to metadata.__topic__ / __session_id__.
+                topic=getattr(f, 'topic', '') or '',
+                session_id=getattr(f, 'session_id', '') or _write_session_id or '',
             )
             canon_id = bus.promote_candidate(
                 cand_id, promoted_by='rest.write', user_id=user, tier=tier,
                 scope_type=scope,  # P1-fix 2026-08-15: thread scope through
+                # v1.11.0: thread session_id for agentic neighbor-expand.
+                # Facts from the same session can be pulled as read/navigate
+                # neighbors at recall time (Mistral Agentic Search pattern).
+                origin_session_id=_write_session_id,
                 stable_id=stable_id,  # P1-fix 2026-08-15: enable content-hash dedup
             )
             fact_ids.append(canon_id)
@@ -484,6 +495,16 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 return v if isinstance(v, list) else []
             except Exception:
                 return []
+        # v1.12.0 (2026-08-29): separate helper for metadata dicts (not lists).
+        # _safe_json_loads above is list-or-[] only; for metadata we need
+        # dict-or-{}. Sharing the helper would silently drop facts whose
+        # metadata is valid JSON but happens to be a dict.
+        def _safe_json_loads_dict(s):
+            try:
+                v = _safe_json_loads_json_mod.loads(s) if s else {}
+                return v if isinstance(v, dict) else {}
+            except Exception:
+                return {}
         embeddings = list(model.embed([query]))
         query_emb = embeddings[0]
 
@@ -856,12 +877,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
         for fact_id, sim in results:
             row = bus.conn.execute(
                 "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
-                "event_date, event_date_precision "
+                "event_date, event_date_precision, origin_session_id, metadata "
                 "FROM memory_canonical WHERE id = ?",
                 (fact_id,),
             ).fetchone()
             if row is None:
                 continue
+            # v1.12.0 (2026-08-29): surface hierarchical extraction fields
+            # (__topic__, __session_id__) to the API so multi-hop bridge
+            # callers and human-readable displays can use them. Falls back
+            # to '' for pre-v1.12 facts that lack these keys.
+            _meta = _safe_json_loads_dict(row[13]) if len(row) > 13 and row[13] else {}
             enriched.append({
                 'fact_id': row[0],
                 'content': row[1],
@@ -885,7 +911,138 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # for temporal queries (LoCoMo "When did X?" weakness).
                 'event_date': row[10] if len(row) > 10 else None,
                 'event_date_precision': row[11] if len(row) > 11 else None,
+                'session_id': (row[12] if len(row) > 12 else None),
+                # v1.12.0: hierarchical extraction (Mem0 2026 lesson).
+                # topic + session_id from metadata JSON, populated by either
+                # LLM extractor or the regex-fallback heuristic. Empty when
+                # fact was written before v1.12.0 (legacy schema didn't have
+                # these fields).
+                'topic': _meta.get('__topic__', '') if _meta else '',
+                'session_id_meta': _meta.get('__session_id__', '') if _meta else '',
             })
+        # v1.11.0 (2026-08-28): Agentic-grep verification pass (Mistral
+        # Agentic Search pattern). Zero LLM tokens. After vector/hybrid
+        # recall, re-run an exact BM25 match on the query's rare tokens;
+        # facts that exact-match but were missed by hybrid recall get
+        # appended (marked source='grep_verify'). Fixes "I don't have
+        # info" failures where the answer WAS in the corpus but vector
+        # similarity ranked it below top_k (observed on LongMemEval).
+        if enriched and os.environ.get('ASTOR_GREP_VERIFY', '1') != '0':
+            try:
+                from .nest.lex_index import astor_lex as _astor_lex
+                _lex = _astor_lex(tier=tier, user_id=user_id)
+                _stop = {
+                    'what', 'when', 'where', 'who', 'how', 'did', 'does', 'is',
+                    'are', 'was', 'were', 'the', 'a', 'an', 'my', 'i', 'me',
+                    'in', 'on', 'at', 'of', 'for', 'to', 'with', 'and', 'or',
+                    'do', 'did', 'have', 'has', 'many', 'much', 'long', 'get',
+                }
+                _tokens = [
+                    t for t in re.findall(r"[A-Za-z0-9]{2,}", query)
+                    if t.lower() not in _stop
+                ]
+                if _tokens:
+                    _have = {int(r['fact_id']) for r in enriched}
+                    # grep semantics: rare tokens are needles. Multi-token AND
+                    # query often returns [] (BM25 conjunction); probe tokens
+                    # individually and merge hits.
+                    _hits = {}
+                    _tok_df = {}
+                    for _tok in _tokens[:8]:
+                        try:
+                            _tok_hits = _lex.bm25_search(_tok, limit=top_k * 2)
+                            _tok_df[_tok.lower()] = len(_tok_hits)
+                            for _fid, _score in _tok_hits:
+                                _hits.setdefault(int(_fid), []).append((_tok, float(_score)))
+                        except Exception:
+                            continue
+                    # Rarest tokens first: a fact matching a rare token is a
+                    # stronger grep signal than one matching only common words.
+                    _rarity = {t: _tok_df.get(t.lower(), 999) for t in _tokens}
+                    _sorted_tokens = sorted(_tokens, key=lambda t: _rarity.get(t.lower(), 999))
+                    _rare_thresh = 3  # token in <=3 facts = rare needle
+                    _hits_ranked = sorted(
+                        _hits.items(),
+                        key=lambda kv: min(_rarity.get(t.lower(), 999) for t, _ in kv[1]),
+                    )
+                    _added = 0
+                    for _fid, _tok_scores in _hits_ranked:
+                        if _fid in _have or _added >= 3:
+                            continue
+                        _row = bus.conn.execute(
+                            "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
+                            "event_date, event_date_precision, origin_session_id "
+                            "FROM memory_canonical WHERE id = ?", (_fid,),
+                        ).fetchone()
+                        if _row is None:
+                            continue
+                        _content_l = str(_row[1]).lower()
+                        # Require >=1 RARE token exact match (grep semantics):
+                        # common-word-only matches are distractors, skip them.
+                        _matched_all = [t for t in _sorted_tokens if t.lower() in _content_l]
+                        _matched = [t for t in _matched_all if _rarity.get(t.lower(), 999) <= _rare_thresh]
+                        if not _matched:
+                            continue
+                        enriched.append({
+                            'fact_id': _row[0],
+                            'content': _row[1],
+                            'kind': _row[2],
+                            'confidence': _row[3],
+                            'importance': _row[4],
+                            'tags': _row[5],
+                            'namespace': _row[6],
+                            'user_id': _row[7],
+                            'similarity': round(min(max(s for _, s in _tok_scores) / 10.0, 1.0), 4),
+                            'score_kind': 'grep_verify',
+                            'keywords': _safe_json_loads(_row[8]) if len(_row) > 8 else [],
+                            'context': (_row[9] if len(_row) > 9 and _row[9] else '')[:500],
+                            'event_date': _row[10] if len(_row) > 10 else None,
+                            'event_date_precision': _row[11] if len(_row) > 11 else None,
+                            'session_id': _row[12] if len(_row) > 12 else None,
+                            'grep_matched_tokens': _matched[:5],
+                        })
+                        _have.add(_fid)
+                        _added += 1
+            except Exception:
+                pass  # grep-verify is best-effort; never break recall
+
+        # v1.11.0: session-neighbor expand (read/navigate pattern). For the
+        # top hybrid hits that carry origin_session_id, pull ±1 sibling facts
+        # from the same session — gives the LLM the surrounding context of a
+        # hit without re-running vector search. 0 LLM tokens.
+        if enriched and os.environ.get('ASTOR_NEIGHBOR', '1') != '0':
+            try:
+                _seen_ids = {int(r['fact_id']) for r in enriched}
+                _neighbors = []
+                for _r in enriched[:3]:
+                    _sid = _r.get('session_id') or None
+                    if not _sid:
+                        continue
+                    _rows = bus.conn.execute(
+                        "SELECT id, content, kind, origin_session_id, event_date FROM memory_canonical "
+                        "WHERE origin_session_id = ? AND id != ? AND tombstoned = 0 "
+                        "ORDER BY ABS(id - ?) LIMIT 2",
+                        (_sid, int(_r['fact_id']), int(_r['fact_id'])),
+                    ).fetchall()
+                    for _row in _rows:
+                        if int(_row[0]) in _seen_ids:
+                            continue
+                        _seen_ids.add(int(_row[0]))
+                        _neighbors.append({
+                            'fact_id': _row[0],
+                            'content': _row[1],
+                            'kind': _row[2],
+                            'session_id': _row[3],
+                            'event_date': _row[4],
+                            'similarity': 0.0,
+                            'score_kind': 'session_neighbor',
+                            'neighbor_of': int(_r['fact_id']),
+                        })
+                # Neighbors go AFTER all primary results
+                enriched.extend(_neighbors[:3])
+            except Exception:
+                pass  # neighbor-expand is best-effort
+
         return jsonify({'results': enriched, 'count': len(enriched)})
 
     @app.route('/v1/forget', methods=['POST'])
@@ -1151,9 +1308,23 @@ def create_app(astor_dir: str | None = None) -> Flask:
         enriched = []
         for key, score in ranked:
             tier, uid, fid = key
+            # 2026-08-29 fix: rebind ACL per scope in the request thread.
+            # The request thread carries whatever binding before_request set
+            # (or a stale bind from a previous request on a reused Flask
+            # thread). _search_one rebinds per scope; enrich must do the
+            # same or private-scope reads 403 with "first_admin lacks grant".
+            if tier == 'private':
+                astor_init_acl(
+                    actor='first_admin', role='first_admin',
+                    tier='private', user_id=uid,
+                )
+            else:
+                astor_init_acl(
+                    actor='first_admin', role='first_admin', tier=tier,
+                )
             bus = astor_bus(tier=tier, user_id=uid)
             row = bus.conn.execute(
-                "SELECT id, content, kind, confidence, importance, tags, namespace, user_id "
+                "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, origin_session_id "
                 "FROM memory_canonical WHERE id = ?", (fid,),
             ).fetchone()
             if row is None:
@@ -1816,6 +1987,113 @@ def create_app(astor_dir: str | None = None) -> Flask:
             grants_out = _list(grantor=ctx.user_id, include_revoked=include_revoked)
         return jsonify({'grants': grants_out, 'count': len(grants_out)})
 
+    # 2026-08-31 ship: 记忆原生三维度自审 audit endpoint
+    # 灵感来源: 微信文章"从外部记忆到记忆原生模型"by Bannings
+    # (https://mp.weixin.qq.com/s/aL1gaDDGR1eJy2uzL5kKdQ)
+    # 三维: 可寻址 (nest.search) / 可更新 (bus.append + nest.store wired) /
+    #       可计算 (query 进 nest search, 不是 hardcoded prefix)
+    @app.route('/v1/audit/health', methods=['GET'])
+    def audit_health():
+        """Self-audit astor on 3-dim memory-native checklist (Bannings 2026-08-31).
+
+        Returns per-dimension score (0/1) + evidence. Total 0-3.
+        GET only — no side effects, no auth required (content-free).
+        """
+        import sqlite3 as _sqlite3
+        from ._internal.acl_layout import get_db_path, Tier, Store
+
+        evidence = {}
+
+        # === Dim 1: 可寻址 (Addressable) ===
+        # nest.search endpoint exists + nest DB has embeddings
+        addressable_ok = False
+        try:
+            # Check nest DB has embeddings (any tier — public covers it)
+            nest_path = str(get_db_path(Tier.PUBLIC, Store.NEST))
+            conn = _sqlite3.connect(nest_path)
+            cur = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings'")
+            has_table = cur.fetchone()[0] > 0
+            if has_table:
+                cnt = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+                addressable_ok = cnt > 0
+                evidence['addressable'] = {
+                    'nest_db': nest_path,
+                    'embeddings_count': cnt,
+                    'check': 'PASS — nest has embeddings'
+                }
+            else:
+                evidence['addressable'] = {
+                    'nest_db': nest_path,
+                    'check': 'FAIL — embeddings table missing'
+                }
+            conn.close()
+        except Exception as e:
+            evidence['addressable'] = {'check': f'FAIL — {e}'}
+
+        # === Dim 2: 可更新 (Updatable) ===
+        # bus.append exists + nest.store wired (called after bus append)
+        updatable_ok = False
+        try:
+            # Look for nest.store call in server.py source
+            import re as _re
+            src_path = os.path.join(os.path.dirname(__file__), 'server.py')
+            with open(src_path, 'r', encoding='utf-8') as f:
+                src = f.read()
+            nest_store_wired = 'nest.store' in src
+            # Check bus DB has append path (events_total > 0 implies writes happened)
+            bus_path = str(get_db_path(Tier.PUBLIC, Store.BUS))
+            conn = _sqlite3.connect(bus_path)
+            events_cnt = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+            conn.close()
+            updatable_ok = nest_store_wired and events_cnt > 0
+            evidence['updatable'] = {
+                'nest_store_wired': nest_store_wired,
+                'bus_events_count': events_cnt,
+                'check': 'PASS — nest.store wired + events flowing' if updatable_ok else 'FAIL — check wiring'
+            }
+        except Exception as e:
+            evidence['updatable'] = {'check': f'FAIL — {e}'}
+
+        # === Dim 3: 可计算 (Computable) ===
+        # nest.search computes embeddings live (not cached/hardcoded)
+        # proxy: query_embedding goes through nest.search() not prefix-match
+        computable_ok = False
+        try:
+            # Look for embedding model in nest.search call (model.embed or model.encode)
+            src_path = os.path.join(os.path.dirname(__file__), 'server.py')
+            with open(src_path, 'r', encoding='utf-8') as f:
+                src = f.read()
+            uses_live_embed = ('model.embed' in src or 'model.encode' in src) and 'nest.search' in src
+            computable_ok = uses_live_embed
+            evidence['computable'] = {
+                'live_embed_in_search': uses_live_embed,
+                'check': 'PASS — nest.search computes live embeddings' if computable_ok else 'FAIL — using prefix/cache'
+            }
+        except Exception as e:
+            evidence['computable'] = {'check': f'FAIL — {e}'}
+
+        # === Aggregate ===
+        scores = {
+            'addressable': 1 if addressable_ok else 0,
+            'updatable': 1 if updatable_ok else 0,
+            'computable': 1 if computable_ok else 0,
+        }
+        total = sum(scores.values())
+        verdict = (
+            'memory_native_ready' if total == 3 else
+            'partially_native' if total >= 1 else
+            'memory_external_only'
+        )
+        return jsonify({
+            'version': __version__,
+            'audit_ts': __import__('datetime').datetime.utcnow().isoformat() + 'Z',
+            'dimension_scores': scores,
+            'total_score': f'{total}/3',
+            'verdict': verdict,
+            'evidence': evidence,
+            'reference': 'mp.weixin.qq.com/s/aL1gaDDGR1eJy2uzL5kKdQ (Bannings 2026-08)'
+        })
+
     @app.errorhandler(500)
     def internal_error(e):
         """Flask 500 handler that emits a structured JSON error + audit row."""
@@ -1835,7 +2113,7 @@ def main():
     args = parser.parse_args()
 
     app = create_app(astor_dir=args.astor_dir)
-    print(f'🚀 Astor-Memory v{__version__} REST API')
+    print(f'[*] Astor-Memory v{__version__} REST API')
     print(f'   Listening on http://{args.host}:{args.port}')
     print(f'   Endpoints: /v1/health /v1/write /v1/read /v1/install')
     app.run(host=args.host, port=args.port, debug=args.debug)

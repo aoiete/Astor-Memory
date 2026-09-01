@@ -138,6 +138,69 @@ def normalize_repo_id(remote_url: str | None, name: str | None = None) -> str:
     )
 
 
+def enumerate_all_scopes() -> list[tuple[str, str | None]]:
+    """v1.10.8 (2026-08-26): return every (tier, user_id) combination. v1.10.9
+    added permission-aware variant enumerate_scopes_for_actor() -- call that
+    instead from CLI code so cron output stays clean of PermissionError.
+
+    Scans the layout directory and returns the canonical (tier, user_id)
+    tuple per bus DB that exists on disk.
+    """
+    from .acl_layout import get_astor_dir as _gad
+    base = _gad() / 'users'
+    if not base.exists():
+        return [('public', None)]
+    scopes: list[tuple[str, str | None]] = []
+    # public is at root /public/memory/
+    pub = _gad() / 'public' / 'memory'
+    if pub.exists():
+        scopes.append(('public', None))
+    # source is at root /source/memory/
+    src = _gad() / 'source' / 'memory'
+    if src.exists():
+        scopes.append(('source', None))
+    # private_<user> under /users/<user>/memory/
+    users_dir = base
+    if users_dir.exists():
+        for user_dir in sorted(users_dir.iterdir()):
+            if not user_dir.is_dir():
+                continue
+            mem = user_dir / 'memory'
+            if not mem.exists():
+                continue
+            # detect bus DB files
+            for db in mem.glob('astor_bus_*.db'):
+                # name is e.g. astor_bus_omb_test.db or astor_bus_admin.db
+                stem = db.stem.replace('astor_bus_', '')
+                user_id = stem if stem != 'public' else None
+                scopes.append(('private', user_id))
+                break
+    return scopes
+
+
+
+
+def enumerate_scopes_for_actor() -> list[tuple[str, str | None]]:
+    """v1.10.9 (2026-08-26): like enumerate_all_scopes() but filters scopes
+    based on the current ACL actor's read permission.
+
+    - first_admin: sees public, source, and (if granted) private_<any_user>.
+    - admin:       sees public, source, and only their own private scope.
+    - user:        sees only public and own private.
+
+    Returns only the scopes the actor can ACTUALLY read. CLI code should
+    call this instead of enumerate_all_scopes() to avoid log spam.
+    """
+    from .acl import astor_current_acl, astor_check_read, PermissionError_
+    all_scopes = enumerate_all_scopes()
+    accessible = []
+    for tier, user_id in all_scopes:
+        try:
+            astor_check_read(tier=tier, user_id=user_id)
+            accessible.append((tier, user_id))
+        except PermissionError_:
+            pass  # actor lacks read access -- skip silently
+    return accessible
 def get_db_path(
     tier: Tier | str,
     store: Store | str,

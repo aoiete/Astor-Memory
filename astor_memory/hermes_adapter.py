@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -177,6 +176,16 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                             "type": "string",
                             "description": "Required when tier='private'",
                         },
+                        "hybrid": {
+                            "type": "boolean",
+                            "description": "Combine vector and BM25 scores",
+                            "default": True,
+                        },
+                        "cross_tier": {
+                            "type": "boolean",
+                            "description": "Also search public and source scopes",
+                            "default": False,
+                        },
                     },
                     "required": ["query"],
                 },
@@ -220,6 +229,32 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                     "event timestamp, ACL actor/role, embedding model name."
                 ),
                 "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "astor_forget",
+                "description": (
+                    "Tombstone a fact in astor-memory by fact_id or semantic query. "
+                    "Use fact_id when the exact memory is known; query requires a "
+                    "similarity threshold."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fact_id": {"type": "integer", "description": "Exact fact ID"},
+                        "query": {"type": "string", "description": "Semantic search query"},
+                        "tier": {
+                            "type": "string",
+                            "enum": ["public", "source", "private"],
+                            "default": "public",
+                        },
+                        "user_id": {"type": "string"},
+                        "forget_threshold": {
+                            "type": "number",
+                            "default": 0.5,
+                            "description": "Minimum similarity for query-based forgetting",
+                        },
+                    },
+                },
             },
         ]
 
@@ -306,8 +341,8 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
             if not hits:
                 return ""
             lines = ["## astor-memory recall (public tier)\n"]
-            for hit in hits[:5]:
-                cid = hit.get("canonical_id") or hit.get("id")
+            for fact_id, _similarity in hits[:5]:
+                cid = fact_id
                 if cid is None:
                     continue
                 row = bus.conn.execute(
@@ -381,36 +416,42 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
     # -- Tool implementations ---------------------------------------------
 
     def _tool_recall(self, args: Dict[str, Any]) -> str:
+        """Recall through the REST API so hybrid and ACL semantics stay unified."""
         import json
-        query = args.get("query", "")
-        top_k = int(args.get("top_k", 5))
+        import urllib.request as _ur
+
+        query = str(args.get("query", "")).strip()
+        if not query:
+            return json.dumps({"error": "query required"})
         tier = args.get("tier", "public")
         user_id = args.get("user_id")
+        endpoint = "/v1/read/multi" if args.get("cross_tier", False) else "/v1/read"
+        body: Dict[str, Any] = {
+            "query": query,
+            "top_k": int(args.get("top_k", 5)),
+            "hybrid": bool(args.get("hybrid", True)),
+        }
+        if endpoint.endswith("/multi"):
+            body["user_id"] = user_id
+        else:
+            body["tier"] = tier
+            if user_id is not None:
+                body["user_id"] = user_id
         try:
-            from astor_memory import astor_bus, astor_nest
-            from astor_memory.nest.embeddings import astor_get_embedding_model
+            base = os.environ.get("ASTOR_BASE_URL", "http://127.0.0.1:7803")
+            req = _ur.Request(
+                base + endpoint,
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            response = json.loads(
+                _ur.urlopen(req, timeout=15).read().decode("utf-8")
+            )
+            if args.get("cross_tier", False):
+                response["cross_tier"] = True
+            return json.dumps(response, ensure_ascii=False)
         except Exception as exc:
-            return json.dumps({"error": f"astor import failed: {exc}"})
-        try:
-            nest = astor_nest(tier=tier, user_id=user_id if tier == "private" else None)
-            bus = astor_bus(tier=tier, user_id=user_id if tier == "private" else None)
-            model = astor_get_embedding_model()
-            emb = list(model.embed([query]))[0]
-            hits = nest.search(emb, limit=top_k)
-            out = []
-            for hit in hits:
-                cid = hit.get("canonical_id") or hit.get("id")
-                row = bus.conn.execute(
-                    "SELECT id, content, kind, tags, importance FROM memory_canonical WHERE id=?",
-                    (cid,),
-                ).fetchone() if cid else None
-                if row:
-                    out.append({"id": row[0], "content": row[1], "kind": row[2],
-                                "tags": row[3], "importance": row[4]})
-            return json.dumps({"results": out, "tier": tier, "count": len(out)},
-                              ensure_ascii=False)
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
+            return json.dumps({"error": f"astor_recall failed: {exc}"})
 
     def _tool_write(self, args: Dict[str, Any]) -> str:
         import json
@@ -510,6 +551,14 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                 e = bus.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
                 result[f"{tier}_canonical"] = n
                 result[f"{tier}_events"] = e
+            # Include lexical index health without exposing index contents.
+            try:
+                from astor_memory.nest.lex_index import astor_lex
+                for tier in ("public", "source"):
+                    result[f"{tier}_lex_docs"] = astor_lex(tier=tier).stats()["documents"]
+                result["per_user_lex"] = {}
+            except Exception as exc:
+                result["lex_error"] = str(exc)
         except Exception as exc:
             result["error"] = str(exc)
         return json.dumps(result, ensure_ascii=False)

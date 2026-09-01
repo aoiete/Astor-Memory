@@ -12,8 +12,6 @@ dry-run-able and testable without filesystem side-effects.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
 from .registry import (
     PRIORITY_MARKER,
     astor_get_agent_tier,

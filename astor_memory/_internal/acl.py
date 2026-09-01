@@ -21,13 +21,10 @@ Lock: 2026-08-15 (turn design discussion); 2026-08-16 strict-privacy ship.
 
 from __future__ import annotations
 
-import os
-import re
 import threading
 from dataclasses import dataclass
 from typing import Literal
 
-from .acl_layout import Tier, get_db_path, _validate_user_id
 from . import grants
 from .audit_logger import astor_audit
 
@@ -170,9 +167,35 @@ def astor_check_read(tier: str, user_id: str | None = None) -> None:
         return
     # tier == "private"
     if user_id is None:
-        # Pathological: private without user_id. Caller should fall through
-        # to a ValueError. ACL check would raise PermissionError_ which is
-        # a worse error message — defer to caller.
+        # Pathological: private without user_id. Caller should raise
+        # ValueError. ACL check returns silently here so caller's
+        # ValueError is the primary error.
+        return
+    # Own private scope is always allowed, including the canonical `admin`
+    # first_admin identity. The grant system is only for cross-user access.
+    # Also resolve user_id in case a raw platform chat_id was passed directly to acl check.
+    from .bot_binding import resolve_chat_to_user as _resolve_chat
+    canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
+    if canonical_target is None:
+        for p in ("discord:discord_main", "weixin:8263b17ef9c7@im.bot", "weixin:11d658c3e7f7@im.bot", "weixin:71cc412a0283@im.bot", "weixin:2f94d1fb499c@im.bot", "weixin:6b76b87d5954@im.bot"):
+            b = _resolve_chat(p, user_id)
+            if b is not None:
+                canonical_target = b["user_id"]
+                break
+    else:
+        canonical_target = canonical_target["user_id"]
+    if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
+        return
+    canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
+    if canonical_target is None:
+        for p in ("discord:discord_main", "weixin:8263b17ef9c7@im.bot", "weixin:11d658c3e7f7@im.bot", "weixin:71cc412a0283@im.bot", "weixin:2f94d1fb499c@im.bot", "weixin:6b76b87d5954@im.bot"):
+            b = _resolve_chat(p, user_id)
+            if b is not None:
+                canonical_target = b["user_id"]
+                break
+    else:
+        canonical_target = canonical_target["user_id"]
+    if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
         return
     if ctx.role == "first_admin":
         # 2026-08-16 strict-privacy ship (B option): first_admin no longer has
@@ -259,7 +282,21 @@ def astor_check_write(tier: str, user_id: str | None = None) -> None:
         # ValueError. ACL check returns silently here so caller's
         # ValueError is the primary error.
         return
-    if ctx.role == "first_admin":
+    # Own private scope is always allowed, including the canonical `admin`
+    # first_admin identity. The grant system is only for cross-user access.
+    # Also resolve user_id in case a raw platform chat_id was passed directly to acl check.
+    from .bot_binding import resolve_chat_to_user as _resolve_chat
+    canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
+    if canonical_target is None:
+        for p in ("discord:discord_main", "weixin:8263b17ef9c7@im.bot", "weixin:11d658c3e7f7@im.bot", "weixin:71cc412a0283@im.bot", "weixin:2f94d1fb499c@im.bot", "weixin:6b76b87d5954@im.bot"):
+            b = _resolve_chat(p, user_id)
+            if b is not None:
+                canonical_target = b["user_id"]
+                break
+    else:
+        canonical_target = canonical_target["user_id"]
+    if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
+        return
         # 2026-08-16 strict-privacy ship: first_admin must hold a 'write' or
         # 'admin' grant from the data owner before writing their private tier.
         if grants.check_grant(grantor=user_id, grantee="first_admin", required_scope="write"):

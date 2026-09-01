@@ -101,6 +101,8 @@ _UNIFIED_SYSTEM_PROMPT = (
     '  - event_date_precision: "day" if YYYY-MM-DD known, "month" if only YYYY-MM, "year" if only YYYY, "none" if no date\n'
     '  - abstract: L0 one-sentence summary of the fact (≤80 tokens / ≤320 chars). MANDATORY for every fact. Used for progressive loading in system prompt.\n'
     '  - overview: L1 structured digest with key params/details (≤300 tokens / ≤1200 chars). Recommended for facts >2 sentences. MANDATORY for decisions/trading_facts.\n'
+    '  - topic: short noun phrase (≤5 words) grouping this fact into a session-level theme (e.g. "AXTI monthly backtest", "MoMoo TFSA rebalance"). MANDATORY — empty string if no clear theme.\n'
+    '  - session_id: stable identifier for the conversation/session this fact came from (e.g. "telegram-2026-08-29-2230", "wechat-sunday-2026-08-13"). If unknown, use the doc timestamp as the session anchor (e.g. "doc-2026-08-29"). MANDATORY.\n'
     'CRITICAL — TEMPORAL NORMALIZATION (v1.10.9):\n'
     ' - When the input mentions ANY relative time ("yesterday", "last week", "3 days ago", "tomorrow", "next Friday", "the other day", "last Monday"), you MUST resolve it to an absolute ISO-8601 date based on the conversation timestamp provided in the document.\n'
     ' - The system ALWAYS prepends a `[Doc timestamp: YYYY-MM-DD ...]` marker to each document. Use that as the anchor date ("today") when resolving relative references.\n'
@@ -364,6 +366,11 @@ def astor_llm_extract(text: str, primary: str = 'm3', fallback_chain: list[str] 
                         overview=str(f.get('overview', '') or '').strip()[:1500] or _derive_overview(
                             f.get('content', '')
                         ),
+                        # v1.12.0 (2026-08-29): hierarchical extraction per
+                        # Mem0 2026 lesson. Falls back to empty string when LLM
+                        # doesn't emit these fields (legacy providers).
+                        topic=str(f.get('topic', '') or '').strip()[:100],
+                        session_id=str(f.get('session_id', '') or '').strip()[:128],
                     )
                     for f in raw_facts
                 ]

@@ -35,8 +35,6 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime
-from pathlib import Path
-
 from .acl_layout import get_audit_path, get_astor_dir
 
 AUDIT_DB_SCHEMA = """

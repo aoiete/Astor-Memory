@@ -47,8 +47,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any
-
 from .._internal.acl_layout import get_db_path
 
 
@@ -167,12 +165,17 @@ def add_auto_link(
     ex_parents.append(int(new_fact_id))
     new_parents_json = json.dumps(sorted(set(new_parents)))
     ex_parents_json = json.dumps(sorted(set(ex_parents)))
+    # v1.10.8 (2026-08-26): preserve existing provenance_kind/agent if set.
+    # Previously auto_link unconditionally wrote provenance_kind='auto_link' /
+    # provenance_agent='nest.auto_link', which silently overwrote real
+    # provenance from reflection (kind='merged') or extraction (kind='extracted').
+    # Now: only set auto_link provenance if the column is NULL/empty.
     # Update new_fact_id
     bus_connection.execute(
         "UPDATE memory_canonical SET "
         "parent_fact_ids = ?, "
-        "provenance_kind = 'auto_link', "
-        "provenance_agent = 'nest.auto_link', "
+        "provenance_kind = COALESCE(NULLIF(provenance_kind, ''), 'auto_link'), "
+        "provenance_agent = COALESCE(NULLIF(provenance_agent, ''), 'nest.auto_link'), "
         "provenance_at = ? "
         "WHERE id = ?",
         (new_parents_json, _utc_now(), int(new_fact_id)),
@@ -181,8 +184,8 @@ def add_auto_link(
     bus_connection.execute(
         "UPDATE memory_canonical SET "
         "parent_fact_ids = ?, "
-        "provenance_kind = 'auto_link', "
-        "provenance_agent = 'nest.auto_link', "
+        "provenance_kind = COALESCE(NULLIF(provenance_kind, ''), 'auto_link'), "
+        "provenance_agent = COALESCE(NULLIF(provenance_agent, ''), 'nest.auto_link'), "
         "provenance_at = ? "
         "WHERE id = ?",
         (ex_parents_json, _utc_now(), int(existing_fact_id)),

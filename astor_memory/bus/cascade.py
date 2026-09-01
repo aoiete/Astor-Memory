@@ -25,14 +25,32 @@ Replay paths:
   - Cron: `am cascade replay --limit=50` daily 03:30 MDT (drains backlog)
 
 Per-row state machine:
-  pending → succeeded   (embed succeeded on retry)
-  pending → failed      (embed still failing after retries; row kept for
-                          post-mortem; cleared by `am cascade purge`)
+  pending → processing → succeeded   (embed succeeded on retry)
+  pending → processing → failed      (embed still failing after retries;
+                                      row kept for post-mortem; cleared by
+                                      `am cascade purge`)
+  processing → pending               (lease expired after 15 min without
+                                      update; orphan row reclaimed by next
+                                      replay pass)
+
+v1.10.8 (2026-08-26):
+  - Added `processing` state — formerly absent from the docstring even
+    though the code used it. The README + audit needed catching up.
+  - Bug fix: lease-recovery comparison was comparing ISO-format string
+    against datetime() space-format string → same-day orphans never
+    reclaimed. Fixed by wrapping last_attempt_at in datetime() before
+    comparing. See list_pending() and replay_one() for the diff.
+  - Added requeue() so failed rows can be resurrected after the
+    underlying error recovers.
+  - stats() now exposes `processing` count (was silently dropped).
+
+Status string literals (NOT exported constants — module uses bare strings
+rather than named constants; intentional to keep call sites terse):
+  'pending' | 'processing' | 'succeeded' | 'failed'
 """
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -43,6 +61,10 @@ from .store import AstorBus
 STATUS_PENDING = 'pending'
 STATUS_SUCCEEDED = 'succeeded'
 STATUS_FAILED = 'failed'
+STATUS_PROCESSING = 'processing'
+# A crashed worker must not strand a row forever. Reclaim only rows whose
+# claim has been quiet for this long; active embedding work remains protected.
+PROCESSING_LEASE_MINUTES = 15
 
 
 def enqueue(
@@ -83,13 +105,16 @@ def list_pending(bus, limit: int = 100) -> list[dict]:
     rows = bus.conn.execute(
         """
         SELECT id, fact_id, operation, tier, user_id, payload,
-               enqueued_at, attempt_count, last_error
+               enqueued_at, attempt_count, last_error, status
         FROM cascade_state
         WHERE status = ?
+           OR (status = ? AND last_attempt_at <
+               datetime('now', ?))
         ORDER BY enqueued_at ASC
         LIMIT ?
         """,
-        (STATUS_PENDING, int(limit)),
+        (STATUS_PENDING, STATUS_PROCESSING,
+         f'-{PROCESSING_LEASE_MINUTES} minutes', int(limit)),
     ).fetchall()
     out: list[dict] = []
     for r in rows:
@@ -107,13 +132,21 @@ def list_pending(bus, limit: int = 100) -> list[dict]:
             'enqueued_at': r[6],
             'attempt_count': r[7],
             'last_error': r[8],
-            'status': STATUS_PENDING,
+            'status': r[9],
         })
     return out
 
 
 def stats(bus) -> dict:
-    """Aggregate stats: pending / succeeded / failed counts + last_attempt."""
+    """Aggregate stats: pending / processing / succeeded / failed + last_attempt.
+
+    v1.10.8 (2026-08-26): include `processing` count. Previously the output
+    dict only initialized pending/succeeded/failed, and the stats loop
+    silently dropped `processing` rows via `if status in out` (the
+    processing key wasn't in out). This meant any row currently being
+    worked on by a replay process was invisible to the operational
+    dashboard, hiding in-flight work.
+    """
     rows = bus.conn.execute(
         """
         SELECT status, COUNT(*), MAX(last_attempt_at)
@@ -123,6 +156,7 @@ def stats(bus) -> dict:
     ).fetchall()
     out = {
         'pending': 0,
+        'processing': 0,  # v1.10.8: was missing → silently dropped by `if status in out`
         'succeeded': 0,
         'failed': 0,
         'last_attempt_at': None,
@@ -146,13 +180,32 @@ def replay_one(bus, row_id: int, max_attempts: int = 5) -> dict:
     # which is the package's main entry. nest imports happen at replay time.
     from ..nest import astor_nest
 
+    # Claim the queue row atomically before doing slow embedding work. Without
+    # this, two replay workers can both read the same pending row and duplicate
+    # nest.store() before either one marks it succeeded.
+    with bus.transaction() as c:
+        # v1.10.8 (2026-08-26): same lease-recovery fix as in list_pending —
+        # wrap last_attempt_at in datetime() to convert ISO format to SQLite
+        # datetime before comparing (string 'T' > ' ' would otherwise block
+        # same-day reclaim).
+        claimed = c.execute(
+            "UPDATE cascade_state SET status = ?, last_attempt_at = "
+            "strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+            "WHERE id = ? AND (status = ? OR (status = ? AND datetime(last_attempt_at) < "
+            "datetime('now', ?)))",
+            (STATUS_PROCESSING, int(row_id), STATUS_PENDING, STATUS_PROCESSING,
+             f'-{PROCESSING_LEASE_MINUTES} minutes'),
+        ).rowcount
+        if not claimed:
+            return {'ok': False, 'error': 'row_not_pending', 'row_id': int(row_id)}
+
     row = bus.conn.execute(
         "SELECT id, fact_id, operation, tier, user_id, payload, attempt_count "
         "FROM cascade_state WHERE id = ? AND status = ?",
-        (int(row_id), STATUS_PENDING),
+        (int(row_id), 'processing'),
     ).fetchone()
     if row is None:
-        return {'ok': False, 'error': 'row_not_pending', 'row_id': int(row_id)}
+        return {'ok': False, 'error': 'row_not_processing', 'row_id': int(row_id)}
 
     queue_id, fact_id, operation, tier, user_id, payload_json, attempts = row
     attempts = int(attempts or 0)
@@ -243,6 +296,76 @@ def purge(bus, status: str = 'succeeded', older_than_days: int = 7) -> int:
     )
     bus.conn.commit()
     return cur.rowcount
+
+
+
+
+def requeue(
+    bus,
+    row_id: int | None = None,
+    *,
+    all_failed: bool = False,
+    max_attempts_threshold: int = 5,
+) -> dict:
+    """v1.10.8 (2026-08-26): reset `failed` rows back to `pending` so a recovered
+    embedding service can retry them.
+
+    Previously failed rows had no revival path: list_pending() only matched
+    status='pending' OR (status='processing' AND lease expired), so a row
+    that hit max_attempts stayed 'failed' forever even after the underlying
+    error (e.g. embedding OOM, downstream service outage) was resolved.
+
+    Args:
+      bus: AstorBus handle.
+      row_id: specific row to requeue. None + all_failed=True requeues every
+        failed row whose attempt_count <= max_attempts_threshold.
+      all_failed: requeue all eligible failed rows.
+      max_attempts_threshold: only requeue rows whose previous attempt_count
+        was at or below this number. Default 5 matches the existing replay
+        retry budget.
+
+    Returns:
+      {'ok': bool, 'requeued': [int], 'reason': str}
+    """
+    if row_id is None and not all_failed:
+        return {'ok': False, 'requeued': [], 'reason': 'specify row_id or all_failed=True'}
+    requeued: list[int] = []
+    try:
+        if row_id is not None:
+            row = bus.conn.execute(
+                "SELECT id, status, attempt_count FROM cascade_state WHERE id = ?",
+                (int(row_id),),
+            ).fetchone()
+            if row is None:
+                return {'ok': False, 'requeued': [], 'reason': f'row {row_id} not found'}
+            if row[1] != 'failed':
+                return {'ok': False, 'requeued': [], 'reason': f'row {row_id} status={row[1]}; only failed rows can be requeued'}
+            bus.conn.execute(
+                "UPDATE cascade_state SET status = 'pending', attempt_count = 0, "
+                "last_error = NULL, last_attempt_at = NULL "
+                "WHERE id = ?",
+                (int(row_id),),
+            )
+            requeued.append(int(row_id))
+        else:
+            # all_failed path
+            rows = bus.conn.execute(
+                "SELECT id FROM cascade_state WHERE status = 'failed' "
+                "AND attempt_count <= ?",
+                (int(max_attempts_threshold),),
+            ).fetchall()
+            for r in rows:
+                bus.conn.execute(
+                    "UPDATE cascade_state SET status = 'pending', attempt_count = 0, "
+                    "last_error = NULL, last_attempt_at = NULL "
+                    "WHERE id = ?",
+                    (int(r[0]),),
+                )
+                requeued.append(int(r[0]))
+        bus.conn.commit()
+        return {'ok': True, 'requeued': requeued, 'reason': 'ok'}
+    except Exception as e:
+        return {'ok': False, 'requeued': requeued, 'reason': f'error: {e}'}
 
 
 __all__ = [

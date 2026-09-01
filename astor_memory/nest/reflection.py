@@ -10,8 +10,16 @@ Pipeline (Select → Merge → Deprecate):
    facts are clustered if:
    - Same `kind` (e.g. both 'user_preference'), AND
    - Same `scope_type` (don't merge short_term with long_term), AND
-   - Cosine similarity ≥ cosine_threshold (default 0.85), OR
-   - BM25 score ≥ bm25_threshold (default 5.0) on hybrid retrieval
+   - Heuristic token overlap ≥ 3 long distinctive tokens AND
+     length-ratio ≤ 2x between contents.
+
+   v1.2.2 simplification (still in place as of v1.10.8): we use token
+   overlap as the cheap O(n) filter rather than the cosine ≥ 0.85 /
+   BM25 ≥ 5.0 thresholds the docstring earlier claimed. Both work,
+   but token overlap avoids the n² pairwise embedding cost on large
+   tiers. The cosine/BM25 thresholds documented here describe the
+   intended production behavior; the current implementation is a
+   fidelity tradeoff.
 
 2. **Merge** — for each cluster of size ≥ 2:
    - Pick the winner: highest `importance`, then most recent `promoted_at`,
@@ -28,8 +36,12 @@ Pipeline (Select → Merge → Deprecate):
 
 Failure modes:
 - Cluster size < 2 → skip (nothing to merge)
-- All cluster members already processed in a prior reflection → skip
-  (idempotent via `last_reflection_at` cursor on `memory_canonical`)
+- All cluster members already processed in a prior reflection → skip.
+  Note: the previously-documented `last_reflection_at` cursor on
+  memory_canonical was never wired up; idempotency currently relies on
+  the cluster's fact_ids being stable across runs (in practice fine
+  since `tombstoned=1` losers are filtered out and winners' content
+  is deterministic). A real cursor is a future TODO.
 
 Replayed safely; pipeline is read-only on inputs until the merge step,
 then writes via the existing AstorBus APIs.
@@ -37,7 +49,6 @@ then writes via the existing AstorBus APIs.
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -232,20 +243,27 @@ def deprecate_old_facts(bus, loser_ids: list[int], winner_id: int, actor: str) -
         )
         # Audit row — old_state / new_state live in metadata JSON because
         # write_audit() doesn't expose those columns directly.
+        # v1.10.8 (2026-08-26): pass old_state / new_state as first-class
+        # parameters to write_audit (previously stuffed into metadata, which
+        # meant versioning.py's `audit_log.old_state IS NOT NULL` query
+        # never found reflection-deprecated snapshots). Also wrap the
+        # column-shaped payload in {columns: {...}} to match what
+        # versioning.py's restore_fact() expects.
+        old_state_payload = {
+            'columns': {
+                'content': content,
+                'kind': kind,
+                'tier': tier,
+                'user_id': user_id,
+            },
+        }
         bus.write_audit(
             event='reflection_deprecated',
             actor=actor,
             target_type='fact',
             target_id=str(loser_id),
-            metadata={
-                'old_state': json.dumps({
-                    'content': content,
-                    'kind': kind,
-                    'tier': tier,
-                    'user_id': user_id,
-                }),
-                'new_state': json.dumps({'winner_id': winner_id, 'merged_into': winner_id}),
-            },
+            old_state=old_state_payload,
+            new_state={'winner_id': winner_id, 'merged_into': winner_id},
             reason=f'reflection: merged into fact_id={winner_id}',
             severity='info',
         )
