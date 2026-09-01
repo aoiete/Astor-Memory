@@ -88,6 +88,24 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument('--batch-size', type=int, default=32, help='Batch size for model.embed()')
     sub.set_defaults(func=cmd_reembed)
 
+    # v1.13.0 (2026-09-02): am learn — auto-detect success pattern + write.
+    # Mirrors `am write` but tags outcome='success' when the text contains
+    # a success-phrase (搞定了 / this works / shipped / etc.). After write,
+    # if the fact is success-tagged and similar facts recurs ≥3 times,
+    # auto-promotes to tier='public' for cross-session recall.
+    sub = subparsers.add_parser(
+        'learn',
+        help='Write a fact + auto-detect success pattern + auto-promote recurring success',
+    )
+    sub.add_argument('text', help='Fact text (often a "this works / 搞定了" statement)')
+    sub.add_argument('--user', default='admin', help='User ID')
+    sub.add_argument('--tier', default='private', help='Tier: public|source|private_<user> (default private)')
+    sub.add_argument('--threshold', type=int, default=3,
+                     help='Auto-promote to public if similar success facts >= threshold (default 3)')
+    sub.add_argument('--no-promote', action='store_true',
+                     help='Skip auto-promotion; just write with outcome=success')
+    sub.set_defaults(func=cmd_learn)
+
     # v1.2.0 (2026-08-16): am cascade — replay the cascade write queue.
     # When nest.store() failed during promote_candidate (e.g. embedding
     # model OOM), the (fact_id, content, tier, user_id) is queued in
@@ -326,6 +344,116 @@ def cmd_write(args) -> int:
         )
         fact_ids.append(canon_id)
     print(f'[OK] Wrote {len(fact_ids)} fact(s): {fact_ids}')
+    return 0
+
+
+def cmd_learn(args) -> int:
+    """v1.13.0 (2026-09-02): write a fact + auto-detect success pattern +
+    optionally auto-promote recurring successes to tier='public'.
+
+    Flow:
+    1. Detect if `args.text` matches a success-phrase regex (zh + en).
+    2. If yes → outcome='success'; else → outcome='neutral'.
+    3. Write the fact via bus (with tags including outcome marker).
+    4. If outcome=success and --no-promote not set → check if similar
+       success-tagged facts recur ≥threshold times. If yes → promote
+       this fact's tier to 'public' and write audit row.
+    5. Print summary (text, fact_id, tier, promoted?, count).
+    """
+    from ..bus import astor_bus
+    from ..forge import astor_extract_facts
+    from ..forge.pattern_detector import (
+        astor_detect_success_pattern,
+        astor_score_success_strength,
+        astor_promote_recurring_success,
+    )
+
+    # 1. Detect success.
+    is_success = astor_detect_success_pattern(args.text)
+    strength = astor_score_success_strength(args.text)
+    outcome = 'success' if is_success else 'neutral'
+    why = (
+        f'auto-detected success-phrase (strength={strength:.2f})'
+        if is_success else None
+    )
+
+    # 2-3. Write the fact via bus.
+    tier = getattr(args, 'tier', 'private')
+    user_id = args.user if tier == 'private' else None
+    bus = astor_bus(tier=tier, user_id=user_id)
+
+    event_id = bus.append_event(
+        namespace=args.user,
+        agent_id='cli.learn',
+        source='cli.learn',
+        action='write',
+        content=args.text,
+    )
+
+    facts = astor_extract_facts(
+        args.text, mode='auto',
+        tier=tier, user_id=user_id,
+        actor='cli.learn',
+        outcome=outcome,  # type: ignore[arg-type]
+        why=why,
+    )
+    if not facts:
+        print(f'[astor] Saved event (no facts extracted): event_id={event_id}')
+        return 0
+
+    fact_ids = []
+    for f in facts:
+        cand_id = bus.insert_candidate(
+            event_id=event_id,
+            namespace=args.user,
+            content=f.content,
+            kind=f.kind,
+            confidence=f.confidence,
+            importance=f.importance,
+            tags=f.tags or [],
+        )
+        canon_id = bus.promote_candidate(
+            cand_id,
+            promoted_by='cli.learn',
+            user_id=args.user if tier == 'private' else None,
+            tier=tier,
+        )
+        fact_ids.append(canon_id)
+
+    # 4. Auto-promote if success + recurrence threshold met.
+    promoted = False
+    promotion_count = 0
+    if is_success and not getattr(args, 'no_promote', False):
+        threshold = args.threshold
+        # Determine the DB path of the current tier for promote lookup.
+        from ..config import get_default_bus_path, _user_bus_path
+        from pathlib import Path as _P
+        if tier == 'private':
+            db_path = _user_bus_path(args.user)
+        else:
+            db_path = get_default_bus_path(tier)
+        db_path = _P(db_path) if db_path else None
+
+        for fid in fact_ids:
+            ok = astor_promote_recurring_success(
+                fid,
+                tier='public',
+                user_id=args.user if tier == 'private' else None,
+                db_path=db_path,
+                actor='cli.learn',
+                threshold=threshold,
+            )
+            if ok:
+                promoted = True
+                promotion_count += 1
+
+    # 5. Summary.
+    print(f'[astor] learn: outcome={outcome} strength={strength:.2f}')
+    print(f'   tier={tier} fact_ids={fact_ids}')
+    if promoted:
+        print(f'   PROMOTED to tier=public ({promotion_count}/{len(fact_ids)} facts crossed threshold)')
+    elif is_success and not getattr(args, 'no_promote', False):
+        print(f'   (similar success facts below threshold {args.threshold}; not promoted)')
     return 0
 
 
