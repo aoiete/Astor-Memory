@@ -496,17 +496,7 @@ treatment (anti-patterns, four canonical scenarios, why two tables).
 
 ## 10. Process model
 
-### Before (legacy 3-server architecture)
-
-```
-bus_server.py:7803       # event log
-memu_server.py:7801      # LLM extraction
-mempalace_server.py:7802 # vector store
-```
-
-3 separate processes, 3 ports, 3 health checks, 3 deployment units.
-
-### After (Astor-Memory single daemon)
+Astor-Memory ships as a single daemon, library, or REST server:
 
 ```
 astord                  # in-process bus + forge + nest
@@ -638,7 +628,7 @@ doc for full P1/P2/P3 priority list.
 
 - [`docs/api.md`](./api.md) — full REST endpoint reference (18 endpoints)
 - [`docs/integration-research-everos-a-mem-2026-08-16.md`](./integration-research-everos-a-mem-2026-08-16.md) — competitive landscape (EverOS + A-MEM research)
-- [`docs/migration.md`](./migration.md) — upgrade guide from old `memory-bus` system
+- [`docs/migration.md`](./migration.md) — migrate from mem0 / Letta / Zep / MemGPT / ChromaDB / Pinecone / Weaviate / plain files
 - [`docs/agent-adapters.md`](./agent-adapters.md) — MCP / LangChain / REST / Python integration
 - [`docs/faq.md`](./faq.md) — frequently asked questions
 - [`docs/troubleshooting.md`](./troubleshooting.md) — common errors and fixes
