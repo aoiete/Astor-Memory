@@ -637,4 +637,4 @@ doc for full P1/P2/P3 priority list.
 
 ## Related design docs
 
-- [ACL v1.2 hardening (2026-09-01)](acl-v1.2-hardening.md)
+- [ACL v1.2 hardening (2026-09-01)](acl-v1.2-hardening.md) · [中文](acl-v1.2-hardening.zh-CN.md)
