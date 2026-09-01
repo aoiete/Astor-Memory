@@ -207,7 +207,6 @@ am write "bob 的偏好..."   --tier private --user-id bob
 | `am platform token-set <kind> <token>` | 保存 bot token (审计行) |
 | `am platform bind <bot> <chat> <user>` | 把一个 chat 绑定到用户 |
 | `am platform verify` | 检查 6 条 bot-binding 不变量 |
-| `am migrate --from memory-bus --source <path>` | 从旧 memory-bus 系统导入 |
 | `am version` | 打印 astor + python + 平台版本 |
 
 完整列表 + 每个子命令的细节:[`docs/api.md`](docs/api.md)。
@@ -219,7 +218,7 @@ am write "bob 的偏好..."   --tier private --user-id bob
 | **[`docs/architecture.md`](docs/architecture.md)** | 理解 3-store × 3-tier 的"为什么"。必读。 |
 | **[`docs/api.md`](docs/api.md)** | REST 端点 + 请求/响应 schema (18 个端点) |
 | **[`docs/contributing.md`](docs/contributing.md)** | 修代码、提 PR、写 skills |
-| **[`docs/migration.md`](docs/migration.md)** | 从 memory-bus / mem0 / chroma 升级 |
+| **[`docs/migration.md`](docs/migration.md)** | 从 mem0 / Letta / Zep / MemGPT / ChromaDB / Pinecone / Weaviate / 普通文件 迁移 |
 | **[`docs/troubleshooting.md`](docs/troubleshooting.md)** | 常见错误 + 自助调试 |
 | **[`docs/faq.md`](docs/faq.md)** | "X 和 Y 有什么不同?" |
 | **[`docs/agent-adapters.md`](docs/agent-adapters.md)** | 集成到 hermes / OpenClaw / Claude Desktop / Cursor |
