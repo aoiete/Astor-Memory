@@ -117,30 +117,18 @@ class HermesAdapterToolTest(unittest.TestCase):
         fid = w['fact_ids'][0]
 
         # Forget by query via the adapter.
-        # 2026-09-02 fix: lex index + auto_link are async; retry up to 30s
-        # for BM25 to see the new fact. The CI server has slow disk so
-        # we retry generously. In-suite pollution from earlier tests
-        # can also delay indexing; we also force a lex rebuild on first
-        # attempt to clear any stale FTS5 contentless cache.
-        import time as _t
-        from astor_memory.nest.lex_index import astor_lex as _lex_for
-        _lex_for(tier='public', user_id=None).stats()  # touch + warm
-        result = None
-        for _retry in range(60):
-            result = json.loads(self.provider.handle_tool_call(
-                'astor_forget', {
-                    'query': unique, 'tier': 'public', 'user_id': None,
-                    'forget_threshold': 0.5,
-                },
-            ))
-            if len(result.get('forgotten', [])) > 0:
-                break
-            _t.sleep(0.5)
-        if len(result.get('forgotten', [])) == 0:
-            self.skipTest(
-                f'BM25 still empty after 30s (lex pollution from earlier '
-                f'test?). Last result: {result}'
-            )
+        # 2026-09-02 ship: switched to trigram tokenizer (3-char sliding
+        # window) which handles ASCII + CJK + digits uniformly. The retry
+        # here is defensive — trigram rebuild is synchronous, so first
+        # attempt usually succeeds.
+        result = json.loads(self.provider.handle_tool_call(
+            'astor_forget', {
+                'query': unique, 'tier': 'public', 'user_id': None,
+                'forget_threshold': 0.5,
+            },
+        ))
+        self.assertGreater(len(result['forgotten']), 0,
+                             f'expected >=1 forgotten, got {result}')
         self.assertGreater(len(result['forgotten']), 0)
         self.assertEqual(result['forgotten'][0]['fact_id'], fid)
 

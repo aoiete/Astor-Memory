@@ -180,14 +180,16 @@ class AstorLex:
                 -- connection. Safe no-op on DBs that already have it.
                 CREATE VIRTUAL TABLE IF NOT EXISTS lex_fts USING fts5(
                     content,
-                    content='documents',
-                    content_rowid='fact_id',
-                    -- 2026-09-02 ship: `separators '_0123456789' + remove_diacritics 2`
-                    -- ensures FTS5 tokenizes CJK chars as atomic tokens AND
-                    -- splits digit runs. Default `porter unicode61` keeps
-                    -- CJK chars atomic but doesn't split digit runs, so
-                    -- 'unique51c1856c' becomes one unsearchable token.
-                    tokenize="unicode61 remove_diacritics 2 separators '_0123456789'"
+                    -- 2026-09-02 ship: switch to trigram tokenizer for CJK
+                    -- support. Trigram (3-char sliding window) handles ASCII,
+                    -- CJK, and digit strings uniformly. Trade-off: queries
+                    -- shorter than 3 chars (e.g. `熊`) return 0 hits, but
+                    -- real-world queries (methods, unique tokens, contexts)
+                    -- are typically 3+ chars.
+                    -- We tried `unicode61 remove_diacritics 2 separators
+                    -- '_0123456789'` but it fails on CJK atomic chars
+                    -- (`熊` / `猫` / `熊猫` all return 0 hits despite docs).
+                    tokenize="trigram"
                 );
                 INSERT OR IGNORE INTO meta(key, value) VALUES ('total_docs', '0');
                 INSERT OR IGNORE INTO meta(key, value) VALUES ('avgdl', '0');
@@ -196,7 +198,14 @@ class AstorLex:
     # ---------- write path ----------
     def index_fact(self, fact_id: int, content: str) -> None:
         """Insert or re-index one fact. If fact_id already present, removes
-        old postings first (re-index is idempotent)."""
+        old postings first (re-index is idempotent).
+
+        2026-09-02 ship: lex_fts is stored-content FTS5 (no content=
+        'documents'), so we INSERT both documents (for BM25 candidate fetch)
+        AND lex_fts (for the actual FTS5 search). The old contentless
+        INSERT INTO lex_fts VALUES('rebuild') approach silently failed for
+        CJK chars.
+        """
         with self._lock:
             # Re-indexing must remove the old index row, not merely tombstone it.
             # `documents.fact_id` is the primary key, so a tombstoned row would
@@ -205,26 +214,23 @@ class AstorLex:
             # remains append-only in the bus store.
             self.remove_fact_hard(fact_id)
             tokens = _tokenize(content)
-            if not tokens:
-                # Still record document with length=0 so we can tombstone later
+            # Always write to documents table (for BM25 candidate fetch).
+            self._conn.execute(
+                'INSERT INTO documents(fact_id, content, length) '
+                'VALUES (?,?,?)',
+                (fact_id, content, len(tokens)),
+            )
+            # Always write to lex_fts (stored content) so CJK + digits are searchable.
+            try:
                 self._conn.execute(
-                    'INSERT INTO documents(fact_id, content, length) VALUES (?,?,?)',
-                    (fact_id, content, 0),
+                    'INSERT INTO lex_fts(rowid, content) VALUES (?, ?)',
+                    (fact_id, content),
                 )
-                try:
-                    self._conn.execute(
-                        'INSERT INTO lex_fts(rowid, content) VALUES (?, ?)',
-                        (fact_id, content),
-                    )
-                except Exception:
-                    pass
+            except Exception:
+                pass
+            if not tokens:
                 return
             tf_counter = Counter(tokens)
-            length = len(tokens)
-            self._conn.execute(
-                'INSERT INTO documents(fact_id, content, length) VALUES (?,?,?)',
-                (fact_id, content, length),
-            )
             for term, tf in tf_counter.items():
                 # terms: insert with df=0 then bump below
                 self._conn.execute(
@@ -243,11 +249,8 @@ class AstorLex:
             # this, lex_fts_data remains empty and bm25_search_tokens
             # returns []. Contentless FTS5 (content='documents') expects
             # auto-sync, but manual `INSERT INTO lex_fts(rowid, content)`
-            # bypasses the index build. Rebuild pulls from documents.
-            try:
-                self._conn.execute("INSERT INTO lex_fts(lex_fts) VALUES('rebuild')")
-            except Exception:
-                pass
+            # No rebuild needed: stored-content FTS5 is kept in sync
+            # automatically when we INSERT into documents/lex_fts above.
             self._refresh_stats()
 
     def remove_fact(self, fact_id: int) -> None:
