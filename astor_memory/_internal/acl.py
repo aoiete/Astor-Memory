@@ -1,36 +1,38 @@
 """
-ACL enforcement: the central gatekeeper that ensures all data access follows
-plan §3-tier × 3-store permission matrix (lines 2576-2607).
+ACL enforcement: the central gatekeeper for all data access.
 
-Three roles (per plan):
-- first_admin: writes source.db, reads any private **with explicit grant from
-  data owner (2026-08-16 strict-privacy ship)**, creates users, cannot be demoted.
-- admin: power user; CANNOT read source.db (distinction from first_admin per
-  plan line 2570 + 2624). Cross-user private access **requires explicit grant
-  from data owner (2026-08-16 strict-privacy ship)**.
-- user: can only access own private_<id>.db.
+Two-tier role hierarchy + 3-value subscription_plan matrix (2026-09-02 ship):
+- admin: SSoT owner. Read+write source.db, write public, manage users,
+  cross-user private access via explicit grant. Identified by
+  `user_meta.role='admin'`. `subscription_plan` is irrelevant for admin.
+- user: Every other person. Read+write own private_<id>, read public.
+  Capability differentiation is by subscription_plan (3 values):
+    - power → write public + cross-read/write private with grant
+    - vip   → write public (models/patterns/methods), own private, grant
+    - free  → own private only (no public write, no cross-user)
+
+  The single `role='user'` does NOT distinguish features — features come
+  from subscription_plan. The matrix below uses ONLY 'admin' vs 'user' as
+  roles; finer per-plan features are enforced at endpoint level
+  (e.g. /v1/write public gates on ctx.subscription_plan ∈
+  _PUBLIC_WRITE_PLANS = {'vip', 'power'}).
 
 This module is process-level state. It enforces:
-1. When astor_bus(actor, tier, user_id) is called, the actor must have permission
-   to access (tier, user_id) per the matrix.
-2. Write paths to private dbs are validated against the requested user_id.
-3. The actor + user_id are recorded in audit rows automatically.
+1. astor_check_read / astor_check_write raise PermissionError_ when the
+   actor's role is not allowed by the matrix.
+2. Cross-user private access requires an explicit grant from data owner
+   (regardless of role/plan — strict privacy model 2026-08-16).
+3. astor_init_acl re-init (changing actor in same process) is audit-logged
+   so silent privilege escalation cannot go unnoticed.
 
 v1.2 hardening (2026-09-01):
 - astor_init_acl validates every argument; bad input cannot be silently
-  accepted. actor must match the canonical regex (rejects typos + smuggling).
-  Role / actor must be consistent (rejects impersonation like
-  actor='first_admin' role='user').
-- tier='public' write is restricted to first_admin + admin so that a
-  compromised 'user' or 'system' context cannot spam public.
-- astor_check_read / astor_check_write raise PermissionError_ when
-  user_id=None for tier=private or tier=repo. The previous "silent pass"
-  was a footgun that hid caller mistakes.
-- astor_init_acl re-init (changing actor within the same process) is
-  audit-logged so silent privilege escalation cannot go unnoticed.
+  accepted. actor must match canonical regex.
+- tier='public' write is restricted to admin (permanent) — compromised
+  user/system contexts cannot spam public.
 
-Lock: 2026-08-15 (turn design discussion); 2026-08-16 strict-privacy ship;
-2026-09-01 v1.2 hardening.
+Lock history: 2026-08-15 (3-tier), 2026-08-16 (strict-privacy),
+2026-09-01 v1.2 hardening, 2026-09-02 (2-tier role + plan-based features).
 """
 
 from __future__ import annotations
@@ -38,78 +40,78 @@ from __future__ import annotations
 import contextvars
 import threading
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 from . import grants
 from .audit_logger import astor_audit
 
-# v1.2 follow-up: contextvars support for async / per-task ACL isolation.
-# threading.local isolates per-thread, but asyncio coroutines share a thread
-# and need per-task isolation. We use a ContextVar as the source of truth for
-# reads, while keeping threading.local as a fallback for non-asyncio callers
-# that ran astor_init_acl() in main thread.
 _ACL_CTX: contextvars.ContextVar["_AclSnapshot | None"] = contextvars.ContextVar(
     "astor_acl_ctx", default=None,
 )
 
 
-Role = Literal["first_admin", "admin", "user", "system"]
+Role = Literal["admin", "user"]
+Plan = Literal["free", "vip", "power"]
 
 
 class PermissionError_(Exception):
     """Raised when an actor attempts an action disallowed by the permission matrix."""
 
 
-_VALID_ROLES = {"first_admin", "admin", "user", "system"}
+_VALID_ROLES = {"admin", "user", "system"}
+_VALID_PLANS = {"free", "vip", "power"}
 _VALID_TIERS = {"public", "source", "private", "repo"}
 
-# Strict actor pattern: only the four canonical forms. Anything else is
-# rejected at init time so typos / smuggling cannot silently bind a fake ACL.
+# Strict actor pattern: admin:<id>, user:<id>, or bare 'system'.
 import re as _re_
-_ACTOR_RE = _re_.compile(r"^(first_admin|system|admin:[a-zA-Z0-9_\-]{1,64}|user:[a-zA-Z0-9_\-]{1,64})$")
-
-# user_id must look like a sane id (canonical or short_alias).
+_ACTOR_RE = _re_.compile(
+    r"^(system|admin:[a-zA-Z0-9_\-]{1,64}|user:[a-zA-Z0-9_\-]{1,64})$"
+)
 _USER_ID_RE = _re_.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 
 
-# Per plan §2576-2589 matrix: action → which roles are allowed.
-# Format: (action, target_tier) → set of allowed roles
-# target_tier could be 'source' / 'private_<id>' / 'public' — represented here
-# by source/private/public for the matrix-level check; finer per-user checks
-# are done in `astor_check_read` / `astor_check_write`.
+# Per (action, target_tier) → which roles may attempt the access.
+# Public write is role='user' but GATED on subscription_plan at endpoint
+# level: lifetime/paid users may write "good models, methods, rules, flows,
+# patterns, structures" (智能贡献); trial/free users cannot write public
+# at all. See astor_check_write() and the public-write endpoint gate.
 #
-# 2026-08-16 strict-privacy ship: this matrix lists *which roles can attempt*
-# access. Cross-user private still goes through `grants.check_grant(...)` for
-# fine-grained per-data-owner authorization. So matrix entries alone no longer
-# mean "implicit access allowed".
+# Admin: full source write + cross-private via grant + public write.
+# User (any plan): own private + (with grant) cross private. Public write
+# requires plan in ('permanent','lifetime','paid').
 _MATRIX = {
-    # Read source: only first_admin
-    ("read", "source"): {"first_admin"},
-    # Write source: only first_admin
-    ("write", "source"): {"first_admin"},
-    # Read public: any role (everyone shares public knowledge)
-    ("read", "public"): {"first_admin", "admin", "user", "system"},
-    # Write public: only first_admin + admin (NOT user/system — compromised
-    # user/system contexts must not be able to spam public).
-    ("write", "public"): {"first_admin", "admin"},
-    # Read private: only the owner (cross-user via grant only)
-    ("read", "private"): {"first_admin", "admin", "user"},
-    # Write private: only the owner (cross-user via grant only)
-    ("write", "private"): {"first_admin", "admin", "user"},
-    # v1.1: tier=repo (per-git-repository memory). Anyone can read; only
-    # first_admin can write (since the writer is the agent itself).
-    ("read", "repo"): {"first_admin", "admin", "user", "system"},
-    ("write", "repo"): {"first_admin"},
-    # Read admin DBs (cross-private): only first_admin (and audit row mandatory)
-    ("read", "private_other"): {"first_admin"},
-    # Hard rules per plan
-    ("create_user", "_"): {"first_admin"},
-    ("delete_user", "_"): {"first_admin"},
-    ("promote", "_"): {"first_admin"},
-    ("demote", "_"): {"first_admin"},
-    ("force_verdict", "any"): {"first_admin"},
-    ("bot_admin", "_"): {"first_admin"},  # `am bot on/off/add-user/promote/demote`
+    # Source (SSoT): admin only.
+    ("read", "source"): {"admin"},
+    ("write", "source"): {"admin"},
+    # Public: everyone reads. Writing allowed for admin + user (user needs
+    # non-trial plan — endpoint gate enforces).
+    ("read", "public"): {"admin", "user", "system"},
+    ("write", "public"): {"admin", "user"},
+    # Private: owner only. Cross-user via grant.
+    ("read", "private"): {"admin", "user"},
+    ("write", "private"): {"admin", "user"},
+    # v1.1: tier=repo (per-git-repository memory). Anyone reads; admin writes.
+    ("read", "repo"): {"admin", "user", "system"},
+    ("write", "repo"): {"admin"},
+    # Cross-private (admin/power reading another user's private): only with grant.
+    ("read", "private_other"): {"admin"},
+    # User management: admin only.
+    ("create_user", "_"): {"admin"},
+    ("delete_user", "_"): {"admin"},
+    ("promote", "_"): {"admin"},
+    ("demote", "_"): {"admin"},
+    ("force_verdict", "any"): {"admin"},
+    ("bot_admin", "_"): {"admin"},  # `am bot on/off/add-user/promote/demote`
 }
+
+
+# 2026-09-02: subscription_plan gate for public write. ALL plans may
+# write public — every user (free / vip / power) can contribute good
+# models / methods / patterns / rules / flows to the public knowledge
+# base. Quality is enforced at the content layer (forge extraction,
+# dedup, importance), not at the ACL layer. Spam protection is the
+# rate-limit gate, not the plan gate.
+_PUBLIC_WRITE_PLANS = {"free", "vip", "power"}
 
 
 @dataclass(frozen=True)
@@ -121,15 +123,17 @@ class _AclSnapshot:
     role: str
     tier: str
     user_id: str | None
+    subscription_plan: str | None  # 2026-09-02: per-plan feature gates
 
 
 @dataclass(frozen=True)
 class AccessContext:
     """Set at process init via `astor_init_acl(...)`; bound into ACL checks."""
-    actor: str         # 'first_admin' | 'admin:<id>' | 'user:<id>' | 'system'
-    role: str          # 'first_admin' | 'admin' | 'user' | 'system'
+    actor: str         # 'admin:<id>' | 'user:<id>' | 'system'
+    role: str          # 'admin' | 'user' | 'system'
     tier: str          # 'public' | 'source' | 'private'
     user_id: str | None  # active user (None when tier=public or source)
+    subscription_plan: str | None = None  # 'power'|'vip'|'free' for users; None for admin
 
 
 _CURRENT = threading.local()
@@ -268,47 +272,73 @@ def _enforce_rate_limit(actor: str, target_user_id: str | None, action: str) -> 
         )
 
 
-def astor_init_acl(actor: str, role: str, tier: str, user_id: str | None = None) -> None:
+def astor_init_acl(
+    actor: str,
+    role: str,
+    tier: str,
+    user_id: str | None = None,
+    subscription_plan: str | None = None,
+) -> None:
     """
     Bind process-level ACL state. Call once at startup (bot init / CLI entry).
 
     Args:
         actor:   who this process is acting as. Convention:
-                 'first_admin' (system root), 'admin:<id>', 'user:<id>',
-                 'system' (background tasks like `am compact`)
-        role:    one of 'first_admin' / 'admin' / 'user' / 'system' (system tasks
-                 can write source only when role=first_admin explicitly opted in)
-        tier:    which ACL tier this process is currently operating in
-        user_id: the active user_id when tier='private' (None otherwise)
+                 'admin:<id>', 'user:<id>', 'system' (background tasks).
+                 Note: 'first_admin' is GONE (2026-09-02 simplification) —
+                 the SSoT owner is just 'admin:<id>' with role='admin' and no plan.
+        role:    one of 'admin' / 'user' / 'system'. Plan-based features
+                 (power/vip/free) are passed via subscription_plan.
+        tier:    which ACL tier this process is currently operating in.
+        user_id: the active user_id when tier='private' (None otherwise).
+        subscription_plan: 'power'|'vip'|'free' (admin ignores).
+                          power = SSoT owner (or top user tier); vip = paid
+                          permanent user; free = trial / unverified.
 
     Example:
-            # bot entry point for alice:
-            astor_init_acl(actor='user:alice', role='user', tier='private', user_id='alice')
-        # first_admin CLI:
-        astor_init_acl(actor='first_admin', role='first_admin', tier='source')
+            # bot entry point for alice (vip user):
+            astor_init_acl(actor='user:alice', role='user', tier='private',
+                           user_id='alice', subscription_plan='vip')
+        # SSoT owner CLI:
+        astor_init_acl(actor='admin:admin', role='admin', tier='source',
+                       user_id='admin')
     """
     # Validate role + tier first (fail-fast on caller error)
     if role not in _VALID_ROLES:
         raise ValueError(f"role must be one of {sorted(_VALID_ROLES)}, got {role!r}")
     if tier not in _VALID_TIERS:
         raise ValueError(f"tier must be one of {sorted(_VALID_TIERS)}, got {tier!r}")
+    if subscription_plan is not None and subscription_plan not in _VALID_PLANS:
+        raise ValueError(
+            f"subscription_plan must be one of {sorted(_VALID_PLANS)}, "
+            f"got {subscription_plan!r}"
+        )
     if tier in ("private", "repo") and not user_id:
         raise ValueError(f"tier={tier} requires user_id (private=username, repo=repo_id)")
+    # 2026-09-02 ship: allow user_id on tier=public/source too. The ACL stores
+    # the actor's identity for cross-tier reclassification (e.g. content
+    # classifier auto-routes public to private_<actor>). Without user_id on
+    # public init, the reclassified own-private write fails the
+    # ctx.user_id == target_user check.
+    # Validation: if user_id provided for public/source, must be a valid form.
     if tier not in ("private", "repo") and user_id:
-        raise ValueError(f"tier={tier} requires user_id=None (system scope)")
+        try:
+            _canonicalize_user_id(user_id, for_tier="private")
+        except ValueError as _v:
+            raise ValueError(
+                f"tier={tier} user_id={user_id!r} failed validation: {_v}"
+            )
     # v1.2 hardening: actor must match canonical form (reject typos + smuggling)
     if not _ACTOR_RE.match(actor or ""):
         raise ValueError(
             f"actor={actor!r} does not match canonical form "
-            f"(first_admin|system|admin:<id>|user:<id> with [A-Za-z0-9_-]{{1,64}})"
+            f"(system|admin:<id>|user:<id> with [A-Za-z0-9_-]{{1,64}})"
         )
     # v1.2 hardening: actor / role consistency (prevent impersonation)
-    if actor == "first_admin" and role != "first_admin":
-        raise ValueError(f"actor={actor!r} requires role='first_admin', got role={role!r}")
     if actor == "system" and role != "system":
         raise ValueError(f"actor={actor!r} requires role='system', got role={role!r}")
-    if actor.startswith("admin:") and role not in ("admin", "first_admin"):
-        raise ValueError(f"actor={actor!r} requires role in ('admin','first_admin'), got role={role!r}")
+    if actor.startswith("admin:") and role != "admin":
+        raise ValueError(f"actor={actor!r} requires role='admin', got role={role!r}")
     if actor.startswith("user:") and role != "user":
         raise ValueError(f"actor={actor!r} requires role='user', got role={role!r}")
     # v1.2 hardening: user_id format check
@@ -326,7 +356,10 @@ def astor_init_acl(actor: str, role: str, tier: str, user_id: str | None = None)
                 action="rebind",
                 user_id=getattr(_CURRENT, "user_id", None),
                 target="acl_context",
-                metadata={"new_actor": actor, "new_role": role, "new_tier": tier},
+                metadata={
+                    "new_actor": actor, "new_role": role, "new_tier": tier,
+                    "new_plan": subscription_plan,
+                },
             )
         except Exception:
             pass
@@ -334,9 +367,13 @@ def astor_init_acl(actor: str, role: str, tier: str, user_id: str | None = None)
     _CURRENT.role = role
     _CURRENT.tier = tier
     _CURRENT.user_id = user_id
+    _CURRENT.subscription_plan = subscription_plan
     # v1.2 follow-up: also set the asyncio ContextVar so per-coroutine
     # callers see the correct ACL context without leaking between tasks.
-    _ACL_CTX.set(_AclSnapshot(actor=actor, role=role, tier=tier, user_id=user_id))
+    _ACL_CTX.set(_AclSnapshot(
+        actor=actor, role=role, tier=tier, user_id=user_id,
+        subscription_plan=subscription_plan,
+    ))
 
 
 def astor_current_acl() -> AccessContext:
@@ -354,6 +391,7 @@ def astor_current_acl() -> AccessContext:
             role=snapshot.role,
             tier=snapshot.tier,
             user_id=snapshot.user_id,
+            subscription_plan=snapshot.subscription_plan,
         )
     try:
         return AccessContext(
@@ -361,6 +399,7 @@ def astor_current_acl() -> AccessContext:
             role=_CURRENT.role,
             tier=_CURRENT.tier,
             user_id=_CURRENT.user_id,
+            subscription_plan=getattr(_CURRENT, "subscription_plan", None),
         )
     except AttributeError:
         raise PermissionError_(
@@ -391,7 +430,7 @@ def astor_check_read(tier: str, user_id: str | None = None) -> None:
         if ctx.role not in allowed:
             raise PermissionError_(
                 f"actor={ctx.actor!r} (role={ctx.role}) cannot read tier=source; "
-                f"only first_admin may read source.db"
+                f"only admin may read source.db"
             )
         return
     if tier == "repo":
@@ -407,62 +446,17 @@ def astor_check_read(tier: str, user_id: str | None = None) -> None:
             f"actor={ctx.actor!r} attempted to read tier=private with user_id=None; "
             f"caller must supply the target user_id"
         )
-    # Own private scope is always allowed, including the canonical `admin`
-        # first_admin identity. The grant system is only for cross-user access.
-        # Also resolve user_id in case a raw platform chat_id was passed directly to acl check.
-        # 2026-09-01 cleanup: ACL does NOT hardcode any bot_id. Instead it queries
-        # bot-binding.db via list_admin_chat_ids() to discover operator bindings at
-        # runtime. The fallback path (admin caller wants to bind a bot while
-        # bot-binding.db is unavailable) is documented in BACKUP_FALLBACK.md and
-        # uses env vars — never embedded here.
-        from .bot_binding import resolve_chat_to_user as _resolve_chat
-        from .bot_binding import list_admin_chat_ids as _list_admin_chats
-        canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
-        if canonical_target is None:
-            for platform_id, chat_id in _list_admin_chats():
-                b = _resolve_chat(platform_id, chat_id)
-                if b is not None:
-                    canonical_target = b["user_id"]
-                    break
-        else:
-            canonical_target = canonical_target["user_id"]
-        if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
-            return
-        canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
-        if canonical_target is None:
-            for platform_id, chat_id in _list_admin_chats():
-                b = _resolve_chat(platform_id, chat_id)
-                if b is not None:
-                    canonical_target = b["user_id"]
-                    break
-        else:
-            canonical_target = canonical_target["user_id"]
-        if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
-            return
-    if ctx.role == "first_admin":
-        # 2026-08-16 strict-privacy ship (B option): first_admin no longer has
-        # implicit cross-user private access. Must hold an explicit grant
-        # from the data owner. Audit row written regardless of outcome.
-        if grants.check_grant(grantor=user_id, grantee="first_admin", required_scope="read"):
-            astor_audit(
-                actor=ctx.actor, tier="private", action="read",
-                user_id=user_id, target="granted",
-                metadata={"required_scope": "read"},
-            )
-            return
-        astor_audit(
-            actor=ctx.actor, tier="private", action="read",
-            user_id=user_id, target="denied_no_grant",
-            metadata={"required_scope": "read", "reason": "first_admin lacks grant"},
-        )
-        raise PermissionError_(
-            f"actor={ctx.actor!r} (role=first_admin) cannot read private_<{user_id}>; "
-            f"user grant required (strict privacy model 2026-08-16)"
-        )
+    # Own private scope is always allowed. The grant system is only for
+    # cross-user access.
+    if user_id == ctx.user_id:
+        return
     if ctx.role == "admin":
-        # 2026-08-16 strict-privacy ship: admin can no longer implicitly read
-        # other users' private. Must have explicit grant from data owner.
-        admin_grantee = f"admin:{ctx.user_id}" if ctx.user_id else None
+        # 2026-09-02 simplification: admins cross-read other users' private
+        # only via explicit grant from the data owner. No implicit root.
+        # Use ctx.actor directly as grantee (e.g. 'admin:admin' for the SSoT
+        # owner, 'admin:bob' for any other admin). This lets data owners
+        # grant specific admins rather than 'admin:<self>' which is awkward.
+        admin_grantee = ctx.actor if ctx.role == "admin" else None
         # v1.2 step 3: per-target leaky bucket rate limit before grant query.
         _enforce_rate_limit(ctx.actor, user_id, "read")
         if admin_grantee and grants.check_grant(
@@ -496,89 +490,64 @@ def astor_check_write(tier: str, user_id: str | None = None) -> None:
     Pre-flight check before writing data to (tier, user_id).
     Raises PermissionError_ on denial.
 
-    Plan rules:
-    - first_admin: write any private IFF has explicit 'write'/'admin' grant
-    - admin:       write any private IFF has explicit 'write'/'admin' grant
-    - user:        write ONLY own private_<self> + public
+    2026-09-02 simplification: use _MATRIX (per (action, tier)) + plan gate.
 
-    v1.2 step 4: rejects user_id values containing path separators or
-    control characters so downstream Path.joinpath() cannot be abused.
+    Plan rules (for role='user'):
+    - power: write public + cross-write private via grant
+    - vip:   write public (gated by _PUBLIC_WRITE_PLANS), own private, grant
+    - free:  own private only (no public write, no cross-user)
+
+    admin: full source write + public write + cross-private via grant.
     """
     user_id = _canonicalize_user_id(user_id, for_tier=tier)
     ctx = astor_current_acl()
-    if tier == "public":
-        return  # any role can write public (their own facts)
-    if tier == "source":
-        if ctx.role != "first_admin":
-            raise PermissionError_(
-                f"actor={ctx.actor!r} (role={ctx.role}) cannot write tier=source; "
-                f"only first_admin may write source.db"
-            )
-        return
-    if tier == "repo":
-        # v1.1: only first_admin can write to repo tier (agent self-
-        # pattern about a specific repo).
-        if ctx.role != "first_admin":
-            raise PermissionError_(
-                f"actor={ctx.actor!r} (role={ctx.role}) cannot write tier=repo; "
-                f"only first_admin may write repo.db"
-            )
-        return
-    # tier == "private"
-    if user_id is None:
-        # v1.2 hardening: pathological case must surface (same rationale
-        # as the read path). A silent pass here allowed caller bugs to
-        # accidentally write into another user's namespace.
+
+    # Stage 1: role-based matrix gate
+    allowed = _MATRIX[("write", tier)]
+    if ctx.role not in allowed:
         raise PermissionError_(
-            f"actor={ctx.actor!r} attempted to write tier=private with user_id=None; "
-            f"caller must supply the target user_id"
+            f"actor={ctx.actor!r} (role={ctx.role}) cannot write tier={tier}; "
+            f"allowed roles: {sorted(allowed)}"
         )
-    # Own private scope is always allowed, including the canonical `admin`
-        # first_admin identity. The grant system is only for cross-user access.
-        # Also resolve user_id in case a raw platform chat_id was passed directly to acl check.
-        # 2026-09-01 cleanup: same runtime-query pattern as the read path — see
-        # astor_check_read for rationale. ACL stays free of any hardcoded bot ID.
-        from .bot_binding import resolve_chat_to_user as _resolve_chat
-        from .bot_binding import list_admin_chat_ids as _list_admin_chats
-        canonical_target = _resolve_chat("telegram:hermes_bot", user_id)
-        if canonical_target is None:
-            for platform_id, chat_id in _list_admin_chats():
-                b = _resolve_chat(platform_id, chat_id)
-                if b is not None:
-                    canonical_target = b["user_id"]
-                    break
+
+    # Stage 2: subscription_plan gate (for tier=public, user role only).
+    # 2026-09-02: all plans allowed (free / vip / power); quality is enforced
+    # at content layer (forge extraction), not ACL.
+    if tier == "public" and ctx.role == "user":
+        if ctx.subscription_plan not in _PUBLIC_WRITE_PLANS:
+            raise PermissionError_(
+                f"actor={ctx.actor!r} (role=user, plan={ctx.subscription_plan}) "
+                f"cannot write tier=public; "
+                f"required plan in {sorted(_PUBLIC_WRITE_PLANS)}"
+            )
+
+    # Stage 2.5: per-actor rate limit on ALL writes (anti-spam first line).
+    # Without this, any user can flood public with garbage and let forge
+    # dedup clean up — but storage cost is real.
+    _enforce_rate_limit(ctx.actor, user_id or tier, "write")
+
+    # Stage 3: tier=private — own vs cross-user
+    if tier == "private":
+        if user_id is None:
+            raise PermissionError_(
+                f"actor={ctx.actor!r} attempted to write tier=private with user_id=None; "
+                f"caller must supply the target user_id"
+            )
+        # Own private scope is always allowed.
+        if user_id == ctx.user_id:
+            return
+        # Cross-user: requires explicit grant from data owner.
+        # 2026-09-02: use ctx.actor as grantee (consistent with read path).
+        # e.g. 'admin:admin' for SSoT owner, 'admin:bob' for any other admin.
+        _enforce_rate_limit(ctx.actor, user_id, "write")
+        if ctx.role == "admin":
+            grantee = f"admin:{ctx.user_id}" if ctx.user_id else None
+        elif ctx.role == "user":
+            grantee = f"user:{ctx.user_id}" if ctx.user_id else None
         else:
-            canonical_target = canonical_target["user_id"]
-        if user_id == ctx.user_id or (canonical_target and canonical_target == ctx.user_id):
-            return
-        # 2026-08-16 strict-privacy ship: first_admin must hold a 'write' or
-        # 'admin' grant from the data owner before writing their private tier.
-        # v1.2 step 3: per-target leaky bucket rate limit before grant query.
-        _enforce_rate_limit(ctx.actor, user_id, "write")
-        if grants.check_grant(grantor=user_id, grantee="first_admin", required_scope="write"):
-            astor_audit(
-                actor=ctx.actor, tier="private", action="write",
-                user_id=user_id, target="granted",
-                metadata={"required_scope": "write"},
-            )
-            return
-        astor_audit(
-            actor=ctx.actor, tier="private", action="write",
-            user_id=user_id, target="denied_no_grant",
-            metadata={"required_scope": "write", "reason": "first_admin lacks grant"},
-        )
-        raise PermissionError_(
-            f"actor={ctx.actor!r} (role=first_admin) cannot write private_<{user_id}>; "
-            f"user write-grant required (strict privacy model 2026-08-16)"
-        )
-    if ctx.role == "admin":
-        # 2026-08-16 strict-privacy ship: admin must hold a 'write' or 'admin'
-        # grant from the data owner before modifying their private tier.
-        admin_grantee = f"admin:{ctx.user_id}" if ctx.user_id else None
-        # v1.2 step 3: per-target leaky bucket rate limit before grant query.
-        _enforce_rate_limit(ctx.actor, user_id, "write")
-        if admin_grantee and grants.check_grant(
-            grantor=user_id, grantee=admin_grantee, required_scope="write"
+            grantee = None
+        if grantee and grants.check_grant(
+            grantor=user_id, grantee=grantee, required_scope="write"
         ):
             astor_audit(
                 actor=ctx.actor, tier="private", action="write",
@@ -589,27 +558,21 @@ def astor_check_write(tier: str, user_id: str | None = None) -> None:
         astor_audit(
             actor=ctx.actor, tier="private", action="write",
             user_id=user_id, target="denied_no_grant",
-            metadata={"required_scope": "write", "reason": "admin lacks grant"},
+            metadata={"required_scope": "write", "reason": "actor lacks grant"},
         )
         raise PermissionError_(
-            f"actor={ctx.actor!r} (role=admin) cannot write private_<{user_id}>; "
+            f"actor={ctx.actor!r} (role={ctx.role}) cannot write private_<{user_id}>; "
             f"user write-grant required (strict privacy model 2026-08-16)"
-        )
-    # user: only own private
-    if user_id != ctx.user_id:
-        raise PermissionError_(
-            f"actor={ctx.actor!r} (role={ctx.role}) cannot write "
-            f"private_<{user_id}>; only own private allowed"
         )
 
 
 def astor_check_bot_admin() -> None:
     """Pre-flight check for `am bot on/off/add-user/promote/demote`."""
     ctx = astor_current_acl()
-    if ctx.role != "first_admin":
+    if ctx.role != 'admin':
         raise PermissionError_(
             f"actor={ctx.actor!r} (role={ctx.role}) cannot run bot admin commands; "
-            f"only first_admin"
+            f"only admin (role='admin' required for `am bot ...` commands)"
         )
 
 
