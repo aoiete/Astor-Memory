@@ -2,7 +2,7 @@
 
 > Astor-Memory 的常见错误与修复。
 
-如果你的错误不在这里，请到 https://github.com/<repo-owner>/ASTOR-Memory/issues 提 issue，附上：
+如果你的错误不在这里，请到 https://github.com/<repo-owner>/Astor-Memory/issues 提 issue，附上：
 - `am doctor --verbose` 的输出
 - `am --version` 的输出
 - 可复现步骤
