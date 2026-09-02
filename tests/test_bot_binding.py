@@ -79,7 +79,7 @@ def test_upsert_platform_overwrites(fresh_db):
 def test_upsert_and_get_user(fresh_db):
     """Add a user_meta row."""
     bb._connect()
-    bb.upsert_user('admin', 'admin', real_name='admin', role='admin', subscription_plan='permanent')
+    bb.upsert_user('admin', 'admin', real_name='admin', role='admin', subscription_plan='power')
     u = bb.get_user('admin')
     assert u['short_alias'] == 'admin'
     assert u['real_name'] == 'admin'
@@ -166,7 +166,7 @@ def test_audit_logged_on_upsert(fresh_db):
     bb._connect()
     # Force ACL init
     from astor_memory._internal.acl import astor_init_acl
-    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+    astor_init_acl(actor='admin:admin', role='admin', tier='public')
 
     # Use real audit db (not mock — we want to verify it doesn't break)
     bb.upsert_platform('weixin', 'a1', 't', source='test')

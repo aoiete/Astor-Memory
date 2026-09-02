@@ -202,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
     admin_audit.add_argument('--since', help='Filter by ts >= ...')
     admin_audit.add_argument('--limit', type=int, default=50, help='Max rows (default 50)')
     admin_audit.set_defaults(func=cmd_admin_audit_log)
+    admin_demote = admin_sub.add_parser('demote', help='Move a public fact to private_<user> (admin only)')
+    admin_demote.add_argument('fact_ids', nargs='+', help='fact_id(s) to demote')
+    admin_demote.add_argument('--to-user', required=True, help='Target user_id (private_<user>)')
+    admin_demote.add_argument('--reason', required=True, help='Why (audit)')
+    admin_demote.set_defaults(func=cmd_admin_demote)
     admin_who = admin_sub.add_parser('whoami', help='Show current first_admin lock')
     admin_who.set_defaults(func=cmd_admin_whoami)
 
@@ -242,8 +247,14 @@ def main(argv: list[str] | None = None) -> int:
     plat_user.add_argument('short_alias')
     plat_user.add_argument('--real-name', default=None)
     plat_user.add_argument('--role', default='user', choices=['user', 'admin'])
-    plat_user.add_argument('--plan', default='trial', choices=['trial', 'lifetime', 'paid', 'free', 'permanent'])
+    plat_user.add_argument('--plan', default='free', choices=['free', 'vip', 'power'])
     plat_user.set_defaults(func=cmd_platform_add_user)
+    plat_setplan = plat_sub.add_parser('set-plan', help='Update a user\'s subscription_plan (admin only)')
+    plat_setplan.add_argument('user_id', help='Target user_id (must exist)')
+    plat_setplan.add_argument('plan', choices=['free', 'vip', 'power'],
+                              help='New plan: free | vip | power')
+    plat_setplan.add_argument('--reason', default=None, help='Why this plan change (logged)')
+    plat_setplan.set_defaults(func=cmd_platform_set_plan)
     plat_verify = plat_sub.add_parser('verify', help='Verify all 6 invariants on bot-binding.db')
     plat_verify.set_defaults(func=cmd_platform_verify)
 
@@ -257,12 +268,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # v1.10.9 (2026-08-26): initialize ACL before dispatching. CLI runs as
-    # first_admin by default (highest privilege, since most commands are
+    # admin by default (highest privilege, since most commands are
     # operational like cascade stats/replay). Individual commands can
     # override this with `astor_init_acl` if they need a different role.
     from .._internal.acl import astor_init_acl as _ia_cli
     try:
-        _ia_cli(actor='first_admin', role='first_admin', tier='public', user_id=None)
+        # 2026-09-02 final: admin role has no plan (plan is for users only).
+        _ia_cli(actor='admin:admin', role='admin', tier='public', user_id=None)
     except Exception:
         pass  # if ACL already init'd (e.g. via server boot), skip
 
@@ -283,7 +295,7 @@ def cmd_init(args) -> int:
     # 2026-08-16 fix: bind ACL first so subsequent bus/nest singleton
     # creation doesn't trip on `astor_acl not initialized`. This makes
     # `am init` work as a true process entry without a separate setup step.
-    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+    astor_init_acl(actor='admin:admin', role='admin', tier='public')
 
     astor_dir = get_default_astor_dir()
     astor_dir.mkdir(parents=True, exist_ok=True)
@@ -702,7 +714,7 @@ def cmd_reembed(args) -> int:
     # CLI must run as first_admin (re-embedding is system-wide).
     # Allow actor='am_cli' for stand-alone `am` invocations.
     try:
-        astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+        astor_init_acl(actor='admin:admin', role='admin', tier='public')
     except Exception:
         pass
 
@@ -1218,7 +1230,7 @@ def _read_install_state() -> dict:
         return {
             "version": 1,
             "mode": "single-user",
-            "first_admin_user_id": "admin",
+            "admin_user_id": "admin",
             "trial_users": [],
             "platform_bindings": {},
         }
@@ -1235,9 +1247,12 @@ def _write_install_state(state: dict) -> None:
 
 
 def _require_first_admin() -> None:
-    """All `am bot ...` and `am admin ...` require first_admin role."""
+    """All `am bot ...` and `am admin ...` require admin role.
+
+    2026-09-02: admin role has no plan (plan is for users only — free/vip/power).
+    """
     from .._internal.acl import astor_init_acl
-    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+    astor_init_acl(actor='admin:admin', role='admin', tier='public')
 
 
 def cmd_bot_on(args) -> int:
@@ -1313,7 +1328,7 @@ def cmd_bot_list_users(args) -> int:
     roles = state.get("roles", {})
     print(f'   install-state.json: {get_install_state_path()}')
     print(f'   mode: {state.get("mode", "(unset)")}')
-    print(f'   first_admin: {state.get("first_admin_user_id", "(none)")}')
+    print(f'   first_admin: {state.get("admin_user_id", "(none)")}')
     print()
     print(f'   {"USER_ID":24s} {"ROLE":8s} {"ON_DISK":8s}')
     for u in users_on_disk:
@@ -1333,7 +1348,7 @@ def cmd_bot_promote(args) -> int:
     """Promote user -> admin."""
     _require_first_admin()
     state = _read_install_state()
-    if args.user_id == state.get("first_admin_user_id"):
+    if args.user_id == state.get("admin_user_id"):
         print(f'[ERR] {args.user_id!r} is already first_admin (cannot promote — first_admin is permanent).')
         return 1
     roles = state.setdefault("roles", {})
@@ -1347,7 +1362,7 @@ def cmd_bot_demote(args) -> int:
     """Demote admin -> user."""
     _require_first_admin()
     state = _read_install_state()
-    if args.user_id == state.get("first_admin_user_id"):
+    if args.user_id == state.get("admin_user_id"):
         print(f'[ERR] {args.user_id!r} is first_admin (cannot demote — first_admin is permanent root, plan §2632).')
         return 1
     roles = state.setdefault("roles", {})
@@ -1391,7 +1406,7 @@ def cmd_bot_status(args) -> int:
     _require_first_admin()
     state = _read_install_state()
     print(f"   mode: {state.get('mode', '(unset)')}")
-    print(f"   first_admin: {state.get('first_admin_user_id', '(none)')}")
+    print(f"   first_admin: {state.get('admin_user_id', '(none)')}")
     print()
     print("   platform_bindings:")
     bindings = state.get("platform_bindings", {})
@@ -1424,6 +1439,92 @@ def cmd_admin_audit_log(args) -> int:
         meta_str = f" reason={r['reason'][:40]!r}" if r.get('reason') else ""
         print(f"   {r['ts']:30s} {r['actor']:16s} {r['tier']:10s} {r['user_id'] or '-':18s} {r['action']:10s} {r['target'] or '-':30s}{meta_str}")
     return 0
+
+
+def cmd_admin_demote(args) -> int:
+    """Move public fact(s) to private_<user> (admin only).
+
+    Workflow:
+      1. Look up each fact_id in public bus; verify it currently lives there.
+      2. Read the fact text (admin has read access to public).
+      3. Insert copy into private_<to_user> via direct DB write (bypassing
+         bus open() which would require grant).
+      4. Tombstone the public fact (so future reads skip it).
+      5. Audit each demotion.
+    """
+    from .._internal.audit_logger import astor_audit
+    from .._internal.bot_binding import _open_bus_for_user
+    _require_first_admin()
+
+    # Open public bus directly (admin always has read on public).
+    from ..bus.store import _open_bus_db as _open_public_db
+    src_db = _open_public_db(tier='public', user_id=None)
+    # Open target user's private bus via direct path (no ACL gate).
+    import os as _os
+    from pathlib import Path as _P
+    astor_dir = _P(_os.environ.get('ASTOR_DIR') or _P.home() / '.astor')
+    dst_db_path = astor_dir / 'users' / args.to_user / 'memory' / 'astor_bus_private.db'
+    if not dst_db_path.exists():
+        print(f'[ERR] target user private db missing: {dst_db_path}')
+        return 1
+    import sqlite3 as _sq
+    dst = _sq.connect(str(dst_db_path))
+
+    moved, skipped = [], []
+    for fid in args.fact_ids:
+        try:
+            fact_id = int(fid)
+        except ValueError:
+            skipped.append((fid, 'not an int'))
+            continue
+        rows = list(src_db.execute(
+            'SELECT text, metadata, stable_id FROM memory_canonical WHERE id = ?',
+            (fact_id,),
+        ))
+        if not rows:
+            skipped.append((fid, 'not found in public'))
+            continue
+        text, metadata_json, stable_id = rows[0]
+        # Insert into private_<user> as new fact (preserve stable_id)
+        cur = dst.execute(
+            'INSERT INTO memory_canonical (text, metadata, stable_id, scope_type, created_at) '
+            'VALUES (?, ?, ?, ?, ?)',
+            (text, metadata_json or 'null', stable_id, 'long_term',
+             __import__('datetime').datetime.utcnow().isoformat() + 'Z'),
+        )
+        new_id = cur.lastrowid
+        dst.commit()
+        # Tombstone public fact
+        src_db.execute(
+            'UPDATE memory_canonical SET tombstoned_at = ? WHERE id = ?',
+            (__import__('datetime').datetime.utcnow().isoformat() + 'Z', fact_id),
+        )
+        src_db.commit()
+        astor_audit(
+            actor='admin:admin',
+            tier='public->private',
+            action='admin_op',
+            user_id=args.to_user,
+            target=f'fact_id={fact_id}->{new_id}',
+            reason=args.reason,
+            metadata={'operation': 'demote', 'old_fact_id': fact_id,
+                      'new_fact_id': new_id, 'stable_id': stable_id,
+                      'to_user': args.to_user},
+        )
+        moved.append((fact_id, new_id))
+
+    src_db.close()
+    dst.close()
+
+    if moved:
+        print(f'[OK] demoted {len(moved)} fact(s) to private_<{args.to_user}>:')
+        for old, new in moved:
+            print(f'   public#{old} -> private<{args.to_user}>#{new}')
+    if skipped:
+        print(f'[WARN] skipped {len(skipped)}:')
+        for fid, why in skipped:
+            print(f'   {fid}: {why}')
+    return 0 if not skipped else 1
 
 
 def cmd_admin_whoami(args) -> int:
@@ -1620,6 +1721,60 @@ def cmd_platform_add_user(args) -> int:
     # NOTE: 9-db layout creation = call `am bot add-user` (different subcommand).
     # We could call cmd_bot_add_user programmatically but skip here to avoid audit duplication.
     print('   (run `am bot add-user <user_id>` separately to create 9-db layout)')
+    return 0
+
+
+def cmd_platform_set_plan(args) -> int:
+    """`am platform set-plan <user_id> <plan>` — update subscription_plan (admin only).
+
+    Writes an audit row recording the change. Cannot self-demote (admin role
+    stays regardless of plan; only user role is affected).
+    """
+    import sqlite3
+    from datetime import datetime
+    _require_first_admin()
+    db_path = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') / 'bot-binding.db'
+    if not db_path.exists():
+        print(f'[ERR] bot-binding.db not found: {db_path}')
+        return 1
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    row = con.execute(
+        'SELECT user_id, role, subscription_plan FROM user_meta WHERE user_id = ?',
+        (args.user_id,),
+    ).fetchone()
+    if row is None:
+        print(f'[ERR] user not found: {args.user_id}')
+        return 1
+    old_plan = row['subscription_plan']
+    if old_plan == args.plan:
+        print(f'[OK] {args.user_id} already on plan={args.plan} (no change)')
+        return 0
+    now = datetime.utcnow().isoformat() + 'Z'
+    con.execute(
+        'UPDATE user_meta SET subscription_plan = ?, updated_at = ? WHERE user_id = ?',
+        (args.plan, now, args.user_id),
+    )
+    # Audit
+    from .._internal.audit_logger import astor_audit
+    reason = args.reason or f'set plan {old_plan} -> {args.plan}'
+    astor_audit(
+        actor='admin:admin',
+        tier='public',
+        action='admin_op',
+        user_id=args.user_id,
+        target=f'user_meta/{args.user_id}',
+        reason=reason,
+        metadata={
+            'operation': 'set_plan',
+            'old_plan': old_plan,
+            'new_plan': args.plan,
+            'role_unchanged': row['role'],
+        },
+    )
+    con.commit()
+    con.close()
+    print(f'[OK] {args.user_id}: plan {old_plan} -> {args.plan} (role={row["role"]} unchanged)')
     return 0
 
 

@@ -41,7 +41,7 @@ def env_and_seed(tmp_path, monkeypatch):
     astor_init_schema(conn)
     conn.close()
     # Bind ACL for direct bus calls
-    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+    astor_init_acl(actor='admin:admin', role='admin', tier='public')
     # Seed facts
     bus = astor_bus(tier=Tier.PUBLIC.value, user_id=None)
     _insert_canonical(bus, content='dark roast coffee morning focus', kind='user_preference')
@@ -52,8 +52,8 @@ def env_and_seed(tmp_path, monkeypatch):
 
 def test_reflection_endpoint_first_admin(env_and_seed, monkeypatch):
     monkeypatch.setattr(bb, '_con', None)
-    bb.upsert_user(user_id='admin', short_alias='admin', role='first_admin',
-                   subscription_plan='permanent')
+    bb.upsert_user(user_id='admin', short_alias='admin', role='admin',
+                   subscription_plan='power')
     app = create_app(os.environ['ASTOR_DIR'])
     client = app.test_client()
     r = client.post('/v1/reflection/run',
@@ -67,7 +67,7 @@ def test_reflection_endpoint_first_admin(env_and_seed, monkeypatch):
 def test_reflection_endpoint_blocks_regular_user(env_and_seed, monkeypatch):
     monkeypatch.setattr(bb, '_con', None)
     bb.upsert_user(user_id='alice', short_alias='alice', role='user',
-                   subscription_plan='lifetime')
+                   subscription_plan='vip')
     app = create_app(os.environ['ASTOR_DIR'])
     client = app.test_client()
     r = client.post('/v1/reflection/run',

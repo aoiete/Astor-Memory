@@ -29,31 +29,154 @@ from ._internal.bot_binding import get_user
 from .config import get_default_astor_dir, get_default_bus_path, get_default_nest_path
 
 
-def _astor_resolve_actor(user_id: str | None) -> tuple[str, str]:
-    """Resolve (actor, role) for a given user_id from bot-binding.db user_meta.
+def _astor_quality_ok(text: str) -> str | None:
+    """Return None if content passes quality gate, else a generic denial reason.
 
-    Returns ('first_admin', 'first_admin') when:
-      - user_id is None/empty
-      - user_id is 'admin' (the canonical first_admin alias; matches install-state.json)
-      - user is not in user_meta (fail closed as root)
-
-    Otherwise returns ('admin:<id>', 'admin') for role='admin', or
-    ('user:<id>', 'user') for role='user'.
-
-    2026-08-16 ACL fix (P0): was hardcoded to first_admin, allowing any user
-    to write source tier and any user to read another user's private DB.
+    2026-09-02 ship: deny obvious spam / nonsense BEFORE the ACL+forge path.
+    Reasons returned are generic so users cannot probe which rule fired.
+    Rules:
+      - 8+ characters after strip
+      - <100% uppercase
+      - <100% control / whitespace
+      - <100% emoji / symbol
+      - <100% digits
+      - no leading 'test' / 'spam' / 'asdf' (case-insensitive)
     """
+    if not isinstance(text, str):
+        return 'invalid content'
+    s = text.strip()
+    if len(s) < 8:
+        return 'invalid content'
+    # All uppercase? (excluding punctuation / digits)
+    letters = [c for c in s if c.isalpha()]
+    if len(letters) >= 8 and all(c.isupper() for c in letters):
+        return 'invalid content'
+    # All control / whitespace?
+    if all((not c.isprintable() or c.isspace()) for c in s if c):
+        return 'invalid content'
+    # All emoji / symbol / punctuation?
+    if all((not c.isalnum()) for c in s):
+        return 'invalid content'
+    # All digits?
+    if all(c.isdigit() for c in s):
+        return 'invalid content'
+    # Known test prefixes
+    low = s.lower()
+    if low.startswith('test ') or low.startswith('spam ') or low.startswith('asdf'):
+        return 'invalid content'
+    return None
+
+
+# 2026-09-02 ship: intent classifier for public write auto-routing.
+# Returns (new_tier, new_user_id) if content should be reclassified away
+# from the caller's requested tier, else None (use caller's choice).
+#
+# Design: admin decides what goes public. User requests tier=public but
+# server inspects text and silently demotes to private_<user> if content
+# matches personal / financial / daily-journal patterns. User never learns
+# (no error message, just count=1 with the new tier under the hood).
+#
+# Patterns matched (case-insensitive, CJK + Latin):
+#   - Personal pronouns: 我 / 我今天 / 我的 / 自己 / i / my / mine
+#   - Financial: 买了 / 卖了 / 仓位 / 跌了 / 涨了 / $/€ / price
+#   - Daily journal: 今天 / yesterday / 早上 / 晚上 / at 8pm
+#   - Emotion/心情: 累了 / 开心 / 难过 / happy / sad
+#
+# Methods/rules/models stay public: includes pattern keywords (workflow /
+# method / model / rule / pattern / 流程 / 方法 / 规则 / 模式 / 模型 / 设计).
+_PERSONAL_PATTERNS = [
+    r"\b我(?:今天|昨天|明天|现在)?\b",
+    r"\b我的\b|\b自己\b",
+    r"\bi\s+(?:am|was|will|just|got|had|have)\b",
+    r"\bmy\s+(?:day|mood|trade|position|portfolio|stocks?)\b",
+    r"\bmine\b",
+]
+_FINANCIAL_PATTERNS = [
+    r"\$\d+|\d+\s*\$|€\d+|\d+\s*€",
+    r"\b(?:bought|sold|traded|long|short|stop[-_ ]?loss|take[-_ ]?profit)\b",
+    r"\b(?:AAPL|TSLA|NVDA|MSFT|GOOG|AMZN|META|SPY|QQQ)\b",
+    r"(?:买了|卖了|持仓|仓位|止盈|止损|跌了|涨了|加仓|减仓)",
+]
+_DAILY_PATTERNS = [
+    r"(?:今天|昨天|明天|早上|晚上|今晚|今早)",
+    r"\b(?:today|yesterday|tonight|this morning)\b",
+    r"\b\d+\s*(?:am|pm)\b",
+]
+_EMOTION_PATTERNS = [
+    r"(?:累了|开心|难过|沮丧|激动|无聊|郁闷|崩溃)",
+    r"\b(?:happy|sad|tired|excited|stressed|anxious|depressed|frustrated)\b",
+]
+_METHOD_PATTERNS = [
+    r"(?:workflow|method|model|rule|pattern|process|approach|framework|design)",
+    r"(?:流程|方法|规则|模式|模型|设计|架构|架构)",
+]
+
+_PERSONAL_RE = re.compile("|".join(_PERSONAL_PATTERNS), re.IGNORECASE)
+_FINANCIAL_RE = re.compile("|".join(_FINANCIAL_PATTERNS), re.IGNORECASE)
+_DAILY_RE = re.compile("|".join(_DAILY_PATTERNS), re.IGNORECASE)
+_EMOTION_RE = re.compile("|".join(_EMOTION_PATTERNS), re.IGNORECASE)
+_METHOD_RE = re.compile("|".join(_METHOD_PATTERNS), re.IGNORECASE)
+
+
+def _astor_classify_intent(text: str, tier: str, user: str | None) -> str | None:
+    """Inspect content; return new tier if content should be reclassified.
+
+    Only acts on tier='public' — private writes always stay private. Returns
+    None when content should stay as caller requested.
+
+    Rules (admin decides):
+      - text contains method/rule/model pattern → stays public (good content)
+      - text contains personal/financial/daily/emotion pattern → demote
+        to 'private' (the explicit_uid / bus_user_id logic picks user_id)
+      - tier != 'public' → return None (no reclassification needed)
+    """
+    if tier != 'public':
+        return None
+    if not isinstance(text, str) or not user or user == 'admin':
+        # admin user keeps admin role — never auto-demote admin's writes
+        return None
+    has_method = bool(_METHOD_RE.search(text))
+    has_personal = bool(_PERSONAL_RE.search(text))
+    has_financial = bool(_FINANCIAL_RE.search(text))
+    has_daily = bool(_DAILY_RE.search(text))
+    has_emotion = bool(_EMOTION_RE.search(text))
+    # Strong-signal demote: any of these forces private.
+    if has_personal or has_financial or has_daily or has_emotion:
+        return 'private'
+    # Method/rule/model alone stays public (admin's call).
+    if has_method:
+        return None
+    # No strong signal — stays public (admin can later review via audit log).
+    return None
+
+
+def _astor_resolve_actor(user_id: str | None) -> tuple[str, str, str | None]:
+    """Resolve (actor, role, plan) for a given user_id from bot-binding.db user_meta.
+
+    2026-09-02 final simplification: admin role IGNORES plan (plan is a
+    user-tier concept only). Admin has full access via role alone; plan=None
+    means "no plan applicable". 2 roles (admin / user) + 3-value plan
+    (free / vip / power) for users only.
+
+    Returns:
+      ('admin:admin', 'admin', None)    for user_id in {None, '', 'admin'}
+      ('admin:<id>',  'admin', None)    for any role='admin' user (plan ignored)
+      ('user:<id>',   'user',  <plan>)  for any active role='user' user
+      ('user:anonymous', 'user', 'free') for unknown / inactive callers
+    """
+    from ._internal.bot_binding import get_user as _get_user
     if not user_id or user_id == 'admin':
-        return ('first_admin', 'first_admin')
-    meta = get_user(user_id)
+        return ('admin:admin', 'admin', None)
+    meta = _get_user(user_id)
     if meta is None or not meta.get('active', 1):
-        return ('first_admin', 'first_admin')  # unknown → fail closed as root
+        return ('user:anonymous', 'user', 'free')
     role = meta.get('role', 'user')
-    if role == 'first_admin':
-        return ('first_admin', 'first_admin')
     if role == 'admin':
-        return (f'admin:{user_id}', 'admin')
-    return (f'user:{user_id}', 'user')
+        # admin: plan is irrelevant — role already grants full access.
+        return (f'admin:{user_id}', 'admin', None)
+    # user: plan differentiates free / vip / power
+    plan = meta.get('subscription_plan', 'free')
+    return (f'user:{user_id}', 'user', plan)
 
 
 def create_app(astor_dir: str | None = None) -> Flask:
@@ -97,7 +220,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     body_user = repo_id
                 else:
                     body_user = body.get('user')
-                actor, role = _astor_resolve_actor(body_user)
+                actor, role, plan = _astor_resolve_actor(body_user)
                 if tier == 'private':
                     target_user = body.get('user_id') or body_user
                 elif tier == 'repo':
@@ -105,12 +228,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 else:
                     target_user = None
                 try:
-                    # Bind ACL with ACTOR's identity (user_id = body_user).
-                    # The cross-user check below uses target_user to verify
-                    # the actor is allowed to access the target's data.
+                    # Bind ACL with ACTOR's identity. user_id=body_user ALWAYS
+                    # (not just for private) so astor_check_write can match
+                    # ctx.user_id == target_user when target_user is the
+                    # actor's own (reclassified private_<self> path).
                     astor_init_acl(
                         actor=actor, role=role, tier=tier,
-                        user_id=body_user if tier in ('private', 'repo') else None,
+                        user_id=body_user,
+                        subscription_plan=plan,
                     )
                 except (ValueError, PermissionError_) as exc:
                     return jsonify({'error': 'acl_init_failed', 'detail': str(exc)}), 403
@@ -123,18 +248,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     try:
                         _acr(tier='private', user_id=target_user)
                     except PermissionError_:
-                        return jsonify({'error': 'cross_user_forbidden', 'detail': (
-                            f"user={body_user!r} (role={role!r}) cannot read private_<{target_user}>; "
-                            f"user grant required (strict privacy model 2026-08-16)"
-                        )}), 403
+                        # 2026-09-02 ship: silent cross-user denial (no policy leak).
+                        return jsonify({'error': 'cross_user_forbidden'}), 403
                     if is_write_action:
                         try:
                             _acw(tier='private', user_id=target_user)
                         except PermissionError_:
-                            return jsonify({'error': 'cross_user_forbidden', 'detail': (
-                                f"user={body_user!r} (role={role!r}) cannot write private_<{target_user}>; "
-                                f"user write-grant required (strict privacy model 2026-08-16)"
-                            )}), 403
+                            return jsonify({'error': 'cross_user_forbidden'}), 403
                 return
         # Default bind for GET endpoints + POST without JSON body.
         # GETs are read-only public-tier inspections; safe to bind as
@@ -142,7 +262,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         try:
             _ = _CURRENT.actor
         except AttributeError:
-            astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+            astor_init_acl(actor='admin:admin', role='admin', tier='public',
+                           subscription_plan=None)
 
     @app.errorhandler(PermissionError_)
     def _astor_handle_permission_error(exc: PermissionError_):  # noqa: ARG001
@@ -232,12 +353,6 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # Profile scope must live in private (per-user identity). Auto-route.
             tier = 'private'
 
-        # P2-fix 2026-08-15: optional mirror_to_source. When tier=public and
-        # mirror=true, also write the same fact into the source tier (admin-
-        # only) so the agent's self-pattern store gets the same content.
-        # This is the 3-store × 3-tier "fanout" pattern from the plan.
-        mirror_to_source = bool(body.get('mirror_to_source', False)) and tier == 'public'
-
         # 2026-08-15 ship: respect tier from request body. Default 'public'.
         # v1.1: tier=repo passes user (= repo_id) to bus/nest/forge as user_id.
         # 2026-08-16 strict-privacy: prefer explicit user_id over 'user' field
@@ -251,6 +366,42 @@ def create_app(astor_dir: str | None = None) -> Flask:
             bus_user_id = user
         else:
             bus_user_id = None
+
+        # 2026-09-02 ship: content classifier — admin decides what goes public.
+        # Must run AFTER bus_user_id resolved (ACL below needs user_id for
+        # tier=private). Reclassify sets tier + bus_user_id together.
+        _reclass = _astor_classify_intent(body.get('text', ''), tier=tier,
+                                          user=user)
+        if _reclass is not None:
+            tier = _reclass
+            bus_user_id = user  # auto-route to caller's own private bucket
+
+        # 2026-09-02 ship: content quality gate (silent reject spam before write).
+        # 8+ chars, no all-uppercase, no all-control, no all-emoji. Failures
+        # return 400 with a generic "invalid content" detail — never reveal
+        # which rule (so users can't probe policy).
+        _qerr = _astor_quality_ok(body.get('text', ''))
+        if _qerr is not None:
+            return jsonify({'error': 'permission_denied', 'detail': _qerr}), 403
+
+        # P2-fix 2026-08-15: optional mirror_to_source. When tier=public and
+        # mirror=true, also write the same fact into the source tier (admin-
+        # only) so the agent's self-pattern store gets the same content.
+        # This is the 3-store × 3-tier "fanout" pattern from the plan.
+        mirror_to_source = bool(body.get('mirror_to_source', False)) and tier == 'public'
+
+        # 2026-09-02 ship: enforce write ACL via matrix. before_request
+        # binds the ACL context but does NOT check it — we must check here
+        # to stop a user from writing to source or public (both admin-only).
+        from ._internal.acl import astor_check_write as _acw_write
+        try:
+            _acw_write(tier='public' if tier == 'public' else tier,
+                       user_id=bus_user_id)
+        except PermissionError_ as _acl_err:
+            # 2026-09-02 ship: silent ACL denial — strip plan + role info.
+            # user never learns why they were blocked (probing prevention).
+            return jsonify({'error': 'permission_denied'}), 403
+
         bus = astor_bus(tier=tier, user_id=bus_user_id)
         forge = astor_forge()
 
@@ -420,6 +571,27 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # Log to stderr; do not fail the primary write.
                 import sys as _sys
                 print(f'[astor.server] mirror_to_source failed: {mirror_exc}', file=_sys.stderr)
+
+        # 2026-09-02 ship: audit row for every successful public write so
+        # admin can review what users contributed (and which got through the
+        # quality gate). admin-only visibility via `am admin audit-log`.
+        if tier == 'public' and fact_ids:
+            try:
+                from ._internal.audit_logger import astor_audit as _audit_w
+                _audit_w(
+                    actor=f'user:{user}' if user else 'user:anonymous',
+                    tier='public',
+                    action='write',
+                    user_id=bus_user_id,
+                    target=f'public/fact_ids={fact_ids[:3]}{"..." if len(fact_ids)>3 else ""}',
+                    metadata={
+                        'count': len(fact_ids),
+                        'preview': (body.get('text', '') or '')[:80],
+                        'mode': body.get('mode', 'auto'),
+                    },
+                )
+            except Exception:
+                pass  # audit failure must not break writes
 
         return jsonify({
             'event_id': event_id,
@@ -1276,8 +1448,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # gates cross-tier read access (first_admin may read all).
             from astor_memory._internal.acl import astor_init_acl
             astor_init_acl(
-                actor='first_admin', role='first_admin',
-                tier=t, user_id=u,
+                actor='admin:admin', role='admin',
+                tier=t, user_id=u, subscription_plan=None,
             )
             nest = astor_nest(tier=t, user_id=u)
             bus = astor_bus(tier=t, user_id=u)
@@ -1315,12 +1487,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # same or private-scope reads 403 with "first_admin lacks grant".
             if tier == 'private':
                 astor_init_acl(
-                    actor='first_admin', role='first_admin',
+                    actor='admin:admin', role='admin',
                     tier='private', user_id=uid,
+                    subscription_plan=None,
                 )
             else:
                 astor_init_acl(
-                    actor='first_admin', role='first_admin', tier=tier,
+                    actor='admin:admin', role='admin', tier=tier,
+                    subscription_plan=None,
                 )
             bus = astor_bus(tier=tier, user_id=uid)
             row = bus.conn.execute(
@@ -1383,8 +1557,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         max_groups = int(body.get('max_groups', 100))
         try:
             ctx = astor_current_acl()
-            if ctx.role != 'first_admin':
-                return jsonify({'error': 'merge requires first_admin'}), 403
+            if ctx.role != 'admin':
+                return jsonify({'error': 'merge requires admin'}), 403
         except Exception:
             pass
         result = find_duplicate_groups(
@@ -1418,8 +1592,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'merges list required'}), 400
         try:
             ctx = astor_current_acl()
-            if ctx.role != 'first_admin':
-                return jsonify({'error': 'merge requires first_admin'}), 403
+            if ctx.role != 'admin':
+                return jsonify({'error': 'merge requires admin'}), 403
         except Exception:
             pass
         result = apply_merges(merges=merges, actor=actor)
@@ -1504,8 +1678,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         body = request.get_json(force=True) if request.is_json else {}
         try:
             ctx = astor_current_acl()
-            if ctx.role != 'first_admin':
-                return jsonify({'error': 'restore requires first_admin'}), 403
+            if ctx.role != 'admin':
+                return jsonify({'error': 'restore requires admin'}), 403
         except Exception:
             pass
         result = restore_fact(
@@ -1553,8 +1727,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         """
         try:
             ctx = astor_current_acl()
-            if ctx.role != 'first_admin':
-                return jsonify({'error': 'cascade_replay requires first_admin'}), 403
+            if ctx.role != 'admin':
+                return jsonify({'error': 'cascade_replay requires admin'}), 403
         except Exception:
             pass
         body = request.get_json(force=True) if request.is_json else {}
@@ -1572,7 +1746,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         try:
             bus.write_audit(
                 event='cascade_replay',
-                actor='first_admin',
+                actor='admin:admin',
                 target_type='system',
                 target_id='cascade_state',
                 metadata={
@@ -1618,8 +1792,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         """
         try:
             ctx = astor_current_acl()
-            if ctx.role != 'first_admin':
-                return jsonify({'error': 'reflection_run requires first_admin'}), 403
+            if ctx.role != 'admin':
+                return jsonify({'error': 'reflection_run requires admin'}), 403
         except Exception:
             pass
         body = request.get_json(force=True) if request.is_json else {}
@@ -1633,13 +1807,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
         result = _reflection.run_reflection(
             bus, tier=tier, user_id=user_id,
             min_size=min_size, max_clusters=max_clusters, kinds=kinds,
-            actor='first_admin',
+            actor='admin:admin',
         )
         # Audit row for the reflection run itself
         try:
             bus.write_audit(
                 event='reflection_run',
-                actor='first_admin',
+                actor='admin:admin',
                 target_type='system',
                 target_id='reflection',
                 metadata={
@@ -1849,8 +2023,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         import os as _os
         try:
             ctx = astor_current_acl()
-            if ctx.role != 'first_admin':
-                return jsonify({'error': 'reload requires first_admin role'}), 403
+            if ctx.role != 'admin':
+                return jsonify({'error': 'reload requires admin role'}), 403
         except Exception:
             pass
         # Schedule a self-restart in 200ms then return. The new process
@@ -1877,7 +2051,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
         Body: {
           "grantor":    "<user_id>",      # data owner (the caller if 'user' role)
-          "grantee":    "first_admin" | "admin:<id>" | "user:<id>",
+          "grantee":    "admin:<id>" | "user:<id>",
           "scope":      "read" | "write" | "admin",
           "expires_at": ISO 8601 or null (default null),
           "reason":     free text (optional)
@@ -1913,7 +2087,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'error': 'forbidden',
                     'detail': 'user can only authorize access to their own private data',
                 }), 403
-        elif ctx.role != 'first_admin':
+        elif ctx.role != 'admin':
             # admin cannot forge a grant on a user's behalf
             astor_audit(
                 actor=ctx.actor, tier='private', action='admin_op',
@@ -1979,7 +2153,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         ctx = astor_current_acl()
         include_revoked = request.args.get('include_revoked', 'false').lower() == 'true'
 
-        if ctx.role == 'first_admin':
+        if ctx.role == 'admin':
             grants_out = _list(include_revoked=include_revoked)
         elif ctx.role == 'admin':
             grants_out = _list(grantee=ctx.actor, include_revoked=include_revoked)

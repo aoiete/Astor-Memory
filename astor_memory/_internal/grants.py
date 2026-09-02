@@ -280,15 +280,15 @@ def _not_expired(expires_at: str | None, now: datetime) -> bool:
 
 
 def _validate_grantee(grantee: str) -> None:
-    """Grantee must be one of: 'first_admin' | 'admin:<id>' | 'user:<id>'."""
-    if grantee == "first_admin":
-        return
+    """Grantee must be one of: 'admin:<id>' | 'user:<id>'. (2026-09-02:
+    first_admin concept removed — SSoT owner is just admin:admin with
+    role='admin', plan='power'.)"""
     if grantee.startswith("admin:") or grantee.startswith("user:"):
         rest = grantee.split(":", 1)[1]
         if rest and all(c.isalnum() or c in "_-" for c in rest) and len(rest) <= 64:
             return
     raise ValueError(
-        f"grantee must be 'first_admin' or 'admin:<id>' or 'user:<id>', got {grantee!r}"
+        f"grantee must be 'admin:<id>' or 'user:<id>', got {grantee!r}"
     )
 
 

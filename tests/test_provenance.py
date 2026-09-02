@@ -24,7 +24,7 @@ class ProvenanceCoreTests(unittest.TestCase):
         try:
             from astor_memory._internal.acl import astor_init_acl
             astor_init_acl(
-                actor='first_admin', role='first_admin', tier='public',
+                actor='admin:admin', role='admin', tier='public',
             )
         except Exception:
             self.skipTest('cannot init ACL')
