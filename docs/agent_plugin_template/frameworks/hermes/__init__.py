@@ -58,7 +58,12 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SERVER_URL = "http://127.0.0.1:7803"
 _DEFAULT_TIMEOUT_S = 8.0
-_DEFAULT_BOT_BINDING_DB = r"<runtime_dir>bot-binding.db"
+# 2026-09-01: removed hardcoded <runtime_dir>bot-binding.db
+# Use env var (ASTOR_BOT_BINDING_DB) or auto-detect from ASTOR_DIR / ~/.astor
+_DEFAULT_BOT_BINDING_DB = os.environ.get(
+    "ASTOR_BOT_BINDING_DB",
+    str(Path(os.environ.get("ASTOR_DIR", str(Path.home() / ".astor"))) / "bot-binding.db"),
+)
 
 
 def _load_config(hermes_home: Optional[str] = None) -> dict:
