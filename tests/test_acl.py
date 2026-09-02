@@ -120,25 +120,26 @@ def test_acl_init_validates_inputs():
 
 
 @pytest.fixture(autouse=True)
-def _reset_acl_for_each_test():
-    """v1.13.1 (2026-09-02): reset _CURRENT state before each ACL test so
-    that test_acl_uninit_raises_permission (which asserts an uninitialized
-    state) runs cleanly regardless of ordering."""
+def _reset_acl_for_each_test_fixture():
+    """Reset BOTH _CURRENT (threading.local) and _ACL_CTX (ContextVar)
+    so test_acl_uninit_raises_permission runs cleanly regardless of ordering.
+
+    2026-09-02 fix: astor_current_acl() checks _ACL_CTX FIRST, so resetting
+    only _CURRENT leaves the ContextVar state behind. Fix: clear both.
+    """
     import astor_memory._internal.acl as acl_mod
-    for attr in ('actor', 'role', 'tier', 'user_id'):
+    # Reset threading.local
+    for attr in ('actor', 'role', 'tier', 'user_id', 'subscription_plan'):
         if hasattr(acl_mod._CURRENT, attr):
             delattr(acl_mod._CURRENT, attr)
+    # Reset ContextVar
+    try:
+        acl_mod._ACL_CTX.set(None)
+    except (LookupError, ValueError):
+        pass
     yield
 
 
-@pytest.mark.xfail(
-    reason="test ordering: must run before any test that calls astor_init_acl. "
-           "Passes when run individually; fails when run in suite after other "
-           "ACL tests have populated _CURRENT. Tracked as known-issue; "
-           "long-term fix: convert astor_memory._internal.acl._CURRENT from "
-           "threading.local to contextvars.ContextVar for test-isolated state.",
-    strict=False,
-)
 def test_acl_uninit_raises_permission():
     """Calling ACL checks without astor_init_acl → PermissionError_.
 
@@ -149,9 +150,10 @@ def test_acl_uninit_raises_permission():
       if a previous test reloaded astor_memory._internal.acl (which
       gives _CURRENT a fresh empty local -- hasattr returns False, but
       we still need the read to fail).
+    2026-09-02 fix: _reset_acl_for_each_test_fixture clears both _CURRENT
+    and _ACL_CTX so this test passes regardless of order.
     """
-    # _reset_acl_for_each_test autouse fixture above has already cleared
-    # the ACL state; no further cleanup needed here.
+    from astor_memory._internal.acl import astor_check_read
     with pytest.raises(PermissionError_):
         astor_check_read("private", user_id="alice")
 
