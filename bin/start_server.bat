@@ -1,7 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
-set ASTOR_DIR=<runtime_dir>
-set PYTHONPATH=<runtime_dir>
+rem 2026-09-01: removed hardcoded <runtime_dir> — use env var or default ~/.astor
+rem This script is for local admin/dev use. For users, astor installs to %USERPROFILE%/.astor by default.
+if "%ASTOR_DIR%"=="" set "ASTOR_DIR=%USERPROFILE%\.astor"
+set PYTHONPATH=%ASTOR_DIR%
 rem 2026-08-26 (M3 fix): load OPENROUTER env from hermes .env so
 rem astor_llm_extract default primary='openai' works out-of-the-box.
 rem OpenRouter provides OpenAI-compatible /chat/completions, so this is
