@@ -265,4 +265,4 @@ Astor-Memory is MIT-licensed. See [`LICENSE`](../LICENSE).
 
 The Acknowledgements above do NOT grant additional rights beyond the MIT license of Astor-Memory itself. Each project's license applies to their own code, not to Astor-Memory's code.
 
-If you believe any part of Astor-Memory improperly incorporates copyrighted material, please open an issue at https://github.com/aoiete/ASTOR-Memory/issues.
+If you believe any part of Astor-Memory improperly incorporates copyrighted material, please open an issue at https://github.com/aoiete/Astor-Memory/issues.

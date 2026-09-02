@@ -185,7 +185,7 @@ def _audit_lookup(platform_kind: str, account_id: str | None, source: str, resul
     try:
         from .audit_logger import astor_audit
         astor_audit(
-            actor="first_admin",  # for now, default; later when we add runtime actor=server
+            actor='admin:admin',  # for now, default; later when we add runtime actor=server
             tier="private",
             action="read",
             target=f"platforms/{platform_kind}/{account_id or '*'}",

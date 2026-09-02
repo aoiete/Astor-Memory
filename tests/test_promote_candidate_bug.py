@@ -33,7 +33,7 @@ def fresh_bus(tmp_path, monkeypatch):
     conn = sqlite3.connect(str(p), timeout=5)
     astor_init_schema(conn)
     conn.close()
-    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+    astor_init_acl(actor='admin:admin', role='admin', tier='public')
     return astor_bus(tier=Tier.PUBLIC.value, user_id=None)
 
 

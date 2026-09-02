@@ -35,7 +35,7 @@ def fresh_bus(tmp_path, monkeypatch):
     conn.close()
     # Direct astor_bus() calls need an ACL context (the production server
     # binds it in before_request; tests bypass Flask and call directly).
-    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+    astor_init_acl(actor='admin:admin', role='admin', tier='public')
     bus = astor_bus(tier=Tier.PUBLIC.value, user_id=None)
     return bus, target
 
@@ -285,7 +285,7 @@ def test_promote_candidate_enqueues_on_embed_failure(tmp_path, monkeypatch):
 
     # Tests that call astor_bus() directly bypass Flask's before_request,
     # so bind ACL first.
-    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+    astor_init_acl(actor='admin:admin', role='admin', tier='public')
     bus = astor_bus(tier=Tier.PUBLIC.value, user_id=None)
 
 
@@ -365,12 +365,12 @@ def test_cascade_via_server_endpoint(tmp_path, monkeypatch):
     # Seed admin user in bot-binding.db so before_request binds first_admin.
     from astor_memory._internal import bot_binding as bb
     monkeypatch.setattr(bb, '_con', None)
-    bb.upsert_user(user_id='admin', short_alias='admin', role='first_admin',
-                   subscription_plan='permanent')
+    bb.upsert_user(user_id='admin', short_alias='admin', role='admin',
+                   subscription_plan='power')
 
     # Tests that call astor_bus() directly bypass Flask's before_request,
     # so bind ACL first.
-    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+    astor_init_acl(actor='admin:admin', role='admin', tier='public')
     # Insert a fact + enqueue a cascade row.
     bus = astor_bus(tier=Tier.PUBLIC.value, user_id=None)
     fid = _insert_one_canonical(bus)
@@ -424,12 +424,12 @@ def test_cascade_server_endpoint_requires_first_admin(tmp_path, monkeypatch):
     from astor_memory._internal import bot_binding as bb
     monkeypatch.setattr(bb, '_con', None)
     bb.upsert_user(user_id='alice', short_alias='alice', role='user',
-                   subscription_plan='lifetime')
+                   subscription_plan='vip')
 
     # Tests that call astor_bus() directly bypass Flask's before_request,
     # so bind ACL first (admin role for this test — alice's role check
     # happens inside the server's before_request).
-    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+    astor_init_acl(actor='admin:admin', role='admin', tier='public')
     bus = astor_bus(tier=Tier.PUBLIC.value, user_id=None)
     fid = _insert_one_canonical(bus)
     cascade.enqueue(bus, fid, 'embed_insert', 'public', None, {}, 'e')

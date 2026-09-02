@@ -2,7 +2,7 @@
 
 > Common errors and fixes for Astor-Memory.
 
-If your error isn't here, file an issue at https://github.com/aoiete/ASTOR-Memory/issues with:
+If your error isn't here, file an issue at https://github.com/aoiete/Astor-Memory/issues with:
 - Output of `am doctor --verbose`
 - Output of `am --version`
 - Reproducible steps
