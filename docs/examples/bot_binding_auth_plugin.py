@@ -17,9 +17,10 @@ Why a plugin (vs in-place patch in core)?
 
 Configuration:
 
-- BOT_BINDING_DB_PATH  (default ``<runtime_dir>bot-binding.db``)
+- BOT_BINDING_DB_PATH  (default: ``$ASTOR_DIR/bot-binding.db`` or ``~/.astor/bot-binding.db``)
   Override via env var if you keep the DB at a different path.
 - HERMES_BOT_BINDING_DB  same as above, alternate env var.
+- ASTOR_BOT_BINDING_DB  another alternate env var.
 
 The plugin is a no-op if the DB file does not exist (e.g. first-run before
 ``bot-binding.db`` is initialized); in that case the env-var allowlist path
@@ -47,7 +48,21 @@ PLUGIN_VERSION = "1.0.0"
 # DB helpers
 # ---------------------------------------------------------------------------
 
-_DEFAULT_DB_PATH = Path(r"<runtime_dir>bot-binding.db")
+# 2026-09-01: removed hardcoded <runtime_dir>bot-binding.db
+# Use ASTOR_DIR env var or default ~/.astor — works for any install location.
+_DEFAULT_DB_PATH = Path(
+    os.environ.get(
+        "HERMES_BOT_BINDING_DB",
+        os.environ.get(
+            "BOT_BINDING_DB_PATH",
+            os.environ.get(
+                "ASTOR_BOT_BINDING_DB",
+                str(Path(os.environ.get("ASTOR_DIR", str(Path.home() / ".astor")))
+                    / "bot-binding.db"),
+            ),
+        ),
+    )
+)
 
 
 def _resolve_db_path() -> Optional[Path]:
