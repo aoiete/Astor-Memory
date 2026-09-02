@@ -391,7 +391,7 @@ def test_promote_writes_audit_log(tmp_path):
     result = astor_promote_recurring_success(
         target_id,
         db_path=db_path,
-        actor='first_admin',
+        actor='admin:admin',
         threshold=3,
     )
     assert result is True
@@ -405,7 +405,7 @@ def test_promote_writes_audit_log(tmp_path):
     assert audit is not None
     event, actor, target_id_db, old, new, reason = audit
     assert event == 'promote_recurring_success'
-    assert actor == 'first_admin'
+    assert actor == 'admin:admin'
     assert target_id_db == str(target_id)
     old_dict = json.loads(old)
     new_dict = json.loads(new)

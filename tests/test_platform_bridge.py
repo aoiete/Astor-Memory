@@ -68,7 +68,7 @@ def fresh_db(monkeypatch, tmp_path):
 
 
 def setup_module(module):
-    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+    astor_init_acl(actor='admin:admin', role='admin', tier='public')
 
 
 def test_resolve_telegram_from_db(fresh_db, monkeypatch):

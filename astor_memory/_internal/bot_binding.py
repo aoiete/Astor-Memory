@@ -37,7 +37,7 @@ def _audit(action: str, target: str, metadata: dict | None = None, reason: str |
     from .audit_logger import astor_audit
     try:
         astor_audit(
-            actor="first_admin",
+            actor='admin:admin',
             tier="private",
             action="admin_op",
             target=target,

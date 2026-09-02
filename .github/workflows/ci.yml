@@ -47,9 +47,38 @@ jobs:
         run: |
           python -c "import astor_memory; print('OK', astor_memory.__version__)"
 
+      # 2026-09-02: ServerIntegrationTests + hermes_adapter rely on a live
+      # astor server on 127.0.0.1:7803. Start one as a background process
+      # before pytest, stop it after. Tests that need the server will fail
+      # loudly if the server is missing — better than silent skip.
+      - name: Start astor server (background)
+        run: |
+          mkdir -p /tmp/astor-ci
+          export ASTOR_DIR=/tmp/astor-ci
+          nohup python -m astor_memory.server --host 127.0.0.1 --port 7803 \
+            > /tmp/astor-server.log 2>&1 &
+          echo $! > /tmp/astor-server.pid
+          # Wait for /v1/health to return 200 (max 30s)
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:7803/v1/health >/dev/null 2>&1; then
+              echo "astor server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:7803/v1/health || (cat /tmp/astor-server.log; exit 1)
+
       - name: Run pytest
         run: |
+          export ASTOR_DIR=/tmp/astor-ci
           pytest tests/ -v --tb=short
+
+      - name: Stop astor server
+        if: always()
+        run: |
+          if [ -f /tmp/astor-server.pid ]; then
+            kill "$(cat /tmp/astor-server.pid)" || true
+          fi
 
       - name: Upload pytest report
         if: always()
