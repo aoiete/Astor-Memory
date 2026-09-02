@@ -182,7 +182,12 @@ class AstorLex:
                     content,
                     content='documents',
                     content_rowid='fact_id',
-                    tokenize='porter unicode61'
+                    -- 2026-09-02 ship: `separators '_0123456789' + remove_diacritics 2`
+                    -- ensures FTS5 tokenizes CJK chars as atomic tokens AND
+                    -- splits digit runs. Default `porter unicode61` keeps
+                    -- CJK chars atomic but doesn't split digit runs, so
+                    -- 'unique51c1856c' becomes one unsearchable token.
+                    tokenize="unicode61 remove_diacritics 2 separators '_0123456789'"
                 );
                 INSERT OR IGNORE INTO meta(key, value) VALUES ('total_docs', '0');
                 INSERT OR IGNORE INTO meta(key, value) VALUES ('avgdl', '0');
