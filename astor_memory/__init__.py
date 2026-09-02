@@ -6,7 +6,7 @@ astor-memory: Self-owned memory system for AI agents.
 See: docs/architecture.md in this repository for the full architecture overview.
 """
 
-__version__ = '1.13.1'  # 2026-09-02 (v1.13.1): see CHANGELOG for full version history
+__version__ = '1.14.0'  # 2026-09-02 (v1.14.0): see CHANGELOG for full version history
 
 # Top-level singleton accessors. Per Plan § Naming:
 # astor_bus() / astor_forge() / astor_nest() are the unified public API entry points.

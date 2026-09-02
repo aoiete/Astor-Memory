@@ -62,9 +62,50 @@ Python 3.10 或更高，低于 3.14。CI 测试覆盖 3.10 / 3.11 / 3.12 / 3.13�
 curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash
 # 或指定版本
 curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash -s v1.13.1
+# 交互式（会问数据目录）
+./scripts/install.sh
+# 非交互式（CI/自动化）
+./scripts/install.sh --non-interactive
+# 自定义数据目录
+./scripts/install.sh --dir /opt/astor/data
 ```
 
-装完跑 `am doctor` 验证。详见 `scripts/install.sh`（支持 `--check` / `--uninstall`，环境变量 `ASTOR_HOME` / `PYTHON` 可覆盖）。
+### 一键安装（Windows）
+
+用仓库里附带的 PowerShell 脚本：
+
+```powershell
+# 从 GitHub raw 一行安装
+iwr -useb https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.ps1 | iex
+# 或本地
+.\scripts\install.ps1
+.\scripts\install.ps1 v1.13.1
+.\scripts\install.ps1 -NonInteractive
+.\scripts\install.ps1 -Dir 'D:\astor\data'
+```
+
+### 怎么卸载？
+
+```bash
+# Linux/macOS
+./scripts/install.sh --uninstall [--dir <path>]
+
+# Windows
+.\scripts\install.ps1 -Uninstall [-Dir <path>]
+```
+
+或者直接 `rm -rf <ASTOR_HOME>` — 数据目录和 `.venv/` 下的 venv 都是自包含的。
+
+### 数据目录在哪？能改吗？
+
+默认：
+
+- Linux/macOS：`~/.astor/`（或 `$ASTOR_HOME` 如果设了）
+- Windows：`%USERPROFILE%\.astor\`（或 `$env:ASTOR_HOME` 如果设了）
+
+装之前设 `ASTOR_HOME` 环境变量即可换路径。装脚本也支持 `--dir` / `-Dir` 一次性覆盖。
+
+装完跑 `am doctor` 验证。
 
 ---
 
