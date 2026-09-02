@@ -1,4 +1,27 @@
 
+## v1.14.0 (2026-09-02)
+
+### Installation: cross-platform + interactive path
+
+- **scripts/install.sh** (Linux + macOS) — added `--non-interactive` flag, macOS detection (Homebrew python lookup, xcode-select hint for git), interactive data-dir prompt, full `--help`/`--check`/`--uninstall`/`--dir` flag set, OS-aware messaging in summary.
+- **scripts/install.ps1** (NEW, Windows PowerShell 5.1+) — mirrors install.sh feature parity: version pin, `-NonInteractive`, `-Dir`, `-Check`, `-Uninstall`, `-Help`. Defaults to `%USERPROFILE%\.astor` on Windows; honors `$env:ASTOR_HOME` override. Validates Python 3.10-3.13 and venv module before installing.
+- README + docs/faq + docs/faq.zh-CN — documented both install paths with all flags.
+
+### Hardcoded-path cleanup (operator hygiene)
+
+For source code + templates shipped to users, removed every hardcoded `<runtime_dir>` and replaced with `os.environ.get(...)` falling back to platform-appropriate default (`~/.astor` on Unix, `%USERPROFILE%\.astor` on Windows):
+
+- **astor_memory/**: no operator-specific paths remain. `nest/lex_index.py` and `nest/conversation_graph.py` doc-comments explicitly state operator paths are forbidden.
+- **bin/start_server.bat**: removed hardcoded `D:\\AI\\Astor-Memory-Runtime`; uses `%USERPROFILE%\\.astor` as default, env var override.
+- **tests/test_lex_index.py** + **tests/test_provenance.py**: replaced hardcoded runtime dir with `tempfile.mkdtemp` + `setdefault('ASTOR_DIR', ...)` so tests are hermetic and portable. CI/dev machines can still point `ASTOR_DIR` at a real directory.
+- **docs/agent_plugin_template/frameworks/hermes/__init__.py** (template plugin shipped to users): `bot_binding_db` default now uses `ASTOR_BOT_BINDING_DB` env var → `ASTOR_DIR` env var → `~/.astor` fallback.
+- **docs/examples/bot_binding_auth_plugin.py** + **.yaml**: same path-resolution chain (env vars first, then `~/.astor`). Documented `ASTOR_BOT_BINDING_DB` as canonical env var.
+
+### Docs
+
+- README Quickstart split into Linux/macOS (`install.sh`) and Windows (`install.ps1`) sections with full flag examples.
+- FAQ.md + FAQ.zh-CN.md: added "One-shot install on Windows", "How do I uninstall?", "Where is the data directory? Can I change it?" Q&A.
+
 ## v1.13.1 (2026-09-02)
 
 ### Bug fixes (test suite + source)

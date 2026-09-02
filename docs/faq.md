@@ -52,7 +52,9 @@ Python 3.10 or higher, lower than 3.14. We test against 3.10, 3.11, 3.12, 3.13.
 
 ### Does it work on Windows / macOS / Linux?
 
-Yes. We test on Ubuntu 24.04 (primary CI), macOS 14, and Windows 11. The codebase uses `pathlib.Path` everywhere, no shell-specific assumptions.
+Yes. We test on Ubuntu 24.04 (primary CI), macOS 14, and Windows 11. The
+codebase uses `pathlib.Path` everywhere, no shell-specific assumptions.
+Linux/macOS use `scripts/install.sh`; Windows uses `scripts/install.ps1`.
 
 ### Can I install without admin / sudo?
 
@@ -73,11 +75,51 @@ data-dir init, and PATH setup in one step):
 curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash
 # or with a specific version
 curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash -s v1.13.1
+# interactive (prompts for data dir)
+./scripts/install.sh
+# non-interactive (CI/automation)
+./scripts/install.sh --non-interactive
+# custom data directory
+./scripts/install.sh --dir /opt/astor/data
 ```
 
-After install: `am doctor` to verify. See `scripts/install.sh` for
-details, options (`--check`, `--uninstall`), and override env vars
-(`ASTOR_HOME`, `PYTHON`).
+### One-shot install on Windows
+
+Use the bundled PowerShell script:
+
+```powershell
+# From GitHub raw (one-liner)
+iwr -useb https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.ps1 | iex
+# Or local
+.\scripts\install.ps1
+.\scripts\install.ps1 v1.13.1
+.\scripts\install.ps1 -NonInteractive
+.\scripts\install.ps1 -Dir 'D:\astor\data'
+```
+
+### How do I uninstall?
+
+```bash
+# Linux/macOS
+./scripts/install.sh --uninstall [--dir <path>]
+
+# Windows
+.\scripts\install.ps1 -Uninstall [-Dir <path>]
+```
+
+Or just `rm -rf <ASTOR_HOME>` — the data dir and the venv under `.venv/`
+are fully self-contained.
+
+### Where is the data directory? Can I change it?
+
+The data directory defaults to:
+
+- Linux/macOS: `~/.astor/` (or `$ASTOR_HOME` if set)
+- Windows: `%USERPROFILE%\.astor\` (or `$env:ASTOR_HOME` if set)
+
+Set `ASTOR_HOME` (env var) before running the install script to use a
+custom path. The install script also accepts `--dir` / `-Dir` for one-off
+overrides.
 
 ---
 
