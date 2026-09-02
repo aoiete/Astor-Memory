@@ -13,13 +13,18 @@ provides_hooks:
   - pre_gateway_dispatch
 trust_level: trusted
 requires:
-  - bot-binding.db at HERMES_BOT_BINDING_DB or <runtime_dir>bot-binding.db
+  # 2026-09-01: removed hardcoded <runtime_dir> path.
+  # Resolves to ASTOR_DIR/bot-binding.db (or ~/.astor/bot-binding.db).
+  - bot-binding.db at HERMES_BOT_BINDING_DB (default $ASTOR_DIR/bot-binding.db)
 env:
   BOT_BINDING_DB_PATH:
     description: Override bot-binding.db path
     default: null
   HERMES_BOT_BINDING_DB:
     description: Alternate env var for the same path
+    default: null
+  ASTOR_BOT_BINDING_DB:
+    description: Canonical env var used by astor-memory
     default: null
 notes: |
   Without this plugin, hermes-agent _is_user_authorized reads

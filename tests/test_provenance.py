@@ -2,11 +2,18 @@
 import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
-os.environ['ASTOR_DIR'] = str(Path(r'<runtime_dir>'))
-sys.path.insert(0, str(Path(r'<source_dir>')))
+# 2026-09-01: removed hardcoded <runtime_dir>.
+# If ASTOR_DIR is not set in env, fall back to a per-process tempdir so tests
+# are hermetic and don't touch the live runtime. CI / dev machines can still
+# point ASTOR_DIR at a real directory via the shell before running tests.
+os.environ.setdefault('ASTOR_DIR', str(Path(tempfile.mkdtemp(prefix="astor_prov_test_"))))
+_ASTOR_SRC = Path(__file__).resolve().parent.parent
+if str(_ASTOR_SRC) not in sys.path:
+    sys.path.insert(0, str(_ASTOR_SRC))
 
 
 class ProvenanceCoreTests(unittest.TestCase):

@@ -148,20 +148,43 @@ Full acknowledgements in [`ACKNOWLEDGEMENTS.md`](./ACKNOWLEDGEMENTS.md).
 
 ## Quickstart
 
-Install:
+Install with pip:
 
 ```bash
 pip install astor-memory
 ```
 
-On Linux / macOS, you can also use the bundled install script (creates
-a venv, fetches from GitHub, initializes data dir, sets up `am` in one
-step):
+Or use a bundled install script — creates a venv, fetches from GitHub,
+initializes the data dir, and sets up `am` in one step:
 
+**Linux / macOS** (`install.sh`):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash
 # or pin a version:
 curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash -s v1.13.1
+# interactive: prompts for data dir
+./scripts/install.sh
+# non-interactive (CI/automation):
+./scripts/install.sh --non-interactive
+# custom data dir:
+./scripts/install.sh --dir /opt/astor/data
+# verify:
+./scripts/install.sh --check
+# uninstall:
+./scripts/install.sh --uninstall
+```
+
+**Windows** (`install.ps1`, PowerShell 5.1+):
+```powershell
+# From GitHub raw (one-liner)
+iwr -useb https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.ps1 | iex
+# Or local
+.\scripts\install.ps1
+.\scripts\install.ps1 v1.13.1
+.\scripts\install.ps1 -NonInteractive
+.\scripts\install.ps1 -Dir 'D:\astor\data'
+.\scripts\install.ps1 -Check
+.\scripts\install.ps1 -Uninstall
 ```
 
 Initialize a single-user memory store:
