@@ -47,7 +47,7 @@ def fresh_bus(tmp_path, monkeypatch):
     conn = sqlite3.connect(str(p), timeout=5)
     astor_init_schema(conn)
     conn.close()
-    astor_init_acl(actor='first_admin', role='first_admin', tier='public')
+    astor_init_acl(actor='admin:admin', role='admin', tier='public')
     return astor_bus(tier=Tier.PUBLIC.value, user_id=None)
 
 
@@ -160,8 +160,8 @@ def test_auto_link_via_server_write_endpoint(fresh_bus, monkeypatch):
     from astor_memory._internal import bot_binding as bb
     import os
     monkeypatch.setattr(bb, '_con', None)
-    bb.upsert_user(user_id='admin', short_alias='admin', role='first_admin',
-                   subscription_plan='permanent')
+    bb.upsert_user(user_id='admin', short_alias='admin', role='admin',
+                   subscription_plan='power')
     # Seed a similar fact
     a = _insert_canonical(fresh_bus, content='dark roast coffee morning')
     # Write a new fact with similar content

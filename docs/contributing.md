@@ -29,7 +29,7 @@ This document is the source of truth for:
 ## Quick start
 
 ```bash
-git clone https://github.com/<repo-owner>/ASTOR-Memory.git
+git clone https://github.com/<repo-owner>/Astor-Memory.git
 cd astor-memory
 pip install -e .[dev]
 pytest tests/

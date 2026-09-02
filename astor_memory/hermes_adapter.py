@@ -71,7 +71,7 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
 
     def __init__(self) -> None:
         self._session_id: str = ""
-        self._actor: str = "first_admin"
+        self._actor: str = 'admin:admin'
         self._hermes_home: str = ""
         self._platform: str = "cli"
         # v1.1: turn counter for periodic memory-search nudge (MemoraX-style
@@ -125,11 +125,14 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
         self._platform = kwargs.get("platform", "cli")
         if _ASTOR_IMPORT_OK:
             try:
+                # 2026-09-02: admin role has no plan (plan is for users only).
+                # Use admin:admin actor + role='admin' + no plan.
                 astor_init_acl(
-                    actor=self._actor,
-                    role="first_admin",
+                    actor='admin:admin',
+                    role='admin',
                     tier="source",
                 )
+                self._actor = 'admin:admin'
                 logger.info(
                     "astor_memory: initialized (session=%s, platform=%s, actor=%s)",
                     session_id, self._platform, self._actor,
