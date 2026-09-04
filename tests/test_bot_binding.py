@@ -31,8 +31,15 @@ def fresh_db(monkeypatch, tmp_path):
     monkeypatch.setattr(bb, '_db_path', lambda: test_db)
     # reset singleton
     bb._con = None
+    # R-class fix: also redirect audit_logger so _audit() writes to tmp,
+    # not the real ASTOR_DIR/audit/astor_audit.db (which other tests share).
+    from astor_memory._internal import acl_layout, audit_logger as _al
+    test_audit_db = tmp_path / 'astor_audit.db'
+    monkeypatch.setattr(acl_layout, 'get_audit_path', lambda: test_audit_db)
+    # reset audit_logger singleton so the next call re-resolves the path
+    _al._reset_audit_conn()
     yield test_db
-    bb._con = None
+    _al._reset_audit_conn()
 
 
 def test_schema_init(fresh_db):
@@ -173,8 +180,10 @@ def test_audit_logged_on_upsert(fresh_db):
     bb.upsert_user('u1', 'u1')
     bb.upsert_binding('weixin:a1', 'c1', 'u1', bound_by='first_admin')
 
-    # Find audit rows; could come from real audit/astor_audit.db (production)
-    audit_db = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') / 'audit' / 'astor_audit.db'
+    # R-class: use the monkeypatched audit db path, not the env-derived path.
+    # The fresh_db fixture redirects audit_logger to tmp_path/astor_audit.db.
+    from astor_memory._internal import acl_layout
+    audit_db = acl_layout.get_audit_path()
     if not audit_db.exists():
         # OK — astor_audit logged nothing, silent fallback (best-effort)
         return

@@ -1783,7 +1783,22 @@ def cmd_platform_verify(args) -> int:
     import sqlite3
     _require_first_admin()
     db_path = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') / 'bot-binding.db'
+    if not db_path.exists():
+        print(f'WARN: bot-binding.db not found at {db_path}', file=__import__('sys').stderr)
+        print('Run `am init` to bootstrap a fresh astor dir before running verify.', file=__import__('sys').stderr)
+        return 1
     con = sqlite3.connect(str(db_path))
+    # Defensive: ensure tables exist (test fixtures may not have called _init_schema)
+    try:
+        existing = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    except sqlite3.OperationalError:
+        existing = set()
+    if not {'platforms', 'bindings', 'user_meta'}.issubset(existing):
+        missing = {'platforms', 'bindings', 'user_meta'} - existing
+        print(f'WARN: bot-binding.db missing tables: {missing}', file=__import__('sys').stderr)
+        print('Run `am init` to bootstrap schema, or check the db is a valid astor bot-binding.db.', file=__import__('sys').stderr)
+        con.close()
+        return 1
     problems = []
     # Inv 1: TG/DC/feishu/webchat exactly 1 row
     for r in con.execute("SELECT platform_kind, COUNT(*) as n FROM platforms WHERE platform_kind IN ('telegram','discord','feishu','webchat') GROUP BY platform_kind HAVING n > 1"):
