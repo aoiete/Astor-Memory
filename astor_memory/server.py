@@ -219,7 +219,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 if tier == 'repo' and repo_id:
                     body_user = repo_id
                 else:
-                    body_user = body.get('user')
+                    # R365 (2026-09-03, locked): fall back to body.user_id if
+                    # body.user is missing. Without this, callers that send only
+                    # user_id (no 'user' field) get body_user=None → resolved as
+                    # admin → ACL bypass on /v1/forget (any non-admin caller
+                    # could delete any admin's public fact because body_user
+                    # became admin:admin).
+                    body_user = body.get('user') or body.get('user_id')
                 actor, role, plan = _astor_resolve_actor(body_user)
                 if tier == 'private':
                     target_user = body.get('user_id') or body_user
@@ -255,6 +261,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             _acw(tier='private', user_id=target_user)
                         except PermissionError_:
                             return jsonify({'error': 'cross_user_forbidden'}), 403
+                elif tier == 'source':
+                    # R354 (2026-09-03, locked): source tier is admin-only. Without
+                    # this gate, non-admin callers could DELETE admin's source-tier
+                    # rules by hitting /v1/forget (same pattern as R365). R218: astor
+                    # server watchdog handles respawn, no hermes restart needed.
+                    if role != 'admin':
+                        return jsonify({'error': 'permission_denied'}), 403
+                # R354 (2026-09-03, locked): public-tier ownership check is enforced
+                # inside /v1/forget handler (need fact_id lookup result to know
+                # the namespace). Read endpoints stay open; write endpoints add
+                # an inline check.
                 return
         # Default bind for GET endpoints + POST without JSON body.
         # GETs are read-only public-tier inspections; safe to bind as
@@ -1256,11 +1273,22 @@ def create_app(astor_dir: str | None = None) -> Flask:
         chosen: tuple[int, float, str] | None = None  # (fact_id, score, content)
         if fact_id is not None:
             row = bus.conn.execute(
-                "SELECT id, content FROM memory_canonical WHERE id = ?",
+                "SELECT id, content, user_id, namespace FROM memory_canonical WHERE id = ?",
                 (int(fact_id),),
             ).fetchone()
             if row is None:
                 return jsonify({'error': f'fact_id {fact_id} not found'}), 404
+            # R354 (2026-09-03, locked): ownership check. Non-admin callers
+            # can only forget their OWN facts (user_id == body_user / namespace ==
+            # caller). Without this, any user could delete admin's facts in the
+            # shared public tier (verified pre-patch: non-admin caller successfully
+            # deleted admin's fact in the public tier). Admin role bypasses this check.
+            from ._internal.acl import astor_current_acl as _acl_ctx
+            _ctx = _acl_ctx()
+            fact_owner = str(row[2]) if row[2] else (str(row[3]) if row[3] else None)
+            caller_id = str(user_id) if user_id else None
+            if _ctx.role != 'admin' and fact_owner and caller_id and fact_owner != caller_id:
+                return jsonify({'error': 'cross_user_forbidden'}), 403
             chosen = (int(row[0]), 1.0, str(row[1]))
         else:
             hits = lex.bm25_search(str(query), limit=5)
@@ -1277,11 +1305,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     ],
                 }), 200
             row = bus.conn.execute(
-                "SELECT id, content FROM memory_canonical WHERE id = ?",
+                "SELECT id, content, user_id, namespace FROM memory_canonical WHERE id = ?",
                 (int(best_fid),),
             ).fetchone()
             if row is None:
                 return jsonify({'error': f'BM25 winner {best_fid} missing in bus'}), 500
+            # R354 (2026-09-03, locked): same ownership check as fact_id path —
+            # BM25 winner must also belong to caller. Prevents cross-user delete
+            # via content search.
+            from ._internal.acl import astor_current_acl as _acl_ctx2
+            _ctx2 = _acl_ctx2()
+            fact_owner = str(row[2]) if row[2] else (str(row[3]) if row[3] else None)
+            caller_id = str(user_id) if user_id else None
+            if _ctx2.role != 'admin' and fact_owner and caller_id and fact_owner != caller_id:
+                return jsonify({'error': 'cross_user_forbidden'}), 403
             chosen = (int(row[0]), float(best_score), str(row[1]))
 
         cfid, cscore, ccontent = chosen
