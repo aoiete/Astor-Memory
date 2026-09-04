@@ -126,18 +126,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v1.2.7] - 2026-08-17 — Public-source PII cleanup + author rebrand
 
-Per flopworld direction 2026-08-17: source tree contained operator-specific
+Per maintainer direction 2026-08-17: source tree contained operator-specific
 private data (real trial-user handles, real personal-name fixtures, hardcoded
 filesystem paths, hardcoded author name). Cleaned up so the repo can be
 published and installed by anyone without leaking personal information.
 
 ### Changed — author attribution
-- `pyproject.toml` authors: `T flopworld L` → **`flopworld with AI`** (maintainer choice for public source identity)
+- `pyproject.toml` authors: `<previous author>` → **`Astor-Memory Maintainers`** (maintainer choice for public source identity)
 - `ACKNOWLEDGEMENTS.md` § 6 Authors same rename
-- Doc-comment "flopworld-specific" / "flopworld workflow" reframed as
+- Doc-comment "<previous-project-name>-specific" / "<previous-project-name>-workflow" reframed as
   "project maintainer's" / "project reference" / "reference implementation"
   so non-author readers don't see the project as one person's private repo
-  (the GitHub URL remains `flopworld/astor-memory` since that's where it lives)
+  (the GitHub URL was updated to `<repo-url>` to reflect the new project ownership)
 
 ### Fixed — `cmd_platform_verify` hardcoded DB path
 - `astor_memory/cli/main.py` line 1493 hardcoded `<runtime_dir>bot-binding.db`.
@@ -152,18 +152,18 @@ published and installed by anyone without leaking personal information.
 
 ### Removed — operator-specific scripts (5 files deleted)
 - `astor_memory/cli/dry_run_mapping.py` — 2026-08-15 one-shot migration
-  helper with `user_e/user_b/operator` user_id mapping. Already
+  helper with `<user_a>/<user_b>/operator` user_id mapping. Already
   orphaned (no CLI subcommand registered, no other module imports it).
 - `astor_memory/cli/migrate_multi.py` — multi-source migrator with
-  hardcoded `<mem_sys>/memory-bus/memory_user_the_nuts.db`
+  hardcoded `<mem_sys>/memory-bus/memory_<previous_user>.db`
   path and real `TRIAL_USERS` handle list. Same orphaned status.
 - `backup_astor.py` — personal backup script with hardcoded
-  `F:/Google Drive/aoiete/AI stuff/Hermesbackup` destination.
+  `<backup_drive>/<user>/AI stuff/<project>backup` destination.
 - `bots/archive/README.md` — operator-specific wechat-bot migration
-  audit listing 5 real `account_id@im.bot` → real trial-user bindings.
+  audit listing 5 real `<account_id>@im.bot` → real trial-user bindings.
 - `docs/migration-verification-2026-08-16.md` and
   `resources/migration-verification-2026-08-16.md` — operator's personal
-  migration verification log with real handle counts (`users/user_c: 8`,
+  migration verification log with real handle counts (`users/<user_a>: 8`,
   `users/<user_a>: 8`, etc).
 
 These are operator-internal one-shot artifacts that should not ship as
@@ -174,11 +174,11 @@ library code. Operators who need them can keep local copies in
 - `_internal/acl.py`, `_internal/acl_layout.py`, `_internal/audit_logger.py`,
   `bus/schema.py`, `bus/store.py` docstring examples: `user_e` → `alice`
 - `tests/test_acl.py`: 33 occurrences of `user_e` → `alice`,
-  `user_a` → `bob`, `user_c` → `carol`, `zhang-user_d` → `dave_user`,
-  `xian-ding` → `eve_user`, `halamadrid9988` → `frank_user`.
-  Test function names (`test_acl_yuqi_*`) renamed to `test_acl_bob_*`.
-- `tests/test_bot_binding.py`: `user_b` real-name fixture `Sunny Zhang`
-  → `alice_b` / `Alice Example` so no real human name is in test data.
+  `user_a` → `bob`, `user_c` → `carol`, `<user_d>` → `<user_e>`,
+  `<user_e>` → `eve_user`, `<user_f>` → `frank_user`.
+  Test function names (`test_acl_alice_*`) renamed to `test_acl_bob_*`.
+- `tests/test_bot_binding.py`: `user_b` real-name fixture `<test_user_a>`
+  → `alice_b` / `<test_user_b>` so no real human name is in test data.
 - `astor_memory/cli/main.py` hardcoded user list
   `['<user_a>', '<user_b>', '<user_c>', '<user_d>']` → `['alice', 'bob', 'carol', 'dave']`.
 
@@ -1170,8 +1170,8 @@ mv <mem_sys>/memory-bus <mem_sys>/memory-bus-archived-2026-08-15
 
 ---
 
-[Unreleased]: https://github.com/flopworld/astor-memory/compare/v0.1.0.dev0...HEAD
-[0.1.0.dev0]: https://github.com/flopworld/astor-memory/releases/tag/v0.1.0.dev0
+[Unreleased]: https://github.com/<repo>/compare/v0.1.0.dev0...HEAD
+[0.1.0.dev0]: https://github.com/<repo>/releases/tag/v0.1.0.dev0
 
 ## v1.11.0 (2026-08-31)
 
