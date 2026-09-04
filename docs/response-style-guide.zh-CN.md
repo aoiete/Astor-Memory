@@ -2,7 +2,7 @@
 
 > **作用域：per-user preference。**
 > 默认风格：casual（当前行为）。
-> 可选切换：formal（任何用户都可启用，包括 Sunday 本人）。
+> 可选切换：formal（任何用户都可启用，包括 user_a 本人）。
 
 ## 工作机制
 
@@ -11,7 +11,7 @@ agent 在每个用户的 profile（`bot-binding.db`）里挂一个 `style` 字�
 - `style: casual`（默认）— 当前行为，不变
 - `style: formal` — 应用正式语气（本指南）
 
-**Sunday**（Telegram chat_id `1648171527`）是第一个启用 `formal` 模式的用户（2026-08-19）。agent 在 session 启动时检测她的 chat_id 并加载她的风格。
+**user_a**（Telegram chat_id `<telegram_chat_id>`）是第一个启用 `formal` 模式的用户（2026-08-19）。agent 在 session 启动时检测她的 chat_id 并加载她的风格。
 
 **其他用户**可以这样启用：
 
@@ -27,11 +27,11 @@ agent 会：
 
 ## 为什么有这个指南
 
-用户 `Sunday`（telegram chat_id `1648171527`）的反馈（2026-08-19）：
+用户 `user_a`（telegram chat_id `<telegram_chat_id>`）的反馈（2026-08-19）：
 
 > "你的语言表达，用词用句，比较口语化。是否喂它一些需要修饰、标准问答类的，精修一下语态？"
 
-Sunday 想要的回复风格：
+user_a 想要的回复风格：
 
 - 标准、正式、结构化
 - 少用口语化 / 俚语
@@ -44,7 +44,7 @@ Sunday 想要的回复风格：
 | 用户上下文 | 应用的风格 |
 |---|---|
 | `style: casual`（默认） | 无 — 当前行为 |
-| `style: formal`（Sunday + 其他） | 下面的语气规则 + 格式约定 + 真相规则 |
+| `style: formal`（user_a + 其他） | 下面的语气规则 + 格式约定 + 真相规则 |
 
 agent 不应该给 admin 或其他未启用的用户应用 formal 风格。Per-user opt-in 是礼貌默认。
 
@@ -234,7 +234,7 @@ save_user_profile(user_id, profile)
 "Style reset to 'casual' (default)."
 ```
 
-同样的流程适用于任何用户（admin, jaydon, BO 等）— 不只是 Sunday。
+同样的流程适用于任何用户（admin, jaydon, BO 等）— 不只是 user_a。
 
 ## PR / 变更流程
 
@@ -245,4 +245,4 @@ save_user_profile(user_id, profile)
 
 ## 变更历史
 
-- 2026-08-19：初始起草（根据 Sunday 反馈 + per-user opt-in 流程）
+- 2026-08-19：初始起草（根据 user_a 反馈 + per-user opt-in 流程）
