@@ -59,3 +59,7 @@ htmlcov/
 
 # Build (already in dist/)
 dist/
+
+# PII rewrite scaffolding (transient, used by git filter-branch only)
+.pii-replace.py
+.pii-replacements.sed
