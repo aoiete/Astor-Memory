@@ -475,7 +475,7 @@ def test_acl_admin_role_can_read_other_users_private(seeded_users):
     client.post("/v1/write", json={
         "user": "bob", "tier": "private", "text": "bob keeps secrets here",
     })
-    # user_a grants carol (admin) read access. Revoke any prior grant first
+    # Alice grants carol (admin) read access. Revoke any prior grant first
     # to avoid UNIQUE constraint failure (grants DB is shared across tests).
     from astor_memory._internal.grants import list_grants, revoke_grant
     for _g in list_grants(grantee="admin:carol"):
