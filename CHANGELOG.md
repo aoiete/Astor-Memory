@@ -272,7 +272,7 @@ shape explicit.
 | | N | 1 (WX bot operator) | public + per-user private_<user> |
 | | N | M (TG + DC + WX support tiers) | public + per-user private_<user> (per-bot chat_ids per user) |
 
-### Archived: `D:/AI/users/_system/wechat_bots.db`
+### Archived: `<users_dir>/_system/wechat_bots.db`
 
 `wechat_bots.db` (5 wechat bots) was already consolidated into
 `bot-binding.db` (in tables `platforms` + `bindings` + `user_meta`).

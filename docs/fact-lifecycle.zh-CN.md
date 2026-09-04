@@ -8,7 +8,7 @@
 
 ## 4 层架构（对齐 TencentDB）
 
-Astor-Memory 采用腾讯的 4 层记忆模型（参考 `D:/AI/wiki/entities/01-tencentdb-agent-memory.md`）：
+Astor-Memory 采用腾讯的 4 层记忆模型（参考 `<wiki>/entities/01-tencentdb-agent-memory.md`）：
 
 | 层 | 名称 | 存储位置 | 内容 |
 |---|---|---|---|
