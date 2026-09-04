@@ -59,9 +59,9 @@ Python 3.10 或更高，低于 3.14。CI 测试覆盖 3.10 / 3.11 / 3.12 / 3.13�
 用仓库里附带的安装脚本（一次性处理 venv 创建、GitHub 拉取、数据目录初始化和 PATH 设置）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/<repo_owner>/<repo_name>/main/scripts/install.sh | bash
 # 或指定版本
-curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash -s v1.13.1
+curl -fsSL https://raw.githubusercontent.com/<repo_owner>/<repo_name>/main/scripts/install.sh | bash -s v1.13.1
 # 交互式（会问数据目录）
 ./scripts/install.sh
 # 非交互式（CI/自动化）
@@ -76,7 +76,7 @@ curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/in
 
 ```powershell
 # 从 GitHub raw 一行安装
-iwr -useb https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/<repo_owner>/<repo_name>/main/scripts/install.ps1 | iex
 # 或本地
 .\scripts\install.ps1
 .\scripts\install.ps1 v1.13.1

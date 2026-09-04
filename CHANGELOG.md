@@ -12,7 +12,7 @@
 For source code + templates shipped to users, removed every hardcoded `<runtime_dir>` and replaced with `os.environ.get(...)` falling back to platform-appropriate default (`~/.astor` on Unix, `%USERPROFILE%\.astor` on Windows):
 
 - **astor_memory/**: no operator-specific paths remain. `nest/lex_index.py` and `nest/conversation_graph.py` doc-comments explicitly state operator paths are forbidden.
-- **bin/start_server.bat**: removed hardcoded `D:\\AI\\Astor-Memory-Runtime`; uses `%USERPROFILE%\\.astor` as default, env var override.
+- **bin/start_server.bat**: removed hardcoded `<runtime_dir>`; uses `%USERPROFILE%\\.astor` as default, env var override.
 - **tests/test_lex_index.py** + **tests/test_provenance.py**: replaced hardcoded runtime dir with `tempfile.mkdtemp` + `setdefault('ASTOR_DIR', ...)` so tests are hermetic and portable. CI/dev machines can still point `ASTOR_DIR` at a real directory.
 - **docs/agent_plugin_template/frameworks/hermes/__init__.py** (template plugin shipped to users): `bot_binding_db` default now uses `ASTOR_BOT_BINDING_DB` env var → `ASTOR_DIR` env var → `~/.astor` fallback.
 - **docs/examples/bot_binding_auth_plugin.py** + **.yaml**: same path-resolution chain (env vars first, then `~/.astor`). Documented `ASTOR_BOT_BINDING_DB` as canonical env var.
