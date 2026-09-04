@@ -160,11 +160,11 @@ published and installed by anyone without leaking personal information.
 - `backup_astor.py` — personal backup script with hardcoded
   `<backup_drive>/<user>/AI stuff/<project>backup` destination.
 - `bots/archive/README.md` — operator-specific wechat-bot migration
-  audit listing 5 real `<account_id>@im.bot` → real trial-user bindings.
+  audit listing sample `<account_id>@im.bot` → trial-user bindings.
 - `docs/migration-verification-2026-08-16.md` and
   `resources/migration-verification-2026-08-16.md` — operator's personal
-  migration verification log with real handle counts (`users/<user_a>: 8`,
-  `users/<user_a>: 8`, etc).
+  migration verification log with placeholder user_id counts
+  (`<user_a>: N`, etc).
 
 These are operator-internal one-shot artifacts that should not ship as
 library code. Operators who need them can keep local copies in
