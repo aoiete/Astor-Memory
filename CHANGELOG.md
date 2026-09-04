@@ -164,7 +164,7 @@ published and installed by anyone without leaking personal information.
 - `docs/migration-verification-2026-08-16.md` and
   `resources/migration-verification-2026-08-16.md` — operator's personal
   migration verification log with real handle counts (`users/user_c: 8`,
-  `users/sunday: 8`, etc).
+  `users/<user_a>: 8`, etc).
 
 These are operator-internal one-shot artifacts that should not ship as
 library code. Operators who need them can keep local copies in
@@ -180,7 +180,7 @@ library code. Operators who need them can keep local copies in
 - `tests/test_bot_binding.py`: `user_b` real-name fixture `Sunny Zhang`
   → `alice_b` / `Alice Example` so no real human name is in test data.
 - `astor_memory/cli/main.py` hardcoded user list
-  `['sunday', 'user_c', 'user_a', 'user_d']` → `['alice', 'bob', 'carol', 'dave']`.
+  `['<user_a>', '<user_b>', '<user_c>', '<user_d>']` → `['alice', 'bob', 'carol', 'dave']`.
 
 ### Changed — absolute paths → env-relative / placeholders
 - `tests/test_bot_binding.py`, `tests/test_cli_doctor.py`,

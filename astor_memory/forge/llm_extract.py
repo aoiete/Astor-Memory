@@ -102,7 +102,7 @@ _UNIFIED_SYSTEM_PROMPT = (
     '  - abstract: L0 one-sentence summary of the fact (≤80 tokens / ≤320 chars). MANDATORY for every fact. Used for progressive loading in system prompt.\n'
     '  - overview: L1 structured digest with key params/details (≤300 tokens / ≤1200 chars). Recommended for facts >2 sentences. MANDATORY for decisions/trading_facts.\n'
     '  - topic: short noun phrase (≤5 words) grouping this fact into a session-level theme (e.g. "AXTI monthly backtest", "MoMoo TFSA rebalance"). MANDATORY — empty string if no clear theme.\n'
-    '  - session_id: stable identifier for the conversation/session this fact came from (e.g. "telegram-2026-08-29-2230", "wechat-sunday-2026-08-13"). If unknown, use the doc timestamp as the session anchor (e.g. "doc-2026-08-29"). MANDATORY.\n'
+    '  - session_id: stable identifier for the conversation/session this fact came from (e.g. "telegram-2026-08-29-2230", "wechat-<user_a>-2026-08-13"). If unknown, use the doc timestamp as the session anchor (e.g. "doc-2026-08-29"). MANDATORY.\n'
     'CRITICAL — TEMPORAL NORMALIZATION (v1.10.9):\n'
     ' - When the input mentions ANY relative time ("yesterday", "last week", "3 days ago", "tomorrow", "next Friday", "the other day", "last Monday"), you MUST resolve it to an absolute ISO-8601 date based on the conversation timestamp provided in the document.\n'
     ' - The system ALWAYS prepends a `[Doc timestamp: YYYY-MM-DD ...]` marker to each document. Use that as the anchor date ("today") when resolving relative references.\n'
