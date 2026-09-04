@@ -20,7 +20,8 @@ Environment variable overrides:
 
 v1.11.0 (2026-08-31, follow astor_memory runtime __version__): plugin.yaml bumped in sync; this plugin
 remains API-compatible with the v1.0.0 initial ship. The 1.11.0 label on the plugin is the
-compatibility target — it must match <runtime_dir>astor_memory/__init__.py:__version__.
+compatibility target — it must match <source_dir>astor_memory/__init__.py:__version__
+(astor-memory source SSoT, editable-installed into PY-311 site-packages via `pip install -e`).
 Plugin internal logic is still the v1.0.0 initial-ship surface (is_available, initialize, prefetch,
 system_prompt_block, handle_tool_call, sync_turn, get_tool_schemas, shutdown). Bump only when
 on_pre_compress schema or MemoryProvider ABC changes.
