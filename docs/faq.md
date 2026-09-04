@@ -72,9 +72,9 @@ Use the bundled install script (handles venv creation, GitHub fetch,
 data-dir init, and PATH setup in one step):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/<repo_owner>/<repo_name>/main/scripts/install.sh | bash
 # or with a specific version
-curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash -s v1.13.1
+curl -fsSL https://raw.githubusercontent.com/<repo_owner>/<repo_name>/main/scripts/install.sh | bash -s v1.13.1
 # interactive (prompts for data dir)
 ./scripts/install.sh
 # non-interactive (CI/automation)
@@ -89,7 +89,7 @@ Use the bundled PowerShell script:
 
 ```powershell
 # From GitHub raw (one-liner)
-iwr -useb https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/<repo_owner>/<repo_name>/main/scripts/install.ps1 | iex
 # Or local
 .\scripts\install.ps1
 .\scripts\install.ps1 v1.13.1

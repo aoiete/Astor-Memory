@@ -30,7 +30,7 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/aoiete/Astor-Memory.git
+git clone https://github.com/<repo_owner>/<repo_name>.git
 cd astor-memory
 pip install -e .[dev]
 pytest tests/
@@ -579,7 +579,7 @@ CI 必须过。Reviewer 可能要求改动。推到同一分支修。
 
 1. **每次发布前搜索硬编码 operator 数据**：
    ```bash
-   grep -rnE "(user_e|user_c|user_a|user_d|operator|bot-account|@im.wechat|C:\\Users\\operator|D:\\AI\\Astor-Memory)" \
+   grep -rnE "(user_e|user_c|user_a|user_d|operator|bot-account|@im.wechat|<home_dir>|<runtime_dir>)" \
      --include="*.py" --include="*.md" --include="*.yaml" --include="*.toml" .
    ```
    应该返回零匹配（排除 `CHANGELOG.md`）。
