@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 # 2026-09-01 cleanup: resolve dataset path from env (LOCOMO_DATASET) with a
-# public-data default. Hardcoding the operator's local D:/AI/... path is
+# public-data default. Hardcoding any operator-specific local path is
 # forbidden — scripts must be portable across hosts.
 _DEFAULT_LOCOMO = Path("~/.cache/locomo/locomo10.json")
 LOCOMO_DATASET_PATH = Path(
