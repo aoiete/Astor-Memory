@@ -178,7 +178,7 @@ active_scenarios = hydrate(query=session_query, top=3)
 - **运行时**：`$ASTOR_DIR (runtime)\scripts\scenario_clustering.py`（通过 `astor_dev_watch.py` 同步）
 - **存储**：`$MEMORY_BUS_DIR` (legacy, pre-2026-07-14)`\scenarios.db`（2026-07-31 创建，跨 session 保留）
 - **调用方**：`recall_3store.py` session_start routine
-- **Wiki 参考**：`D:/AI/wiki/entities/01-tencentdb-agent-memory.md`
+- **Wiki 参考**：`<wiki>/entities/01-tencentdb-agent-memory.md`
 
 ## 局限与已知问题
 

@@ -7,7 +7,7 @@ Authoritative here. **If any other doc contradicts this, this wins.**
 
 ## 4-layer architecture (TencentDB-aligned)
 
-Astor-Memory adopts Tencent's 4-tier memory model (`D:/AI/wiki/entities/01-tencentdb-agent-memory.md`):
+Astor-Memory adopts Tencent's 4-tier memory model (`<wiki>/entities/01-tencentdb-agent-memory.md`):
 
 | Layer | Name | Where | What |
 |---|---|---|---|

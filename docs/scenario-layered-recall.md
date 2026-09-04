@@ -170,7 +170,7 @@ Fits in cron job budget.
 - **Runtime**: `$ASTOR_DIR (runtime)\scripts\scenario_clustering.py` (synced via `astor_dev_watch.py`)
 - **Storage**: `$MEMORY_BUS_DIR (legacy, pre-2026-07-14)\scenarios.db` (was created 2026-07-31, persists across sessions)
 - **Caller**: `recall_3store.py` session_start routine
-- **Wiki reference**: `D:/AI/wiki/entities/01-tencentdb-agent-memory.md`
+- **Wiki reference**: `<wiki>/entities/01-tencentdb-agent-memory.md`
 
 ## Limitations & known issues
 

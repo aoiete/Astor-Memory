@@ -85,7 +85,7 @@
 
 6. **astor_audit required reason** — action='admin_op' raises ValueError if reason is None.
 
-7. **Sync discipline** — every source change MUST sync to /d/AI/Astor-Memory-Runtime/ via `python <scripts>/sync_astor_runtime.py` before server test, else server uses stale code. Verify with `diff -q` on all touched files.
+7. **Sync discipline** — every source change MUST sync to <runtime_dir>/ via `python <scripts>/sync_astor_runtime.py` before server test, else server uses stale code. Verify with `diff -q` on all touched files.
 
 8. **bus_user_id resolution order** — reclassify must run AFTER explicit_uid → bus_user_id assignment; BEFORE ACL check. Otherwise own-private write fails ctx.user_id==None check.
 

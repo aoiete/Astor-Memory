@@ -2,7 +2,7 @@
 """
 ingest_eval_logs.py — Ingest ABM eval logs into astor bus (source tier).
 
-Scans /d/AI/agent-memory-benchmark-ll/ for *.log files matching the v1109
+Scans $EVAL_LOG_DIR (default: <repo>/agent-memory-benchmark-ll/) for *.log files matching the v1109
 eval pattern, extracts (run_name, total, correct, accuracy, llm, top_k,
 rerank, timestamp), and POSTs each as a canonical fact to
 http://127.0.0.1:7803/v1/write with tier=source.
@@ -22,7 +22,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-LOG_DIR = Path(os.environ.get('EVAL_LOG_DIR', 'D:/AI/agent-memory-benchmark-ll'))
+# R-class: replaced hardcoded operator benchmark path with env var EVAL_LOG_DIR.
+# Operators point EVAL_LOG_DIR at their benchmark dir; default <repo>/agent-memory-benchmark-ll.
+LOG_DIR = Path(os.environ.get('EVAL_LOG_DIR', '<repo>/agent-memory-benchmark-ll'))
 ASTOR_URL = os.environ.get('ASTOR_HTTP_URL', 'http://127.0.0.1:7803')
 LOG_PATTERN = re.compile(
     r'(?P<key>Total(?:\s+Queries)?|Correct|Accuracy)\s*[:=]\s*(?P<val>[\d.]+%?)'
