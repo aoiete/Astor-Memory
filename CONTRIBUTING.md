@@ -53,7 +53,10 @@ Refs: R354, R365
 ## Testing
 
 ```bash
-PYTHONPATH=. ASTOR_DIR=/tmp/astor-test /d/AI/PY-311/Scripts/python.exe -m pytest tests/ -q
+PYTHONPATH=. ASTOR_DIR=/tmp/astor-test python -m pytest tests/ -q
+
+# (or use a specific python interpreter path on Windows)
+# PYTHONPATH=. ASTOR_DIR=/tmp/astor-test <path-to-python.exe> -m pytest tests/ -q
 ```
 
 209 tests, expected pass. If you add a new test, ensure it uses
