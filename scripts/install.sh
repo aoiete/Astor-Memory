@@ -9,7 +9,7 @@
 #
 # Usage:
 #   # Linux/macOS one-liner
-#   curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/<repo_owner>/<repo_name>/main/scripts/install.sh | bash
 #
 #   # Or local
 #   ./install.sh                       # install latest (interactive)
@@ -208,10 +208,10 @@ do_install() {
 
     if [ "$VERSION" = "latest" ]; then
         log "Installing astor-memory (latest from GitHub)"
-        "$venv/bin/pip" install --quiet "git+https://github.com/aoiete/Astor-Memory.git"
+        "$venv/bin/pip" install --quiet "git+https://github.com/<repo_owner>/<repo_name>.git"
     else
         log "Installing astor-memory $VERSION"
-        "$venv/bin/pip" install --quiet "git+https://github.com/aoiete/Astor-Memory.git@${VERSION#v}"
+        "$venv/bin/pip" install --quiet "git+https://github.com/<repo_owner>/<repo_name>.git@${VERSION#v}"
     fi
 
     # Initialize ASTOR_HOME if first install.

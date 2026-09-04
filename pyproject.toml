@@ -66,11 +66,11 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/aoiete/ASTOR-Memory"
-Repository = "https://github.com/aoiete/ASTOR-Memory.git"
-Issues = "https://github.com/aoiete/ASTOR-Memory/issues"
-Discussions = "https://github.com/aoiete/ASTOR-Memory/discussions"
-Changelog = "https://github.com/aoiete/ASTOR-Memory/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/<repo_owner>/<repo_name>"
+Repository = "https://github.com/<repo_owner>/<repo_name>.git"
+Issues = "https://github.com/<repo_owner>/<repo_name>/issues"
+Discussions = "https://github.com/<repo_owner>/<repo_name>/discussions"
+Changelog = "https://github.com/<repo_owner>/<repo_name>/blob/main/CHANGELOG.md"
 
 [project.scripts]
 am = "astor_memory.cli:main"
