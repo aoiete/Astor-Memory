@@ -35,7 +35,8 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime
-from .acl_layout import get_audit_path, get_astor_dir
+from . import acl_layout  # R-class: dynamic lookup so monkeypatch can redirect
+# Note: get_audit_path is called as acl_layout.get_audit_path() at runtime
 
 AUDIT_DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit (
@@ -58,7 +59,21 @@ CREATE INDEX IF NOT EXISTS idx_audit_admin_op ON audit(action, reason) WHERE act
 """
 
 _lock = threading.Lock()
+_conn = None  # module-level global; reset by tests via _reset_audit_conn()
 _conn: sqlite3.Connection | None = None
+
+
+def _reset_audit_conn() -> None:
+    """R-class: tests need to clear the singleton so the next astor_audit() call
+    re-resolves the (possibly monkeypatched) audit db path.
+    """
+    global _conn
+    if _conn is not None:
+        try:
+            _conn.close()
+        except Exception:
+            pass
+        _conn = None
 
 
 def _get_audit_conn() -> sqlite3.Connection:
@@ -67,7 +82,7 @@ def _get_audit_conn() -> sqlite3.Connection:
     if _conn is not None:
         return _conn
 
-    path = get_audit_path()
+    path = acl_layout.get_audit_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # Use sqlite3 with check_same_thread=False because audit_logger may be
     # called from any thread (Flask server)
