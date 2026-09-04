@@ -1225,7 +1225,7 @@ class FakeSource:
         self.platform, self.chat_id, self.user_id = platform, chat_id, user_id
 
 from gateway.config import Platform
-src = FakeSource(Platform.DISCORD, "356273139325599755", "356273139325599755")
+src = FakeSource(Platform.DISCORD, "999999999999999999", "999999999999999999")
 
 class FakeEvent:
     def __init__(self, source):

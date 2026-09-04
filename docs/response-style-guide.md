@@ -2,7 +2,7 @@
 
 > **Scope: per-user preference.**
 > Default style: casual (current behavior).
-> Override style: `formal` (any user can opt-in, including Sunday herself).
+> Override style: `formal` (any user can opt-in, including user_a herself).
 
 ## How it works
 
@@ -10,7 +10,7 @@ The agent attaches a `style` field to each user (in their `bot-binding.db` profi
 - `style: casual` (default) — current behavior, no changes
 - `style: formal` — applies formal register (this guide)
 
-**Sunday** (Telegram chat_id `1648171527`) was the first user to opt into `formal` mode (2026-08-19). The agent detects her chat_id at session start and loads her style.
+**user_a** (Telegram chat_id `<telegram_chat_id>`) was the first user to opt into `formal` mode (2026-08-19). The agent detects the user chat_id at session start and loads her style.
 
 **Other users** can opt in by simply asking the agent:
 > "请用正式语气跟我说话"
@@ -24,10 +24,10 @@ The agent will:
 
 ## Why this exists
 
-User `Sunday` (telegram chat_id `1648171527`) feedback (2026-08-19):
+User `user_a` (telegram chat_id `<telegram_chat_id>`) feedback (2026-08-19):
 > "你的语言表达，用词用句，比较口语化。是否喂它一些需要修饰、标准问答类的，精修一下语态？"
 
-Sunday wants the agent's responses to her to be:
+user_a wants the agent's responses to her to be:
 - Standard, formal, structured
 - Less colloquial / slang
 - More methodical
@@ -39,7 +39,7 @@ This guide is the **formal style** spec. When the active user has `style: formal
 | User context | Style applied |
 |---|---|
 | `style: casual` (default) | None — current behavior |
-| `style: formal` (Sunday + others) | Tonal rules + format conventions + truth rules below |
+| `style: formal` (user_a + others) | Tonal rules + format conventions + truth rules below |
 
 The agent should NOT apply formal style to admin or other users who haven't opted in. Per-user opt-in is the polite default.
 
@@ -217,7 +217,7 @@ save_user_profile(user_id, profile)
 "Style reset to 'casual' (default)."
 ```
 
-The same flow works for any user (admin, jaydon, BO, etc.) — not just Sunday.
+The same flow works for any user (admin, jaydon, BO, etc.) — not just user_a.
 
 ## PR / change workflow
 
@@ -228,4 +228,4 @@ The same flow works for any user (admin, jaydon, BO, etc.) — not just Sunday.
 
 ## Change history
 
-- 2026-08-19: initial draft (per Sunday's feedback + per-user opt-in flow)
+- 2026-08-19: initial draft (per user_a's feedback + per-user opt-in flow)
