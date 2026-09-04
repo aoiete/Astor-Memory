@@ -63,7 +63,7 @@ PYTHONPATH=. ASTOR_DIR=/tmp/astor-test <SCRIPTS_DIR> -m pytest tests/ -q
 
 Before pushing to GitHub, run the pre-publish audit:
 
-1. **No PII in source.** `grep -rnE "<user_c>|<USER>|C:/Users/[a-z]+|<ASTOR_RUNTIME_DIR>]+"`
+1. **No PII in source.** `grep -rnE "<real_user_handle>|<real_home_path>|<real_drive_path>"`
    should return 0 hits in `astor_memory/`, `bin/`, `tests/`, `scripts/`.
 2. **No hardcoded tokens.** `grep -rnE "(api[_-]?key|token|secret|password)\s*[:=]\s*['\"]"`
    (excluding env-var defaults and SQL `IS NULL` checks).
