@@ -29,7 +29,7 @@ This document is the source of truth for:
 ## Quick start
 
 ```bash
-git clone https://github.com/<repo-owner>/Astor-Memory.git
+git clone https://github.com/<repo_owner>/<repo_name>.git
 cd astor-memory
 pip install -e .[dev]
 pytest tests/
@@ -577,7 +577,7 @@ If your fork will be published and installed by other operators:
 
 1. **Search for hardcoded operator data** before each release:
    ```bash
-   grep -rnE "(user_e|user_c|user_a|user_d|operator|bot-account|@im.wechat|<HOME_DIR>|<ASTOR_RUNTIME_DIR>)" \
+   grep -rnE "(user_e|user_c|user_a|user_d|operator|bot-account|@im.wechat|<home_dir>|<runtime_dir>)" \
      --include="*.py" --include="*.md" --include="*.yaml" --include="*.toml" .
    ```
    Should return zero matches (excluding `CHANGELOG.md`).
