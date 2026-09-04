@@ -98,7 +98,7 @@
 - `astor_memory/forge/llm_extract.py` — entity-preservation prompt, parser resilience, provider kwargs
 
 **External (client)**:
-- `D:/AI/agent-memory-benchmark/src/memory_bench/memory/astor.py` — force top_k=20, env `AMB_ASTOR_RERANK`, temporal query detection + per-fact ed hint, mission wrapper strip for LLM mode, regex mode for ingest (LLM too strict, dropped to 5 facts/conv)
+- `<repo>/agent-memory-benchmark/src/memory_bench/memory/astor.py` — force top_k=20, env `AMB_ASTOR_RERANK`, temporal query detection + per-fact ed hint, mission wrapper strip for LLM mode, regex mode for ingest (LLM too strict, dropped to 5 facts/conv)
 
 ### v1.11.1 (commit 2f2c0a7)
 **Modified**:
