@@ -25,7 +25,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 # 2026-09-01 cleanup: resolve paths from env (ASTOR_DIR) with default pointing
-# to ~/.astor. Hardcoding the operator's local D:/AI/... path is forbidden —
+# to ~/.astor. Hardcoding any operator-specific local path is forbidden —
 # scripts must be portable across hosts.
 import os as _os
 _ASTOR_DIR = Path(_os.environ.get("ASTOR_DIR", "~/.astor")).expanduser()
