@@ -99,11 +99,11 @@ am bot bind --platform=telegram --account-id=<bot_id> \\
 
 If you edit Python files at runtime (e.g. via hermes agents), changes
 land in `$ASTOR_DIR/astor_memory/*.py` (Runtime) but NOT in the source
-tree (`D:/AI/astor-memory/astor_memory/*.py` on this host). After fixing
-a runtime bug, copy the patched file back to source:
+tree (wherever you cloned the repo to, e.g. `<source_dir>/astor_memory/`).
+After fixing a runtime bug, copy the patched file back to source:
 
 ```bash
-cp $ASTOR_DIR/astor_memory/server.py $SOURCE/astor_memory/server.py
+cp $ASTOR_DIR/astor_memory/server.py <source_dir>/astor_memory/server.py
 # then commit + push to GitHub
 ```
 
