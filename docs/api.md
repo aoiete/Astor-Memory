@@ -332,7 +332,7 @@ and filtered out by the SQL query). Safe to invoke weekly via cron.
 ### When to use
 
 - **Weekly cron**: `am reflection run --tier=public --max-clusters=200` on
-  Sunday 03:00 UTC (evergreen; keeps public tier tidy).
+  weekly-Sunday 03:00 UTC (evergreen; keeps public tier tidy).
 - **Post-migration**: after importing legacy data, run once per tier to
   collapse near-duplicates.
 - **Per-tier blast control**: run public, source, admin separately.
