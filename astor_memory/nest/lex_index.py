@@ -1,7 +1,10 @@
 """
 Lexical inverted index (BM25) for Astor-Memory.
 
-A 4th store, sibling to bus/forge/nest, that provides:
+A companion index to bus/forge/nest, that provides:
+  (technically a 4th DB file per tier — not a 4th "store" in the 3-store
+  triplet sense — but stored separately so heavy BM25 reads don't contend
+  with bus writes). Provides:
   - exact-match keyword recall (fast O(1) term lookup via postlist)
   - BM25 score (no GPU, no embedding model)
   - hybrid merge with nest cosine similarity score
