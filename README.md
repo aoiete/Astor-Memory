@@ -159,9 +159,9 @@ initializes the data dir, and sets up `am` in one step:
 
 **Linux / macOS** (`install.sh`):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/<repo_owner>/<repo_name>/main/scripts/install.sh | bash
 # or pin a version:
-curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.sh | bash -s v1.13.1
+curl -fsSL https://raw.githubusercontent.com/<repo_owner>/<repo_name>/main/scripts/install.sh | bash -s v1.13.1
 # interactive: prompts for data dir
 ./scripts/install.sh
 # non-interactive (CI/automation):
@@ -177,7 +177,7 @@ curl -fsSL https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/in
 **Windows** (`install.ps1`, PowerShell 5.1+):
 ```powershell
 # From GitHub raw (one-liner)
-iwr -useb https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/<repo_owner>/<repo_name>/main/scripts/install.ps1 | iex
 # Or local
 .\scripts\install.ps1
 .\scripts\install.ps1 v1.13.1

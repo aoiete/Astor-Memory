@@ -5,7 +5,7 @@ Tested on: Windows 10/11 (PowerShell 5.1+, recommended 7+).
 
 Usage:
     # One-liner (from GitHub raw)
-    iwr -useb https://raw.githubusercontent.com/aoiete/Astor-Memory/main/scripts/install.ps1 | iex
+    iwr -useb https://raw.githubusercontent.com/<repo_owner>/<repo_name>/main/scripts/install.ps1 | iex
 
     # Or local
     .\install.ps1                          # install latest (interactive)
@@ -195,11 +195,11 @@ function Install-Astor {
     # Install astor-memory
     if ($Version -eq "latest") {
         Write-Log "Installing astor-memory (latest from GitHub)"
-        & "$venv\Scripts\pip.exe" install --quiet "git+https://github.com/aoiete/Astor-Memory.git"
+        & "$venv\Scripts\pip.exe" install --quiet "git+https://github.com/<repo_owner>/<repo_name>.git"
     } else {
         $tag = $Version.TrimStart("v")
         Write-Log "Installing astor-memory $Version"
-        & "$venv\Scripts\pip.exe" install --quiet "git+https://github.com/aoiete/Astor-Memory.git@$tag"
+        & "$venv\Scripts\pip.exe" install --quiet "git+https://github.com/<repo_owner>/<repo_name>.git@$tag"
     }
 
     # Initialize data dir on first install
