@@ -68,8 +68,8 @@
 | user | role | plan | notes |
 |---|---|---|---|
 | admin | admin | power | SSoT owner; plan ignored |
-| user_a, sunday | user | vip | VIPs (per user "现在没power就2个个VIP user_a。和 Sunday") |
-| anyu, aran, user_c, jason, jaydon, nelson, owen, rita, roy, steve, xian-ding, user_d, bo-wang | user | free | Free tier (own private only) |
+| <vip_user_1>, <vip_user_2> | user | vip | VIPs (per user statement) |
+| <free_user_1>...<free_user_n> | user | free | Free tier (own private only) |
 
 ## Pitfalls observed (locked for future sessions)
 
