@@ -308,9 +308,53 @@ def astor_get_api_key(provider: str) -> str:
     return os.environ.get(env_var, '')
 
 
+def _grounding_check(text: str, raw_facts: list[dict], *, min_overlap: float = 0.5) -> list[dict]:
+    """v1.13.2 (2026-09-04): Grounding gate — drop LLM-fabricated facts.
+
+    Per sunday-rejection-bug incident (2026-09-04): M3/gpt-4o-mini hallucinated
+    reject-rule details (彩票/股票点位/生死健康/24h) into a fact about
+    流天书 that the user never said. Grounding gate ensures every fact's
+    `content` is grounded in the source text — at least min_overlap fraction
+    of the fact's content tokens (≥2 chars, CJK + Latin) must appear
+    verbatim in the source.
+
+    Returns: filtered list of raw_facts that pass grounding.
+    """
+    import re as _re_g
+    if not raw_facts or not text:
+        return raw_facts  # nothing to check, or no source (e.g. synthetic)
+    # Tokenize source once: CJK chars individually + Latin words ≥2 chars
+    src_chars = set(_re_g.findall(r'[\u4e00-\u9fff]', text))
+    src_words = set(w.lower() for w in _re_g.findall(r'[A-Za-z]{2,}', text))
+    if not src_chars and not src_words:
+        return raw_facts  # no recognizable tokens → can't verify, allow
+    out = []
+    for f in raw_facts:
+        c = str(f.get('content', '') or '')
+        if not c:
+            continue
+        fact_chars = set(_re_g.findall(r'[\u4e00-\u9fff]', c))
+        fact_words = set(w.lower() for w in _re_g.findall(r'[A-Za-z]{2,}', c))
+        if not fact_chars and not fact_words:
+            continue
+        # Compute coverage: fraction of fact tokens present in source
+        matched_chars = sum(1 for ch in fact_chars if ch in src_chars)
+        matched_words = sum(1 for w in fact_words if w in src_words)
+        total_chars = len(fact_chars)
+        total_words = len(fact_words)
+        if total_chars + total_words == 0:
+            continue
+        coverage = (matched_chars + matched_words) / (total_chars + total_words)
+        if coverage >= min_overlap:
+            out.append(f)
+        # Dropped facts: silently discarded (no LLM write). Caller logs if needed.
+    return out
+
+
 def astor_llm_extract(text: str, primary: str = 'm3', fallback_chain: list[str] | None = None,
                 retry_per_provider: int = 2, timeout: int = 30,
-                base_url: str | None = None, model: str | None = None) -> list[AstorFact]:
+                base_url: str | None = None, model: str | None = None,
+                grounding_check: bool = True, min_overlap: float = 0.5) -> list[AstorFact]:
     """LLM extract with fallback provider chain.
 
     Per Plan § LLM fallback provider:
@@ -322,6 +366,11 @@ def astor_llm_extract(text: str, primary: str = 'm3', fallback_chain: list[str] 
     v1.10.9 (2026-08-27): accept base_url/model kwargs so callers can route
     'openai' provider through OpenRouter-compatible endpoints (OPENAI_BASE_URL
     env var) and pin the model (ASTOR_LLM_MODEL env var).
+
+    v1.13.2 (2026-09-04): grounding_check=True (default). Drop any fact
+    whose content isn't grounded in source text (LLM hallucination guard).
+    Set grounding_check=False to bypass (e.g. for synthetic test inputs
+    where source text isn't meaningful).
     """
     fallback_chain = fallback_chain or []
     providers = [primary] + [p for p in fallback_chain if p != primary]
@@ -342,6 +391,17 @@ def astor_llm_extract(text: str, primary: str = 'm3', fallback_chain: list[str] 
         for retry in range(retry_per_provider):
             try:
                 raw_facts = _call_provider(provider, text, api_key, timeout=timeout, **_provider_extra)
+                # v1.13.2 (2026-09-04): grounding gate — drop LLM-fabricated facts
+                if grounding_check and raw_facts:
+                    pre_count = len(raw_facts)
+                    raw_facts = _grounding_check(text, raw_facts, min_overlap=min_overlap)
+                    dropped = pre_count - len(raw_facts)
+                    if dropped > 0:
+                        import logging as _logging_g
+                        _logging_g.getLogger('astor.forge').warning(
+                            'grounding gate dropped %d/%d fabricated facts (provider=%s, min_overlap=%.2f)',
+                            dropped, pre_count, provider, min_overlap,
+                        )
                 return [
                     AstorFact(
                         content=f.get('content', ''),
@@ -379,10 +439,13 @@ def astor_llm_extract(text: str, primary: str = 'm3', fallback_chain: list[str] 
                 continue  # next retry of same provider
 
     # All providers failed (or no keys); fall back to regex
-        from .extractor import astor_regex_extract
-        from .relative_date import resolve_relative_dates_batch
-        regex_facts = astor_regex_extract(text)
-        return resolve_relative_dates_batch(regex_facts, anchor=None)
+    from .extractor import astor_regex_extract
+    from .relative_date import resolve_relative_dates_batch
+    regex_facts = astor_regex_extract(text)
+    return resolve_relative_dates_batch(regex_facts, anchor=None)
+
+
+
 
 
     def astor_llm_extract_with_anchor(

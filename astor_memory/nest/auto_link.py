@@ -220,11 +220,34 @@ def auto_link_for_fact(
     cosine_threshold: float = 0.85,
     max_existing: int = 200,
     max_links: int = 5,
+    min_confidence: float = 0.6,
 ) -> dict:
     """End-to-end: find similarities + add edges + audit.
 
+    v1.13.2 (2026-09-04): added `min_confidence` gate. Skip auto-linking
+    facts whose `confidence` < min_confidence — these are typically LLM
+    extractions whose content isn't well-grounded, and auto-linking them
+    amplifies their reach into the provenance graph. Without this gate,
+    low-confidence extractions (verified root cause of the
+    sunday-rejection-bug fact 8608) propagate as if authoritative.
+
     Returns: {'new_fact_id', 'linked_to': [fact_id, ...], 'edges_added': int}
     """
+    # v1.13.2 (2026-09-04): read new fact's confidence; skip if below gate.
+    try:
+        row = bus.conn.execute(
+            'SELECT confidence FROM memory_canonical WHERE id = ? AND tombstoned = 0',
+            (int(new_fact_id),),
+        ).fetchone()
+        if row is not None and row[0] is not None and float(row[0]) < min_confidence:
+            return {
+                'new_fact_id': new_fact_id,
+                'linked_to': [],
+                'edges_added': 0,
+                'skipped': f'confidence {float(row[0]):.2f} < {min_confidence:.2f}',
+            }
+    except Exception:
+        pass
     try:
         sims = find_similar_facts(
             bus.conn, new_fact_id, content, kind, tier, user_id,
@@ -239,6 +262,18 @@ def auto_link_for_fact(
     edges_added = 0
     linked_to: list[dict] = []
     for sim in sims:
+        # v1.13.2 (2026-09-04): also gate the EXISTING fact's confidence —
+        # don't link a high-confidence new fact to a low-confidence
+        # existing fact (would pull it into the graph as if equivalent).
+        try:
+            ex_row = bus.conn.execute(
+                'SELECT confidence FROM memory_canonical WHERE id = ? AND tombstoned = 0',
+                (int(sim['fact_id']),),
+            ).fetchone()
+            if ex_row is not None and ex_row[0] is not None and float(ex_row[0]) < min_confidence:
+                continue
+        except Exception:
+            pass
         ok = add_auto_link(
             bus.conn,
             new_fact_id=new_fact_id,
