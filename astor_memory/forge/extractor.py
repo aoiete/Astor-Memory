@@ -72,6 +72,17 @@ def astor_regex_extract(text: str) -> list[AstorFact]:
     v1.6.0: derives abstract (L0) + overview (L1) heuristically:
     - abstract = first sentence (split by . / 。 / newline, ≤80 tokens)
     - overview = first 240 chars of full text (≤300 tokens)
+
+    v1.13.2 (2026-09-04): default confidence raised from 0.7 to 0.85.
+    Regex extraction is deterministic and verifiable (the content
+    pattern matches a literal substring of the source), unlike LLM
+    extraction which can fabricate. Raising regex confidence above
+    the auto_link min_confidence=0.6 gate ensures these facts aren't
+    silently demoted, and above typical LLM 0.7 means they outrank
+    LLM hallucinations in provenance graph traversal. Triggered by
+    sunday-rejection-bug (fact 8608): LLM-extracted fact with the same
+    0.7 default propagated as authoritative and was quoted by agent
+    in a user-facing refusal.
     """
     import re as _re
     facts = []
@@ -91,7 +102,7 @@ def astor_regex_extract(text: str) -> list[AstorFact]:
             facts.append(AstorFact(
                 content=content_part,
                 kind=kind,
-                confidence=0.7,
+                confidence=0.85,
                 importance=0.5,
                 tags=[kind, 'auto_extracted'],
                 keywords=[kind] + distinct_words,
