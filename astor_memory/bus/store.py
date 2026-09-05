@@ -245,6 +245,22 @@ class AstorBus:
                 ).fetchone()
                 assert row is not None
                 event_id, namespace, content, kind, confidence, importance, tags, metadata, scene = row
+                # v1.13.2 (2026-09-04): hard confidence gate. Refuse to
+                # promote candidates with confidence < 0.5 — these are
+                # near-certain fabrications (LLM very unsure about the
+                # fact). Prevents low-quality facts from ever entering
+                # canonical and propagating through auto_link / recall.
+                # Triggered by sunday-rejection-bug: fact 8608 had
+                # confidence=0.7 (above any soft gate) but content
+                # was a hallucinated reject-rule list. Lower threshold
+                # to 0.5 catches the truly low-confidence fabrications
+                # while letting standard regex extraction (default 0.7)
+                # and capture_intent boost (0.95) pass through.
+                if confidence is not None and float(confidence) < 0.5:
+                    raise ValueError(
+                        f'candidate confidence {float(confidence):.2f} below 0.5 gate — '
+                        f'refused to promote (content: {str(content)[:200]!r})'
+                    )
                 # v1.2.0: pull keywords/context out of metadata JSON. Older
                 # candidates without these get safe defaults ('[]' / '').
                 try:
@@ -737,10 +753,46 @@ class AstorBus:
         return out
 
     def close(self) -> None:
-        """Close the bus SQLite connection (used by CLI teardown)."""
+        """Close the bus SQLite connection (used by CLI teardown).
+
+        v1.13.2 (2026-09-04): safety net — if server is started via CLI and
+        bus is garbage-collected before explicit close(), __del__ ensures the
+        underlying sqlite3 connection is closed. Without this, server holds
+        the WAL writer lock forever and external direct-connect INSERT
+        operations fail with 'database is locked' (verified bug 2026-09-04).
+        """
         if self._conn is not None:
-            self._conn.close()
+            try:
+                self._conn.close()
+            except Exception:
+                pass
             self._conn = None
+
+    def __enter__(self) -> 'AstorBus':
+        """Context manager support — use as `with astor_bus(...) as bus:`.
+
+        v1.13.2 (2026-09-04): server handlers should use this pattern so
+        the per-request connection is closed at the end of the request,
+        avoiding permanent lock contention with external direct-connect
+        writers.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager cleanup — closes connection on exit."""
+        self.close()
+
+    def __del__(self) -> None:
+        """Destructor — closes connection if still open.
+
+        v1.13.2 (2026-09-04): last-resort cleanup for handler-created buses
+        that never go through a context manager. Without this, every
+        server request leaks one open WAL connection.
+        """
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 # Module-level singleton (lazy init)
@@ -810,9 +862,14 @@ def astor_bus(
         _BUS_SINGLETONS = {}
     with _BUS_LOCK:
         inst = _BUS_SINGLETONS.get(key)
-        if inst is None:
-            inst = AstorBus(target)
-            _BUS_SINGLETONS[key] = inst
+        if inst is not None:
+            return inst
+        # v1.13.2 (2026-09-04): hold _BUS_LOCK while constructing the
+        # instance so two concurrent requests for the same key cannot
+        # both run AstorBus._open() in parallel (which would deadlock
+        # on astor_init_schema's write lock — "database is locked").
+        inst = AstorBus(target)
+        _BUS_SINGLETONS[key] = inst
         return inst
 
 

@@ -198,14 +198,58 @@ def create_app(astor_dir: str | None = None) -> Flask:
     # read can cross tiers as designed; tier-scoped endpoints (private DB)
     # should re-bind to a narrower context inside their handler.
     # P2-fix 2026-08-15: rebind ACL per request, taking tier + actor from the
-    # request body so per-tier writes use the correct role.
-    # P0-fix 2026-08-16: actor/role now come from bot-binding.db user_meta.role
-    # based on `body.user` (was hardcoded to first_admin, allowing any user → source
-    # write + cross-user private read). Also enforce cross-user protection:
-    # if tier=private and user_id != actor, deny at the request boundary
-    # instead of letting it reach `astor_check_write/read`.
+        # request body so per-tier writes use the correct role.
+        # P0-fix 2026-08-16: actor/role now come from bot-binding.db user_meta.role
+        # based on `body.user` (was hardcoded to first_admin, allowing any user → source
+        # write + cross-user private read). Also enforce cross-user protection:
+        # if tier=private and user_id != actor, deny at the request boundary
+        # instead of letting it reach `astor_check_write/read`.
+        #
+            # v1.13.2 (2026-09-04): add teardown_request hook to auto-close per-request
+    # bus connections. Without this, server holds the WAL writer lock forever
+    # and external direct-connect INSERT operations fail with 'database is
+    # locked' (verified bug 2026-09-04 after sunday-rejection incident).
+    _request_buses: list = []
+    _request_nests: list = []
+
+    # Wrap the factory functions so every AstorBus / astor_nest created inside
+    # a request handler is auto-tracked for cleanup. Use the original factory
+    # at module-import time so we don't recurse.
+    import astor_memory.bus as _bus_pkg
+    import astor_memory.nest as _nest_pkg
+    _orig_bus_factory = _bus_pkg.astor_bus
+    _orig_nest_factory = _nest_pkg.astor_nest
+
+    def _tracking_bus_factory(*args, **kwargs):
+        # v1.13.2 fix (2026-09-04): call _orig_bus_factory which already
+        # consults _BUS_SINGLETONS cache (per (tier, user_id, path) key).
+        # Tracking only ADDS the returned instance to the per-request
+        # list — does NOT bypass the cache. This is critical because
+        # astor_init_schema() in AstorBus.__init__ holds a write lock
+        # and creating a fresh instance per request exhausts locks
+        # ("database is locked" errors, server hangs).
+        bus = _orig_bus_factory(*args, **kwargs)
+        if bus is not None and bus not in _request_buses:
+            _request_buses.append(bus)
+        return bus
+
+    def _tracking_nest_factory(*args, **kwargs):
+        nest = _orig_nest_factory(*args, **kwargs)
+        if nest is not None and nest not in _request_nests:
+            _request_nests.append(nest)
+        return nest
+
+    _bus_pkg.astor_bus = _tracking_bus_factory
+    _nest_pkg.astor_nest = _tracking_nest_factory
+    # Also rebind in the local module namespace (server.py imports these).
+    globals()['astor_bus'] = _tracking_bus_factory
+    globals()['astor_nest'] = _tracking_nest_factory
+
     @app.before_request
     def _astor_bind_request_acl() -> None:
+        # Reset per-request bus/nest tracking lists.
+        _request_buses.clear()
+        _request_nests.clear()
         # 2026-08-16: Always bind a default ACL for GET requests (e.g. health,
         # viewer_stats, lex_stats). Without this, Flask worker threads may
         # not have _CURRENT set, and downstream astor_check_* raises
@@ -281,6 +325,28 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except AttributeError:
             astor_init_acl(actor='admin:admin', role='admin', tier='public',
                            subscription_plan=None)
+
+    @app.teardown_request
+    def _astor_close_request_buses(_exc) -> None:
+        """v1.13.2 (2026-09-04): Auto-close all per-request bus/nest connections.
+
+        Closes every AstorBus / nest instance created during this request
+        via the _tracking_*_factory wrappers. Without this hook, server
+        accumulates one open WAL writer connection per request and external
+        direct-connect INSERT operations get 'database is locked' forever.
+        """
+        for bus in _request_buses:
+            try:
+                bus.close()
+            except Exception:
+                pass
+        for nest in _request_nests:
+            try:
+                nest.close() if hasattr(nest, 'close') else None
+            except Exception:
+                pass
+        _request_buses.clear()
+        _request_nests.clear()
 
     @app.errorhandler(PermissionError_)
     def _astor_handle_permission_error(exc: PermissionError_):  # noqa: ARG001
