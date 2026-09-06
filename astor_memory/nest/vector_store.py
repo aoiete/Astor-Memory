@@ -68,7 +68,16 @@ class AstorNest:
 
     @property
     def conn(self) -> sqlite3.Connection:
-        """Get the SQLite connection for vector store (embeddings table)."""
+        """Get the SQLite connection for vector store (embeddings table).
+
+        v1.14.3 fix: if _conn was closed (e.g. by CLI teardown), auto-reopen.
+        """
+        if self._conn is None:
+            self._conn = sqlite3.connect(
+                str(self.db_path), isolation_level=None, check_same_thread=False
+            )
+            self._conn.execute('PRAGMA journal_mode = WAL')
+            self._conn.execute('PRAGMA synchronous = NORMAL')
         return self._conn
 
     def close(self) -> None:
@@ -230,7 +239,7 @@ class AstorNest:
             cache.pop(key, None)
 
         # Cold path: load from DB and stack
-        rows = self._conn.execute(
+        rows = self.conn.execute(
             "SELECT fact_id, embedding FROM embeddings WHERE model_name = ?",
             (model_name,),
         ).fetchall()
