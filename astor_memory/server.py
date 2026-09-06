@@ -408,7 +408,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         body = request.get_json(force=True)
         text = body.get('text')
         if not text:
-            return jsonify({'error': 'text required'}), 400
+            return jsonify({'error': 'text required', 'detail': 'POST /v1/write requires JSON body with "text" field (string, 8+ chars)'}), 400
         user = body.get('user', 'admin')
         mode = body.get('mode', 'auto')
         tier = body.get('tier', 'public')
@@ -425,13 +425,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
             if repo_id:
                 user = repo_id
             if not user or user == 'admin':
-                return jsonify({'error': 'tier=repo requires user=<repo_id> or repo_id=<id>'}), 400
+                return jsonify({'error': 'tier=repo requires user=<repo_id> or repo_id=<id>', 'detail': 'When tier=repo, provide either user=<repo_id> in body or repo_id=<id>'}), 400
 
         # P1-fix 2026-08-15: validate scope + route policy. Per plan §3-tier
         # × 3-scope: profile-scope facts only land in private tier (per-user
         # identity). short-term scope carries 30d TTL via scope_type column.
         if scope not in ('long_term', 'short_term', 'profile'):
-            return jsonify({'error': f'invalid scope {scope!r}'}), 400
+            return jsonify({'error': f'invalid scope {scope!r}', 'detail': 'scope must be one of: long_term, short_term, profile'}), 400
         if scope == 'profile' and tier != 'private':
             # Profile scope must live in private (per-user identity). Auto-route.
             tier = 'private'
@@ -699,7 +699,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         body = request.get_json(force=True)
         query = body.get('query')
         if not query:
-            return jsonify({'error': 'query required'}), 400
+            return jsonify({'error': 'query required', 'detail': 'POST /v1/read requires JSON body with "query" field (string)'}), 400
         # 2026-08-27: tolerate "auto" / None / malformed top_k — fallback to 5
         # instead of 500. Client side passes "auto" from --query-adaptive flag.
         raw_top_k = body.get('top_k', 5)
@@ -1331,7 +1331,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         forget_threshold = float(body.get('forget_threshold', 5.0))
 
         if not fact_id and not query:
-            return jsonify({'error': 'fact_id or query required'}), 400
+            return jsonify({'error': 'fact_id or query required', 'detail': 'Provide either fact_id (int) or query (string) in request body'}), 400
 
         from .nest.lex_index import astor_lex as _astor_lex
         lex = _astor_lex(tier=tier, user_id=user_id)
@@ -1509,7 +1509,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         body = request.get_json(force=True)
         query = body.get('query')
         if not query:
-            return jsonify({'error': 'query required'}), 400
+            return jsonify({'error': 'query required', 'detail': 'POST /v1/read requires JSON body with "query" field (string)'}), 400
         top_k = int(body.get('top_k', 10))
         use_hybrid = bool(body.get('hybrid', True))
         # Default scopes: public always + private(current_call_user) if any
@@ -1692,7 +1692,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         merges = body.get('merges', [])
         actor = body.get('actor', 'merge_v2_operator')
         if not isinstance(merges, list) or not merges:
-            return jsonify({'error': 'merges list required'}), 400
+            return jsonify({'error': 'merges list required', 'detail': 'Provide "merges" as a list of fact_id pairs to merge'}), 400
         try:
             ctx = astor_current_acl()
             if ctx.role != 'admin':
@@ -1949,7 +1949,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         mode = body.get('mode', 'auto')
         agent_dir = body.get('agent_dir', '~')
         if not ide:
-            return jsonify({'error': 'ide required'}), 400
+            return jsonify({'error': 'ide required', 'detail': 'Provide "ide" field (e.g. vscode, cursor, windsurf)'}), 400
         result = run_installer(ide, Path(agent_dir).expanduser(), mode)
         return jsonify(result)
 
@@ -2175,7 +2175,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         reason = body.get('reason')
 
         if not grantor or not grantee:
-            return jsonify({'error': 'missing grantor/grantee'}), 400
+            return jsonify({'error': 'missing grantor/grantee', 'detail': 'Provide both grantor and grantee user_ids'}), 400
 
         ctx = astor_current_acl()
         if ctx.role == 'user':
@@ -2207,7 +2207,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             gid = _create_grant(grantor=grantor, grantee=grantee, scope=scope,
                                 expires_at=expires_at, reason=reason)
         except ValueError as exc:
-            return jsonify({'error': 'invalid_grant', 'detail': str(exc)}), 400
+            return jsonify({'error': 'invalid_grant', 'detail': f'grant validation failed: {str(exc)}'}), 400
         astor_audit(
             actor=ctx.actor, tier='private', action='admin_op',
             user_id=grantor, target='grant_created',
@@ -2227,7 +2227,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         body = request.get_json(force=True) or {}
         gid = body.get('grant_id')
         if not gid:
-            return jsonify({'error': 'missing grant_id'}), 400
+            return jsonify({'error': 'missing grant_id', 'detail': 'Provide "grant_id" to revoke'}), 400
 
         ctx = astor_current_acl()
         rows = _list(grantee=None, include_revoked=True)
