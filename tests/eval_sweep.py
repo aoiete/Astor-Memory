@@ -22,7 +22,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(r"D:\AI\astor-memory")
+ROOT = Path(os.environ.get("ASTOR_PROJECT_ROOT", str(Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name in ("tests", "tools") else Path.cwd())))
 TESTS_DIR = ROOT / "tests"
 METRICS_DIR = ROOT / "astor" / "metrics"
 METRICS_DIR.mkdir(parents=True, exist_ok=True)

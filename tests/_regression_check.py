@@ -1,7 +1,7 @@
 """_regression_check.py — detect eval regression vs last baseline.
 
 Companion to astor_eval_weekly_wrapper.bat (cron astor-eval-weekly).
-Reads D:\AI\astor-memory\astor\metrics\eval_history.jsonl,
+Reads $ASTOR_METRICS_DIR/eval_history.jsonl (default <repo>/astor/metrics),
 compares latest 'baseline' run to previous 'baseline' run,
 prints alert if hit_rate dropped > 0.05 OR mrr dropped > 0.05.
 """
@@ -11,12 +11,12 @@ import os
 import urllib.request
 from pathlib import Path
 
-HISTORY = Path(r"D:\AI\astor-memory\astor\metrics\eval_history.jsonl")
+HISTORY = Path(os.environ.get("ASTOR_METRICS_DIR", str(ROOT / "astor" / "metrics"))) / "eval_history.jsonl"
 TELEGRAM_TOKEN = None
 TELEGRAM_CHAT = None
 try:
     # load .env lightly
-    env = Path(r"C:\Users\TheNuts\AppData\Local\hermes\.env")
+    env = Path(os.environ.get("HERMES_ENV", str(Path.home() / "AppData/Local/hermes/.env")))
     if env.exists():
         for line in env.read_text(encoding="utf-8", errors="ignore").splitlines():
             if line.startswith("TELEGRAM_BOT_TOKEN="):

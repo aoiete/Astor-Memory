@@ -28,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(r"D:\AI\astor-memory")
+ROOT = Path(os.environ.get("ASTOR_PROJECT_ROOT", str(Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name in ("tests", "tools") else Path.cwd())))
 METRICS = ROOT / "astor" / "metrics"
 METRICS.mkdir(parents=True, exist_ok=True)
 
@@ -69,14 +69,14 @@ def main() -> int:
     elif args.tier == "private":
         # v1.14.5: walk every user's private DB (16+ users in prod)
         from pathlib import Path
-        users_dir = Path(r"D:\AI\Astor-Memory-Runtime\users")
+        users_dir = Path(os.environ.get("ASTOR_DIR", str(Path.home() / ".astor"))) / "users"
         tier_user_combos = [("private", d.name) for d in users_dir.iterdir() if d.is_dir()]
     elif args.tier is None:
         # default = all public + all source + all private (per-user)
         # v1.14.5: prioritize admin (largest tier, 9500+ facts) first so
         # admin recall path gets e5-large coverage ASAP, then alphabetical.
         from pathlib import Path
-        users_dir = Path(r"D:\AI\Astor-Memory-Runtime\users")
+        users_dir = Path(os.environ.get("ASTOR_DIR", str(Path.home() / ".astor"))) / "users"
         all_users = sorted(d.name for d in users_dir.iterdir() if d.is_dir())
         priority_users = [u for u in all_users if u == "admin"]
         other_users = [u for u in all_users if u != "admin"]
