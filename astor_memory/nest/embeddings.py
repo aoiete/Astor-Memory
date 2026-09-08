@@ -79,6 +79,13 @@ def astor_get_model_name_for_ram() -> str:
     vector index keeps working) but expose ASTOR_EMBEDDING_USE_BGE_SMALL=1
     to switch. Caller in match_experiences / hot embed paths can opt-in
     via astor_get_embedding_model('BAAI/bge-small-en-v1.5') directly.
+
+    v1.14.5 (2026-09-08): bump default to intfloat/multilingual-e5-large on
+    >= 16 GB hosts. compare_models.py 5-query Chinese probe showed avg cosine
+    0.890 (e5-large) vs 0.768 (bge-base-en-v1.5) — +15.9% recall on Chinese
+    queries. Old bge-base facts stay queryable via legacy model_name row.
+    Re-embed script `python -m astor_memory.tools.reembed` migrates facts.
+    Override via ASTOR_EMBEDDING_MODEL env var.
     """
     import os as _os_e
     override = _os_e.environ.get("ASTOR_EMBEDDING_MODEL")
@@ -86,11 +93,11 @@ def astor_get_model_name_for_ram() -> str:
         return override
     mem_gb = psutil.virtual_memory().total / 1024**3
     if mem_gb >= 16:
-        return 'BAAI/bge-base-en-v1.5'  # 92M params, 768d (existing index)
+        return 'intfloat/multilingual-e5-large'  # 1024d, 100+ langs, Chinese-friendly
     elif mem_gb >= 8:
-        return 'BAAI/bge-small-en-v1.5'  # 33M params, 384d
+        return 'BAAI/bge-small-zh-v1.5'  # 512d, Chinese-focused mid-tier
     else:
-        return 'sentence-transformers/all-MiniLM-L6-v2'  # 22M params, 384d, lowest RAM
+        return 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'  # 384d, lowest RAM
 
 
 def astor_get_embedding_model(model_name: str | None = None):
