@@ -43,7 +43,7 @@ QUERIES = [
 ]
 
 DOCS = [
-    "用户的 fortune 流天书项目文件在 D:/AI/fortune-model/,有 eval_results/ + scripts/ 子目录,项目专属脚本不进 D:/AI/scripts/",
+    "用户的 fortune 流天书项目文件在 <data_root>/fortune-model/,有 eval_results/ + scripts/ 子目录,项目专属脚本不进 <data_root>/scripts/",
     "流天书项目包含64gua和tcm内容,古籍/古文是核心功能",
     "用户认为古籍信息量大且很重要,确认古籍引用是流天书的核心能力",
     "紫微斗数推算 v18 LoRA 模型支持 12 宫 + 四化飞星",
