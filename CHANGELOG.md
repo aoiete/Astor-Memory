@@ -1,5 +1,23 @@
 
-## v1.14.0 (2026-09-02)
+## v1.14.3 (2026-09-07)
+
+### Bug fix: vector_store closed-conn reopen
+
+Symptom: astor-server log showed `sqlite3.ProgrammingError: Cannot operate on a closed database` at `vector_store.py:245` (cold-path `rows = self.conn.execute(...).fetchall()`), followed by Segmentation fault in `start_astor.sh` and a 60-second DOWN window before `astor_watch` recovered.
+
+Root cause: v1.14.3 `AstorNest.conn` property only auto-reopened when `self._conn IS None`. After CLI teardown or module-level reference holding a closed Connection, `_conn` could be a closed-but-not-None handle; the property returned it; the cold path crashed.
+
+Fix: `conn` property now probes `_conn.isolation_level`; on `ProgrammingError` it calls a new `_reopen()` helper that closes the dead handle (best-effort), re-opens from `db_path` with the standard pragmas, and re-runs `astor_init_nest_schema` (idempotent CREATE TABLE IF NOT EXISTS) for defensive recovery. Live connections are unaffected (cheap pass-through).
+
+Regression tests: `tests/test_vector_store_reopen.py` (5 cases — None path, closed-but-not-None path, open-conn pass-through, end-to-end store+search after reopen, schema preservation).
+
+### Stale skill audit fix
+
+`astor_skills_audit.py` previously truncated reports mid-line at the byte boundary, hid the `short_body` section from the report, and put `.archive/` skills first in the stale list. Now trims at the newline, includes the `## Short body (< 50 lines, top 5)` section, and excludes archived skills from the "needs attention" list with a separate count.
+
+## v1.14.2 (2026-09-02)
+
+### Bug fix: 400-detail field
 
 ### Installation: cross-platform + interactive path
 

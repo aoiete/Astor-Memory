@@ -21,7 +21,9 @@ server.*.log
 # Backup files (preserve during dev, ignore at publish)
 *.bak
 *.bak-*
+*.bak_*
 *.py.bak-*
+*.py.bak_*
 
 # Legacy archive dirs (kept locally for emergency rollback, not for source dist)
 _archive_pickup/

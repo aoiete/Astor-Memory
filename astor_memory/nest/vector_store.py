@@ -71,14 +71,48 @@ class AstorNest:
         """Get the SQLite connection for vector store (embeddings table).
 
         v1.14.3 fix: if _conn was closed (e.g. by CLI teardown), auto-reopen.
+        v1.14.3 patch (2026-09-07): the original v1.14.3 check `is None` missed
+        the case where _conn was a CLOSED Connection object (a previous module
+        reference still holding the closed handle). Symptom: "Cannot operate
+        on a closed database" at vector_store.py:245 (cold path:
+        rows = self.conn.execute(...).fetchall()). Now we probe
+        _conn.isolation_level; on ProgrammingError we fully reopen via
+        _reopen(). Live connections are unaffected (cheap pass-through).
         """
         if self._conn is None:
-            self._conn = sqlite3.connect(
-                str(self.db_path), isolation_level=None, check_same_thread=False
-            )
-            self._conn.execute('PRAGMA journal_mode = WAL')
-            self._conn.execute('PRAGMA synchronous = NORMAL')
+            self._reopen()
+        else:
+            # Closed-but-not-None: detect and reopen. sqlite3 Connection has
+            # no public `closed` attr until 3.12; probe cheaply via isolation_level.
+            try:
+                _ = self._conn.isolation_level
+            except (sqlite3.ProgrammingError, AttributeError):
+                # ProgrammingError = "Cannot operate on a closed database"
+                self._reopen()
         return self._conn
+
+    def _reopen(self) -> None:
+        """Reopen _conn from db_path. Called when conn was closed/None.
+
+        Re-runs astor_init_nest_schema (idempotent CREATE TABLE IF NOT EXISTS)
+        for defense against partial-recovery scenarios.
+        """
+        try:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._conn = sqlite3.connect(
+            str(self.db_path), isolation_level=None, check_same_thread=False
+        )
+        self._conn.execute('PRAGMA journal_mode = WAL')
+        self._conn.execute('PRAGMA synchronous = NORMAL')
+        self._conn.execute('PRAGMA foreign_keys = ON')
+        self._conn.execute('PRAGMA busy_timeout = 5000')
+        astor_init_nest_schema(self._conn)
 
     def close(self) -> None:
         """Close the vector store connection (CLI teardown).
