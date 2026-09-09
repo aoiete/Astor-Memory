@@ -15,6 +15,32 @@ Per Plan § Memory <-> concurrency: WAL mode handles concurrent reads.
 """
 from __future__ import annotations
 
+
+# S14 (2026-09-08): auto-load OPENAI_API_KEY from hermes .env file if not in env.
+# Subprocess start (memory_servers_watch, start_astor.sh) sometimes doesn't inherit
+# OPENAI_API_KEY from parent bash on Windows MSYS. Read it directly from .env file
+# as a fallback so LLM rerank + forge paths work regardless of startup method.
+import os as _os
+# S14 (2026-09-08): load OPENAI_API_KEY from .env. Path resolved from HERMES_ENV env var
+# (set by hermes wrappers / cron) with generic fallbacks. No hardcoded operator paths
+# in source — R-class privacy rule (no PII in source files).
+if not _os.environ.get("OPENAI_API_KEY"):
+    _hermes_env = _os.environ.get("HERMES_ENV")
+    _env_paths = [p for p in (_hermes_env, "~/.hermes/.env") if p]
+    for _env_path in _env_paths:
+        _env_path = _os.path.expanduser(_env_path) if _env_path.startswith("~") else _env_path
+        try:
+            with open(_env_path, encoding="utf-8", errors="ignore") as _f:
+                for _line in _f:
+                    if _line.startswith("OPENAI_API_KEY=") or _line.startswith("OPENROUTER_API_KEY="):
+                        _key = _line.split("=", 1)[1].strip().strip('"\'')
+                        if _key and len(_key) > 15:  # not a 15-char redacted placeholder
+                            _os.environ["OPENAI_API_KEY"] = _key
+                            break
+        except OSError:
+            continue
+        if _os.environ.get("OPENAI_API_KEY"):
+            break
 import os
 import re
 import sys
@@ -890,11 +916,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
             vector_hits = nest.search(query_emb, limit=oversample)
             # v1.14.5: also search legacy bge-base-en-v1.5 during the
             # e5-large reembed transition. Once reembed finishes and all
-            # facts have e5-large embeddings, this block becomes a no-op
+            # S2 (2026-09-08): dual-model merge auto-disabled — public tier 100% + source tier 100% e5-large coverage; bge-baseen-v1.5 cleaned. Override via ASTOR_DUAL_MODEL=1 to re-enable.
             # (the legacy model returns empty hits for the few facts still
             # pending). Drops out automatically once e5-large row count
             # reaches bge-base row count. Override via ASTOR_DUAL_MODEL=0.
-            if os.environ.get('ASTOR_DUAL_MODEL', '1') == '1':
+            if os.environ.get('ASTOR_DUAL_MODEL', '0') == '1':  # S2: 100% e5-large coverage → default OFF
                 try:
                     from .nest.embeddings import astor_get_model_name_for_ram as _gmn
                     _primary_model = _gmn()
@@ -2427,7 +2453,7 @@ def main():
     print(f'[*] Astor-Memory v{__version__} REST API')
     print(f'   Listening on http://{args.host}:{args.port}')
     print(f'   Endpoints: /v1/health /v1/write /v1/read /v1/install')
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)  # S13: enable Flask threaded mode for concurrent /v1/read requests (R-class N). Bus uses WAL mode so concurrent reads safe.
 
 
 if __name__ == '__main__':
@@ -2435,3 +2461,5 @@ if __name__ == '__main__':
 
 
 __all__ = ['create_app', 'main']
+
+# S13 v1.14.6 threaded=True — verified 2-concurrent OK, 4-concurrent overload (R-class Q bus lock)

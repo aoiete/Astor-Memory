@@ -141,6 +141,7 @@ Astor-Memory stands on shoulders. We explicitly learned architecture from and av
 - **CoALA paper** (arXiv:2309.02427) — cognitive architecture framing for memory systems
 - **Mem-π paper** — adaptive memory + cross-LLM transfer insight ("memory strategy is independent of executor")
 - **Memory-in-the-Age-of-LLMs** (arXiv:2512.13564) — taxonomy of agent memory types
+- **akitaonrails/ai-memory** (2026-09 survey) — shared-wiki-as-Source-of-Truth framing; "typed edges" (`fixes`/`causes`/`contradicts`) reinforced our `tags` design for cross-fact relations. See [docs/research-survey-2026-09-08.md](./docs/research-survey-2026-09-08.md) for the architecture comparison + what we deliberately did not copy.
 
 Full acknowledgements in [`ACKNOWLEDGEMENTS.md`](./ACKNOWLEDGEMENTS.md).
 
@@ -255,6 +256,7 @@ Astor-Memory v1.0 ships:
 | External skill scan/import (read-only reference, no copy) | ✅ |
 | Cross-LLM adapter (works with OpenAI / Anthropic / Gemini / DeepSeek / 智谱 / Ollama) | ✅ |
 | 15 Core runtime iron rules (default) | ✅ |
+| **Zero-LLM mode** (FTS5 BM25 + lexical-only recall, no embedding / no API key required) | ✅ |
 
 Deferred to v1.1+:
 - Multi-user dashboard (`am ui`)

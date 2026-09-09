@@ -206,7 +206,7 @@ def audit_tier(tier: str, user_id: str | None, hours: int, min_overlap: float,
         print(f"[ALERT] {tier}/{user_id or '(public)'}: {len(flagged)} ungrounded facts in last {hours}h:")
         for f in flagged:
             print(f"  fact_id={f['id']}  confidence={f['confidence']}  provenance={f['provenance_kind']}/{f['provenance_agent']}")
-            print(f"    content: {str(f['content'])[:200]}")
+            print(f"    content: {str(f['content'])[:200].encode('ascii', 'replace').decode('ascii')}")
             print(f"    parents: {json.loads(f.get('parent_fact_ids') or '[]')}")
             print()
         if tombstone and not dry_run:
