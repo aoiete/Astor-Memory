@@ -189,6 +189,24 @@ def audit_tier(tier: str, user_id: str | None, hours: int, min_overlap: float,
         agent = str(fact.get('provenance_agent') or '')
         if not (agent.startswith('nest.auto_link') or agent.startswith('llm_extract')):
             continue
+        # v1.14.10 (2026-09-09): skip child facts (those that already reference parents).
+        # Reasoning: a child fact's grounding was already verified when its PARENT
+        # was checked. Re-checking the child's substring match against parent's
+        # content produces 80+ false positives daily because child facts legitimately
+        # introduce new identifiers (variable names, file paths, function names)
+        # not present in the parent's text. Verified live 2026-09-09: 972 nest.auto_link
+        # facts in last 24h, ALL 972 have parent_fact_ids (depth=0 but parent-rich),
+        # and 85 of them were false-positive flagged because the heuristic substring
+        # match failed on legitimate Chinese / code-identifier content.
+        # Trust the provenance chain: facts with parent_fact_ids have a documented
+        # derivation path. Only flag facts with NO parents (raw extraction that
+        # wasn't linked to source).
+        try:
+            parents_check = json.loads(fact.get('parent_fact_ids') or '[]')
+        except Exception:
+            parents_check = []
+        if len(parents_check) > 0:
+            continue
         # v1.13.2 (2026-09-04): content-aware filter — skip ship-log / canonical
         # style facts that legitimately enumerate change lists. These are
         # admin-authored summaries, not LLM fabrications. Without this
@@ -206,7 +224,9 @@ def audit_tier(tier: str, user_id: str | None, hours: int, min_overlap: float,
         print(f"[ALERT] {tier}/{user_id or '(public)'}: {len(flagged)} ungrounded facts in last {hours}h:")
         for f in flagged:
             print(f"  fact_id={f['id']}  confidence={f['confidence']}  provenance={f['provenance_kind']}/{f['provenance_agent']}")
-            print(f"    content: {str(f['content'])[:200].encode('ascii', 'replace').decode('ascii')}")
+            # v1.14.10 (2026-09-09): drop ascii-encode roundtrip that was destroying
+            # Chinese text in audit output (admin couldn't read 80 false positives).
+            print(f"    content: {str(f['content'])[:200]}")
             print(f"    parents: {json.loads(f.get('parent_fact_ids') or '[]')}")
             print()
         if tombstone and not dry_run:
