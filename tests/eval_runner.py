@@ -98,10 +98,11 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
     """Run one variant (a set of recall kwargs overrides)."""
     # Variant -> kwargs to merge into /v1/read body
     variants = {
-        "baseline":   {"hybrid": True,  "rerank": "on"},   # production config
-        "vector_only": {"hybrid": False, "rerank": "off"},
-        "rerank_off":  {"hybrid": True,  "rerank": "off"},
-        "stage_off":   {"hybrid": True,  "rerank": "on"},   # not yet togglable via body
+        "baseline":   {"hybrid": True,  "rerank": "on"},                                  # production config (current ship)
+        "baseline_bm25_6": {"hybrid": True, "rerank": "on", "bm25_weight": 0.6},         # S16: high-bm25 control
+        "baseline_bm25_4": {"hybrid": True, "rerank": "on", "bm25_weight": 0.4},         # S16: low-bm25 control
+        "vector_only": {"hybrid": False, "rerank": "off"},                              # rerank + hybrid both off
+        "rerank_off":  {"hybrid": True,  "rerank": "off"},                              # hybrid on, rerank off
     }
     kwargs = variants.get(variant, {})
 
@@ -198,7 +199,7 @@ def print_summary(run: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--variant", default="baseline",
-                    choices=["baseline", "vector_only", "rerank_off", "stage_off"])
+                    choices=["baseline", "baseline_bm25_6", "baseline_bm25_4", "vector_only", "rerank_off"])
     ap.add_argument("--all", action="store_true", help="Run all variants")
     ap.add_argument("--set", default=str(EVAL_SET), help="Path to eval set jsonl")
     args = ap.parse_args()

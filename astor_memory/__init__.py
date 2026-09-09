@@ -6,7 +6,7 @@ astor-memory: Self-owned memory system for AI agents.
 See: docs/architecture.md in this repository for the full architecture overview.
 """
 
-__version__ = '1.14.3'  # 2026-09-07 (v1.14.3): vector_store conn property detects closed-but-not-None and auto-reopens
+__version__ = '1.14.6'  # 2026-09-08 (v1.14.6): lifestyle fix + dual-merge off + eval 100 + auto-rollback + sweep tier fix  # 2026-09-07 (v1.14.3): vector_store conn property detects closed-but-not-None and auto-reopens
 
 # Top-level singleton accessors. Per Plan § Naming:
 # astor_bus() / astor_forge() / astor_nest() are the unified public API entry points.
