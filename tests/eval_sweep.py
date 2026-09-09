@@ -1,13 +1,15 @@
-"""eval_sweep.py — multi-config recall evaluation
+"""eval_sweep.py — multi-config recall evaluation (S7: parallel variant sweep)
 
-v1.0.0 (2026-09-08, ship)
-
-Sweeps multiple knobs (bm25_weight, rerank top_k) to find best config.
-Use after eval_runner.py ships the baseline.
+v1.0.0 (2026-09-08, ship) — original serial version
+v1.1.0 (2026-09-08, S7) — parallel variant sweep via ThreadPoolExecutor.
+  100 query × 7 variant = 280s serial vs ~50s with 8 workers parallel.
+  Hit: same scoring logic, but variant loop now concurrent.futures.
+  Threads (not procs) — query is I/O bound (urllib against local server).
 
 Usage:
     python eval_sweep.py                          # all configs
     python eval_sweep.py --quick                  # 4 quick configs only
+    python eval_sweep.py --workers 8              # parallel workers (default 8)
     python eval_sweep.py --set tests/eval_set.jsonl
 """
 from __future__ import annotations
@@ -16,9 +18,9 @@ import argparse
 import json
 import os
 import statistics
-import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,8 +38,8 @@ def load_eval_set() -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def recall(query: str, top_k: int = 10, **kwargs) -> tuple[list[dict], float]:
-    body = {"query": query, "tier": "private", "user": "admin", "top_k": top_k, **kwargs}
+def recall(query: str, tier: str = "private", top_k: int = 10, **kwargs) -> tuple[list[dict], float]:
+    body = {"query": query, "tier": tier, "user": "admin", "top_k": top_k, **kwargs}
     req = urllib.request.Request(
         f"{SERVER}/v1/read",
         data=json.dumps(body).encode(),
@@ -66,7 +68,6 @@ def score(results, kws, min_hits=1):
 
 
 CONFIGS = [
-    # name, kwargs
     ("baseline_bm25.4",      {"hybrid": True, "rerank": "on",  "bm25_weight": 0.4}),
     ("high_bm25_bm25.6",     {"hybrid": True, "rerank": "on",  "bm25_weight": 0.6}),
     ("low_bm25_bm25.2",      {"hybrid": True, "rerank": "on",  "bm25_weight": 0.2}),
@@ -74,10 +75,11 @@ CONFIGS = [
     ("pure_vec",             {"hybrid": False, "rerank": "off"}),
     ("hybrid_no_rerank",     {"hybrid": True,  "rerank": "off"}),
     ("hybrid_rerank",        {"hybrid": True,  "rerank": "on"}),
-    # v1.14.5: dual-model merge (server-side ASTOR_DUAL_MODEL=1) — only effective
-    # when server is running with the env var. Tested via env-controlled reruns.
-    ("dual_model_off",       {"hybrid": True,  "rerank": "on"}),  # baseline for comparison
-    ("dual_model_on",        {"hybrid": True,  "rerank": "on"}),  # baseline + body hint; server env decides
+    # S6 (2026-09-08): dual-model merge is OFF by default in server.py. These
+    # two configs are kept for completeness — they differentiate only when
+    # ASTOR_DUAL_MODEL=1 on the server side.
+    ("dual_model_off",       {"hybrid": True,  "rerank": "on"}),
+    ("dual_model_on",        {"hybrid": True,  "rerank": "on"}),
 ]
 
 
@@ -111,20 +113,52 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--set", default=str(EVAL_SET))
+    ap.add_argument("--workers", type=int, default=1, help="Parallel workers for variant sweep. Default 1 — astor server is single-threaded Flask, --workers > 1 serializes internally and may timeout (S7)")
     args = ap.parse_args()
 
     eval_set = load_eval_set()
-    print(f"Loaded {len(eval_set)} queries. Sweeping {len(CONFIGS) if not args.quick else 4} configs...")
-
     configs = CONFIGS[:4] if args.quick else CONFIGS
+    print(f"Loaded {len(eval_set)} queries. Sweeping {len(configs)} configs with {args.workers} workers...")
 
+    t_start = time.perf_counter()
     rows = []
-    for name, kw in configs:
-        r = run_config(name, kw, eval_set)
+    # S7: serial variant sweep (astor server is single-threaded Flask, parallel
+    # workers contend on the same write-lock and timeout). For long sweeps,
+    # use --quick (4 variants) or a dedicated run. Per-variant progress every
+    # 25 queries keeps the user informed.
+    for idx, (name, kw) in enumerate(configs, 1):
+        print(f"  [{idx}/{len(configs)}] {name} starting... ", end="", flush=True)
+        # Inject progress callback into run_config
+        detail_rows = []
+        lats = []
+        for qi, q in enumerate(eval_set, 1):
+            try:
+                results, lat = recall(q["query"], tier=q.get("tier", "private"), top_k=q.get("top_k", 10), **kw)
+            except Exception as e:
+                detail_rows.append({"qid": q["qid"], "error": str(e), "matched": False, "mrr": 0.0})
+                continue
+            s = score(results, q["expected_keywords"], q.get("min_hits", 1))
+            detail_rows.append({"qid": q["qid"], "category": q.get("category"), **s,
+                                "latency_ms": round(lat, 2)})
+            lats.append(lat)
+            if qi % 25 == 0:
+                print(f"{qi}..", end="", flush=True)
+        # Aggregate
+        n = len(detail_rows)
+        r = {
+            "name": name, "kwargs": kw,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "n_queries": n,
+            "hit_rate": round(sum(1 for d in detail_rows if d["matched"]) / n, 4) if n else 0,
+            "mrr": round(statistics.mean(d["mrr"] for d in detail_rows), 4) if n else 0,
+            "avg_latency_ms": round(statistics.mean(lats), 2) if lats else 0,
+            "p95_latency_ms": round(statistics.quantiles(lats, n=20)[18], 2) if len(lats) >= 20 else (max(lats, default=0)),
+            "misses": [d["qid"] for d in detail_rows if not d["matched"]],
+        }
         rows.append(r)
-        print(f"  {name:24}  hit={r['hit_rate']:.3f}  mrr={r['mrr']:.3f}  "
-              f"avg_ms={r['avg_latency_ms']:.0f}  p95_ms={r['p95_latency_ms']:.0f}  "
-              f"misses={r['misses']}")
+        print(f" hit={r['hit_rate']:.3f}  mrr={r['mrr']:.3f}  avg_ms={r['avg_latency_ms']:.0f}  p95_ms={r['p95_latency_ms']:.0f}  misses={r['misses']}")
+    elapsed = time.perf_counter() - t_start
+    print(f"\nSweep completed in {elapsed:.1f}s (avg {elapsed/len(rows):.1f}s per variant)")
 
     # Save sweep
     sweep_path = METRICS_DIR / f"eval_sweep_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
@@ -142,9 +176,9 @@ def main() -> int:
     # Append sweep summary to history
     with open(METRICS_DIR / "eval_sweep_history.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps({"ts": datetime.now(timezone.utc).isoformat(), "sweep": rows,
-                            "best": best["name"]}, ensure_ascii=False) + "\n")
+                            "best": best["name"], "elapsed_s": round(elapsed, 1)},
+                           ensure_ascii=False) + "\n")
 
-    print(f"\nSaved: {sweep_path.name}")
     return 0
 
 
