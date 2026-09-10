@@ -114,21 +114,35 @@
   </div>
   <div>
     <div class="grid-3">
-      <div class="card health-card">
+      <div class="card health-card clickable" id="health-card-embed" title="Click to diagnose">
         <div class="health-label">Embedding Failed</div>
         <div class="health-value" id="health-embed">—</div>
+        <div class="health-hint">click for detail</div>
       </div>
-      <div class="card health-card">
+      <div class="card health-card clickable" id="health-card-warn" title="Click to diagnose">
         <div class="health-label">Audit Warnings</div>
         <div class="health-value" id="health-warn">—</div>
+        <div class="health-hint">click for detail</div>
       </div>
-      <div class="card health-card">
+      <div class="card health-card clickable" id="health-card-total" title="Click to diagnose">
         <div class="health-label">Audit Total</div>
         <div class="health-value" id="health-total">—</div>
+        <div class="health-hint">click for detail</div>
       </div>
     </div>
   </div>
 </section>
+
+<!-- Health diagnosis modal -->
+<div id="health-modal" class="modal" hidden>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2 id="modal-title">Health Diagnosis</h2>
+      <button class="modal-close" id="modal-close">×</button>
+    </div>
+    <div id="modal-body" class="modal-body">loading…</div>
+  </div>
+</div>
 
 <footer class="dash-footer">
   Auto-refresh every 60s · Cache TTL 5min · <a href="/v1/dashboard" target="_blank">raw JSON</a>
