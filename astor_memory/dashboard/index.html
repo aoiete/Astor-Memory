@@ -87,19 +87,46 @@
   </div>
 </section>
 
-<!-- Row 4: Health -->
-<section class="grid-3">
-  <div class="card health-card">
-    <div class="health-label">Embedding Failed</div>
-    <div class="health-value" id="health-embed">—</div>
+<!-- Row 4: Recall debug + Health -->
+<section class="grid-2">
+  <div class="card">
+    <h2>Recall Debugger <span class="subtitle">live /v1/read</span></h2>
+    <div class="recall-form">
+      <input type="text" id="recall-q" placeholder="e.g. R132 3-store 铁律" autocomplete="off">
+      <select id="recall-tier">
+        <option value="private" selected>private</option>
+        <option value="source">source</option>
+        <option value="public">public</option>
+      </select>
+      <select id="recall-user">
+        <option value="admin" selected>admin</option>
+      </select>
+      <select id="recall-topk">
+        <option value="3">top 3</option>
+        <option value="5" selected>top 5</option>
+        <option value="10">top 10</option>
+      </select>
+      <button id="recall-run" class="btn-primary">Run</button>
+    </div>
+    <div id="recall-results" class="recall-results">
+      <div class="recall-hint">Run a query to see live recall output.</div>
+    </div>
   </div>
-  <div class="card health-card">
-    <div class="health-label">Audit Warnings</div>
-    <div class="health-value" id="health-warn">—</div>
-  </div>
-  <div class="card health-card">
-    <div class="health-label">Audit Total</div>
-    <div class="health-value" id="health-total">—</div>
+  <div>
+    <div class="grid-3">
+      <div class="card health-card">
+        <div class="health-label">Embedding Failed</div>
+        <div class="health-value" id="health-embed">—</div>
+      </div>
+      <div class="card health-card">
+        <div class="health-label">Audit Warnings</div>
+        <div class="health-value" id="health-warn">—</div>
+      </div>
+      <div class="card health-card">
+        <div class="health-label">Audit Total</div>
+        <div class="health-value" id="health-total">—</div>
+      </div>
+    </div>
   </div>
 </section>
 
