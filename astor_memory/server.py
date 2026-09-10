@@ -468,6 +468,21 @@ def create_app(astor_dir: str | None = None) -> Flask:
         _DASHBOARD_CACHE["astor_dir"] = str(astor_dir)
         return jsonify({**payload, "_cache": "miss"})
 
+    @app.route('/dashboard/', methods=['GET'])
+    @app.route('/dashboard/index.html', methods=['GET'])
+    def dashboard_page():
+        """Serve the static dashboard HTML page."""
+        from flask import send_from_directory
+        dashboard_dir = Path(__file__).parent / "dashboard"
+        return send_from_directory(str(dashboard_dir), "index.html")
+
+    @app.route('/dashboard/<path:filename>', methods=['GET'])
+    def dashboard_static(filename):
+        """Serve dashboard static assets (style.css, app.js)."""
+        from flask import send_from_directory
+        dashboard_dir = Path(__file__).parent / "dashboard"
+        return send_from_directory(str(dashboard_dir), filename)
+
     @app.route('/v1/write', methods=['POST'])
     def write():
         """Write a fact via forge extraction + bus promote + nest store.

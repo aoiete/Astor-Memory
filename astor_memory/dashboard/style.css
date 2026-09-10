@@ -1,0 +1,296 @@
+/* Astor Dashboard — warm-orange theme (reused from pokerstats) */
+:root {
+  --bg: #F5EAD6;
+  --panel: #FFF3E6;
+  --panel-2: #FFE8D0;
+  --text: #1a1a1a;
+  --text-dim: #3a2a1a;
+  --accent: #FF8C2E;
+  --accent-dim: #E66A0F;
+  --accent-soft: rgba(255, 140, 46, 0.12);
+  --danger: #ef4444;
+  --warn: #f59e0b;
+  --border: #FFD9B8;
+  --good: #16a34a;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+body {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px 20px 40px;
+}
+
+.dash-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 2px solid var(--border);
+}
+
+.dash-header h1 {
+  font-size: 22px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.header-meta {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.cache-badge {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.cache-badge.hit { background: var(--accent-soft); color: var(--accent-dim); }
+.cache-badge.miss { background: var(--warn); color: white; }
+.cache-badge.error { background: var(--danger); color: white; }
+
+.last-event { font-variant-numeric: tabular-nums; }
+
+.btn-refresh {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  width: 28px; height: 28px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.btn-refresh:hover { background: var(--accent-dim); }
+
+/* Hero */
+.hero {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr) 1.5fr;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.hero-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.hero-card.accent {
+  background: linear-gradient(135deg, var(--accent-soft), var(--panel));
+  border-color: var(--accent);
+}
+.hero-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.hero-value {
+  font-size: 26px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.hero-card.accent .hero-value { color: var(--accent-dim); }
+.hero-card.wide .hero-value { font-size: 22px; }
+.trend-value.improving { color: var(--good); }
+.trend-value.stable { color: var(--text-dim); }
+.trend-value.regressing { color: var(--danger); }
+.trend-value.no_data { color: var(--text-dim); font-style: italic; }
+
+/* Grid 2 */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.card h2 {
+  font-size: 15px;
+  color: var(--accent);
+  margin-bottom: 12px;
+  font-weight: 700;
+}
+.subtitle {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 400;
+  margin-left: 8px;
+}
+.sub-h {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 12px 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.chart-wrap {
+  position: relative;
+  height: 220px;
+}
+
+/* KPI */
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.kpi {
+  background: var(--panel-2);
+  border-radius: 6px;
+  padding: 8px 10px;
+  text-align: center;
+}
+.kpi-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.kpi-value {
+  font-size: 18px;
+  font-weight: 700;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* Variants table */
+.variants-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.variants-table th {
+  background: var(--panel-2);
+  padding: 6px 8px;
+  text-align: left;
+  color: var(--text-dim);
+  font-weight: 500;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.variants-table td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.variants-table td.mrr, .variants-table td.hit { font-weight: 600; }
+
+/* Keywords */
+.keywords-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.kw-chip {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.kw-chip strong {
+  color: var(--accent-dim);
+  margin-right: 4px;
+}
+
+/* Recent facts */
+.recent-facts {
+  list-style: none;
+}
+.recent-facts li {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 12px;
+}
+.recent-facts li:last-child { border-bottom: none; }
+.recent-facts .fact-meta {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.recent-facts .fact-content {
+  color: var(--text);
+  word-break: break-word;
+}
+
+/* Health */
+.health-card { text-align: center; }
+.health-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.health-value {
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+#health-embed:not(:empty).nonzero { color: var(--warn); }
+#health-warn:not(:empty).nonzero { color: var(--danger); }
+
+/* Footer */
+.dash-footer {
+  margin-top: 24px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.dash-footer a {
+  color: var(--accent-dim);
+  text-decoration: none;
+  font-family: monospace;
+}
+
+/* Mobile */
+@media (max-width: 720px) {
+  body { padding: 12px 10px 24px; }
+  .dash-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .hero { grid-template-columns: 1fr 1fr; }
+  .hero-card.wide { grid-column: span 2; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .grid-3 { grid-template-columns: 1fr; }
+  .kpi-row { grid-template-columns: 1fr 1fr; }
+  .chart-wrap { height: 180px; }
+}
