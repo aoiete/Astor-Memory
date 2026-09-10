@@ -65,6 +65,28 @@ body {
 .cache-badge.miss { background: var(--warn); color: white; }
 .cache-badge.error { background: var(--danger); color: white; }
 
+.template-banner {
+  background: var(--panel-2);
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+  padding: 6px 12px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.template-banner code {
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--accent-dim);
+}
+.template-banner a {
+  color: var(--accent-dim);
+  text-decoration: none;
+}
+
 .last-event { font-variant-numeric: tabular-nums; }
 
 .btn-refresh {
