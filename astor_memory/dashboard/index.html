@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Astor Dashboard</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<header class="dash-header">
+  <h1>🧠 Astor Dashboard</h1>
+  <div class="header-meta">
+    <span id="cache-badge" class="cache-badge">…</span>
+    <span id="last-event" class="last-event">last event: …</span>
+    <button id="refresh-btn" class="btn-refresh" title="Force refresh (bypasses 5min cache)">↻</button>
+  </div>
+</header>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="hero-card">
+    <div class="hero-label">Total Users</div>
+    <div class="hero-value" id="hero-users">—</div>
+  </div>
+  <div class="hero-card accent">
+    <div class="hero-label">Active Facts</div>
+    <div class="hero-value" id="hero-facts">—</div>
+  </div>
+  <div class="hero-card">
+    <div class="hero-label">Tombstoned</div>
+    <div class="hero-value" id="hero-tomb">—</div>
+  </div>
+  <div class="hero-card">
+    <div class="hero-label">High Importance</div>
+    <div class="hero-value" id="hero-high">—</div>
+  </div>
+  <div class="hero-card wide">
+    <div class="hero-label">Trend</div>
+    <div class="hero-value trend-value" id="hero-trend">—</div>
+  </div>
+</section>
+
+<!-- Row 1: Eval + Growth -->
+<section class="grid-2">
+  <div class="card">
+    <h2>Recall Eval Harness <span class="subtitle">last 30d baseline runs</span></h2>
+    <div class="kpi-row">
+      <div class="kpi"><div class="kpi-label">Hit Rate</div><div class="kpi-value" id="kpi-hit">—</div></div>
+      <div class="kpi"><div class="kpi-label">MRR</div><div class="kpi-value" id="kpi-mrr">—</div></div>
+      <div class="kpi"><div class="kpi-label">P95 Latency</div><div class="kpi-value" id="kpi-p95">—</div></div>
+      <div class="kpi"><div class="kpi-label">Runs</div><div class="kpi-value" id="kpi-runs">—</div></div>
+    </div>
+    <h3 class="sub-h">Variants (latest run each)</h3>
+    <table class="variants-table" id="variants-table">
+      <thead><tr><th>Variant</th><th>Hit Rate</th><th>MRR</th><th>P95 ms</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h2>30d Memory Growth <span class="subtitle">admin daily promoted</span></h2>
+    <div class="chart-wrap"><canvas id="growth-chart"></canvas></div>
+  </div>
+</section>
+
+<!-- Row 2: Per-user + Importance histogram -->
+<section class="grid-2">
+  <div class="card">
+    <h2>Per-User Facts <span class="subtitle">active count</span></h2>
+    <div class="chart-wrap"><canvas id="peruser-chart"></canvas></div>
+  </div>
+  <div class="card">
+    <h2>Importance Distribution</h2>
+    <div class="chart-wrap"><canvas id="importance-chart"></canvas></div>
+  </div>
+</section>
+
+<!-- Row 3: Keywords + Recent facts -->
+<section class="grid-2">
+  <div class="card">
+    <h2>Top Keywords</h2>
+    <div id="keywords-list" class="keywords-list"></div>
+  </div>
+  <div class="card">
+    <h2>Recent Facts <span class="subtitle">last 5</span></h2>
+    <ul id="recent-facts" class="recent-facts"></ul>
+  </div>
+</section>
+
+<!-- Row 4: Health -->
+<section class="grid-3">
+  <div class="card health-card">
+    <div class="health-label">Embedding Failed</div>
+    <div class="health-value" id="health-embed">—</div>
+  </div>
+  <div class="card health-card">
+    <div class="health-label">Audit Warnings</div>
+    <div class="health-value" id="health-warn">—</div>
+  </div>
+  <div class="card health-card">
+    <div class="health-label">Audit Total</div>
+    <div class="health-value" id="health-total">—</div>
+  </div>
+</section>
+
+<footer class="dash-footer">
+  Auto-refresh every 60s · Cache TTL 5min · <a href="/v1/dashboard" target="_blank">raw JSON</a>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
