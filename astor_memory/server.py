@@ -6,6 +6,7 @@ Endpoints:
   POST /v1/write    body={"text":..., "user":..., "mode":...} -> {fact_ids}
   POST /v1/read     body={"query":..., "user":..., "top_k":5}  -> {results: [{fact_id, content, ...}]}
   GET  /v1/health   -> {status, version, dbs}
+  GET  /v1/dashboard -> aggregated dashboard JSON (5min cache)
   POST /v1/install  body={"ide":..., "mode":..., "agent_dir":...} -> {plan}
 
 Run: python -m astor_memory.server
@@ -14,6 +15,13 @@ Or:  flask --app astor_memory.server run --port 7803
 Per Plan § Memory <-> concurrency: WAL mode handles concurrent reads.
 """
 from __future__ import annotations
+
+# S15 (2026-09-10): dashboard cache — keeps aggregated payload for 5min so
+# the HTML page polling /v1/dashboard doesn't re-run 16 user-db aggregates
+# on every refresh. Cache key: astor_dir. Invalidation: TTL only (5min);
+# staleness of ~5min is acceptable for a memory-health overview.
+_DASHBOARD_CACHE: dict = {"payload": None, "ts": 0.0, "astor_dir": None}
+_DASHBOARD_TTL_SEC = 300
 
 
 # S14 (2026-09-08): auto-load OPENAI_API_KEY from hermes .env file if not in env.
@@ -417,6 +425,48 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception as e:
             result['nest_error'] = str(e)
         return jsonify(result)
+
+    @app.route('/v1/dashboard', methods=['GET'])
+    def dashboard():
+        """Aggregated dashboard payload for the web UI.
+
+        Returns the 6-dimension payload built by dashboard_data.build_dashboard_payload:
+        - hero (totals + last_event delta + trend_status)
+        - eval_trend (hit_rate / mrr / p95 / variants / delta)
+        - per_user (top 16)
+        - growth_30d (daily promoted, admin)
+        - top_keywords + recent_facts
+        - importance_histogram + health
+
+        Cached 5min in-process to avoid re-aggregating 16 user dbs per poll.
+        Optional query: ?astor_dir=<path>  override default ASTOR_DIR (testing).
+        """
+        import time as _t
+        from .dashboard_data import build_dashboard_payload
+
+        astor_dir = request.args.get("astor_dir") or get_default_astor_dir()
+        now = _t.time()
+        cached = _DASHBOARD_CACHE
+        if (
+            cached["payload"] is not None
+            and cached["astor_dir"] == str(astor_dir)
+            and (now - cached["ts"]) < _DASHBOARD_TTL_SEC
+        ):
+            return jsonify({**cached["payload"], "_cache": "hit"})
+
+        try:
+            payload = build_dashboard_payload(astor_dir)
+        except Exception as exc:
+            return jsonify({
+                "error": "dashboard_build_failed",
+                "detail": str(exc),
+                "astor_dir": str(astor_dir),
+            }), 500
+
+        _DASHBOARD_CACHE["payload"] = payload
+        _DASHBOARD_CACHE["ts"] = now
+        _DASHBOARD_CACHE["astor_dir"] = str(astor_dir)
+        return jsonify({**payload, "_cache": "miss"})
 
     @app.route('/v1/write', methods=['POST'])
     def write():
@@ -2452,7 +2502,7 @@ def main():
     app = create_app(astor_dir=args.astor_dir)
     print(f'[*] Astor-Memory v{__version__} REST API')
     print(f'   Listening on http://{args.host}:{args.port}')
-    print(f'   Endpoints: /v1/health /v1/write /v1/read /v1/install')
+    print(f'   Endpoints: /v1/health /v1/dashboard /v1/write /v1/read /v1/install')
     app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)  # S13: enable Flask threaded mode for concurrent /v1/read requests (R-class N). Bus uses WAL mode so concurrent reads safe.
 
 
