@@ -1,4 +1,47 @@
 
+## v1.14.16 (2026-09-10)
+
+### Dashboard: Recall debugger + frontend tests
+
+- `astor_memory/dashboard/index.html`: new Row 4 with Recall form (query input + tier/user/top_k selects + Run button) + recall-results region (320px scrollable)
+- `astor_memory/dashboard/style.css`: `.recall-form` (5-col grid), `.btn-primary` (warm-orange solid), `.recall-item` (rank chip + similarity + meta line), `.recall-error` (red bordered alert), `.recall-summary` (tier/user/top_k metadata banner), mobile collapse
+- `astor_memory/dashboard/app.js`: new `runRecall()` function — POST `/v1/read` with `{query, tier, user, top_k}`, Enter key triggers Run, empty results show "No matches" hint, all user content XSS-escaped
+- `tests/test_dashboard_js.py`: 10 tests — files exist, HTML DOM IDs, chart canvases, CDN ref, CSS selectors, theme vars, JS functions, XSS-safe escaping, endpoint URLs, `_cache` handling
+
+Combined regression: 10 (data) + 8 (endpoint) + 10 (js) = 28/28 tests pass.
+
+## v1.14.15 (2026-09-10)
+
+### Dashboard: HTML/CSS/JS + Flask static routes
+
+- New `astor_memory/dashboard/` directory: `index.html` (4952 bytes), `style.css` (8569 bytes), `app.js` (12692 bytes)
+- 6-card layout: hero row, eval+growth, per-user+importance, keywords+recent, health
+- Warm-orange theme reused from pokerstats (`#FF8C2E` accent, `#F5EAD6` bg, `#FFD9B8` border)
+- Chart.js 4.4.1 from jsdelivr CDN — bar (growth, per-user) + doughnut (importance) charts
+- 60s polling with chart-instance destroy+recreate to avoid memory leak
+- Flask static routes: `/dashboard/`, `/dashboard/index.html`, `/dashboard/<path:filename>`
+- All assets served at 200 with full bytes
+
+## v1.14.14 (2026-09-10)
+
+### `/v1/dashboard` endpoint + 5min in-process cache
+
+- New Flask route registered in url_map
+- Module-level `_DASHBOARD_CACHE` dict + `_DASHBOARD_TTL_SEC = 300` — avoids re-aggregating 16 user dbs per page poll
+- Returns `{**payload, "_cache": "miss"|"hit"}` so UI knows cache state
+- Optional `?astor_dir=<path>` query override for testing
+- 500 on build failure with `{error, detail, astor_dir}`
+- `tests/test_dashboard_endpoint.py`: 8 tests — endpoint 200, payload keys, cache miss→hit, hero sanity, eval shape, per_user list, health keys, recent_facts ≤5
+
+## v1.14.13 (2026-09-10)
+
+### Dashboard data aggregator
+
+- New `astor_memory/dashboard_data.py` — pure Python stdlib + sqlite3
+- 6 dimensions + importance histogram: hero / eval_trend / per_user / growth_30d / top_keywords / recent_facts / importance_histogram / health
+- CLI: `python -m astor_memory.dashboard_data [astor_dir]`
+- `tests/test_dashboard_data.py`: 10 invariant tests
+
 ## v1.14.3 (2026-09-07)
 
 ### Bug fix: vector_store closed-conn reopen
