@@ -16,6 +16,8 @@ Per Plan § Memory <-> concurrency: WAL mode handles concurrent reads.
 """
 from __future__ import annotations
 
+import sqlite3
+
 # S15 (2026-09-10): dashboard cache — keeps aggregated payload for 5min so
 # the HTML page polling /v1/dashboard doesn't re-run 16 user-db aggregates
 # on every refresh. Cache key: astor_dir. Invalidation: TTL only (5min);
@@ -468,12 +470,65 @@ def create_app(astor_dir: str | None = None) -> Flask:
         _DASHBOARD_CACHE["astor_dir"] = str(astor_dir)
         return jsonify({**payload, "_cache": "miss"})
 
+    @app.route('/v1/health/diagnose', methods=['GET'])
+    def health_diagnose():
+        """Detailed breakdown of health counters (embedding_failed + warnings).
+
+        Returns the same data as scripts/astor_health_diagnose.py --summary,
+        but as JSON for the dashboard to consume.
+
+        Optional query: ?user=<id>&astor_dir=<path>
+        """
+        import time as _t
+        from .dashboard_data import _summarize_embedding_failures, _summarize_warnings
+        from pathlib import Path as _P
+
+        user = request.args.get("user", "admin")
+        astor_arg = request.args.get("astor_dir")
+        astor_dir = _P(astor_arg) if astor_arg else get_default_astor_dir()
+
+        db = astor_dir / "users" / user / "memory" / f"astor_bus_{user}.db"
+        if not db.exists():
+            return jsonify({"error": "user_db_not_found", "user": user, "db": str(db)}), 404
+
+        try:
+            co = sqlite3.connect(str(db))
+            cu = co.cursor()
+            emb = _summarize_embedding_failures(cu)
+            warn = _summarize_warnings(cu)
+            sev_rows = cu.execute(
+                "SELECT severity, COUNT(*) FROM audit_log GROUP BY severity ORDER BY 2 DESC"
+            ).fetchall()
+            co.close()
+        except Exception as exc:
+            return jsonify({"error": "diagnosis_failed", "detail": str(exc)}), 500
+
+        return jsonify({
+            "generated_at": _t.time(),
+            "user": user,
+            "db": str(db),
+            "embedding_failed": emb,
+            "warnings": warn,
+            "audit_total_by_severity": {row[0]: row[1] for row in sev_rows},
+        })
+
     @app.route('/dashboard/', methods=['GET'])
     @app.route('/dashboard/index.html', methods=['GET'])
+    @app.route('/', methods=['GET'])
     def dashboard_page():
-        """Serve the static dashboard HTML page."""
-        from flask import send_from_directory
+        """Serve the static dashboard HTML page.
+
+        Multiple paths map to the same page:
+        - /dashboard/  (explicit dashboard)
+        - /dashboard/index.html  (direct asset)
+        - /  (root — convenient default for the public hostname)
+        """
+        from flask import send_from_directory, redirect
         dashboard_dir = Path(__file__).parent / "dashboard"
+        # If request is for `/`, serve dashboard HTML directly.
+        # If request is for `/dashboard/` or `/dashboard/index.html`, same.
+        if request.path == '/':
+            return send_from_directory(str(dashboard_dir), "index.html")
         return send_from_directory(str(dashboard_dir), "index.html")
 
     @app.route('/dashboard/<path:filename>', methods=['GET'])
@@ -481,6 +536,23 @@ def create_app(astor_dir: str | None = None) -> Flask:
         """Serve dashboard static assets (style.css, app.js)."""
         from flask import send_from_directory
         dashboard_dir = Path(__file__).parent / "dashboard"
+        return send_from_directory(str(dashboard_dir), filename)
+
+    @app.route('/<path:filename>', methods=['GET'])
+    def root_static(filename):
+        """Serve dashboard assets when accessed from the root path.
+
+        e.g. GET /style.css → style.css, GET /app.js → app.js
+        Lets the dashboard be served at https://host/ (root) with
+        relative asset paths working out-of-the-box.
+        Restricted to the dashboard directory's allowed filenames
+        (style.css, app.js) to avoid path traversal risk.
+        """
+        from flask import send_from_directory, abort
+        dashboard_dir = Path(__file__).parent / "dashboard"
+        allowed = {"style.css", "app.js", "index.html"}
+        if filename not in allowed:
+            abort(404)
         return send_from_directory(str(dashboard_dir), filename)
 
     @app.route('/v1/write', methods=['POST'])
