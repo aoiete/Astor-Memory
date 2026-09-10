@@ -268,5 +268,94 @@
     fetchDashboard();
     setInterval(fetchDashboard, REFRESH_MS);
     document.getElementById('refresh-btn').addEventListener('click', () => fetchDashboard());
+
+    // recall debugger wiring
+    const recallQ = document.getElementById('recall-q');
+    const recallBtn = document.getElementById('recall-run');
+    recallBtn.addEventListener('click', runRecall);
+    recallQ.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        runRecall();
+      }
+    });
   });
+
+  async function runRecall() {
+    const q = document.getElementById('recall-q').value.trim();
+    if (!q) {
+      renderRecallHint('Type a query first.');
+      return;
+    }
+    const tier = document.getElementById('recall-tier').value;
+    const user = document.getElementById('recall-user').value;
+    const topK = parseInt(document.getElementById('recall-topk').value, 10);
+    const btn = document.getElementById('recall-run');
+    btn.disabled = true;
+    btn.textContent = '...';
+
+    const body = JSON.stringify({ query: q, tier: tier, user: user, top_k: topK });
+    try {
+      const r = await fetch('/v1/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: body,
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error('HTTP ' + r.status + ': ' + t.slice(0, 200));
+      }
+      const d = await r.json();
+      renderRecall(d, q, tier, user, topK);
+    } catch (e) {
+      console.error('recall failed:', e);
+      renderRecallError(e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Run';
+    }
+  }
+
+  function renderRecallHint(msg) {
+    document.getElementById('recall-results').innerHTML =
+      '<div class="recall-hint">' + escapeHtml(msg) + '</div>';
+  }
+
+  function renderRecallError(msg) {
+    document.getElementById('recall-results').innerHTML =
+      '<div class="recall-error">' + escapeHtml(msg) + '</div>';
+  }
+
+  function renderRecall(d, q, tier, user, topK) {
+    const results = d.results || [];
+    const summary = '<div class="recall-summary">'
+      + '<strong>' + escapeHtml(q) + '</strong>'
+      + ' · tier=<code>' + escapeHtml(tier) + '</code>'
+      + ' · user=<code>' + escapeHtml(user) + '</code>'
+      + ' · top_k=<code>' + topK + '</code>'
+      + ' · returned=<code>' + (d.count != null ? d.count : results.length) + '</code>'
+      + ' · ' + (results.length ? results.length + ' results shown' : 'no results')
+      + '</div>';
+    let html = summary;
+    if (results.length === 0) {
+      html += '<div class="recall-hint">No matches — query too narrow, or fact not in this tier/user.</div>';
+    } else {
+      results.forEach((r, i) => {
+        const sim = r.similarity != null ? r.similarity.toFixed(4) : '—';
+        const meta = '#' + r.fact_id
+          + ' · sim=' + sim
+          + ' · imp=' + (r.importance != null ? r.importance.toFixed(2) : '—')
+          + ' · conf=' + (r.confidence != null ? r.confidence.toFixed(2) : '—')
+          + ' · ' + (r.score_kind || '—')
+          + ' · ' + (r.topic || r.kind || '—');
+        html += '<div class="recall-item">'
+          + '<span class="rank">' + (i + 1) + '</span>'
+          + '<span class="sim">' + sim + '</span>'
+          + '<div class="meta">' + escapeHtml(meta) + '</div>'
+          + '<div class="content">' + escapeHtml(r.content || '') + '</div>'
+          + '</div>';
+      });
+    }
+    document.getElementById('recall-results').innerHTML = html;
+  }
 })();
