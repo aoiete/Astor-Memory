@@ -8,6 +8,9 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
+<!-- S18 (2026-09-10): This dashboard is a generic template.
+     Reads data via ?astor_dir= and ?user= query params (see docs/dashboard.md).
+     No operator-specific data is baked in. Host responsibly. -->
 <header class="dash-header">
   <h1>🧠 Astor Dashboard</h1>
   <div class="header-meta">
@@ -16,6 +19,10 @@
     <button id="refresh-btn" class="btn-refresh" title="Force refresh (bypasses 5min cache)">↻</button>
   </div>
 </header>
+<div class="template-banner">
+  <strong>📦 Generic template</strong> · Pass <code>?astor_dir=/path&amp;user=name</code> to point at any ASTOR_DIR.
+  See <a href="https://github.com/aoiete/Astor-Memory/blob/main/docs/dashboard.md" target="_blank">docs/dashboard.md</a>.
+</div>
 
 <!-- Hero -->
 <section class="hero">
