@@ -162,6 +162,101 @@
     setHealth('health-total', h2.audit_total);
   }
 
+  // -- Health diagnosis modal ------------------------------------------------
+  // Click any health card → fetch /v1/health/diagnose → render modal.
+
+  async function showHealthModal(kind) {
+    const modal = document.getElementById('health-modal');
+    const body = document.getElementById('modal-body');
+    const title = document.getElementById('modal-title');
+    title.textContent = 'Health Diagnosis: ' + ({
+      embed: 'Embedding Failed',
+      warn: 'Audit Warnings',
+      total: 'Audit Log Total',
+    }[kind] || kind);
+    body.innerHTML = 'loading…';
+    modal.hidden = false;
+
+    const user = (document.getElementById('recall-user') || {}).value || 'admin';
+    const url = '/v1/health/diagnose?user=' + encodeURIComponent(user)
+      + (ASTOR_DIR ? '&astor_dir=' + encodeURIComponent(ASTOR_DIR) : '');
+
+    try {
+      const r = await fetch(url);
+      const d = await r.json();
+      if (d.error) {
+        body.innerHTML = '<div class="recall-error">' + escapeHtml(d.error) + (d.detail ? ': ' + escapeHtml(d.detail) : '') + '</div>';
+        return;
+      }
+      body.innerHTML = renderDiagnosis(d, kind);
+    } catch (e) {
+      body.innerHTML = '<div class="recall-error">' + escapeHtml(e.message) + '</div>';
+    }
+  }
+
+  function renderDiagnosis(d, kind) {
+    let html = '';
+    const emb = d.embedding_failed || {};
+    const warn = d.warnings || {};
+    const sev = d.audit_total_by_severity || {};
+
+    // Embedding section
+    html += '<div class="dx-section"><h3>Embedding Failed</h3>';
+    html += '<div>total: <span class="dx-tag ' + (emb.total > 0 ? 'warn' : 'ok') + '">' + (emb.total || 0) + '</span>';
+    if (emb.no_replay_queued === 0 && emb.total > 0) {
+      html += ' <span class="dx-tag ok">all queued for replay</span>';
+    } else if (emb.no_replay_queued > 0) {
+      html += ' <span class="dx-tag warn">' + emb.no_replay_queued + ' NOT queued</span>';
+    }
+    html += '</div>';
+    if (emb.errors && emb.errors.length) {
+      html += '<div style="margin-top:6px"><b>Top errors:</b></div>';
+      emb.errors.slice(0, 5).forEach(e => {
+        html += '<div class="dx-row"><span class="dx-tag">' + e[1] + '</span> ' + escapeHtml(e[0].slice(0, 110)) + '</div>';
+      });
+    }
+    if (emb.by_day && emb.by_day.length) {
+      html += '<div style="margin-top:6px"><b>Daily trend:</b></div>';
+      const max = Math.max.apply(null, emb.by_day.map(x => x[1]));
+      emb.by_day.slice(0, 10).forEach(x => {
+        const w = Math.round(x[1] / max * 60);
+        html += '<div class="dx-row">' + x[0] + ' &nbsp;<span class="dx-tag">' + x[1] + '</span><span class="dx-day-bar" style="width:' + w + 'px"></span></div>';
+      });
+    }
+    html += '</div>';
+
+    // Warnings section
+    html += '<div class="dx-section"><h3>Audit Warnings</h3>';
+    html += '<div>total: <span class="dx-tag ' + (warn.total > 0 ? 'warn' : 'ok') + '">' + (warn.total || 0) + '</span></div>';
+    if (warn.by_event && warn.by_event.length) {
+      html += '<div style="margin-top:6px"><b>By event type:</b></div>';
+      warn.by_event.forEach(e => {
+        html += '<div class="dx-row"><span class="dx-tag">' + e[1] + '</span> ' + escapeHtml(e[0]) + '</div>';
+      });
+    }
+    if (warn.samples && warn.samples.length) {
+      html += '<div style="margin-top:6px"><b>Recent samples:</b></div>';
+      warn.samples.slice(0, 5).forEach(s => {
+        html += '<div class="dx-row">' + s[1].slice(0, 10) + ' &nbsp;<span class="dx-tag">' + escapeHtml(s[2]) + '</span> fact #' + s[3] + '<br>' + escapeHtml((s[4] || '').slice(0, 100)) + '</div>';
+      });
+    }
+    html += '</div>';
+
+    // Audit total by severity
+    html += '<div class="dx-section"><h3>Audit Log (by severity)</h3>';
+    Object.keys(sev).forEach(k => {
+      html += '<div class="dx-row"><span class="dx-tag ' + (k === 'warning' ? 'warn' : 'ok') + '">' + k + '</span> ' + fmtInt(sev[k]) + '</div>';
+    });
+    html += '</div>';
+
+    html += '<div style="margin-top:8px;color:var(--text-dim);font-size:11px;">user: ' + escapeHtml(d.user) + ' · db: ' + escapeHtml(d.db) + '</div>';
+    return html;
+  }
+
+  function closeHealthModal() {
+    document.getElementById('health-modal').hidden = true;
+  }
+
   function renderGrowth(g) {
     const labels = Object.keys(g);
     const data = labels.map(d => g[d]);
@@ -278,6 +373,15 @@
         e.preventDefault();
         runRecall();
       }
+    });
+
+    // health diagnosis modal wiring
+    document.getElementById('health-card-embed').addEventListener('click', () => showHealthModal('embed'));
+    document.getElementById('health-card-warn').addEventListener('click', () => showHealthModal('warn'));
+    document.getElementById('health-card-total').addEventListener('click', () => showHealthModal('total'));
+    document.getElementById('modal-close').addEventListener('click', closeHealthModal);
+    document.getElementById('health-modal').addEventListener('click', e => {
+      if (e.target.id === 'health-modal') closeHealthModal();
     });
   });
 

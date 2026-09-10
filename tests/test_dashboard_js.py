@@ -58,6 +58,15 @@ def test_html_uses_cdn_chartjs():
     assert "cdn.jsdelivr.net" in html, "Chart.js not from jsdelivr CDN"
 
 
+def test_html_health_modal():
+    """Health diagnosis modal + 3 clickable cards."""
+    html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+    assert 'id="health-modal"' in html, "modal element missing"
+    assert 'id="modal-close"' in html, "modal close button missing"
+    for k in ("health-card-embed", "health-card-warn", "health-card-total"):
+        assert f'id="{k}"' in html, f"clickable card missing: {k}"
+
+
 def test_css_selectors():
     css = (DASHBOARD / "style.css").read_text(encoding="utf-8")
     required = [
@@ -84,8 +93,18 @@ def test_js_functions():
     js = (DASHBOARD / "app.js").read_text(encoding="utf-8")
     for fn in ["fetchDashboard", "runRecall", "renderRecall",
                "renderGrowth", "renderPerUser", "renderImportance",
-               "escapeHtml", "renderRecallError", "renderRecallHint"]:
+               "escapeHtml", "renderRecallError", "renderRecallHint",
+               "showHealthModal", "renderDiagnosis", "closeHealthModal"]:
         assert fn in js, f"missing JS function {fn}"
+
+
+def test_js_health_modal_wiring():
+    """Modal click handlers are wired to all 3 health cards."""
+    js = (DASHBOARD / "app.js").read_text(encoding="utf-8")
+    assert "health-card-embed" in js
+    assert "health-card-warn" in js
+    assert "health-card-total" in js
+    assert "/v1/health/diagnose" in js
 
 
 def test_js_xss_safe():

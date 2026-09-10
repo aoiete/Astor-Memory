@@ -44,6 +44,58 @@ def _safe_count(cu, sql: str) -> int:
         return 0
 
 
+def _summarize_embedding_failures(cu) -> dict:
+    """Group embedding_failed records by error message + show timeline."""
+    from collections import Counter
+    import json as _json
+    rows = cu.execute(
+        "SELECT id, ts, target_id, metadata FROM audit_log "
+        "WHERE event='embedding_failed' ORDER BY ts DESC"
+    ).fetchall()
+    errors: Counter = Counter()
+    timeline: Counter = Counter()
+    targets_with_no_replay: list[tuple[int, str, str | None]] = []
+    for r in rows:
+        try:
+            meta = _json.loads(r[3]) if r[3] else {}
+        except _json.JSONDecodeError:
+            meta = {}
+        err = meta.get("error", "(no error field)")
+        errors[err] += 1
+        timeline[r[1][:10]] += 1
+        if not meta.get("queued_for_replay", False):
+            targets_with_no_replay.append((r[0], r[1], r[2]))
+    return {
+        "total": len(rows),
+        "errors": errors.most_common(),
+        "by_day": sorted(timeline.items(), reverse=True)[:14],
+        "no_replay_queued": len(targets_with_no_replay),
+        "sample_targets_no_replay": targets_with_no_replay[:5],
+    }
+
+
+def _summarize_warnings(cu) -> dict:
+    """Group audit warnings by event type."""
+    from collections import Counter
+    rows = cu.execute(
+        "SELECT id, ts, event, target_id, reason FROM audit_log "
+        "WHERE severity='warning' ORDER BY ts DESC"
+    ).fetchall()
+    by_event: Counter = Counter()
+    by_day: Counter = Counter()
+    samples: list[tuple] = []
+    for r in rows:
+        by_event[r[2]] += 1
+        by_day[r[1][:10]] += 1
+        samples.append(r)
+    return {
+        "total": len(rows),
+        "by_event": by_event.most_common(),
+        "by_day": sorted(by_day.items(), reverse=True)[:14],
+        "samples": samples[:10],
+    }
+
+
 def _per_user_breakdown(astor_dir: Path) -> tuple[list[dict], str | None, int, int, int, int, int]:
     """Scan all users/<u>/memory/astor_bus_*.db, aggregate stats.
 
