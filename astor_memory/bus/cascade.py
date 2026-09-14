@@ -20,7 +20,7 @@ What does NOT route here (write fails loud instead):
   - Schema version mismatch → write fails fast
 
 Replay paths:
-  - `POST /v1/cascade/replay` (first_admin only) — manual trigger
+  - `POST /v1/cascade/replay` (admin only) — manual trigger
   - `am cascade replay [--limit=N]` — CLI equivalent
   - Cron: `am cascade replay --limit=50` daily 03:30 MDT (drains backlog)
 
