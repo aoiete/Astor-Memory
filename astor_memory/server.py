@@ -1495,6 +1495,49 @@ def create_app(astor_dir: str | None = None) -> Flask:
             except Exception:
                 pass  # neighbor-expand is best-effort
 
+        # v1.14.x (2026-09-13): bump access_count + last_confirmed_at for
+        # every fact that actually surfaced in this recall. Per wechat
+        # article 3-layer memory best practice (long-term memory decay):
+        # tracks how often each fact is actually useful, enables future
+        # "30d no-hit decay / 90d archive" sweep. Cheap (one UPDATE batch),
+        # committed after enriched is returned.
+        try:
+            import datetime as _dt_acc
+            import os as _os_acc
+            _surfaced_fids = [int(r['fact_id']) for r in enriched if r.get('fact_id') is not None]
+            if _surfaced_fids and _os_acc.environ.get('ASTOR_ACCESS_TRACKING', '1') != '0':
+                _ph_acc = ','.join('?' * len(_surfaced_fids))
+                _now_iso = _dt_acc.datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+                # Decay sweep (disabled by default — enable via ASTOR_DECAY_SWEEP=1).
+                # 30d no-recall: access_count halved (floor 1).
+                # 90d no-recall: tombstoned (archive).
+                if _os_acc.environ.get('ASTOR_DECAY_SWEEP', '0') == '1':
+                    _30d_iso = (_dt_acc.datetime.utcnow() - _dt_acc.timedelta(days=30)).isoformat(timespec='seconds') + 'Z'
+                    _90d_iso = (_dt_acc.datetime.utcnow() - _dt_acc.timedelta(days=90)).isoformat(timespec='seconds') + 'Z'
+                    bus.conn.execute(
+                        f"UPDATE memory_canonical SET access_count = MAX(1, access_count / 2) "
+                        f"WHERE id NOT IN ({_ph_acc}) AND tombstoned = 0 "
+                        f"AND (last_confirmed_at IS NULL OR last_confirmed_at < ?)",
+                        _surfaced_fids + [_30d_iso],
+                    )
+                    bus.conn.execute(
+                        f"UPDATE memory_canonical SET tombstoned = 1 "
+                        f"WHERE id NOT IN ({_ph_acc}) AND tombstoned = 0 "
+                        f"AND (last_confirmed_at IS NULL OR last_confirmed_at < ?)",
+                        _surfaced_fids + [_90d_iso],
+                    )
+                # Always: bump surfaced facts' access_count + last_confirmed_at.
+                bus.conn.execute(
+                    f"UPDATE memory_canonical SET access_count = access_count + 1, "
+                    f"last_confirmed_at = ? WHERE id IN ({_ph_acc}) AND tombstoned = 0",
+                    [_now_iso] + _surfaced_fids,
+                )
+                bus.conn.commit()
+        except Exception as _acc_exc:
+            # Tracking is best-effort; never fail the recall response.
+            import sys as _sys_acc
+            print(f'[astor.server] access_count update failed: {_acc_exc}', file=_sys_acc.stderr)
+
         return jsonify({'results': enriched, 'count': len(enriched)})
 
     @app.route('/v1/forget', methods=['POST'])
@@ -2590,7 +2633,15 @@ def main():
     print(f'[*] Astor-Memory v{__version__} REST API')
     print(f'   Listening on http://{args.host}:{args.port}')
     print(f'   Endpoints: /v1/health /v1/dashboard /v1/write /v1/read /v1/install')
-    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)  # S13: enable Flask threaded mode for concurrent /v1/read requests (R-class N). Bus uses WAL mode so concurrent reads safe.
+    # v1.14.7 (2026-09-11): threaded=False. Earlier `threaded=True` enabled
+    # concurrent Flask workers, but AstorNest._conn is a singleton (per
+    # (tier, user_id, db_path)) and SQLite + numpy ndarray are not safe to
+    # share across threads without explicit per-thread connections. Production
+    # traffic at 1 req/min triggered sporadic SIGSEGVs in the SQLite C
+    # bindings. We accept serial request handling (no parallelism) in
+    # exchange for stability. A threaded server with per-thread connections
+    # is the proper fix; ship that in a future version (v1.14.8+).
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=False)  # S13: enable Flask threaded mode for concurrent /v1/read requests (R-class N). Bus uses WAL mode so concurrent reads safe.
 
 
 if __name__ == '__main__':
