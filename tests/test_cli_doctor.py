@@ -26,7 +26,7 @@ def fresh_bot_binding_db(monkeypatch, tmp_path):
     test_astor = tmp_path / 'astor'
     test_astor.mkdir()
     test_db = test_astor / 'bot-binding.db'
-    # Write admin.lock so _require_first_admin() passes
+    # Write admin.lock so _require_admin() passes
     import json
     (test_astor / 'admin.lock').write_text(json.dumps({
         'user_id': 'admin',

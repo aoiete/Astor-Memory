@@ -261,7 +261,7 @@ def astor_promote_recurring_success(
         tier: target tier for promotion. Defaults to 'public'.
         user_id: required when tier='private' (rare; cross-user isolation).
         db_path: optional explicit bus.db path.
-        actor: actor label for the audit row (e.g. 'system', 'first_admin').
+        actor: actor label for the audit row (e.g. 'system', 'admin').
         threshold: min recurrence count to trigger promotion.
 
     Returns:

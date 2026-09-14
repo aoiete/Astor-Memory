@@ -165,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     mcp_serve.set_defaults(func=cmd_mcp_serve)
 
     # am bot - multi-user management (plan §2591-2594)
-    bot_p = subparsers.add_parser('bot', help='Multi-user bot management (first_admin only)')
+    bot_p = subparsers.add_parser('bot', help='Multi-user bot management (admin only)')
     bot_sub = bot_p.add_subparsers(dest='bot_command')
     bot_sub.add_parser('on', help='Enable multi-user mode').set_defaults(func=cmd_bot_on)
     bot_sub.add_parser('off', help='Disable multi-user mode').set_defaults(func=cmd_bot_off)
@@ -192,8 +192,8 @@ def main(argv: list[str] | None = None) -> int:
     bot_p_status = bot_sub.add_parser('status', help='Show bot on/off + platform bindings')
     bot_p_status.set_defaults(func=cmd_bot_status)
 
-    # am admin - first_admin system operations
-    admin_p = subparsers.add_parser('admin', help='first_admin system operations')
+    # am admin - admin system operations
+    admin_p = subparsers.add_parser('admin', help='admin system operations')
     admin_sub = admin_p.add_subparsers(dest='admin_command')
     admin_audit = admin_sub.add_parser('audit-log', help='Read audit rows')
     admin_audit.add_argument('--actor', help='Filter by actor')
@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     admin_demote.add_argument('--to-user', required=True, help='Target user_id (private_<user>)')
     admin_demote.add_argument('--reason', required=True, help='Why (audit)')
     admin_demote.set_defaults(func=cmd_admin_demote)
-    admin_who = admin_sub.add_parser('whoami', help='Show current first_admin lock')
+    admin_who = admin_sub.add_parser('whoami', help='Show current admin lock')
     admin_who.set_defaults(func=cmd_admin_whoami)
 
     # am platform ... (bot-binding.db CRUD)
@@ -711,7 +711,7 @@ def cmd_reembed(args) -> int:
         Tier, Store, get_db_path, list_user_ids,
     )
 
-    # CLI must run as first_admin (re-embedding is system-wide).
+    # CLI must run as admin (re-embedding is system-wide).
     # Allow actor='am_cli' for stand-alone `am` invocations.
     try:
         astor_init_acl(actor='admin:admin', role='admin', tier='public')
@@ -735,7 +735,7 @@ def cmd_reembed(args) -> int:
         try:
             astor_check_write(tier.value, user_id)
         except Exception as e:
-            # Skip disallowed tiers (e.g. source when actor is user, not first_admin)
+            # Skip disallowed tiers (e.g. source when actor is user, not admin)
             continue
 
         bus_path = get_db_path(tier, Store.BUS, user_id)
@@ -1246,7 +1246,7 @@ def _write_install_state(state: dict) -> None:
     p.write_text(json.dumps(state, indent=2, ensure_ascii=False))
 
 
-def _require_first_admin() -> None:
+def _require_admin() -> None:
     """All `am bot ...` and `am admin ...` require admin role.
 
     2026-09-02: admin role has no plan (plan is for users only — free/vip/power).
@@ -1257,7 +1257,7 @@ def _require_first_admin() -> None:
 
 def cmd_bot_on(args) -> int:
     """Enable multi-user mode."""
-    _require_first_admin()
+    _require_admin()
     state = _read_install_state()
     state["mode"] = "multi-user"
     state.setdefault("tier", "multi-user")
@@ -1268,7 +1268,7 @@ def cmd_bot_on(args) -> int:
 
 def cmd_bot_off(args) -> int:
     """Disable multi-user mode (rollback to single-user)."""
-    _require_first_admin()
+    _require_admin()
     state = _read_install_state()
     state["mode"] = "single-user"
     _write_install_state(state)
@@ -1278,7 +1278,7 @@ def cmd_bot_off(args) -> int:
 
 def cmd_bot_add_user(args) -> int:
     """Create empty 9-db layout for a new user."""
-    _require_first_admin()
+    _require_admin()
     from .._internal.acl_layout import (
         Tier, Store, ensure_layout, _validate_user_id,
     )
@@ -1321,14 +1321,14 @@ def cmd_bot_add_user(args) -> int:
 
 def cmd_bot_list_users(args) -> int:
     """List users on disk + their roles."""
-    _require_first_admin()
+    _require_admin()
     from .._internal.acl_layout import list_user_ids, get_install_state_path
     users_on_disk = sorted(list_user_ids())
     state = _read_install_state()
     roles = state.get("roles", {})
     print(f'   install-state.json: {get_install_state_path()}')
     print(f'   mode: {state.get("mode", "(unset)")}')
-    print(f'   first_admin: {state.get("admin_user_id", "(none)")}')
+    print(f'   admin: {state.get("admin_user_id", "(none)")}')
     print()
     print(f'   {"USER_ID":24s} {"ROLE":8s} {"ON_DISK":8s}')
     for u in users_on_disk:
@@ -1346,10 +1346,10 @@ def cmd_bot_list_users(args) -> int:
 
 def cmd_bot_promote(args) -> int:
     """Promote user -> admin."""
-    _require_first_admin()
+    _require_admin()
     state = _read_install_state()
     if args.user_id == state.get("admin_user_id"):
-        print(f'[ERR] {args.user_id!r} is already first_admin (cannot promote — first_admin is permanent).')
+        print(f'[ERR] {args.user_id!r} is already admin (cannot promote — admin is permanent).')
         return 1
     roles = state.setdefault("roles", {})
     roles[args.user_id] = "admin"
@@ -1360,10 +1360,10 @@ def cmd_bot_promote(args) -> int:
 
 def cmd_bot_demote(args) -> int:
     """Demote admin -> user."""
-    _require_first_admin()
+    _require_admin()
     state = _read_install_state()
     if args.user_id == state.get("admin_user_id"):
-        print(f'[ERR] {args.user_id!r} is first_admin (cannot demote — first_admin is permanent root, plan §2632).')
+        print(f'[ERR] {args.user_id!r} is admin (cannot demote — admin is permanent root, plan §2632).')
         return 1
     roles = state.setdefault("roles", {})
     roles[args.user_id] = "user"
@@ -1374,7 +1374,7 @@ def cmd_bot_demote(args) -> int:
 
 def cmd_bot_bind_platform(args) -> int:
     """Lock platform chat_id -> user_id for incoming messages."""
-    _require_first_admin()
+    _require_admin()
     state = _read_install_state()
     bindings = state.setdefault("platform_bindings", {})
     key = f"{args.platform}:{args.chat_id}"
@@ -1388,7 +1388,7 @@ def cmd_bot_bind_platform(args) -> int:
 
 def cmd_bot_unbind(args) -> int:
     """Remove a platform binding (e.g. feishu revoke)."""
-    _require_first_admin()
+    _require_admin()
     state = _read_install_state()
     bindings = state.setdefault("platform_bindings", {})
     key = f"{args.platform}:{args.chat_id}"
@@ -1403,10 +1403,10 @@ def cmd_bot_unbind(args) -> int:
 
 def cmd_bot_status(args) -> int:
     """Show bot on/off + all platform bindings."""
-    _require_first_admin()
+    _require_admin()
     state = _read_install_state()
     print(f"   mode: {state.get('mode', '(unset)')}")
-    print(f"   first_admin: {state.get('admin_user_id', '(none)')}")
+    print(f"   admin: {state.get('admin_user_id', '(none)')}")
     print()
     print("   platform_bindings:")
     bindings = state.get("platform_bindings", {})
@@ -1419,12 +1419,12 @@ def cmd_bot_status(args) -> int:
 
 
 # ============================================================
-# am admin ... (first_admin system operations)
+# am admin ... (admin system operations)
 # ============================================================
 
 def cmd_admin_audit_log(args) -> int:
-    """Read audit rows. first_admin only."""
-    _require_first_admin()
+    """Read audit rows. admin only."""
+    _require_admin()
     from .._internal.audit_logger import astor_query_audit
     rows = astor_query_audit(
         actor=args.actor, user_id=args.user, action=args.action,
@@ -1454,7 +1454,7 @@ def cmd_admin_demote(args) -> int:
     """
     from .._internal.audit_logger import astor_audit
     from .._internal.bot_binding import _open_bus_for_user
-    _require_first_admin()
+    _require_admin()
 
     # Open public bus directly (admin always has read on public).
     from ..bus.store import _open_bus_db as _open_public_db
@@ -1528,11 +1528,11 @@ def cmd_admin_demote(args) -> int:
 
 
 def cmd_admin_whoami(args) -> int:
-    """Show current first_admin lock."""
+    """Show current admin lock."""
     from .._internal.acl_layout import get_admin_lock_path
     p = get_admin_lock_path()
     if not p.exists():
-        print(f'[ERR] No first_admin lock at {p}')
+        print(f'[ERR] No admin lock at {p}')
         return 1
     import json
     print(f"   lockfile: {p}")
@@ -1547,7 +1547,7 @@ def cmd_admin_whoami(args) -> int:
 def cmd_platform_list(args) -> int:
     """List platforms from bot-binding.db."""
     from .._internal.bot_binding import list_platforms
-    _require_first_admin()
+    _require_admin()
     rows = list_platforms(enabled_only=False)
     if not rows:
         print('No platforms in bot-binding.db. Run am platform token-set or am platform add (out of scope).')
@@ -1561,7 +1561,7 @@ def cmd_platform_list(args) -> int:
 def cmd_platform_list_users(args) -> int:
     """`am platform list-users` — print all user_meta rows."""
     from .._internal.bot_binding import list_users
-    _require_first_admin()
+    _require_admin()
     rows = list_users(active_only=False)
     if not rows:
         print('No user_meta rows in bot-binding.db.')
@@ -1577,7 +1577,7 @@ def cmd_platform_list_users(args) -> int:
 def cmd_platform_list_bindings(args) -> int:
     """`am platform list-bindings` — print all chat_id→user_id bindings."""
     from .._internal.bot_binding import list_bindings
-    _require_first_admin()
+    _require_admin()
     rows = list_bindings(active_only=not args.all)
     if not rows:
         print('No bindings found.')
@@ -1594,7 +1594,7 @@ def cmd_platform_list_bindings(args) -> int:
 def cmd_platform_resolve(args) -> int:
     """`am platform resolve <plat_id> <chat_id>` — reverse-lookup: chat_id → user_id."""
     from .._internal.bot_binding import resolve_chat_to_user
-    _require_first_admin()
+    _require_admin()
     r = resolve_chat_to_user(args.platform_id, args.chat_id)
     if r is None:
         print(f'[ERR] no active binding for {args.platform_id} : {args.chat_id}')
@@ -1614,7 +1614,7 @@ def cmd_platform_token_get(args) -> int:
     """`am platform token-get <platform_kind>` — print token, write audit row."""
     from .._internal.platform_bridge import astor_get_token
     from .._internal.bot_binding import get_platform
-    _require_first_admin()
+    _require_admin()
     # Try as plain platform_id (e.g. "telegram:hermes_bot") FIRST
     p = get_platform(args.platform_id)
     if p is None and ':' in args.platform_id:
@@ -1646,7 +1646,7 @@ def cmd_platform_token_get(args) -> int:
 def cmd_platform_token_set(args) -> int:
     """`am platform token-set <platform_kind> <token>` — upsert token into bot-binding.db."""
     from .._internal.bot_binding import get_platform, upsert_platform
-    _require_first_admin()
+    _require_admin()
     if ':' not in args.platform_id:
         print(f'[ERR] bad platform_id: {args.platform_id}')
         return 1
@@ -1671,14 +1671,14 @@ def cmd_platform_token_set(args) -> int:
 def cmd_platform_bind(args) -> int:
     """`am platform bind <platform_id> <chat_id> <user_id>` — create a chat→user binding."""
     from .._internal.bot_binding import upsert_binding
-    _require_first_admin()
+    _require_admin()
     bid = upsert_binding(
         platform_id=args.platform_id,
         chat_id=args.chat_id,
         user_id=args.user_id,
         scope=args.scope,
         allow_from=args.allow_from or args.chat_id,
-        bound_by='first_admin',
+        bound_by='admin',
         notes='cli bind',
     )
     print(f'[OK] binding created: {bid[:8]}... ({args.platform_id} : {args.chat_id} -> {args.user_id})')
@@ -1688,13 +1688,13 @@ def cmd_platform_bind(args) -> int:
 def cmd_platform_unbind(args) -> int:
     """`am platform unbind <binding_id>` — revoke a binding (soft delete; audit row written)."""
     from .._internal.bot_binding import resolve_chat_to_user, revoke_binding
-    _require_first_admin()
+    _require_admin()
     # find binding_id from chat_id
     r = resolve_chat_to_user(args.platform_id, args.chat_id)
     if r is None:
         print(f'[ERR] no active binding for {args.platform_id} : {args.chat_id}')
         return 1
-    revoke_binding(r['binding_id'], revoked_by='first_admin')
+    revoke_binding(r['binding_id'], revoked_by='admin')
     print(f'[OK] unbound: {args.platform_id} : {args.chat_id} (binding_id={r["binding_id"][:8]}...)')
     return 0
 
@@ -1703,7 +1703,7 @@ def cmd_platform_add_user(args) -> int:
     """`am platform add-user <user_id> --role <role>` — create a user_meta row + per-user private db layout."""
     from .._internal.bot_binding import upsert_user
     from .._internal.acl_layout import _validate_user_id
-    _require_first_admin()
+    _require_admin()
     try:
         _validate_user_id(args.user_id)
     except ValueError as e:
@@ -1732,7 +1732,7 @@ def cmd_platform_set_plan(args) -> int:
     """
     import sqlite3
     from datetime import datetime
-    _require_first_admin()
+    _require_admin()
     db_path = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') / 'bot-binding.db'
     if not db_path.exists():
         print(f'[ERR] bot-binding.db not found: {db_path}')
@@ -1781,7 +1781,7 @@ def cmd_platform_set_plan(args) -> int:
 def cmd_platform_verify(args) -> int:
     """Run 6 invariants on bot-binding.db."""
     import sqlite3
-    _require_first_admin()
+    _require_admin()
     db_path = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') / 'bot-binding.db'
     if not db_path.exists():
         print(f'WARN: bot-binding.db not found at {db_path}', file=__import__('sys').stderr)

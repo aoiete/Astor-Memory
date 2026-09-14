@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     event TEXT NOT NULL,
-    actor TEXT NOT NULL,                          -- 'first_admin' | 'admin:<id>' | 'user:<id>' | 'system'
+    actor TEXT NOT NULL,                          -- 'admin' | 'admin:<id>' | 'user:<id>' | 'system'
     target_type TEXT,                              -- 'fact' | 'skill' | 'cron' | 'db' | 'user'
     target_id TEXT,
     old_state TEXT,                                -- JSON snapshot before change

@@ -11,7 +11,7 @@ Per Plan § Tier B (patchable agents): Hermes 0.20 has a clear injection
 point via `external_memory_provider` config key + the `MemoryProvider`
 ABC. This adapter:
   - is_available() -> True iff ASTOR_DIR is set and DBs reachable
-  - initialize() -> sets up astor ACL (first_admin role) for the session
+  - initialize() -> sets up astor ACL (admin role) for the session
   - system_prompt_block() -> returns a HIGHEST PRIORITY marker + status
   - prefetch() -> runs astor bus recall (public + source tiers)
   - sync_turn() -> writes a system_event event to public bus for audit
@@ -63,7 +63,7 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
     Per Plan § Tier B: provides astor bus + nest recall as the agent's
     primary memory, replacing MEMORY.md / USER.md injection.
 
-    Tier routing: this adapter operates as first_admin (full read+write
+    Tier routing: this adapter operates as admin (full read+write
     to source tier; read public). Per-user private facts are still
     routed via astor_bus(tier='private', user_id=...) directly when the
     agent explicitly writes per-user data.
@@ -115,7 +115,7 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
         """
         One-time per-session setup.
 
-        Initializes astor ACL as first_admin (highest privilege). Per-user
+        Initializes astor ACL as admin (highest privilege). Per-user
         private writes should still pass tier='private', user_id=<id>
         explicitly via astor_bus() — the ACL context here only governs
         which tier this adapter reads from (public + source).
