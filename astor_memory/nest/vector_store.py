@@ -78,17 +78,36 @@ class AstorNest:
         rows = self.conn.execute(...).fetchall()). Now we probe
         _conn.isolation_level; on ProgrammingError we fully reopen via
         _reopen(). Live connections are unaffected (cheap pass-through).
+
+        v1.14.7 fix (2026-09-11): concurrent /v1/read requests on the dev
+        Flask server caused SIGSEGV when one request triggered _reopen()
+        while another was mid-fetchall(). Cause: reopen mutates self._conn
+        without holding a lock; another worker still holds a reference to
+        the old connection. Fix: wrap the closed-detect + reopen in the
+        existing _cache_lock (RLock, reentrant — safe across the property
+        boundary since we never re-enter the same thread from inside).
         """
         if self._conn is None:
-            self._reopen()
+            with self._cache_lock:
+                if self._conn is None:
+                    self._reopen()
         else:
             # Closed-but-not-None: detect and reopen. sqlite3 Connection has
             # no public `closed` attr until 3.12; probe cheaply via isolation_level.
+            closed = False
             try:
                 _ = self._conn.isolation_level
             except (sqlite3.ProgrammingError, AttributeError):
                 # ProgrammingError = "Cannot operate on a closed database"
-                self._reopen()
+                closed = True
+            if closed:
+                with self._cache_lock:
+                    # double-check inside lock: another thread may have
+                    # already reopened between our probe and the lock acquire.
+                    try:
+                        _ = self._conn.isolation_level
+                    except (sqlite3.ProgrammingError, AttributeError):
+                        self._reopen()
         return self._conn
 
     def _reopen(self) -> None:
@@ -140,7 +159,14 @@ class AstorNest:
         return f'{fact_id}:{model_name}'
 
     def get(self, fact_id: int, model_name: str | None = None) -> np.ndarray | None:
-        """Get embedding from cache or DB."""
+        """Get embedding from cache or DB.
+
+        v1.14.7 fix (2026-09-11): the entire body (cache + DB fetch + cache
+        store) is now inside self._cache_lock. Without this, threaded Flask
+        workers could race on self._conn.fetchone() and crash the server
+        with a C-level SIGSEGV. _cache_lock is an RLock so the nested
+        _put() call inside the same thread is safe.
+        """
         if model_name is None:
             from .embeddings import astor_get_model_name_for_ram
             model_name = astor_get_model_name_for_ram()
@@ -150,17 +176,20 @@ class AstorNest:
                 self._cache.move_to_end(key)  # LRU touch
                 return self._cache[key]
 
-        # Cache miss: load from nest DB
-        row = self._conn.execute(
-            "SELECT embedding FROM embeddings WHERE fact_id = ? AND model_name = ?",
-            (fact_id, model_name),
-        ).fetchone()
-        if row is None or row[0] is None:
-            return None
+            # Cache miss: load from nest DB. Same connection across threads
+            # is safe under the lock; SQLite Python module serializes C-level
+            # operations internally for check_same_thread=False.
+            row = self._conn.execute(
+                "SELECT embedding FROM embeddings WHERE fact_id = ? AND model_name = ?",
+                (fact_id, model_name),
+            ).fetchone()
+            if row is None or row[0] is None:
+                return None
 
-        emb = _unpack_embedding(row[0])
-        self._put(fact_id, model_name, emb)
-        return emb
+            emb = _unpack_embedding(row[0])
+            # _put acquires _cache_lock again; RLock allows re-entry.
+            self._put(fact_id, model_name, emb)
+            return emb
 
     def _put(self, fact_id: int, model_name: str, embedding: np.ndarray):
         """Put in cache (LRU eviction)."""
