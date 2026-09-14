@@ -31,7 +31,7 @@ FORGE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS llm_call_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    -- ACL alignment with bus (plan §actor types: 'first_admin' | 'admin' | 'system' | 'user:<id>')
+    -- ACL alignment with bus (plan §actor types: 'admin' | 'admin' | 'system' | 'user:<id>')
     actor TEXT NOT NULL,
     -- The user whose data this call affects (may be the actor's own user, or
     -- 'admin' for source-tier ops). For PUBLIC calls, user_id='_public'.
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS llm_call_log (
     success INTEGER NOT NULL DEFAULT 0,
     error_msg TEXT,
     latency_ms INTEGER,
-    -- User reason annotation (for first_admin audit escalations)
+    -- User reason annotation (for admin audit escalations)
     reason TEXT
 );
 
@@ -62,7 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_llm_hash ON llm_call_log(input_hash);
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     ts DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    applied_by TEXT NOT NULL,                     -- 'first_admin' | 'system'
+    applied_by TEXT NOT NULL,                     -- 'admin' | 'system'
     description TEXT,
     applied_sql TEXT
 );

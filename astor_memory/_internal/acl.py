@@ -285,7 +285,7 @@ def astor_init_acl(
     Args:
         actor:   who this process is acting as. Convention:
                  'admin:<id>', 'user:<id>', 'system' (background tasks).
-                 Note: 'first_admin' is GONE (2026-09-02 simplification) —
+                 Note: 'admin' is GONE (2026-09-02 simplification) —
                  the SSoT owner is just 'admin:<id>' with role='admin' and no plan.
         role:    one of 'admin' / 'user' / 'system'. Plan-based features
                  (power/vip/free) are passed via subscription_plan.
@@ -413,7 +413,7 @@ def astor_check_read(tier: str, user_id: str | None = None) -> None:
     Raises PermissionError_ on denial. Always succeeds for public.
 
     Plan rules:
-    - first_admin: read any private IFF has explicit grant from data owner
+    - admin: read any private IFF has explicit grant from data owner
     - admin:       read any private IFF has explicit grant from data owner
     - user:        read ONLY own private_<self> + public
 

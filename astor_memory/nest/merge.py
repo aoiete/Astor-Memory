@@ -17,7 +17,7 @@ Workflow (operator-driven, NOT automatic):
      → is idempotent (re-applying after a successful merge is a no-op)
 
 Safety:
-  - All mutations gated by ACL role check (first_admin only — operator).
+  - All mutations gated by ACL role check (admin only — operator).
   - Winners must have importance >= losers (auto-promote if not, but flag).
   - LLM judge decides verifier=settled / rejected — threshold-only fallback
     when the LLM is unreachable (e.g. API outage).
