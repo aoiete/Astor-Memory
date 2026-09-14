@@ -1,3 +1,24 @@
+## v1.14.19 (2026-09-13)
+
+### Access tracking + decay sweep (wechat article L3 memory best practice)
+
+- `astor_memory/server.py` /v1/read: after enriching results, batch UPDATE `memory_canonical` SET `access_count = access_count + 1`, `last_confirmed_at = <utc_now>` for all surfaced facts. Single statement per recall, best-effort (try/except — never blocks the response).
+- New env vars:
+  - `ASTOR_ACCESS_TRACKING` (default `1`): set to `0` to disable the UPDATE entirely (no overhead).
+  - `ASTOR_DECAY_SWEEP` (default `0`): when set to `1`, the same `/v1/read` path also runs two decay sweeps:
+    - 30 days no-recall → `access_count = MAX(1, access_count / 2)` (gentle decay, floor 1 to preserve cold-start).
+    - 90 days no-recall → `tombstoned = 1` (archive, still recoverable via audit_log).
+- Off by default (`ASTOR_DECAY_SWEEP=0`) so existing consumers don't see surprise archival; flip on once you've observed access_count distributions look reasonable (a few days of recall traffic).
+- Wechat article (mp.weixin.qq.com/s/cokYazb8rQ6twBaoPc5Cgg) recommended "30d no-recall decay + 90d archive" for long-term memory hygiene; this is the implementation. The wechat author's broader architecture (3-layer memory, system-prompt-last placement, hybrid retrieval + rerank) is already ship in astor — verified against the article, no further changes needed.
+
+Verified:
+- Syntax OK
+- `bus.conn.commit()` runs in best-effort try/except; recall response never fails
+- Test recall: fact 5105 `access_count` 1 → 2 after two `/v1/read` calls; `last_confirmed_at` updated to current UTC
+- Non-surfaced facts do NOT increment (verified with fact 5085/5661 — only 5105 was in top_k=2 result)
+- Backup: `server.py.bak-pre-access-count-20260913` in `D:/AI/astor-memory/astor_memory/`
+
+
 
 ## v1.14.16 (2026-09-10)
 
