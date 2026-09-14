@@ -230,13 +230,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
     # and `_CURRENT` is a `_thread._local`, so the main-thread init below
     # would NOT propagate to request-handler threads. We therefore register
     # `before_request` to (re-)bind ACL for every worker thread. The server
-    # itself runs as `first_admin` with `source` tier scope so health/write/
+    # itself runs as `admin` with `source` tier scope so health/write/
     # read can cross tiers as designed; tier-scoped endpoints (private DB)
     # should re-bind to a narrower context inside their handler.
     # P2-fix 2026-08-15: rebind ACL per request, taking tier + actor from the
         # request body so per-tier writes use the correct role.
         # P0-fix 2026-08-16: actor/role now come from bot-binding.db user_meta.role
-        # based on `body.user` (was hardcoded to first_admin, allowing any user → source
+        # based on `body.user` (was hardcoded to admin, allowing any user → source
         # write + cross-user private read). Also enforce cross-user protection:
         # if tier=private and user_id != actor, deny at the request boundary
         # instead of letting it reach `astor_check_write/read`.
@@ -355,7 +355,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 return
         # Default bind for GET endpoints + POST without JSON body.
         # GETs are read-only public-tier inspections; safe to bind as
-        # first_admin (server identity).
+        # admin (server identity).
         try:
             _ = _CURRENT.actor
         except AttributeError:
@@ -776,7 +776,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 import sys as _sys
                 print(f'[astor.server] auto_link failed (continuing): {_auto_link_exc}', file=_sys.stderr)
         # P2-fix 2026-08-15: optional source-tier mirror. Best-effort — if
-        # mirror fails (e.g. ACL denial for non-first_admin caller), the
+        # mirror fails (e.g. ACL denial for non-admin caller), the
         # primary write still succeeds.
         mirrored_fact_ids = []
         if mirror_to_source and fact_ids:
@@ -1786,9 +1786,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
             w = float(scope.get('weight', 1.0))
             # ACL: each ThreadPoolExecutor worker is a fresh thread, so
             # `_CURRENT` (which is _thread._local) is uninitialized there.
-            # Re-init as first_admin for every scope — read/write tier is
+            # Re-init as admin for every scope — read/write tier is
             # scoped by the per-scope bus/nest/forge objects, ACL just
-            # gates cross-tier read access (first_admin may read all).
+            # gates cross-tier read access (admin may read all).
             from astor_memory._internal.acl import astor_init_acl
             astor_init_acl(
                 actor='admin:admin', role='admin',
@@ -1827,7 +1827,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # The request thread carries whatever binding before_request set
             # (or a stale bind from a previous request on a reused Flask
             # thread). _search_one rebinds per scope; enrich must do the
-            # same or private-scope reads 403 with "first_admin lacks grant".
+            # same or private-scope reads 403 with "admin lacks grant".
             if tier == 'private':
                 astor_init_acl(
                     actor='admin:admin', role='admin',
@@ -2077,7 +2077,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         body = request.get_json(force=True) if request.is_json else {}
         limit = int(body.get('limit', 100))
         max_attempts = int(body.get('max_attempts', 5))
-        # Run replay against public tier (caller is first_admin, can write
+        # Run replay against public tier (caller is admin, can write
         # any tier; cross-tier rows are routed by their own tier/user_id
         # inside cascade.replay_pending).
         bus = astor_bus(tier='public', user_id='admin')
@@ -2361,7 +2361,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         (bus/store, forge/extractor, server) pick up fresh source. Used
         after patching the code without restarting manually.
 
-        Restricted to first_admin (per ACL plan § reload requires root).
+        Restricted to admin (per ACL plan § reload requires root).
         """
         import os as _os
         try:
@@ -2489,7 +2489,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.route('/v1/grant/list', methods=['GET'])
     def grant_list():
-        """List grants scoped to caller role (first_admin=all, admin=incoming, user=outgoing)."""
+        """List grants scoped to caller role (admin=all, admin=incoming, user=outgoing)."""
         from ._internal.grants import list_grants as _list
         from ._internal.acl import astor_current_acl
 
