@@ -50,7 +50,7 @@ def env_and_seed(tmp_path, monkeypatch):
     return target
 
 
-def test_reflection_endpoint_first_admin(env_and_seed, monkeypatch):
+def test_reflection_endpoint_admin(env_and_seed, monkeypatch):
     monkeypatch.setattr(bb, '_con', None)
     bb.upsert_user(user_id='admin', short_alias='admin', role='admin',
                    subscription_plan='power')

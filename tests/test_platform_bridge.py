@@ -61,7 +61,7 @@ def fresh_db(monkeypatch, tmp_path):
         chat_id=_FAKE_WX_ADMIN_CHAT,
         user_id='admin',
         scope='dm',
-        bound_by='first_admin',
+        bound_by='admin',
     )
     yield test_db
     bb._con = None
