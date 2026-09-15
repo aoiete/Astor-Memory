@@ -491,6 +491,56 @@ def test_rest_read_backward_compatible(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert r.get_json()['count'] >= 1
 
+def test_rest_write_populates_entities_json(tmp_path, monkeypatch):
+    """v1.14.21 Ship B: /v1/write populates entities_json column."""
+    from astor_memory.server import create_app
+    import sqlite3
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    r = client.post('/v1/write',
+                    json={'text': 'Calgary BTC NVDA 2026-09-15', 'user': 'admin'})
+    assert r.status_code == 200
+    astor_dir = tmp_path / 'astor'
+    # find the bus db (write may have routed to public or source tier)
+    db_candidates = [
+        astor_dir / 'public' / 'memory' / 'astor_bus_public.db',
+        astor_dir / 'source' / 'memory' / 'astor_bus_source.db',
+    ]
+    db_path = next((p for p in db_candidates if p.exists()), None)
+    assert db_path, f'no bus db in {astor_dir}'
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            'SELECT id, content, entities_json FROM memory_canonical ORDER BY id DESC LIMIT 1'
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows, 'no canonical row written'
+    fact_id, content, ents_json = rows[0]
+    import json as _json
+    ents = _json.loads(ents_json) if ents_json else []
+    assert isinstance(ents, list), f'entities_json not a list: {ents_json[:80]}'
+
+
+def test_rest_read_returns_entities_field(tmp_path, monkeypatch):
+    """v1.14.21 Ship B: /v1/read surfaces entities field per fact."""
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    client.post('/v1/write',
+                json={'text': 'Alice mentioned NVDA at 2026-09-15', 'user': 'admin'})
+    r = client.post('/v1/read', json={'query': 'NVDA', 'top_k': 5})
+    assert r.status_code == 200
+    results = r.get_json()['results']
+    assert results, 'no recall results'
+    for res in results:
+        assert 'entities' in res, f'entities field missing on fact_id={res.get("fact_id")}'
+        assert isinstance(res['entities'], list)
+
 
 def test_rest_install_plan(tmp_path, monkeypatch):
     """POST /v1/install returns install plan for cursor."""
