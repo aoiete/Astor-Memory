@@ -250,7 +250,20 @@ def _enforce_rate_limit(actor: str, target_user_id: str | None, action: str) -> 
 
     Also enforces a per-process global ceiling so a co-ordinated flood
     across many (actor, target) pairs cannot still succeed.
+
+    v1.14.35 Ship J: admin actor (role='admin') bypasses rate limit.
+    Rationale: admin already passes _MATRIX role gate at the start of
+    every astor_check_write / astor_check_read call. The rate limit's
+    purpose is anti-spam from non-admin users (free/vip/power). Imposing
+    the same limit on admin breaks two real workflows: (1) test infra
+    that fires 16+ writes/sec in pytest; (2) bulk audit jobs (e.g.
+    health check sweeping every fact). Both are admin-only paths.
+    Non-admin actors still pay 5/sec.
     """
+    # v1.14.35 Ship J: admin bypass — see rationale above
+    ctx = astor_current_acl()
+    if ctx.role == 'admin':
+        return
     global _GLOBAL_BUCKET
     if _GLOBAL_BUCKET is None:
         _GLOBAL_BUCKET = _LeakyBucket(
