@@ -151,6 +151,41 @@ def main() -> int:
         json.dump(out, f, ensure_ascii=False, indent=2)
     print(f'\nsaved: {out_path}')
 
+    # v1.14.30 Ship S2 (2026-09-15): optional astor_write to record the
+    # A/B result as a bus fact. Triggered by ASTOR_WRITE=1 env var
+    # (no argparse — keeps script signature free for piping).
+    if os.environ.get('ASTOR_WRITE') == '1':
+        try:
+            text = (
+                f'eval_ripple_compare {len(detail)}q: '
+                f'without={summary["without_hit_rate"]:.1%} '
+                f'with={summary["with_hit_rate"]:.1%} '
+                f'delta={summary["delta_hit_rate"]:+.1%} '
+                f'imp={summary["improved"]} reg={summary["regressed"]} '
+                f'lat_overhead={summary["lat_overhead_ms"]:+.1f}ms'
+            )
+            body = json.dumps({
+                'text': text[:500],
+                'user': 'admin',
+                'tier': 'private',
+                'kind': 'eval_ripple_compare',
+                'importance': 0.5,
+            }).encode('utf-8')
+            req = urllib.request.Request(
+                'http://127.0.0.1:7803/v1/write',
+                data=body, method='POST',
+                headers={
+                    'Content-Type': 'application/json',
+                    # v1.14.30 Ship S2: X-Actor=admin required because
+                    # /v1/write enforces ACL and rejects anonymous 403.
+                    'X-Actor': 'admin',
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                print(f'\nastor_write: {r.status} {json.loads(r.read())["fact_ids"]}')
+        except Exception as e:
+            print(f'\nastor_write failed: {e}', file=sys.stderr)
+
     # Recommendation
     if summary['delta_hit_rate'] >= 0.10:
         print('\n[RECOMMENDATION] Ship A params lift hit_rate >= 10%. '
