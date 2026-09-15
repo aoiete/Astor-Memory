@@ -199,6 +199,45 @@ def astor_detect_capture_intent(text: str) -> bool:
     return any(re.search(p, text, re.IGNORECASE) for p in phrases)
 
 
+def astor_classify_outcome(text: str) -> str:
+    """v1.13.1 (2026-09-14, Ship F): classify text into 3-zone outcome.
+
+    Returns one of:
+      - 'success'  (matches success_pattern phrases — go to user_preference)
+      - 'failure'  (matches failure_pattern phrases — go to failure_pattern)
+      - 'lesson'   (matches lesson_pattern phrases   — go to lesson zone)
+      - 'neutral'  (no zone match — kind='fact', normal flow)
+
+    Lesson takes precedence over failure and success (lessons are
+    rare + specific, false-positive cost is high). Failure takes
+    precedence over success (a text that says "搞砸了" is not a success).
+    Success is the default for capture_intent-style phrases that don't
+    trip failure/lesson detectors.
+
+    The function delegates to the per-zone detectors in pattern_detector.py
+    (Ship E) so the regex sets stay in one place.
+    """
+    if not text or not text.strip():
+        return 'neutral'
+    try:
+        # Lazy import — pattern_detector also imports from extractor in some
+        # cases, avoid circular.
+        from .pattern_detector import (
+            astor_detect_lesson_pattern,
+            astor_detect_failure_pattern,
+            astor_detect_success_pattern,
+        )
+    except ImportError:
+        return 'neutral'
+    if astor_detect_lesson_pattern(text):
+        return 'lesson'
+    if astor_detect_failure_pattern(text):
+        return 'failure'
+    if astor_detect_success_pattern(text) or astor_detect_capture_intent(text):
+        return 'success'
+    return 'neutral'
+
+
 def astor_choose_extract_mode(text: str) -> AstorExtractMode:
     """Per Plan § Bus direct entry auto-mode heuristic."""
     text_len = len(text)
@@ -345,6 +384,26 @@ def astor_extract_facts(
                 f.tags.append(f'outcome:{outcome}')
             if why:
                 f.context = (f.context + f'\n[why] {why}').strip() if f.context else f'[why] {why}'
+            # v1.13.1 (2026-09-14, Ship F): outcome → zone mapping.
+            # Force the fact into the right zone per astor 3-zone architecture
+            # (fact 11938). success → user_preference, failure → failure_pattern,
+            # lesson → lesson. importance follows the iron-rule convention
+            # (fact 3752). This is the bridge between capture_intent hook
+            # and the zone taxonomy — without it, every fact lands as
+            # kind='fact' and the 3-zone system never gets populated.
+            if outcome == 'success':
+                f.kind = 'user_preference'
+                f.importance = max(f.importance, 0.85)
+            elif outcome == 'failure':
+                f.kind = 'failure_pattern'
+                f.importance = max(f.importance, 0.90)
+            elif outcome == 'lesson':
+                f.kind = 'lesson'
+                f.importance = max(f.importance, 0.99)
+                # v1.13.1 Ship F: enforce LESSON prefix in content
+                # (iron rule fact 3752). Only add if missing.
+                if f.content and not f.content.upper().startswith('LESSON '):
+                    f.content = f'LESSON {f.content}'
 
     # v1.10.8: capture-intent boost moved OUT of the regex branch — now applies
     # uniformly to regex, llm, and the all-providers-failed regex_fallback path.
