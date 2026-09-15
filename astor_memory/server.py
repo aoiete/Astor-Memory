@@ -955,6 +955,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except (TypeError, ValueError):
             top_k = 5
 
+        # v1.14.29 (2026-09-15 Ship S1): latency timer for usage stats.
+        import time as _t_s1
+        _read_t0 = _t_s1.time()
         # 2026-08-15 ship: recall targets the tier from request body.
         tier = body.get('tier', 'public')
         # v1.10.9 (2026-08-27): accept query_timestamp (LoCoMo, LongMemEval)
@@ -1733,6 +1736,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'used_hint': _used_hint,
                     'used_filter': _used_filter,
                     'used_time': _used_time,
+                    # v1.14.29 Ship S1: wall-clock latency from request start
+                    # to response ready. Used by astor_usage_stats --window
+                    # to surface p50/p95 latency in the weekly Telegram push.
+                    'latency_ms': int((_t_s1.time() - _read_t0) * 1000),
                 }, ensure_ascii=False) + '\n')
         except Exception:
             pass
