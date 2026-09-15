@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""bus_reflect.py — session 末 / cron 末 自动反思 (v1.1.0, 2026-09-14)
+"""bus_reflect.py — session 末 / cron 末 自动反思 (v1.1.1, 2026-09-14)
 
 设计目标:
   - 不调 LLM, 纯 SQL 聚合今天新写入的 canonical facts
@@ -23,6 +23,14 @@
   - 跟 `astor_grounding_audit.py` / `astor_health_diagnose.py` 模式一致:
     这些脚本都是 source-only 开发工具。
   - 触发方式: 手动跑 / cron (待 ship `bus-reflect-daily-2359mdt`)。
+
+v1.1.1 changelog (2026-09-14, Ship J + K):
+  - Ship J: --bootstrap flag. First-run auto-backfills 30 days
+    (detected by absence of prior reflection_* facts).
+  - Ship K: --include-reflections flag. By default reflection_* facts
+    are excluded from collect to avoid circular noise (v1.0.4); pass
+    --include-reflections to disable the filter for debugging/audit.
+  - collect_facts() now accepts include_reflections kwarg.
 
 v1.1.0 changelog (2026-09-14, Ship D):
   - Zone-partitioned reflection: instead of 1 mixed reflection, write 1
@@ -138,10 +146,15 @@ def _tokenize_cjk_latin(text: str, max_tokens: int = 200) -> list[str]:
     return tokens[:max_tokens]
 
 
-def collect_facts(since: dt.datetime, tier: str, user_id: str | None) -> dict:
+def collect_facts(since: dt.datetime, tier: str, user_id: str | None,
+                   include_reflections: bool = False) -> dict:
     """Aggregate canonical facts created in [since, now].
 
     Returns dict with: total, by_kind, by_tag, recent_sample, hot_text_tokens.
+
+    v1.1.1 (2026-09-14, Ship K): include_reflections flag. When True,
+    include reflection_* facts in the collect. When False (default),
+    exclude them to avoid circular noise.
     """
     db_path = find_bus_db(tier, user_id)
     if not db_path.exists():
@@ -167,17 +180,24 @@ def collect_facts(since: dt.datetime, tier: str, user_id: str | None) -> dict:
         # and adds itself to by_kind — circular noise.
         # v1.1.0 Ship D: also exclude reflection_success / reflection_failure /
         # reflection_lesson (zone-partitioned reflection facts) — same reason.
-        rows = conn.execute(
-            """SELECT id, content, kind, importance, tags, metadata,
-                      origin_session_id, promoted_at
-               FROM memory_canonical
-               WHERE promoted_at >= ? AND promoted_at <= ?
-                 AND (tombstoned = 0 OR tombstoned IS NULL)
-                 AND kind NOT IN ('reflection', 'reflection_success',
-                                  'reflection_failure', 'reflection_lesson')
-               ORDER BY promoted_at ASC""",
-            (since_iso, now_iso),
-        ).fetchall()
+        # v1.1.1 Ship K: --include-reflections flag overrides the filter.
+        if include_reflections:
+            kind_clause = ''
+        else:
+            kind_clause = (
+                "AND kind NOT IN ('reflection', 'reflection_success', "
+                "'reflection_failure', 'reflection_lesson') "
+            )
+        sql = (
+            "SELECT id, content, kind, importance, tags, metadata, "
+            "origin_session_id, promoted_at "
+            "FROM memory_canonical "
+            "WHERE promoted_at >= ? AND promoted_at <= ? "
+            "AND (tombstoned = 0 OR tombstoned IS NULL) "
+            f"{kind_clause}"
+            "ORDER BY promoted_at ASC"
+        )
+        rows = conn.execute(sql, (since_iso, now_iso)).fetchall()
     finally:
         conn.close()
 
@@ -415,6 +435,14 @@ def main() -> int:
     )
     p.add_argument('--since', default='24h',
                    help='24h | 7d | YYYY-MM-DD | YYYY-MM-DDTHH:MM:SS')
+    # v1.1.1 (2026-09-14, Ship J): one-shot bootstrap mode for first-run
+    # crons. Auto-derives a sensible --since window when this is the
+    # first bus_reflect invocation ever (no prior reflection_* facts):
+    #   - first run → 30d window (backfill context)
+    #   - subsequent runs → user-provided --since (default 24h)
+    # Idempotent: re-running on the same data is safe (dedup at fact level).
+    p.add_argument('--bootstrap', action='store_true',
+                   help='First-run 30d backfill (used when no prior reflection exists)')
     p.add_argument('--tier', default='private',
                    choices=['public', 'source', 'private'],
                    help='Tier to reflect on (default private_<admin>)')
@@ -422,6 +450,15 @@ def main() -> int:
                    help='User id for private tier (default admin)')
     p.add_argument('--dry-run', action='store_true',
                    help='Print reflection but do not write')
+    # v1.1.1 (2026-09-14, Ship K): include-reflection flag. By default the
+    # SQL filters out reflection_* facts (otherwise each reflection
+    # inflates the next day's count by 1 — circular noise, see v1.0.4).
+    # But when debugging the reflection loop itself you sometimes want
+    # to see what the prior reflections looked like — pass --include-
+    # reflections to disable the filter for this run only. Audit trail
+    # never depends on this; reflections still write independently.
+    p.add_argument('--include-reflections', action='store_true',
+                   help='Include reflection_* facts in the collect (debug only)')
     p.add_argument('--astor-dir', default=None,
                    help='ASTOR_DIR override (default: env ASTOR_DIR or ~/.astor)')
     args = p.parse_args()
@@ -431,12 +468,37 @@ def main() -> int:
     if args.astor_dir:
         DEFAULT_ASTOR_DIR = Path(args.astor_dir)
 
+    # v1.1.1 (2026-09-14, Ship J): --bootstrap = first-run 30d backfill.
+    # Detect whether this is the first invocation by checking for ANY
+    # prior reflection_* fact in the tier. If none → 30d window. If
+    # any exist → user --since (default 24h). Flag is idempotent; the
+    # user can re-run safely.
+    if args.bootstrap:
+        db_path = find_bus_db(args.tier if args.tier != 'private'
+                              else f'private_{args.user_id}',
+                              args.user_id)
+        if db_path.exists():
+            import sqlite3 as _sq
+            _c = _sq.connect(str(db_path))
+            try:
+                _n_prior = _c.execute(
+                    "SELECT COUNT(*) FROM memory_canonical "
+                    "WHERE kind LIKE 'reflection%'"
+                ).fetchone()[0]
+            finally:
+                _c.close()
+            if _n_prior == 0:
+                args.since = '30d'
+                print(f'[bootstrap] first run detected, using --since=30d for backfill',
+                      file=sys.stderr, flush=True)
+
     since = parse_since(args.since)
     tier = args.tier
     if tier == 'private':
         tier = f'private_{args.user_id}'
 
-    stats = collect_facts(since, tier, args.user_id)
+    stats = collect_facts(since, tier, args.user_id,
+                          include_reflections=args.include_reflections)
     text = build_reflection_text(stats, since, tier)
     print(text)
     print('---')
