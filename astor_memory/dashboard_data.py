@@ -96,6 +96,85 @@ def _summarize_warnings(cu) -> dict:
     }
 
 
+def _entities_coverage(astor_dir: Path) -> dict:
+    """v1.14.25 Ship G (2026-09-15): aggregate entities_json coverage across
+    all bus DBs (public + source + per-user private). Reports total facts,
+    facts with non-empty entities_json, coverage ratio, and per-tier breakdown.
+
+    Cheap: one COUNT query per DB. JSON1 json_array_length is O(1) per row.
+    """
+    total_facts = 0
+    facts_with_entities = 0
+    per_tier: dict[str, dict] = {}
+    # Public + source DBs
+    for tier in ('public', 'source'):
+        db_path = astor_dir / tier / 'memory' / f'astor_bus_{tier}.db'
+        if not db_path.exists():
+            continue
+        try:
+            co = sqlite3.connect(str(db_path))
+            cu = co.cursor()
+            # Check schema version
+            cols = {row[1] for row in cu.execute(
+                "PRAGMA table_info(memory_canonical)"
+            ).fetchall()}
+            if 'entities_json' not in cols:
+                co.close()
+                continue
+            n = _safe_count(cu,
+                "SELECT COUNT(*) FROM memory_canonical WHERE tombstoned = 0")
+            ne = _safe_count(cu,
+                "SELECT COUNT(*) FROM memory_canonical "
+                "WHERE tombstoned = 0 AND json_array_length(entities_json) > 0")
+            total_facts += n
+            facts_with_entities += ne
+            per_tier[tier] = {'total': n, 'with_entities': ne,
+                              'coverage': round(ne / n, 4) if n > 0 else 0.0}
+            co.close()
+        except Exception:
+            continue
+    # Per-user private DBs (aggregate under 'private' bucket)
+    private_total = private_with = 0
+    users_dir = astor_dir / 'users'
+    if users_dir.exists():
+        for user_dir in sorted(users_dir.glob('*/memory')):
+            dbs = list(user_dir.glob('astor_bus_*.db'))
+            for db in dbs:
+                try:
+                    co = sqlite3.connect(str(db))
+                    cu = co.cursor()
+                    cols = {row[1] for row in cu.execute(
+                        "PRAGMA table_info(memory_canonical)"
+                    ).fetchall()}
+                    if 'entities_json' not in cols:
+                        co.close()
+                        continue
+                    n = _safe_count(cu,
+                        "SELECT COUNT(*) FROM memory_canonical WHERE tombstoned = 0")
+                    ne = _safe_count(cu,
+                        "SELECT COUNT(*) FROM memory_canonical "
+                        "WHERE tombstoned = 0 AND json_array_length(entities_json) > 0")
+                    private_total += n
+                    private_with += ne
+                    co.close()
+                except Exception:
+                    continue
+    if private_total > 0:
+        per_tier['private'] = {
+            'total': private_total,
+            'with_entities': private_with,
+            'coverage': round(private_with / private_total, 4),
+        }
+        total_facts += private_total
+        facts_with_entities += private_with
+    return {
+        'total_facts': total_facts,
+        'facts_with_entities': facts_with_entities,
+        'coverage_ratio': round(facts_with_entities / total_facts, 4) if total_facts > 0 else 0.0,
+        'per_tier': per_tier,
+    }
+
+
 def _per_user_breakdown(astor_dir: Path) -> tuple[list[dict], str | None, int, int, int, int, int]:
     """Scan all users/<u>/memory/astor_bus_*.db, aggregate stats.
 
@@ -358,6 +437,8 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
     keywords, recent = _top_keywords_and_recent(astor)
     importance_hist = _importance_histogram(astor)
     health = _health(astor)
+    # v1.14.25 Ship G: entities_json coverage across all tiers.
+    entities_cov = _entities_coverage(astor)
 
     delta_min: float | None = None
     if last_event_ts:
@@ -387,6 +468,10 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
         "recent_facts": recent,
         "importance_histogram": importance_hist,
         "health": health,
+        # v1.14.25 Ship G (2026-09-15): structured entity binding coverage.
+        # Useful for monitoring the Ship B backfill progress and tracking
+        # the % of facts that have at least 1 extracted entity.
+        "entities_coverage": entities_cov,
     }
 
 
