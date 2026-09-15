@@ -1,0 +1,110 @@
+{"qid": "Q01", "query": "德州扑克现金局", "expected_keywords": ["德州", "扑克", "赌博", "竞技"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q02", "query": "八字 壬水身强", "expected_keywords": ["八字", "壬水", "身强"], "min_hits": 1, "category": "fortune", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q03", "query": "R132 3-store 优先铁律", "expected_keywords": ["R132", "3-store", "auto_route"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q04", "query": "gateway 重启规则", "expected_keywords": ["gateway", "R218", "restart"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q05", "query": "backup ACTIVE_ 前缀", "expected_keywords": ["ACTIVE_", "backup"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q06", "query": "moomoo 路径 Hermes mirror", "expected_keywords": ["moomoo", "Hermes", "mirror"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q07", "query": "WeChat iLink token SSoT", "expected_keywords": ["iLink", "token", "SSoT"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q08", "query": "MDT 时区", "expected_keywords": ["MDT", "America/Edmonton"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q09", "query": "pokerstats 主题色 bg", "expected_keywords": ["bg", "F5EAD6", "warm"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q10", "query": "astor-memory 4 层架构", "expected_keywords": ["astor", "memory", "架构"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q11", "query": "补录 场次 pokerstats", "expected_keywords": ["补录", "pokerstats"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q12", "query": "bge-m3 embedding", "expected_keywords": ["bge", "embedding"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q13", "query": "bge-reranker-v2-m3", "expected_keywords": ["reranker", "bge", "v2-m3"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q14", "query": "飞书 bot 推送 cron", "expected_keywords": ["飞书", "bot", "cron"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q15", "query": "Disk cleanup 用户 scratchpad", "expected_keywords": ["cleanup", "scratchpad"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q16", "query": "PII CHANGELOG genericize", "expected_keywords": ["PII", "CHANGELOG"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q17", "query": "CloudflaredPoker tunnel", "expected_keywords": ["Cloudflared", "Poker"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q18", "query": "make_exchange ccxt kraken", "expected_keywords": ["ccxt", "kraken"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q19", "query": "agent-fact-check audit hook", "expected_keywords": ["fact-check", "audit"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q20", "query": "打牌 方位 喜忌", "expected_keywords": ["方位", "喜", "忌"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q21", "query": "kraken maker pocket 状态机", "expected_keywords": ["maker_pocket", "ARMED"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q22", "query": "tianshu_api 端口 7777", "expected_keywords": ["tianshu_api", "7777"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q23", "query": "pokerstats 项目路径", "expected_keywords": ["pokerstats", "D:/AI/pokerstats"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q24", "query": "moomoo PY-314-ml 迁移", "expected_keywords": ["moomoo", "PY-314-ml"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q25", "query": "astor L4 grounding 守则", "expected_keywords": ["L4", "grounding"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q26", "query": "astor 9-db layout", "expected_keywords": ["9-db", "private"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q27", "query": "astor grounding_check 50%", "expected_keywords": ["grounding_check", "0.5"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q28", "query": "promote_candidate 阈值 0.5", "expected_keywords": ["promote_candidate", "0.5"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q29", "query": "pokerstats bg warm F5EAD6", "expected_keywords": ["F5EAD6", "warm"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q30", "query": "moomoo 4-env PYTHONPATH", "expected_keywords": ["moomoo", "PYTHONPATH"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q31", "query": "ACTIVE_ prefix 备份 目录", "expected_keywords": ["ACTIVE_", "backup"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q32", "query": "smart backup weekly 节奏", "expected_keywords": ["weekly", "smart_backup"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q33", "query": "hermes cron 周节奏", "expected_keywords": ["cron", "weekly"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q34", "query": "NSSM 自动重启", "expected_keywords": ["NSSM", "Restart"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q35", "query": "scheduler-watch 1h cadence", "expected_keywords": ["scheduler", "watch", "1h", "CronSchedulerWatch"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10, "notes": "workflow scheduler-watch 1h cadence; baseline (hybrid+rerank) hit, vector_only may miss (R-class E2: keyword strict)"}
+{"qid": "Q36", "query": "MemoryServersWatch service", "expected_keywords": ["MemoryServersWatch"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q37", "query": "CYCLE_SECONDS 900 watch", "expected_keywords": ["CYCLE_SECONDS", "900"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q38", "query": "CloudflaredPoker tunnel", "expected_keywords": ["CloudflaredPoker"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q39", "query": "ship cadence 批量 ship", "expected_keywords": ["ship", "cadence"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q40", "query": "R132 auto_route_write", "expected_keywords": ["R132", "auto_route"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q41", "query": "search before inability 搜索前", "expected_keywords": ["search", "search-before"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q42", "query": "R218 gateway no-restart", "expected_keywords": ["R218", "no-restart"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q43", "query": "IRON RULE NEVER fabricate", "expected_keywords": ["IRON RULE", "fabricate"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q44", "query": "R134 outbound 平台", "expected_keywords": ["R134", "outbound"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q45", "query": "流天书 协议 客户档案 fortune", "expected_keywords": ["流天书", "fortune"], "min_hits": 1, "category": "fortune", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q46", "query": "tianshu 紫微 v18 命盘", "expected_keywords": ["紫微", "tianshu"], "min_hits": 1, "category": "fortune", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q47", "query": "八字 壬水 身强 喜忌", "expected_keywords": ["壬水", "身强"], "min_hits": 1, "category": "fortune", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q48", "query": "梅花易数 起卦", "expected_keywords": ["梅花易数", "起卦"], "min_hits": 1, "category": "fortune", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q49", "query": "poker NL10 NL20 现金局", "expected_keywords": ["pokerstats", "盲注", "NLH"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q50", "query": "八字 五行 方位 打牌", "expected_keywords": ["打牌", "运势", "扑克", "方位"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q51", "query": "六爻 起卦 排盘", "expected_keywords": ["六爻", "起卦", "排盘"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q52", "query": "梅花易数 时辰 方位", "expected_keywords": ["梅花", "时辰", "方位"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q53", "query": "八字 五行 缺木", "expected_keywords": ["八字", "五行", "木"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q54", "query": "流天书 协议 客户档案", "expected_keywords": ["流天书", "协议", "客户档案"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q55", "query": "紫微 命盘 输出", "expected_keywords": ["紫微", "命盘", "输出"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q56", "query": "八字 壬水 喜火", "expected_keywords": ["八字", "壬水", "喜"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q57", "query": "扑克 旺时 凶时", "expected_keywords": ["扑克", "旺时", "凶时"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q58", "query": "八字 方位 喜用神", "expected_keywords": ["八字", "方位", "喜用神"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q59", "query": "fit 健身 计划", "expected_keywords": ["fit", "健身", "计划"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q60", "query": "workout 周训练", "expected_keywords": ["workout", "训练"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q61", "query": "ship 自动化 pre-merge", "expected_keywords": ["ship", "自动化", "merge"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q62", "query": "cron 健康 监测", "expected_keywords": ["cron", "健康", "监测"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q63", "query": "备份 weekly ACTIVE_", "expected_keywords": ["备份", "weekly", "ACTIVE_"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q64", "query": "PII genericize 历史", "expected_keywords": ["PII", "genericize", "历史"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q65", "query": "NSSM watchdog 重启", "expected_keywords": ["NSSM", "watchdog", "重启"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q66", "query": "vision m3 k3 fallback", "expected_keywords": ["vision", "m3", "k3", "fallback"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q67", "query": "auto_route recall priority", "expected_keywords": ["auto_route", "recall", "priority"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q68", "query": "ETH 钱包 充值", "expected_keywords": ["ETH", "钱包", "充值"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q69", "query": "wechat bot 推送", "expected_keywords": ["wechat", "bot", "推送"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q70", "query": "telegram chat_id session", "expected_keywords": ["telegram", "chat_id", "session"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q71", "query": "maker pocket state machine", "expected_keywords": ["maker_pocket", "state"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q72", "query": "kraken API limit order", "expected_keywords": ["kraken", "API", "limit"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q73", "query": "discover scanner 选股", "expected_keywords": ["discover", "scanner", "选股"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q74", "query": "tianshu_api 端口 7777", "expected_keywords": ["tianshu_api", "7777"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q75", "query": "pokerstats 部署 tunnel", "expected_keywords": ["pokerstats", "tunnel"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q76", "query": "moomoo OpenD 连接", "expected_keywords": ["moomoo", "OpenD"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q77", "query": "hermes gateway cron", "expected_keywords": ["hermes", "gateway", "cron"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q78", "query": "astor server v1.14", "expected_keywords": ["astor", "server", "v1.14"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q79", "query": "RAG 知识库 bge-reranker", "expected_keywords": ["RAG", "知识库", "bge-reranker"], "min_hits": 1, "category": "project", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q80", "query": "agent memory multi user", "expected_keywords": ["agent", "memory", "multi_user"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q81", "query": "R132 astor 优先铁律", "expected_keywords": ["R132", "astor"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q82", "query": "R218 gateway no-restart", "expected_keywords": ["R218", "gateway"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q83", "query": "R107 ship cadence", "expected_keywords": ["R107", "ship", "cadence"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q84", "query": "R6 timezone MDT", "expected_keywords": ["R6", "timezone", "MDT"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q85", "query": "R5 D:/AI 统一", "expected_keywords": ["R5", "D:/AI"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q86", "query": "R119 search-before-inability", "expected_keywords": ["search", "before", "R119", "search-before"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q87", "query": "R134 privacy genericize", "expected_keywords": ["R134", "privacy", "genericize"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q88", "query": "R200 auto-call references", "expected_keywords": ["auto", "call", "reference", "auto_route"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q89", "query": "R7 cron 1h 不 5min", "expected_keywords": ["R7", "cron", "5min"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q90", "query": "R132 3-store iron rule", "expected_keywords": ["R132", "3-store"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q91", "query": "八字 五行 相生 相克", "expected_keywords": ["八字", "五行", "相生"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q92", "query": "梅花易数 起卦 时间", "expected_keywords": ["梅花", "起卦", "时间"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q93", "query": "流天书 模板 v1 v2", "expected_keywords": ["流天书", "模板", "v1"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q94", "query": "八字 身强 身弱", "expected_keywords": ["八字", "身强", "身弱"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q95", "query": "八字 喜忌 颜色", "expected_keywords": ["八字", "喜忌", "颜色"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q96", "query": "fortune daily push 9am", "expected_keywords": ["fortune", "daily", "push"], "min_hits": 1, "category": "fortune", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "Q97", "query": "八字 月令 日主", "expected_keywords": ["八字", "月令", "日主"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q98", "query": "梅花 体卦 用卦", "expected_keywords": ["梅花", "体卦", "用卦"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q99", "query": "tianshu lora v18", "expected_keywords": ["tianshu", "lora", "v18"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "Q100", "query": "八字 壬水 身强 喜忌", "expected_keywords": ["壬水", "身强", "喜忌"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "M01", "query": "用户当前时区", "missing_hint": "bazi day pillar", "entity_filter": ["sunday"], "expected_keywords": ["KST", "时区", "sunday"], "min_hits": 2, "category": "fortune", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "M02", "query": "moomoo 交易账户", "missing_hint": "trading credentials", "entity_filter": ["moomoo"], "expected_keywords": ["moomoo", "trading"], "min_hits": 2, "category": "trading", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "M03", "query": "maker pocket backtest", "missing_hint": "BTC strategy", "since_ts": "2026-09-01T00:00:00Z", "until_ts": "2026-09-30T23:59:59Z", "expected_keywords": ["maker", "pocket", "backtest"], "min_hits": 2, "category": "trading", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "M04", "query": "OpenD", "missing_hint": "Windows service", "since_ts": "2026-09-09T00:00:00Z", "until_ts": "2026-09-15T23:59:59Z", "expected_keywords": ["OpenD", "服务"], "min_hits": 1, "category": "ops", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "M05", "query": "pokerstats hand replay", "expected_keywords": ["pokerstats", "replay"], "min_hits": 1, "category": "code", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "M06", "query": "今日日柱", "missing_hint": "bazi", "entity_filter": ["sunday"], "expected_keywords": ["sunday", "日柱", "八字"], "min_hits": 2, "category": "fortune", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "M07", "query": "ship cadence", "missing_hint": "weekly rhythm", "entity_filter": ["astor"], "expected_keywords": ["ship", "astor"], "min_hits": 2, "category": "code", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "M08", "query": "Lock ipfs setup", "expected_keywords": ["ipfs", "lock"], "min_hits": 1, "category": "code", "tier": "public", "user": "admin", "top_k": 10}
+{"qid": "M09", "query": "maker pocket RANGE", "missing_hint": "regime", "since_ts": "2026-08-01T00:00:00Z", "until_ts": "2026-09-15T23:59:59Z", "expected_keywords": ["RANGE", "maker"], "min_hits": 2, "category": "trading", "tier": "private", "user": "admin", "top_k": 10}
+{"qid": "M10", "query": "moomoo GTC order", "missing_hint": "limit order", "entity_filter": ["QQQI"], "expected_keywords": ["QQQI", "GTC", "moomoo"], "min_hits": 2, "category": "trading", "tier": "private", "user": "admin", "top_k": 10}
