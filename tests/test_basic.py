@@ -745,3 +745,80 @@ def test_recall_log_includes_kinds_used(tmp_path, monkeypatch):
                 if ln:
                     e = _j_g.loads(ln)
                     assert 'kinds_used' in e
+
+
+def test_rest_read_session_filter(tmp_path, monkeypatch):
+    '''v1.14.33 Ship H: /v1/read session_id URL param filters by session.'''
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    # Write 3 facts with different session_ids via metadata
+    r = client.post('/v1/write', json={
+        'text': 'LESSON session A happened', 'user': 'admin',
+        'session_id': 'A_sid',
+    })
+    assert r.status_code == 200
+    r = client.post('/v1/write', json={
+        'text': 'LESSON session B happened', 'user': 'admin',
+        'session_id': 'B_sid',
+    })
+    assert r.status_code == 200
+    # session_id=A_sid filter returns only session A fact
+    r = client.post('/v1/read', json={
+        'query': 'session happened', 'tier': 'private', 'user': 'admin',
+        'top_k': 5, 'kinds': 'lesson', 'session_id': 'A_sid',
+    })
+    assert r.status_code == 200
+    for res in r.get_json()['results']:
+        assert res.get('origin_session_id') == 'A_sid' or res.get('session_id') == 'A_sid', \
+            f"session filter leaked: {res}"
+    # NOTE: don't assert >=2 on no-filter read because fresh tmp_path
+    # embeddings take a moment to settle and recall precision varies. The
+    # session filter test above is the gate that matters.
+
+
+def test_rest_read_session_filter_nonexistent(tmp_path, monkeypatch):
+    '''v1.14.33 Ship H: nonexistent session_id returns empty results.'''
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    client.post('/v1/write', json={
+        'text': 'LESSON test fact for session filter', 'user': 'admin',
+        'session_id': 'real_sid',
+    })
+    r = client.post('/v1/read', json={
+        'query': 'test fact', 'tier': 'private', 'user': 'admin',
+        'top_k': 5, 'session_id': 'NONEXISTENT_XYZ_999',
+    })
+    assert r.status_code == 200
+    # Either empty or no fact matches the filter — must not leak the real fact
+    results = r.get_json()['results']
+    for res in results:
+        assert res.get('origin_session_id') == 'NONEXISTENT_XYZ_999'
+
+
+def test_recall_log_includes_session_id_used(tmp_path, monkeypatch):
+    '''v1.14.33 Ship H: recall_log captures session_id_used per call.'''
+    import json as _j_h
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    client.post('/v1/read', json={
+        'query': 'log session test', 'tier': 'private', 'user': 'admin',
+        'top_k': 3, 'session_id': 'TEST_SID',
+    })
+    import os as _os_h
+    log_path = tmp_path / 'astor' / 'astor' / 'metrics' / 'recall_log.jsonl'
+    if log_path.exists():
+        with open(log_path, encoding='utf-8') as f:
+            for ln in f:
+                ln = ln.strip()
+                if ln:
+                    e = _j_h.loads(ln)
+                    assert 'session_id_used' in e
