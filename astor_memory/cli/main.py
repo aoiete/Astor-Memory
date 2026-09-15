@@ -25,6 +25,20 @@ from ..config import load_config, get_default_astor_dir
 
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point."""
+    # v1.13.1 (2026-09-14, Ship E/F/G fix): force stdout line buffering.
+    # Without this, print() buffers until process exits — and on Windows
+    # the parent PTY buffers further. Symptom: cli output appears
+    # truncated/empty in Hermes terminal even though rc=0. Python 3.7+
+    # supports reconfigure() for this exact case. See fact 10795
+    # (Hermes client stdout truncation) — server-side mitigation.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        # Older Python or non-text stream — fall back to flush=True in
+        # individual print() calls (already done in ship D v1.1.0 by_reflect).
+        pass
+
     parser = argparse.ArgumentParser(
         prog='am',
         description='Astor-Memory CLI',
@@ -115,6 +129,12 @@ def main(argv: list[str] | None = None) -> int:
     # failure_pattern detection. Auto-tags outcome='failure', forces
     # kind='failure_pattern', importance=0.90, tier='public' (so the agent
     # sees the failed approach on next attempt and avoids repeating it).
+    #
+    # v1.13.1 (2026-09-14, Ship I): why default=public? failure_patterns
+    # are CROSS-USER useful (others should learn from your mistakes). If
+    # you want a personal failure, pass --tier private. Same logic applies
+    # to am learn (default private — your preferences) and am postmortem
+    # (default private — your lessons). The asymmetry is by design.
     sub = subparsers.add_parser(
         'fail',
         help='Write a fact + auto-detect failure pattern (kind=failure_pattern, tier=public)',
@@ -473,14 +493,16 @@ def cmd_learn(args) -> int:
     promotion_count = 0
     if is_success and not getattr(args, 'no_promote', False):
         threshold = args.threshold
-        # Determine the DB path of the current tier for promote lookup.
-        from ..config import get_default_bus_path, _user_bus_path
-        from pathlib import Path as _P
+        # v1.13.1 fix (2026-09-14, Ship H): `_user_bus_path` was imported
+        # here but never defined in config.py — am learn has been broken
+        # since that import was added. Use _internal.acl_layout.get_db_path
+        # which is the canonical path resolver (fact 11938 setup).
+        from .._internal.acl_layout import get_db_path
         if tier == 'private':
-            db_path = _user_bus_path(args.user)
+            db_path = get_db_path('private', 'bus', args.user)
         else:
-            db_path = get_default_bus_path(tier)
-        db_path = _P(db_path) if db_path else None
+            db_path = get_db_path(tier, 'bus')
+        db_path = Path(str(db_path)) if db_path else None
 
         for fid in fact_ids:
             ok = astor_promote_recurring_success(
@@ -583,6 +605,13 @@ def cmd_fail(args) -> int:
     print(f'   tier={tier} fact_ids={fact_ids}')
     print(f'   kind=failure_pattern importance=0.90 (forced)')
     return 0
+
+
+# v1.13.1 (2026-09-14, Ship E stdout discipline): when --quiet is NOT set,
+# cmd_fail/cmd_postmortem return ONLY the 3-line summary above. Long output
+# (full fact content) requires `--verbose` or going through `am recall`.
+# Rationale: Hermes client truncates large stdout buffers (fact 10795);
+# the agent already has the input it typed and doesn't need it echoed back.
 
 
 def cmd_postmortem(args) -> int:
