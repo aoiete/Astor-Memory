@@ -17,6 +17,7 @@ Per Plan § Memory <-> concurrency: WAL mode handles concurrent reads.
 from __future__ import annotations
 
 import sqlite3
+import json
 
 # S15 (2026-09-10): dashboard cache — keeps aggregated payload for 5min so
 # the HTML page polling /v1/dashboard doesn't re-run 16 user-db aggregates
@@ -213,6 +214,25 @@ def _astor_resolve_actor(user_id: str | None) -> tuple[str, str, str | None]:
     # user: plan differentiates free / vip / power
     plan = meta.get('subscription_plan', 'free')
     return (f'user:{user_id}', 'user', plan)
+
+
+def _extract_entities_for_fact(bus, canon_id):
+    """v1.14.23 Ship E: read entities_json for one canonical row.
+    Best-effort: returns [] on any error (caller can re-read via /v1/read)."""
+    try:
+        row = bus.conn.execute(
+            "SELECT entities_json FROM memory_canonical WHERE id = ?",
+            (int(canon_id),),
+        ).fetchone()
+        if row and row[0] is not None and len(row[0]) > 2:
+            try:
+                v = json.loads(row[0])
+                return v if isinstance(v, list) else []
+            except Exception:
+                return []
+        return []
+    except Exception:
+        return []
 
 
 def create_app(astor_dir: str | None = None) -> Flask:
@@ -682,6 +702,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'scope': scope,
                     'dedup': True,
                     'stable_id': stable_id,
+                    # v1.14.23 Ship E: entities for existing row.
+                    'entities_per_fact': [_extract_entities_for_fact(bus, existing_row[0])],
                 })
         except Exception as dedup_exc:
             # Dedup check failure should not block write path.
@@ -735,6 +757,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'event_id': event_id, 'facts': [], 'count': 0})
         # 3. Insert candidates + promote (which auto-stores embeddings via nest)
         fact_ids = []
+        facts_entities: list[list[dict]] = []
         # 2026-08-16 opt1: hook BM25 lex index — every promoted fact gets
         # tokenized and indexed for exact-match keyword recall. Failures
         # are logged but never block the write (lex is a redundant store).
@@ -773,6 +796,43 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 stable_id=stable_id,  # P1-fix 2026-08-15: enable content-hash dedup
             )
             fact_ids.append(canon_id)
+            # v1.14.23 Ship E (2026-09-15): read entities_json from DB so
+            # /v1/write response carries the structured entity binding
+            # back to the caller (avoids a 2nd /v1/read round trip).
+            # Best-effort: read failure -> empty list (caller can retry).
+            try:
+                _ents_row = bus.conn.execute(
+                    "SELECT entities_json FROM memory_canonical WHERE id = ?",
+                    (int(canon_id),),
+                ).fetchone()
+                _ents = []
+                # DEBUG
+                import sys as _sys_d
+                _sys_d.stderr.write(f'[DEBUG-E] canon_id={canon_id} row={_ents_row!r}\n')
+                _sys_d.stderr.flush()
+                if _ents_row and _ents_row[0] is not None and len(_ents_row[0]) > 2:
+                    # len > 2 skips the literal '[]' string (Ship B writes
+                    # the column with default '[]' before the 2nd UPDATE
+                    # rewrites it with real entities). At this point in
+                    # promote_candidate's transaction, the 2nd UPDATE has
+                    # committed, so we should see the populated JSON list.
+                    try:
+                        _ents = json.loads(_ents_row[0])
+                        if not isinstance(_ents, list):
+                            _ents = []
+                    except Exception as _ex_in:
+                        import sys as _sys_d3
+                        _sys_d3.stderr.write(f'[DEBUG-E] EXCEPTION inner {_ex_in!r}\n')
+                        _sys_d3.stderr.flush()
+                        _ents = []
+                _sys_d.stderr.write(f'[DEBUG-E] PRE-append _ents type={type(_ents).__name__} len={len(_ents) if hasattr(_ents, "__len__") else "?"}\n')
+                _sys_d.stderr.flush()
+                facts_entities.append(_ents)
+            except Exception as _ex:
+                import sys as _sys_d2
+                _sys_d2.stderr.write(f'[DEBUG-E] EXCEPTION outer {_ex!r}\n')
+                _sys_d2.stderr.flush()
+                facts_entities.append([])
             # Index for BM25 keyword recall — best-effort
             try:
                 _lex.index_fact(int(canon_id), f.content)
@@ -865,6 +925,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'tier': tier,
             'scope': scope,
             'mirrored': mirrored_fact_ids,
+            # v1.14.23 Ship E: structured entity binding per fact.
+            # Index N in entities_per_fact = entities for fact_ids[N].
+            'entities_per_fact': facts_entities,
         })
 
     @app.route('/v1/read', methods=['POST'])
