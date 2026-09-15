@@ -878,3 +878,46 @@ def test_rest_write_provenance_backward_compat(tmp_path, monkeypatch):
         conn.close()
         assert row is not None
         assert row[0] == 'extracted', f"expected default 'extracted', got {row[0]!r}"
+
+def test_admin_bypasses_rate_limit(tmp_path, monkeypatch):
+    """v1.14.35 Ship J: admin actor bypasses per-actor 5/sec rate limit."""
+    # Real bug exposed during Ship I pytest run: 16 tests back-to-back
+    # hit the leaky bucket and returned 403. Admin actor should bypass.
+    from astor_memory.server import create_app
+    from astor_memory._internal import acl as _acl
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+
+    # Init ACL as admin (the bypass path)
+    _acl.astor_init_acl(actor='admin:admin', role='admin',
+                         tier='private', user_id='admin',
+                         subscription_plan='power')
+
+    # Fire 25 writes back-to-back. Pre-Ship-J this would 403 on write 6+.
+    ok = 0
+    for i in range(25):
+        text = 'LESSON Ship J admin bypass test fact #' + str(i)
+        r = client.post('/v1/write', json={
+            'text': text,
+            'user': 'admin', 'tier': 'private',
+        })
+        if r.status_code == 200:
+            ok += 1
+    assert ok == 25, 'admin bypass failed: only ' + str(ok) + '/25 succeeded'
+
+    # Switch to non-admin: rate limit should STILL kick in (regression check)
+    _acl.astor_init_acl(actor='user:alice', role='user',
+                         tier='private', user_id='alice',
+                         subscription_plan='free')
+    alice_fail = 0
+    for i in range(25):
+        text = 'LESSON Ship J alice rate-limit test #' + str(i)
+        r = client.post('/v1/write', json={
+            'text': text,
+            'user': 'alice', 'tier': 'private',
+        })
+        if r.status_code != 200:
+            alice_fail += 1
+    assert alice_fail > 0, 'non-admin bypass leaked: alice 25/25 OK'
