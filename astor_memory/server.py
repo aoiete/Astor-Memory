@@ -793,7 +793,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # Facts from the same session can be pulled as read/navigate
                 # neighbors at recall time (Mistral Agentic Search pattern).
                 origin_session_id=_write_session_id,
-                stable_id=stable_id,  # P1-fix 2026-08-15: enable content-hash dedup
+                stable_id=stable_id,
+                # v1.14.34 Ship I: thread provenance from caller so hook
+                # writes can be filtered from manual am writes.
+                provenance_kind=body.get('provenance_kind') or None,
+                provenance_agent=body.get('provenance_agent') or None,  # P1-fix 2026-08-15: enable content-hash dedup
             )
             fact_ids.append(canon_id)
             # v1.14.23 Ship E (2026-09-15): read entities_json from DB so

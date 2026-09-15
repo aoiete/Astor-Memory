@@ -822,3 +822,59 @@ def test_recall_log_includes_session_id_used(tmp_path, monkeypatch):
                 if ln:
                     e = _j_h.loads(ln)
                     assert 'session_id_used' in e
+
+
+def test_rest_write_provenance_threaded(tmp_path, monkeypatch):
+    '''v1.14.34 Ship I: /v1/write threads provenance_kind/agent to canonical.'''
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    r = client.post('/v1/write', json={
+        'text': 'LESSON Ship I provenance threaded from caller to canonical',
+        'user': 'admin', 'tier': 'private',
+        'provenance_kind': 'session_end_hook',
+        'provenance_agent': 'astor-extract-hook:test',
+    })
+    assert r.status_code == 200
+    fid = r.get_json()['fact_ids'][0]
+    # Read back via direct SQL on the user's bus DB
+    import sqlite3 as _sq_i
+    db_path = tmp_path / 'astor' / 'users' / 'admin' / 'memory' / 'astor_bus_admin.db'
+    if db_path.exists():
+        conn = _sq_i.connect(db_path)
+        row = conn.execute(
+            'SELECT provenance_kind, provenance_agent FROM memory_canonical WHERE id=?',
+            (fid,),
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == 'session_end_hook', f"provenance_kind leak: {row[0]!r}"
+        assert row[1] == 'astor-extract-hook:test'
+
+
+def test_rest_write_provenance_backward_compat(tmp_path, monkeypatch):
+    '''v1.14.34 Ship I: backward compat — no provenance defaults to 'extracted'.'''
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    r = client.post('/v1/write', json={
+        'text': 'LESSON Ship I backward compat no provenance defaults extracted',
+        'user': 'admin', 'tier': 'private',
+    })
+    assert r.status_code == 200
+    fid = r.get_json()['fact_ids'][0]
+    import sqlite3 as _sq_i
+    db_path = tmp_path / 'astor' / 'users' / 'admin' / 'memory' / 'astor_bus_admin.db'
+    if db_path.exists():
+        conn = _sq_i.connect(db_path)
+        row = conn.execute(
+            'SELECT provenance_kind FROM memory_canonical WHERE id=?',
+            (fid,),
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == 'extracted', f"expected default 'extracted', got {row[0]!r}"
