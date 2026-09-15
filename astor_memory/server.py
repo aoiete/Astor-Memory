@@ -1726,6 +1726,22 @@ def create_app(astor_dir: str | None = None) -> Flask:
             enriched = [r for r in enriched
                          if r.get('kind') in _kinds_filter_set][:top_k]
 
+        # v1.14.33 Ship H (2026-09-15): --session_id URL param for session-scoped
+        # recall. Mirrors Ship G kinds filter logic — post-enrichment client-side
+        # filter (cheap, ~60 µs). session_id typically comes from hermes agent
+        # which knows its own session_id, or from fact_id reverse-lookup.
+        # Empty/missing = no filter (backward compat).
+        _session_filter = body.get('session_id')
+        if isinstance(_session_filter, str) and not _session_filter.strip():
+            _session_filter = None
+        if _session_filter and enriched:
+            # Match exact session_id OR origin_session_id (server returns both
+            # fields; legacy facts may have only one of them populated).
+            enriched = [r for r in enriched
+                         if (r.get('session_id') == _session_filter
+                             or r.get('origin_session_id') == _session_filter)
+                        ][:top_k]
+
         # v1.14.x (2026-09-13): bump access_count + last_confirmed_at for
         # every fact that actually surfaced in this recall. Per wechat
         # article 3-layer memory best practice (long-term memory decay):
@@ -1798,6 +1814,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     # v1.14.32 Ship G: zone filter passed (kinds=user_preference,failure_pattern).
                     # Empty list means no filter applied.
                     'kinds_used': sorted(_kinds_filter_set) if _kinds_filter_set else [],
+                    # v1.14.33 Ship H: session filter passed (session_id=<hermes_sid>).
+                    # Empty string means no filter applied.
+                    'session_id_used': _session_filter or '',
                     # v1.14.29 Ship S1: wall-clock latency from request start
                     # to response ready. Used by astor_usage_stats --window
                     # to surface p50/p95 latency in the weekly Telegram push.
