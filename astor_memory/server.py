@@ -1444,7 +1444,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         for fact_id, sim in results:
             row = bus.conn.execute(
                 "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
-                "event_date, event_date_precision, origin_session_id, metadata, entities_json "
+                "event_date, event_date_precision, origin_session_id, metadata, entities_json, created_at "
                 "FROM memory_canonical WHERE id = ?",
                 (fact_id,),
             ).fetchone()
@@ -1490,6 +1490,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # List of {type, value, fact_id} extracted at forge time.
                 # Empty list for legacy facts until backfill runs.
                 'entities': _safe_json_loads(row[14]) if len(row) > 14 else [],
+                # v1.14.31 Ship S3: created_at surfaced so time_range reorder
+                # can use it as a soft proximity signal for legacy facts
+                # (no event_date). Caller can also use this to display
+                # "ingested at" timestamps.
+                'created_at': (row[15] if len(row) > 15 and row[15] else '')[:19],
             })
         # v1.15.0 Ship A: entity_filter + time_range post-filter.
         # entity_filter = list of strings; fact must contain ANY of them in
@@ -1649,13 +1654,24 @@ def create_app(astor_dir: str | None = None) -> Flask:
                                       for k in (r.get('keywords') or []))
                                for e in _ef_low)]
         if time_range:
-            # v1.14.27 Ship I (2026-09-15): legacy facts without event_date
-            # used to be unconditionally kept (preserve pre-v1.10.9 rows).
-            # That risks a 2020-era fact polluting a 2026-09 query. New
-            # behavior: KEEP but DEPRIORITIZE — facts with event_date in
-            # range go FIRST, then out-of-range, then legacy (no date)
-            # at the bottom. Caller still sees them, just ranked lower.
+            # v1.14.27 Ship I + v1.14.31 Ship S3: legacy facts without
+            # event_date are KEEP-but-DEPRIORITIZE. Ship S3 adds a soft
+            # proximity boost: legacy facts with created_at inside the
+            # time window float to the front of the legacy block; ones
+            # with created_at far from the window sink to the bottom.
+            # Uses created_at as a proxy for "how old is this".
             _ts_lo, _ts_hi = time_range
+            _ts_lo_d = _ts_lo[:10]  # YYYY-MM-DD
+            _ts_hi_d = _ts_hi[:10]
+            # Compute window midpoint as YYYYMMDD integer for distance math
+            try:
+                _mid_y, _mid_m, _mid_d = int(_ts_lo_d[:4]), int(_ts_lo_d[5:7]), int(_ts_lo_d[8:10])
+                _win_lo_int = _mid_y * 10000 + _mid_m * 100 + _mid_d
+                _mid_y, _mid_m, _mid_d = int(_ts_hi_d[:4]), int(_ts_hi_d[5:7]), int(_ts_hi_d[8:10])
+                _win_hi_int = _mid_y * 10000 + _mid_m * 100 + _mid_d
+                _win_mid = (_win_lo_int + _win_hi_int) // 2
+            except Exception:
+                _win_mid = None
 
             def _event_date_in(r):
                 _ed = r.get('event_date') or ''
@@ -1666,6 +1682,31 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _in_range = [r for r in enriched if _event_date_in(r) is True]
             _out_of_range = [r for r in enriched if _event_date_in(r) is False]
             _legacy = [r for r in enriched if _event_date_in(r) is None]
+
+            # Sort legacy by created_at proximity to window midpoint
+            # (closest first). created_at comes from the canonical row,
+            # but is not in the per-fact response dict (omitted for size);
+            # fall back to last_confirmed_at (also not exposed) — best
+            # we can do is stable order, which matches previous behavior.
+            # When Ship S3's response shape adds created_at, this sort
+            # will activate automatically.
+            if _win_mid is not None and _legacy:
+                def _legacy_key(r):
+                    # Look for created_at or promoted_at in the row;
+                    # absence -> treat as 'far from window' (sink).
+                    _ca = r.get('created_at') or r.get('promoted_at') or ''
+                    if not _ca:
+                        return (1, 0)  # (no date flag, dummy distance)
+                    try:
+                        _y = int(_ca[:4])
+                        _m = int(_ca[5:7]) if len(_ca) >= 7 else 1
+                        _d = int(_ca[8:10]) if len(_ca) >= 10 else 1
+                        _ca_int = _y * 10000 + _m * 100 + _d
+                        _dist = abs(_ca_int - _win_mid)
+                        return (0, _dist)
+                    except Exception:
+                        return (1, 0)
+                _legacy.sort(key=_legacy_key)
             enriched = _in_range + _out_of_range + _legacy
         # v1.14.x (2026-09-13): bump access_count + last_confirmed_at for
         # every fact that actually surfaced in this recall. Per wechat

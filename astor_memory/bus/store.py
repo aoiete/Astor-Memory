@@ -319,8 +319,9 @@ class AstorBus:
                         promoted_by, user_id, tier, scope_type, verdict,
                         origin_session_id, stable_id, embedding_version,
                         event_date, event_date_precision,
-                        entities_json)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        entities_json,
+                        created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         candidate_id, event_id, namespace, content, kind, confidence, importance,
                         tags, metadata, kw_json, ctx_text,
@@ -337,6 +338,10 @@ class AstorBus:
                             (_meta_dict(metadata).get('__entities__'))
                             or _extract_entities_safe(content, 0)  # placeholder; UPDATE below sets real fact_id
                         ),
+                        # v1.14.31 Ship S3: created_at = now (ISO 8601 UTC).
+                        # Used by time_range reorder as proximity signal for
+                        # legacy facts without event_date.
+                        datetime.utcnow().isoformat() + 'Z',
                     ),
                 )
                 canonical_id = cur.lastrowid
@@ -349,7 +354,7 @@ class AstorBus:
                         "SELECT entities_json FROM memory_canonical WHERE id = ?",
                         (canonical_id,),
                     ).fetchone()
-                    if _raw and _raw[0]:
+                    if _raw and _raw[0] and len(_raw[0]) > 2:
                         _ents = json.loads(_raw[0])
                         if isinstance(_ents, list):
                             for _e in _ents:
