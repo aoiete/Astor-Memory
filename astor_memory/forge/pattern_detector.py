@@ -80,6 +80,146 @@ _COMPILED = [
     for p in _SUCCESS_PATTERNS_ZH + _SUCCESS_PATTERNS_EN
 ]
 
+# ---------------------------------------------------------------------------
+# v1.13.1 (2026-09-14, Ship E): failure + lesson patterns (mirror design)
+# ---------------------------------------------------------------------------
+
+# Chinese failure phrases (agent hit a dead-end, won't repeat).
+_FAILURE_PATTERNS_ZH = [
+    r'不行',
+    r'没用了',
+    r'没用',
+    r'失败了',
+    r'失败了?这招',
+    r'白试了',
+    r'别试了',
+    r'别这么干',
+    r'别这样',
+    r'这样不行',
+    r'这条路走不通',
+    r'踩坑',
+    r'死路',
+    r'行不通',
+    r'跑不通',
+    r'搞砸了',
+    r'搞坏了',
+    r'浪费时间',
+    r'浪费了',
+    r'用错了',
+    r'这条路是错的',
+]
+
+# English failure phrases.
+_FAILURE_PATTERNS_EN = [
+    r"\bdoesn't work\b",
+    r"\bdoes not work\b",
+    r"\bbroken\b",
+    r"\bdead end\b",
+    r"\bdon't do that\b",
+    r"\bdon't try that\b",
+    r"\bdon't go there\b",
+    r"\bavoid\b",
+    r"\bwasted (time|effort)\b",
+    r"\bthat failed\b",
+    r"\bthis failed\b",
+    r"\bwrong (path|approach)\b",
+]
+
+_FAILURE_COMPILED = [
+    re.compile(p, re.IGNORECASE)
+    for p in _FAILURE_PATTERNS_ZH + _FAILURE_PATTERNS_EN
+]
+
+# Chinese lesson phrases (severe error + root cause + fix).
+# Heuristic: text must contain both an error word AND a fix/root-cause word.
+_LESSON_ERROR_ZH = [
+    r'严重错误', r'重大', r'critical', r'崩溃', r'crash',
+    r'泄漏', r'leak', r'安全', r'栽了', r'翻车',
+]
+_LESSON_FIX_ZH = [r'根因', r'原因是', r'因为', r'教训', r'根因是', r'记住了', r'不能再']
+
+# English lesson phrases (severe error + root cause + fix).
+_LESSON_ERROR_EN = [
+    r'\bcritical bug\b', r'\bdata loss\b', r'\bcrash(ed)?\b', r'\bleak(ed)?\b',
+    r'\bsecurity\b', r'\bsevere\b', r'\bcatastrophic\b',
+]
+_LESSON_FIX_EN = [
+    r'\broot cause\b', r'\bbecause\b', r'\blesson\b',
+    r"\bdon't .* again\b", r'\bnever again\b', r'\bnever .* again\b',
+    r'\bthe fix\b', r'\bresolved by\b',
+    # v1.13.1 fix (Ship E): standalone 'fix' as fix-phrase was missing.
+    # Test case 'critical bug — fix is to add null check' now matches.
+    r'(?<!\bthe )\bfix\b',
+    r'\broot cause\b',
+]
+
+_LESSON_ERROR_COMPILED = [re.compile(p, re.IGNORECASE) for p in _LESSON_ERROR_ZH + _LESSON_ERROR_EN]
+_LESSON_FIX_COMPILED = [re.compile(p, re.IGNORECASE) for p in _LESSON_FIX_ZH + _LESSON_FIX_EN]
+
+
+def astor_detect_failure_pattern(text: str) -> bool:
+    """Return True if `text` describes a failed attempt / wasted path.
+
+    Mirror of astor_detect_success_pattern. Single-phrase heuristic — any
+    failure phrase matches. Use astor_score_failure_strength for confidence.
+    """
+    if not text or not text.strip():
+        return False
+    return any(p.search(text) for p in _FAILURE_COMPILED)
+
+
+def astor_score_failure_strength(text: str) -> float:
+    """Score failure-pattern strength (0.0 - 1.0).
+
+    Counts distinct failure phrases; normalizes by max expected density.
+    Same curve as astor_score_success_strength.
+    """
+    if not text or not text.strip():
+        return 0.0
+    hits = sum(1 for p in _FAILURE_COMPILED if p.search(text))
+    if hits == 0:
+        return 0.0
+    if hits == 1:
+        return 0.5
+    if hits == 2:
+        return 0.75
+    return 1.0  # 3+
+
+
+def astor_detect_lesson_pattern(text: str) -> bool:
+    """Return True if `text` describes a severe error + root cause + fix.
+
+    Heuristic: requires BOTH an error phrase AND a fix/root-cause phrase.
+    Rationale: a single "崩溃" without a fix isn't a lesson — it's just
+    a complaint. A "崩溃 + 因为" pair is a complete lesson.
+
+    Per astor iron rule (fact 3752): lessons go to tier='private' with
+    importance=0.99 and a `LESSON ` prefix in the content.
+    """
+    if not text or not text.strip():
+        return False
+    has_error = any(p.search(text) for p in _LESSON_ERROR_COMPILED)
+    has_fix = any(p.search(text) for p in _LESSON_FIX_COMPILED)
+    return has_error and has_fix
+
+
+def astor_score_lesson_strength(text: str) -> float:
+    """Score lesson-pattern strength (0.0 - 1.0).
+
+    Combines error hits + fix hits into a composite score. Minimum to be
+    considered a lesson is 1+ error AND 1+ fix phrase (handled by
+    astor_detect_lesson_pattern).
+    """
+    if not text or not text.strip():
+        return 0.0
+    error_hits = sum(1 for p in _LESSON_ERROR_COMPILED if p.search(text))
+    fix_hits = sum(1 for p in _LESSON_FIX_COMPILED if p.search(text))
+    if error_hits == 0 or fix_hits == 0:
+        return 0.0
+    # composite: error + fix both contribute, cap at 1.0
+    raw = (error_hits * 0.4) + (fix_hits * 0.3)
+    return min(raw, 1.0)
+
 # Default threshold for "recurring" — auto-promote when ≥3 similar facts exist.
 DEFAULT_RECURRENCE_THRESHOLD = 3
 
