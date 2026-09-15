@@ -758,6 +758,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # propagated through to metadata.__topic__ / __session_id__.
                 topic=getattr(f, 'topic', '') or '',
                 session_id=getattr(f, 'session_id', '') or _write_session_id or '',
+                # v1.14.21 Ship B: RippleMem-style structured entity binding.
+                # Thread entities from AstorFact → insert_candidate → metadata
+                # → promote_candidate → memory_canonical.entities_json.
+                entities=getattr(f, 'entities', None),
             )
             canon_id = bus.promote_candidate(
                 cand_id, promoted_by='rest.write', user_id=user, tier=tier,
@@ -1374,7 +1378,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         for fact_id, sim in results:
             row = bus.conn.execute(
                 "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
-                "event_date, event_date_precision, origin_session_id, metadata "
+                "event_date, event_date_precision, origin_session_id, metadata, entities_json "
                 "FROM memory_canonical WHERE id = ?",
                 (fact_id,),
             ).fetchone()
@@ -1416,6 +1420,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # these fields).
                 'topic': _meta.get('__topic__', '') if _meta else '',
                 'session_id_meta': _meta.get('__session_id__', '') if _meta else '',
+                # v1.14.21 Ship B: RippleMem-style structured entity binding.
+                # List of {type, value, fact_id} extracted at forge time.
+                # Empty list for legacy facts until backfill runs.
+                'entities': _safe_json_loads(row[14]) if len(row) > 14 else [],
             })
         # v1.15.0 Ship A: entity_filter + time_range post-filter.
         # entity_filter = list of strings; fact must contain ANY of them in
