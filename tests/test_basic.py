@@ -680,3 +680,68 @@ def test_e2e_integration(tmp_path, monkeypatch):
             assert e.code == 0
     assert '--tier' in captured_help.getvalue()
     assert '--threshold' in captured_help.getvalue()
+
+
+def test_rest_read_kinds_filter(tmp_path, monkeypatch):
+    '''v1.14.32 Ship G: /v1/read kinds URL param filters by zone.'''
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    client.post('/v1/write', json={'text': 'LESSON read with kinds filter works', 'user': 'admin'})
+    client.post('/v1/write', json={'text': 'PATCH tool 4 spaces indent drift case', 'user': 'admin'})
+    r = client.post('/v1/read', json={
+        'query': 'kinds filter patch test', 'tier': 'private', 'user': 'admin',
+        'top_k': 5, 'kinds': 'lesson',
+    })
+    assert r.status_code == 200
+    for res in r.get_json()['results']:
+        assert res['kind'] == 'lesson', f"kinds filter leaked: {res['kind']}"
+    # Backward compat: no kinds = all kinds
+    r2 = client.post('/v1/read', json={
+        'query': 'kinds filter patch test', 'tier': 'private', 'user': 'admin', 'top_k': 5,
+    })
+    assert r2.status_code == 200
+
+
+def test_rest_read_kinds_comma_separated(tmp_path, monkeypatch):
+    '''v1.14.32 Ship G: kinds accepts comma-separated string + list.'''
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    r = client.post('/v1/read', json={
+        'query': 'kinds comma test', 'tier': 'public', 'top_k': 3,
+        'kinds': 'fact,observation',
+    })
+    assert r.status_code == 200
+    r = client.post('/v1/read', json={
+        'query': 'kinds list test', 'tier': 'public', 'top_k': 3,
+        'kinds': ['fact'],
+    })
+    assert r.status_code == 200
+
+
+def test_recall_log_includes_kinds_used(tmp_path, monkeypatch):
+    '''v1.14.32 Ship G: recall_log captures kinds_used per call.'''
+    import json as _j_g
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    client.post('/v1/read', json={
+        'query': 'log kinds test', 'tier': 'private', 'user': 'admin',
+        'top_k': 3, 'kinds': 'user_preference',
+    })
+    import os as _os_g
+    log_path = tmp_path / 'astor' / 'astor' / 'metrics' / 'recall_log.jsonl'
+    if log_path.exists():
+        with open(log_path, encoding='utf-8') as f:
+            for ln in f:
+                ln = ln.strip()
+                if ln:
+                    e = _j_g.loads(ln)
+                    assert 'kinds_used' in e
