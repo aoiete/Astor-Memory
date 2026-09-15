@@ -1646,13 +1646,24 @@ def create_app(astor_dir: str | None = None) -> Flask:
                                       for k in (r.get('keywords') or []))
                                for e in _ef_low)]
         if time_range:
+            # v1.14.27 Ship I (2026-09-15): legacy facts without event_date
+            # used to be unconditionally kept (preserve pre-v1.10.9 rows).
+            # That risks a 2020-era fact polluting a 2026-09 query. New
+            # behavior: KEEP but DEPRIORITIZE — facts with event_date in
+            # range go FIRST, then out-of-range, then legacy (no date)
+            # at the bottom. Caller still sees them, just ranked lower.
             _ts_lo, _ts_hi = time_range
-            def _in_tr_final(r):
+
+            def _event_date_in(r):
                 _ed = r.get('event_date') or ''
                 if not _ed:
-                    return True
+                    return None  # signal "legacy / no date"
                 return _ts_lo <= _ed[:10] <= _ts_hi
-            enriched = [r for r in enriched if _in_tr_final(r)]
+
+            _in_range = [r for r in enriched if _event_date_in(r) is True]
+            _out_of_range = [r for r in enriched if _event_date_in(r) is False]
+            _legacy = [r for r in enriched if _event_date_in(r) is None]
+            enriched = _in_range + _out_of_range + _legacy
         # v1.14.x (2026-09-13): bump access_count + last_confirmed_at for
         # every fact that actually surfaced in this recall. Per wechat
         # article 3-layer memory best practice (long-term memory decay):
