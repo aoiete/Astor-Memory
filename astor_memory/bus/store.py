@@ -216,6 +216,11 @@ class AstorBus:
         verdict: str = 'settled',
         origin_session_id: str | None = None,
         stable_id: str | None = None,
+        # v1.14.34 Ship I: provenance fields so callers can identify WHO/WHAT
+        # wrote a fact (e.g. session_end_hook vs astor_recall auto-link vs
+        # manual am write). Default 'extracted' preserves existing rows.
+        provenance_kind: str | None = None,
+        provenance_agent: str | None = None,
     ) -> int:
         """Promote a candidate to canonical. Returns canonical_id.
 
@@ -320,8 +325,9 @@ class AstorBus:
                         origin_session_id, stable_id, embedding_version,
                         event_date, event_date_precision,
                         entities_json,
+                        provenance_kind, provenance_agent,
                         created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         candidate_id, event_id, namespace, content, kind, confidence, importance,
                         tags, metadata, kw_json, ctx_text,
@@ -341,6 +347,11 @@ class AstorBus:
                         # v1.14.31 Ship S3: created_at = now (ISO 8601 UTC).
                         # Used by time_range reorder as proximity signal for
                         # legacy facts without event_date.
+                        # v1.14.34 Ship I: provenance defaults (None → 'extracted')
+                        # inserted here so caller-overridden values flow through
+                        # to the new columns added in v1.14.34.
+                        (provenance_kind if provenance_kind is not None else 'extracted'),
+                        (provenance_agent if provenance_agent is not None else promoted_by),
                         datetime.utcnow().isoformat() + 'Z',
                     ),
                 )
