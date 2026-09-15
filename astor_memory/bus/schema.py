@@ -14,7 +14,7 @@ Tables:
 """
 
 import sqlite3
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 -- Pragmas set at connection time (bus/store.py:connect)
@@ -127,6 +127,14 @@ CREATE TABLE IF NOT EXISTS memory_canonical (
     event_date TEXT,
     event_date_precision TEXT NOT NULL DEFAULT 'none'
         CHECK(event_date_precision IN ('day', 'month', 'year', 'none')),
+    -- v1.14.21 (2026-09-15 Ship B): RippleMem-style structured entity binding.
+    -- Stores list of {type, value, fact_id} extracted at forge time. Distinct
+    -- from keywords (semantic / hybrid-search boost) and context (human-readable).
+    -- Used by future Ship C (entity_lex 3rd retrieval path) and by any caller
+    -- that wants to bind "who/where/when" without reparsing content. Format:
+    -- [{"type": "person|location|time|topic", "value": "...", "fact_id": N}]
+    -- Empty list is fine — old facts without extraction still valid.
+    entities_json TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY (candidate_id) REFERENCES memory_candidates(id),
     FOREIGN KEY (event_id) REFERENCES events(id),
     FOREIGN KEY (parent_revision_id) REFERENCES memory_canonical(id),
@@ -292,6 +300,7 @@ def astor_init_schema(conn: sqlite3.Connection) -> None:
     _astor_upgrade_v5_to_v6(conn)
     _astor_upgrade_v6_to_v7(conn)
     _astor_upgrade_v7_to_v8(conn)
+    _astor_upgrade_v8_to_v9(conn)
     # Index that depends on the publishable column must be created AFTER the column exists.
     # The executescript above emits CREATE INDEX inside the same script as the table,
     # which works for fresh DBs but errors on v1 databases because the column doesn't exist yet.
@@ -429,6 +438,42 @@ def _astor_upgrade_v7_to_v8(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_experience_emb_ready "
             "ON memory_experience(namespace, outcome) WHERE action_embedding IS NOT NULL"
+        )
+    except Exception:
+        pass
+
+
+def _astor_upgrade_v8_to_v9(conn: sqlite3.Connection) -> None:
+    """v1.14.21 (2026-09-15 Ship B): RippleMem-style structured entity binding.
+
+    Adds `entities_json` column to memory_canonical. Stores
+    [{"type": "person|location|time|topic", "value": "...", "fact_id": N}]
+    as a JSON list. Extracted at forge time and during backfill.
+
+    Backward compat: column defaults to '[]' (empty list). Existing rows
+    unaffected. New writes populate it via forge.extract_entities().
+
+    Index added for future Ship C (entity_lex 3rd retrieval path).
+    """
+    try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(memory_canonical)"
+        ).fetchall()}
+    except Exception:
+        return
+    if "entities_json" not in cols:
+        try:
+            conn.execute(
+                "ALTER TABLE memory_canonical ADD COLUMN entities_json "
+                "TEXT NOT NULL DEFAULT '[]'"
+            )
+        except Exception:
+            pass
+    # Index on JSON1 json_each for future Ship C. No-op until Ship C ships.
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canonical_entities "
+            "ON memory_canonical(json_each(entities_json)) WHERE tombstoned = 0"
         )
     except Exception:
         pass
