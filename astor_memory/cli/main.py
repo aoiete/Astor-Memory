@@ -748,23 +748,33 @@ def cmd_recall(args) -> int:
 
     # v1.13.1 Ship G: post-filter by --kinds if given. Build fact_kind map
     # by reading canonical directly (faster than re-querying nest).
+    # v1.13.1 fix (post-Ship G): astor_bus() requires tier arg — legacy
+    # single-file fallback was removed 2026-08-15. Default to 'public'
+    # since --kinds is most useful for cross-user zone facts (which live
+    # in public tier per the 3-zone architecture). If caller wants
+    # private, they should query directly via astor_bus(tier='private', ...).
     kinds_filter = None
     if args.kinds:
         kinds_filter = set(k.strip() for k in args.kinds.split(',') if k.strip())
     if kinds_filter and results:
-        bus = astor_bus()
+        bus = astor_bus(tier='public')
         fact_ids = [r[0] for r in results]
         placeholders = ','.join('?' for _ in fact_ids)
         fact_kind_map = {}
         try:
-            with bus._connect() as _c:
-                for row in _c.execute(
-                    f"SELECT id, kind FROM memory_canonical WHERE id IN ({placeholders})",
-                    fact_ids,
-                ).fetchall():
-                    fact_kind_map[row[0]] = row[1]
+            # v1.13.1 fix (post-Ship G re-verification): AstorBus exposes
+            # `conn` (sqlite3 connection) directly, not `_connect`. Use
+            # the public attribute — bus.conn is the canonical accessor
+            # in astor_memory/bus/store.py:75.
+            _c = bus.conn.cursor()
+            for row in _c.execute(
+                f"SELECT id, kind FROM memory_canonical WHERE id IN ({placeholders})",
+                fact_ids,
+            ).fetchall():
+                fact_kind_map[row[0]] = row[1]
         except Exception as e:
-            print(f'[WARN] --kinds filter lookup failed: {e}', file=sys.stderr)
+            print(f'[WARN] --kinds filter lookup failed: {e}', file=sys.stderr,
+                  flush=True)
         results = [(fid, sim) for fid, sim in results
                    if fact_kind_map.get(fid) in kinds_filter]
         results = results[:args.top_k]
