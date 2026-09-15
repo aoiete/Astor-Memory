@@ -405,6 +405,92 @@ def test_rest_read_missing_query(tmp_path, monkeypatch):
     r = client.post('/v1/read', json={'top_k': 5})
     assert r.status_code == 400
 
+def test_rest_read_missing_hint(tmp_path, monkeypatch):
+    """v1.15.0 Ship A: missing_hint expands query, doesn't break read."""
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    # Write a fact
+    client.post('/v1/write', json={'text': 'I drink dark roast coffee every morning', 'user': 'admin'})
+    # Read WITH missing_hint (gap-style)
+    r = client.post('/v1/read', json={
+        'query': 'morning drink',
+        'missing_hint': 'caffeine preference',
+        'top_k': 3,
+    })
+    assert r.status_code == 200
+    assert r.get_json()['count'] >= 1
+    # No exception, hint doesn't break the call
+
+
+def test_rest_read_entity_filter(tmp_path, monkeypatch):
+    """v1.15.0 Ship A: entity_filter post-filters by content/keyword substring."""
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    client.post('/v1/write', json={'text': 'Sunday poker tournament win', 'user': 'admin'})
+    client.post('/v1/write', json={'text': 'Stock portfolio rebalance', 'user': 'admin'})
+    # Filter by 'sunday' - should drop second (Stock) and keep first (Sunday)
+    r = client.post('/v1/read', json={
+        'query': 'win rebalance',
+        'entity_filter': ['sunday'],
+        'top_k': 5,
+    })
+    assert r.status_code == 200
+    results = r.get_json()['results']
+    # Contract: every surviving result MUST contain 'sunday' (case-insensitive)
+    # in content or keywords. Stock fact must be filtered out.
+    for res in results:
+        content_has = 'sunday' in (res.get('content') or '').lower()
+        kw_has = any('sunday' in (k or '').lower() for k in (res.get('keywords') or []))
+        assert content_has or kw_has, (
+            f"entity_filter leaked non-matching fact: {res.get('content')!r}"
+        )
+
+
+def test_rest_read_time_range(tmp_path, monkeypatch):
+    """v1.15.0 Ship A: since_ts/until_ts clamp results to time range."""
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    client.post('/v1/write', json={'text': 'Recent portfolio decision', 'user': 'admin'})
+    # Wide range should include everything
+    r = client.post('/v1/read', json={
+        'query': 'portfolio',
+        'since_ts': '2020-01-01T00:00:00Z',
+        'until_ts': '2099-12-31T23:59:59Z',
+        'top_k': 5,
+    })
+    assert r.status_code == 200
+    # Tight future range should still return (no event_date → kept by design)
+    r = client.post('/v1/read', json={
+        'query': 'portfolio',
+        'since_ts': '2099-01-01T00:00:00Z',
+        'until_ts': '2099-12-31T23:59:59Z',
+        'top_k': 5,
+    })
+    assert r.status_code == 200
+
+
+def test_rest_read_backward_compatible(tmp_path, monkeypatch):
+    """v1.15.0 Ship A: existing callers (no hint/filter) unchanged."""
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    client.post('/v1/write', json={'text': 'legacy caller works', 'user': 'admin'})
+    # Old-style payload, no new fields
+    r = client.post('/v1/read', json={'query': 'legacy', 'top_k': 3})
+    assert r.status_code == 200
+    assert r.get_json()['count'] >= 1
+
 
 def test_rest_install_plan(tmp_path, monkeypatch):
     """POST /v1/install returns install plan for cursor."""
