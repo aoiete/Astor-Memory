@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""bus_reflect.py — session 末 / cron 末 自动反思 (v1.0.5, 2026-09-14)
+"""bus_reflect.py — session 末 / cron 末 自动反思 (v1.1.0, 2026-09-14)
 
 设计目标:
   - 不调 LLM, 纯 SQL 聚合今天新写入的 canonical facts
@@ -23,6 +23,21 @@
   - 跟 `astor_grounding_audit.py` / `astor_health_diagnose.py` 模式一致:
     这些脚本都是 source-only 开发工具。
   - 触发方式: 手动跑 / cron (待 ship `bus-reflect-daily-2359mdt`)。
+
+v1.1.0 changelog (2026-09-14, Ship D):
+  - Zone-partitioned reflection: instead of 1 mixed reflection, write 1
+    fact per zone (success / failure / lesson). Skip neutral (fact/rule).
+  - Zone configs:
+      success → kind=reflection_success, importance=0.85, conf=0.90,
+                namespace=meta:reflection:success
+      failure → kind=reflection_failure, importance=0.90, conf=0.85,
+                namespace=meta:reflection:failure
+      lesson  → kind=reflection_lesson,  importance=0.99, conf=0.95,
+                namespace=meta:reflection:lesson
+  - Zone importance follows astor iron-rule convention (fact 3752)
+  - collect_facts() returns new 'zones' dict with success/failure/lesson/neutral
+  - Self-exclusion extended: also filter reflection_success/failure/lesson
+    from collect (same circular-noise reason as v1.0.4)
 
 v1.0.5 changelog (2026-09-14):
   - Replace all 5 utcnow() with now(timezone.utc) — utcnow is deprecated
@@ -150,13 +165,16 @@ def collect_facts(since: dt.datetime, tier: str, user_id: str | None) -> dict:
         # v1.0.4 fix: exclude kind='reflection' rows from the count. Without
         # this, each reflection fact inflates the next day's "new_facts" by 1
         # and adds itself to by_kind — circular noise.
+        # v1.1.0 Ship D: also exclude reflection_success / reflection_failure /
+        # reflection_lesson (zone-partitioned reflection facts) — same reason.
         rows = conn.execute(
             """SELECT id, content, kind, importance, tags, metadata,
                       origin_session_id, promoted_at
                FROM memory_canonical
                WHERE promoted_at >= ? AND promoted_at <= ?
                  AND (tombstoned = 0 OR tombstoned IS NULL)
-                 AND kind != 'reflection'
+                 AND kind NOT IN ('reflection', 'reflection_success',
+                                  'reflection_failure', 'reflection_lesson')
                ORDER BY promoted_at ASC""",
             (since_iso, now_iso),
         ).fetchall()
@@ -167,8 +185,22 @@ def collect_facts(since: dt.datetime, tier: str, user_id: str | None) -> dict:
     by_tag = Counter()
     text_tokens = Counter()
     sample = []
+    # v1.1.0 (2026-09-14, Ship D): partition facts by zone for downstream
+    # reflection. Per astor 3-zone architecture (fact 11938):
+    #   success   → user_preference / success_pattern → public
+    #   failure   → failure_pattern                   → public
+    #   lesson    → postmortem / lesson               → private (LESSON prefix)
+    #   neutral   → fact / rule / decision / etc.     → no zone promotion
+    success_kinds = {'user_preference', 'success_pattern'}
+    failure_kinds = {'failure_pattern'}
+    lesson_kinds = {'postmortem', 'lesson'}
+    success_facts: list[dict] = []
+    failure_facts: list[dict] = []
+    lesson_facts: list[dict] = []
+    neutral_facts: list[dict] = []
     for r in rows:
-        by_kind[r['kind'] or 'fact'] += 1
+        kind = r['kind'] or 'fact'
+        by_kind[kind] += 1
         try:
             tags = json.loads(r['tags'] or '[]')
         except Exception:
@@ -178,13 +210,22 @@ def collect_facts(since: dt.datetime, tier: str, user_id: str | None) -> dict:
         # v1.0.3 fix: char-grams for CJK + word tokens for latin
         for tok in _tokenize_cjk_latin(r['content'] or ''):
             text_tokens[tok] += 1
+        rec = {
+            'id': r['id'],
+            'kind': kind,
+            'content_preview': (r['content'] or '')[:120],
+            'promoted_at': r['promoted_at'],
+        }
+        if kind in success_kinds:
+            success_facts.append(rec)
+        elif kind in failure_kinds:
+            failure_facts.append(rec)
+        elif kind in lesson_kinds:
+            lesson_facts.append(rec)
+        else:
+            neutral_facts.append(rec)
         if len(sample) < 3:
-            sample.append({
-                'id': r['id'],
-                'kind': r['kind'],
-                'content_preview': (r['content'] or '')[:120],
-                'promoted_at': r['promoted_at'],
-            })
+            sample.append(rec)
     return {
         'total': len(rows),
         'by_kind': dict(by_kind.most_common()),
@@ -194,6 +235,13 @@ def collect_facts(since: dt.datetime, tier: str, user_id: str | None) -> dict:
         ],
         'recent_sample': sample,
         'window_end_iso': now_iso,
+        # v1.1.0 Ship D: zone-partitioned facts
+        'zones': {
+            'success': success_facts,
+            'failure': failure_facts,
+            'lesson': lesson_facts,
+            'neutral': neutral_facts,
+        },
     }
 
 
@@ -242,13 +290,17 @@ def write_reflection_fact(
     user_id: str,
     since: dt.datetime,
 ) -> int:
-    """Write the reflection fact directly via bus API. Returns fact_id or 0.
+    """Write per-zone reflection facts directly via bus API.
 
-    v1.0.2 (2026-09-14): bypass `am write` CLI because --mode none makes
-    the extractor return [] and `am write` only writes an event, no fact.
-    Direct insert_candidate + promote_candidate guarantees the fact lands
-    in memory_canonical with kind='reflection' (which we tag via metadata
-    for queryability).
+    v1.1.0 (2026-09-14, Ship D): zone-partitioned reflection. Instead of
+    one mixed reflection, write one fact per zone (success / failure /
+    lesson) and skip neutral. Each zone uses:
+      - kind='reflection' (so they all show up in one recall bucket)
+      - importance matched to the zone's iron-rule importance
+        (success 0.85 / failure 0.90 / lesson 0.99)
+      - namespace encodes the zone: meta:reflection:success / failure / lesson
+      - tags include the zone name for filterable queries
+    Returns the FIRST fact_id written, or 0 if all failed.
     """
     import sys as _sys
     from pathlib import Path as _Path
@@ -280,47 +332,76 @@ def write_reflection_fact(
 
     # v1.0.5 fix: now(timezone.utc) (utcnow is deprecated in py3.12+).
     today = dt.datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    metadata = {
-        '__reflection__': True,
-        '__window_start__': since.isoformat() + 'Z',
-        '__window_end__': dt.datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-        '__new_fact_count__': stats.get('total', 0),
-        '__hot_tokens__': stats.get('hot_tokens', [])[:10],
-        '__by_kind__': stats.get('by_kind', {}),
-        '__top_tags__': list(stats.get('by_tag', {}).keys())[:5],
-        '__generator__': 'bus_reflect.py v1.0.5',
-    }
+    now_iso = dt.datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+    # v1.1.0 Ship D: zone config table. importance follows the iron-rule
+    # convention from fact 3752.
+    zones_cfg = [
+        # (zone_name, importance, confidence, kind_for_zone)
+        ('success', 0.85, 0.90, 'reflection_success'),
+        ('failure', 0.90, 0.85, 'reflection_failure'),
+        ('lesson',  0.99, 0.95, 'reflection_lesson'),
+    ]
+    zones_data = (stats.get('zones') or {})
+    first_fact_id = 0
     try:
         bus_tier = tier.split('_', 1)[0] if tier.startswith('private_') else tier
         bus = astor_bus(tier=bus_tier, user_id=user_id)
-        # 1) append event so the fact has a foreign-key target
-        event_id = bus.append_event(
-            namespace=user_id,
-            agent_id='cli.reflect',
-            source='cli.reflect',
-            action='reflect',
-            content=text,
-        )
-        # 2) insert candidate with kind='reflection'
-        cand_id = bus.insert_candidate(
-            event_id=event_id,
-            namespace='meta:session_reflection',
-            content=text,
-            kind='reflection',
-            confidence=0.85,
-            importance=0.7,
-            tags=['reflection', 'auto', today],
-            metadata=metadata,
-            scene='reflection',
-        )
-        # 3) promote to canonical. v1.0.3 fix: pass short tier form (e.g.
-        # 'private'), not 'private_admin' — bus writes to the canonical table
-        # keyed on user_id, not the long suffix.
-        fact_id = bus.promote_candidate(
-            cand_id, promoted_by='cli.reflect',
-            user_id=user_id, tier=bus_tier,
-        )
-        return fact_id
+        for zone_name, imp, conf, kind in zones_cfg:
+            zone_facts = zones_data.get(zone_name) or []
+            if not zone_facts:
+                continue
+            # v1.1.0 Ship D: zone-prefixed text. Include a header line
+            # so the fact is self-describing.
+            zone_text = (
+                f'[bus_reflect · {zone_name} · '
+                f'{since.strftime("%Y-%m-%d %H:%M")} → {now_iso.rstrip("Z")} UTC] '
+                f'count={len(zone_facts)}'
+            )
+            for f in zone_facts[:5]:  # cap per-zone sample at 5
+                zone_text += (
+                    f"\n  #{f['id']} [{f['kind']}] {f['content_preview']}"
+                )
+            metadata = {
+                '__reflection__': True,
+                '__zone__': zone_name,
+                '__window_start__': since.isoformat() + 'Z',
+                '__window_end__': now_iso,
+                '__zone_count__': len(zone_facts),
+                '__by_kind__': stats.get('by_kind', {}),
+                '__hot_tokens__': stats.get('hot_tokens', [])[:10],
+                '__generator__': 'bus_reflect.py v1.1.0',
+            }
+            event_id = bus.append_event(
+                namespace=user_id,
+                agent_id='cli.reflect',
+                source='cli.reflect',
+                action=f'reflect.{zone_name}',
+                content=zone_text,
+            )
+            cand_id = bus.insert_candidate(
+                event_id=event_id,
+                namespace=f'meta:reflection:{zone_name}',
+                content=zone_text,
+                kind=kind,
+                confidence=conf,
+                importance=imp,
+                tags=['reflection', zone_name, 'auto', today],
+                metadata=metadata,
+                scene='reflection',
+            )
+            fact_id = bus.promote_candidate(
+                cand_id, promoted_by='cli.reflect',
+                user_id=user_id, tier=bus_tier,
+            )
+            if fact_id and not first_fact_id:
+                first_fact_id = fact_id
+            print(
+                f'[OK] reflection.{zone_name} written: id={fact_id} '
+                f'count={len(zone_facts)} imp={imp}',
+                file=_sys.stderr,
+            )
+        return first_fact_id
     except Exception as e:
         print(f'[ERR] reflection write failed: {type(e).__name__}: {e}',
               file=_sys.stderr)
