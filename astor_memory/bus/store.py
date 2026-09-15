@@ -130,6 +130,10 @@ class AstorBus:
         overview: str = '',
         topic: str = '',
         session_id: str = '',
+        # v1.14.21 Ship B: RippleMem-style structured entity binding. Optional
+        # list of {"type": ..., "value": ...}; if None, extract_entities() runs
+        # on content during promote_candidate so we never lose it.
+        entities: list[dict] | None = None,
     ) -> int:
         """Insert a candidate fact. Returns candidate_id.
 
@@ -160,6 +164,10 @@ class AstorBus:
         # even if a misbehaving extractor emits huge blobs.
         if abstract:
             meta['__abstract__'] = str(abstract)[:500]
+        # v1.14.21 Ship B: store entities in metadata so promote_candidate
+        # can pick them up and write to memory_canonical.entities_json.
+        if entities:
+            meta['__entities__'] = list(entities)[:16]
         if overview:
             meta['__overview__'] = str(overview)[:1500]
         # v1.12.0 (2026-08-29): topic + session_id for hierarchical extraction
@@ -214,6 +222,27 @@ class AstorBus:
         After the INSERT, computes embedding via nest and stores it on the
         canonical row so recall() works (Plan § Write-time dedup).
         """
+        # v1.14.21 Ship B: lazy import forge.extract_entities to avoid any
+        # bus<->forge circular import risk (forgiving fallback if unavailable).
+        try:
+            from .forge.extractor import extract_entities as _extract_entities_safe
+        except Exception:
+            def _extract_entities_safe(_text, _fact_id=0):
+                return []
+        # v1.14.21 Ship B: metadata may be a JSON string (DB column) or dict
+        # (in-process). Normalize for entities_json extraction.
+        def _meta_dict(m):
+            if not m:
+                return {}
+            if isinstance(m, dict):
+                return m
+            if isinstance(m, str):
+                try:
+                    v = json.loads(m)
+                    return v if isinstance(v, dict) else {}
+                except Exception:
+                    return {}
+            return {}
         # P0-fix 2026-08-15: dedup check BEFORE INSERT.
         # P1-fix 2026-08-16: **content-aware** dedup. We only treat the
         # existing canonical row as idempotent if its content matches the
@@ -289,18 +318,49 @@ class AstorBus:
                         tags, metadata, keywords, context,
                         promoted_by, user_id, tier, scope_type, verdict,
                         origin_session_id, stable_id, embedding_version,
-                        event_date, event_date_precision)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        event_date, event_date_precision,
+                        entities_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         candidate_id, event_id, namespace, content, kind, confidence, importance,
                         tags, metadata, kw_json, ctx_text,
                         promoted_by, user_id, tier, scope_type, verdict,
                         origin_session_id, stable_id, 1,
                         ev_date, ev_prec,
+                        # v1.14.21 Ship B: entities_json from candidate metadata
+                        # (__entities__ key set by astor_extract_facts forward path)
+                        # or fall back to a fresh extract_entities() call on content.
+                        # Lazy import to avoid circular dep (forge -> bus is already
+                        # common; bus -> forge is fine because forge/extractor.py has
+                        # no bus imports at module level).
+                        json.dumps(
+                            (_meta_dict(metadata).get('__entities__'))
+                            or _extract_entities_safe(content, 0)  # placeholder; UPDATE below sets real fact_id
+                        ),
                     ),
                 )
                 canonical_id = cur.lastrowid
                 assert canonical_id is not None
+                # v1.14.21 Ship B: rewrite entities_json with the real canonical fact_id.
+                # Must use cursor c (same transaction); conn.execute would query a
+                # different connection without seeing the just-INSERTed row.
+                try:
+                    _raw = c.execute(
+                        "SELECT entities_json FROM memory_canonical WHERE id = ?",
+                        (canonical_id,),
+                    ).fetchone()
+                    if _raw and _raw[0]:
+                        _ents = json.loads(_raw[0])
+                        if isinstance(_ents, list):
+                            for _e in _ents:
+                                if isinstance(_e, dict):
+                                    _e['fact_id'] = canonical_id
+                            c.execute(
+                                "UPDATE memory_canonical SET entities_json = ? WHERE id = ?",
+                                (json.dumps(_ents, ensure_ascii=False), canonical_id),
+                            )
+                except Exception:
+                    pass  # best-effort; entities_json still valid (just fact_id=0)
         if existing_canonical_id is not None:
             # True idempotent retried write — already promoted with matching
             # content. Audit must happen OUTSIDE the now-closed transaction.
