@@ -92,21 +92,73 @@ def extract_entities(text: str, fact_id: int = 0) -> list[dict]:
         seen.add((typ, v.lower()))
         out.append({"type": typ, "value": v[:128], "fact_id": fact_id})
 
-    # --- person: Chinese names (2-4 Han chars) ---
+    # --- person: Chinese names (2-4 Han chars) — Ship D (2026-09-15) ---
+    # Dependency-aware heuristic: a Han token is treated as person ONLY if
+    # the surrounding context signals a name reference. Patterns accepted:
+    #   - "X 是/有/在/了/说/做/叫/来/去" (declarative)
+    #   - "在/我/他/她/这/那/叫/对 X" (introducing phrase)
+    #   - "叫 X" (introducing by name)
+    #   - "X 的" (possessive, strong person signal)
+    #   - "X 给/跟/向/对/和/与" (relation)
+    # Tokens in noise patterns (verb / time / location-only / single-char
+    # common words) are skipped. Tightens precision at the cost of some
+    # recall (better for post-filter use case).
     _PERSON_STOP = {"用户", "今日", "明天", "昨天", "早上", "晚上", "中午",
                     "下午", "现在", "之前", "之后", "每天", "每周", "每月",
                     "要求", "希望", "觉得", "应该", "已经", "可以", "不能",
                     "不要", "不会", "请看", "请按", "请您", "想要",
-                    "开始", "结束", "完成", "进行", "继续", "停止", "暂停"}
+                    "开始", "结束", "完成", "进行", "继续", "停止", "暂停",
+                    # Ship D additions: verbs / time / common phrases
+                    "交易", "买入", "卖出", "购买", "使用", "看", "去", "来",
+                    "做了", "有了", "走了", "看了", "买了", "卖了", "用了",
+                    "当天", "当天买入", "当天卖出", "今天", "明天", "昨天",
+                    "股票", "金额", "价格", "订单", "数量", "时间", "日期",
+                    "公司", "行业", "部门", "项目", "产品", "系统", "服务",
+                    "页面", "按钮", "表格", "图片", "视频", "文档", "数据",
+                    "用户", "客户", "对方", "本人", "自己", "大家", "他们",
+                    "我们", "你们", "他们", "她们", "它们", "这事", "那个",
+                    "这个", "哪个", "那些", "这些", "然后", "接着", "于是",
+                    "现在", "以后", "以后", "此时", "那时", "过去", "未来",
+                    "真的", "假的", "对的", "错的", "好的", "坏的", "贵的",
+                    "便宜", "高", "低", "大", "小", "多", "少", "长", "短"}
+    # postfix chars that STRONGLY signal the previous Han token is a name
+    _PERSON_POSTFIX = {"是", "有", "在", "了", "说", "做", "叫", "来", "去",
+                       "的", "给", "跟", "向", "对", "和", "与", "们"}  # 们 = plural marker (我们/他们)
+    # prefix chars that introduce a name (weaker signal; only count if the
+    # token is followed by a postfix signal too)
+    _PERSON_PREFIX = {"在", "我", "他", "她", "这", "那", "叫", "对", "跟", "给"}
     for m in _re_e.finditer(r"[\u4e00-\u9fff]{2,4}", text):
         s = m.group(0)
         if s in _PERSON_STOP:
             continue
         if s[0] in {"今", "明", "昨", "前", "后"} and len(s) <= 3:
             continue
-        _add("person", s)
-        if len(out) >= 16:
-            return out
+        # Context scan: 1-2 chars on each side
+        s_start = m.start()
+        s_end = m.end()
+        prev_char = text[s_start - 1] if s_start > 0 else ''
+        next_char = text[s_end] if s_end < len(text) else ''
+        prev2 = text[s_start - 2:s_start] if s_start >= 2 else ''
+        # Rule 1: previous char is a strong introducer
+        if prev_char in _PERSON_PREFIX:
+            _add("person", s)
+            if len(out) >= 16:
+                return out
+            continue
+        # Rule 2: next char is a strong postfix (的/是/在/了/...)
+        if next_char in _PERSON_POSTFIX:
+            _add("person", s)
+            if len(out) >= 16:
+                return out
+            continue
+        # Rule 3: previous char is 的 (X的 is possessive — strong person signal)
+        if prev_char == "的":
+            _add("person", s)
+            if len(out) >= 16:
+                return out
+            continue
+        # Otherwise: probably a verb / noun, skip (precision over recall)
+        continue
 
     # --- person: English Capitalized ---
     _STOP_CAP = {"The", "This", "That", "These", "Those", "I", "You", "We",
