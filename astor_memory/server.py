@@ -902,6 +902,31 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if query_timestamp and not isinstance(query_timestamp, str):
             query_timestamp = None
         query_anchor = (query_timestamp or '')[:10] or None
+        # v1.15.0 (2026-09-15 Ship A): RippleMem evidence-gap hint. Optional.
+        # Caller can pass missing_hint="user timezone" to expand the query;
+        # entity_filter=["sunday"] to post-filter; since_ts/until_ts to clamp
+        # time_range. All three are backward-compatible no-ops when absent.
+        # RippleMem ablation: hint-based gap-aware recall beats naive top-k
+        # on multi-hop without a full graph layer (skipped — mem0g/zep
+        # 4M-token build cost not justified for single-agent single-user).
+        missing_hint = body.get('missing_hint')
+        if missing_hint is not None and not isinstance(missing_hint, str):
+            missing_hint = None
+        if missing_hint:
+            missing_hint = str(missing_hint).strip()[:200] or None
+        _raw_ef = body.get('entity_filter')
+        entity_filter = None
+        if isinstance(_raw_ef, list):
+            entity_filter = [str(e).strip()[:64] for e in _raw_ef if e][:8] or None
+        elif isinstance(_raw_ef, str) and _raw_ef.strip():
+            entity_filter = [e.strip()[:64] for e in _raw_ef.split(',') if e.strip()][:8] or None
+        time_range = None
+        if since_ts and until_ts:
+            time_range = (since_ts[:10], until_ts[:10])
+        elif since_ts:
+            time_range = (since_ts[:10], '9999-12-31')
+        elif until_ts:
+            time_range = ('0000-01-01', until_ts[:10])
         # v1.1: tier=repo accepts repo_id (explicit) or user_id (fallback).
         user_id = None
         if tier == 'repo':
@@ -957,6 +982,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # Generates 1-2 cheap synonym variants (research->study, when->what date)
         # and runs hybrid recall on each, then dedupes by best score.
         _query_variants = [query]
+        # v1.15.0 Ship A: missing_hint -> extra variant for BM25/vector expansion.
+        # RippleMem-style: caller tells bus "what evidence is missing", bus
+        # expands the query so it lands in hybrid retrieval results.
+        if missing_hint and missing_hint.lower() not in query.lower():
+            _query_variants.append(f"{query} {missing_hint}")
         if os.environ.get('ASTOR_EXPANSION', '1') != '0':
             try:
                 from .nest.synonym_expander import expand_query as _expq
@@ -1387,7 +1417,33 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'topic': _meta.get('__topic__', '') if _meta else '',
                 'session_id_meta': _meta.get('__session_id__', '') if _meta else '',
             })
-        # v1.11.0 (2026-08-28): Agentic-grep verification pass (Mistral
+        # v1.15.0 Ship A: entity_filter + time_range post-filter.
+        # entity_filter = list of strings; fact must contain ANY of them in
+        # content or keywords (case-insensitive substring match — works for
+        # Ship A without entities_json column; will upgrade to structured
+        # entity match in Ship B). Empty filter / None = no filter.
+        # time_range = (since, until) YYYY-MM-DD; fact's event_date must fall
+        # in range. None time = no clamp.
+        if entity_filter:
+            _ef_low = [e.lower() for e in entity_filter]
+            enriched = [r for r in enriched
+                        if any(e in (r.get('content') or '').lower()
+                               or any(e in (k or '').lower()
+                                      for k in (r.get('keywords') or []))
+                               for e in _ef_low)]
+        if time_range:
+            _ts_lo, _ts_hi = time_range
+            def _in_tr(r):
+                _ed = r.get('event_date') or ''
+                if not _ed:
+                    return True  # no date = keep (don't punish legacy facts)
+                return _ts_lo <= _ed[:10] <= _ts_hi
+            enriched = [r for r in enriched if _in_tr(r)]
+        # NOTE: v1.15.0 entity_filter + time_range post-filters are placed
+        # AFTER grep_verify + neighbor-expand below so they also prune any
+        # rows those passes append. (Otherwise grep_verify can re-leak facts
+        # that should be filtered, as observed in test_rest_read_entity_filter.)
+
         # Agentic Search pattern). Zero LLM tokens. After vector/hybrid
         # recall, re-run an exact BM25 match on the query's rare tokens;
         # facts that exact-match but were missed by hybrid recall get
@@ -1510,6 +1566,22 @@ def create_app(astor_dir: str | None = None) -> Flask:
             except Exception:
                 pass  # neighbor-expand is best-effort
 
+        # v1.15.0 Ship A: final filter pass (after grep_verify + neighbor)
+        if entity_filter:
+            _ef_low = [e.lower() for e in entity_filter]
+            enriched = [r for r in enriched
+                        if any(e in (r.get('content') or '').lower()
+                               or any(e in (k or '').lower()
+                                      for k in (r.get('keywords') or []))
+                               for e in _ef_low)]
+        if time_range:
+            _ts_lo, _ts_hi = time_range
+            def _in_tr_final(r):
+                _ed = r.get('event_date') or ''
+                if not _ed:
+                    return True
+                return _ts_lo <= _ed[:10] <= _ts_hi
+            enriched = [r for r in enriched if _in_tr_final(r)]
         # v1.14.x (2026-09-13): bump access_count + last_confirmed_at for
         # every fact that actually surfaced in this recall. Per wechat
         # article 3-layer memory best practice (long-term memory decay):
