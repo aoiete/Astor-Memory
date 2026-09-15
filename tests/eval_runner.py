@@ -110,10 +110,17 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
     latencies = []
     for q in eval_set:
         try:
+            # v1.14.23 Ship F (2026-09-15): per-query RippleMem hint/filter/time
+            # params. If present in the eval query, they pass through to
+            # /v1/read as missing_hint/entity_filter/since_ts/until_ts.
+            _q_kwargs = {}
+            for _qk in ('missing_hint', 'entity_filter', 'since_ts', 'until_ts'):
+                if _qk in q:
+                    _q_kwargs[_qk] = q[_qk]
             results, lat_ms = recall(
                 query=q["query"], tier=q.get("tier", "private"),
                 user=q.get("user", "admin"), top_k=q.get("top_k", 10),
-                **kwargs,
+                **kwargs, **_q_kwargs,
             )
         except Exception as e:
             detail.append({"qid": q["qid"], "error": str(e), "matched": False, "mrr": 0.0})
