@@ -709,10 +709,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # relative-date resolution at write time.
         caller_event_ts = body.get('event_time') or body.get('event_ts')
         print(f'[DEBUG] /v1/write caller_event_ts={caller_event_ts!r}', flush=True)
+        # v1.13.1 (2026-09-14, Ship L): bridge the capture_intent hook to
+        # the 3-zone architecture. Before extracting facts, classify the
+        # text into success/failure/lesson/neutral. Pass outcome so the
+        # extractor's zone-mapping branch (forge/extractor.py outcome→
+        # kind/importance) actually fires. Without this, every fact
+        # landed as kind='fact' (neutral) regardless of content — Ship F
+        # code was dead code until this hook was wired up.
+        from .forge.extractor import astor_classify_outcome
+        outcome = astor_classify_outcome(text)
+        why = (
+            f'auto-classified outcome={outcome} (Ship L capture_intent→zone)'
+            if outcome != 'neutral' else None
+        )
         facts = forge.astor_extract_facts(
             text, mode=mode, tier=tier,
             user_id=bus_user_id if tier == 'private' else None,
             actor='rest_api',
+            outcome=outcome,
+            why=why,
             # v1.10.9: doc_timestamp anchors relative-time resolution.
             doc_timestamp=caller_event_ts,
         )
