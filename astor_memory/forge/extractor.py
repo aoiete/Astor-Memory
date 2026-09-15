@@ -60,6 +60,106 @@ class AstorFact:
     # session_id identifies the conversation this fact originated from.
     topic: str = ''
     session_id: str = ''
+    # v1.14.21 (2026-09-15 Ship B): RippleMem-style structured entity binding.
+    # List of {type, value} extracted from content. Types: 'person', 'time',
+    # 'topic'. Distinct from keywords (semantic retrieval boost) and
+    # context (human-readable). Future Ship C entity_lex 3rd path uses this.
+    entities: list[dict] | None = None  # [{"type": "person", "value": "sunday"}]
+
+
+def extract_entities(text: str, fact_id: int = 0) -> list[dict]:
+    """v1.14.21 (2026-09-15 Ship B): RippleMem-style structured entity binding.
+
+    Extracts person / location / time / topic entities from text. Cheap regex
+    heuristics, no LLM. Backward-compatible: returns [] when no entity is
+    detectable.
+
+    Returns list of {"type": str, "value": str, "fact_id": int}. fact_id is
+    filled by caller. Capped at 16 per fact.
+    """
+    import re as _re_e
+    if not text or not text.strip():
+        return []
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(typ: str, val: str) -> None:
+        v = val.strip()
+        if not v:
+            return
+        if (typ, v.lower()) in seen:
+            return
+        seen.add((typ, v.lower()))
+        out.append({"type": typ, "value": v[:128], "fact_id": fact_id})
+
+    # --- person: Chinese names (2-4 Han chars) ---
+    _PERSON_STOP = {"用户", "今日", "明天", "昨天", "早上", "晚上", "中午",
+                    "下午", "现在", "之前", "之后", "每天", "每周", "每月",
+                    "要求", "希望", "觉得", "应该", "已经", "可以", "不能",
+                    "不要", "不会", "请看", "请按", "请您", "想要",
+                    "开始", "结束", "完成", "进行", "继续", "停止", "暂停"}
+    for m in _re_e.finditer(r"[\u4e00-\u9fff]{2,4}", text):
+        s = m.group(0)
+        if s in _PERSON_STOP:
+            continue
+        if s[0] in {"今", "明", "昨", "前", "后"} and len(s) <= 3:
+            continue
+        _add("person", s)
+        if len(out) >= 16:
+            return out
+
+    # --- person: English Capitalized ---
+    _STOP_CAP = {"The", "This", "That", "These", "Those", "I", "You", "We",
+                 "They", "He", "She", "It", "And", "But", "Or", "Not", "No",
+                 "Yes", "If", "When", "Where", "How", "Why", "What", "Who",
+                 "Then", "Now", "Here", "There", "Today", "Yesterday",
+                 "Tomorrow", "Monday", "Tuesday", "Wednesday", "Thursday",
+                 "Friday", "Saturday", "Sunday", "January", "February",
+                 "March", "April", "May", "June", "July", "August",
+                 "September", "October", "November", "December", "API",
+                 "ASTOR", "CEO", "CTO", "AI", "OK", "TODO", "URL", "USD",
+                 "USDC", "BTC", "ETH", "Post", "Pre", "Ship", "Fact",
+                 "User", "Admin", "Bus", "Note", "Class"}
+    for m in _re_e.finditer(r"\b[A-Z][a-zA-Z]{1,30}\b", text):
+        w = m.group(0)
+        if w in _STOP_CAP:
+            continue
+        if len(w) < 2:
+            continue
+        _add("person", w)
+        if len(out) >= 16:
+            return out
+
+    # --- time: ISO dates + Chinese dates + relative anchors ---
+    for m in _re_e.finditer(r"\b\d{4}-\d{1,2}(?:-\d{1,2})?\b", text):
+        _add("time", m.group(0))
+        if len(out) >= 16:
+            return out
+    for m in _re_e.finditer(r"\b\d{4}年(?:\d{1,2}月)?(?:\d{1,2}日)?", text):
+        _add("time", m.group(0))
+        if len(out) >= 16:
+            return out
+    for m in _re_e.finditer(
+        r"(?:今天|昨天|明天|前天|后天|上周|本周|下周|上个月|这个月|下个月|今晚|明早|今早)",
+        text):
+        _add("time", m.group(0))
+        if len(out) >= 16:
+            return out
+
+    # --- topic: tickers + quoted phrases ---
+    for m in _re_e.finditer(r"\b[A-Z]{2,5}\b", text):
+        w = m.group(0)
+        if w in _STOP_CAP:
+            continue
+        _add("topic", w)
+        if len(out) >= 16:
+            return out
+    for m in _re_e.finditer(r"[""“]([^""”]{2,40})[""”]", text):
+        _add("topic", m.group(1))
+        if len(out) >= 16:
+            return out
+
+    return out
 
 
 def astor_regex_extract(text: str) -> list[AstorFact]:
@@ -107,6 +207,7 @@ def astor_regex_extract(text: str) -> list[AstorFact]:
                 tags=[kind, 'auto_extracted'],
                 keywords=[kind] + distinct_words,
                 context=text[:120].strip(),
+                entities=extract_entities(text),
                 abstract=abstract,
                 overview=text[:240].strip(),
                 # v1.12.0: derive topic from first noun phrase (≤5 words) and
