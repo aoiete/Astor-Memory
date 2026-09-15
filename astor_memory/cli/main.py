@@ -55,6 +55,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument('query', help='Query text')
     sub.add_argument('--user', default='admin', help='User ID')
     sub.add_argument('--top-k', type=int, default=5, help='Number of results')
+    # v1.13.1 (2026-09-14, Ship G): --kinds filter for zone-prioritized
+    # recall. Comma-separated list, e.g. `--kinds user_preference,failure_pattern`
+    # to only surface success+failure zones, skipping neutral `fact` rows.
+    sub.add_argument('--kinds', default=None,
+                     help='Comma-separated kind filter (e.g. user_preference,failure_pattern)')
     sub.set_defaults(func=cmd_recall)
 
     # am doctor
@@ -105,6 +110,32 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument('--no-promote', action='store_true',
                      help='Skip auto-promotion; just write with outcome=success')
     sub.set_defaults(func=cmd_learn)
+
+    # v1.13.1 (2026-09-14, Ship E): am fail — mirror of `am learn` for
+    # failure_pattern detection. Auto-tags outcome='failure', forces
+    # kind='failure_pattern', importance=0.90, tier='public' (so the agent
+    # sees the failed approach on next attempt and avoids repeating it).
+    sub = subparsers.add_parser(
+        'fail',
+        help='Write a fact + auto-detect failure pattern (kind=failure_pattern, tier=public)',
+    )
+    sub.add_argument('text', help='Fact text describing a failed approach')
+    sub.add_argument('--user', default='admin', help='User ID')
+    sub.add_argument('--tier', default='public',
+                    help='Tier: public|source|private_<user> (default public)')
+    sub.set_defaults(func=cmd_fail)
+
+    # v1.13.1 (2026-09-14, Ship E): am postmortem — for severe error +
+    # root cause + lesson (LESSON zone, private, importance=0.99).
+    sub = subparsers.add_parser(
+        'postmortem',
+        help='Write a LESSON fact (kind=postmortem/lesson, tier=private, importance=0.99)',
+    )
+    sub.add_argument('text', help='LESSON fact text (must include error + root cause + fix)')
+    sub.add_argument('--user', default='admin', help='User ID')
+    sub.add_argument('--tier', default='private',
+                    help='Tier: public|source|private_<user> (default private)')
+    sub.set_defaults(func=cmd_postmortem)
 
     # v1.2.0 (2026-08-16): am cascade — replay the cascade write queue.
     # When nest.store() failed during promote_candidate (e.g. embedding
@@ -271,10 +302,15 @@ def main(argv: list[str] | None = None) -> int:
     # admin by default (highest privilege, since most commands are
     # operational like cascade stats/replay). Individual commands can
     # override this with `astor_init_acl` if they need a different role.
+    # v1.13.1 (2026-09-14, Ship E fix): admin actor cannot read private_
+    # (strict privacy model). Impersonate as 'user:admin' with role='user'
+    # and plan='power' so private_<admin> access works. admin-only ops
+    # (cascade stats, bot admin) still work because each per-tier check
+    # verifies role on its own.
     from .._internal.acl import astor_init_acl as _ia_cli
     try:
-        # 2026-09-02 final: admin role has no plan (plan is for users only).
-        _ia_cli(actor='admin:admin', role='admin', tier='public', user_id=None)
+        _ia_cli(actor='user:admin', role='user', tier='private',
+                user_id='admin', subscription_plan='power')
     except Exception:
         pass  # if ACL already init'd (e.g. via server boot), skip
 
@@ -469,10 +505,204 @@ def cmd_learn(args) -> int:
     return 0
 
 
+def cmd_fail(args) -> int:
+    """v1.13.1 (2026-09-14, Ship E): mirror of cmd_learn for failure_pattern.
+
+    Detects failure phrases (zh + en), tags outcome='failure', forces
+    kind='failure_pattern' with importance=0.90. Defaults to tier='public'
+    so the failure is visible to the agent on next attempt.
+    """
+    from ..bus import astor_bus
+    from ..forge import astor_extract_facts
+    from ..forge.pattern_detector import (
+        astor_detect_failure_pattern,
+        astor_score_failure_strength,
+    )
+
+    is_failure = astor_detect_failure_pattern(args.text)
+    strength = astor_score_failure_strength(args.text)
+    outcome = 'failure' if is_failure else 'neutral'
+    why = (
+        f'auto-detected failure-phrase (strength={strength:.2f})'
+        if is_failure else None
+    )
+    if not is_failure:
+        print(
+            f'[WARN] text did not match any failure pattern '
+            f'(strength={strength:.2f}). Writing anyway as failure_pattern — '
+            f'review before relying on this fact for future recall.',
+            file=sys.stderr,
+        )
+
+    tier = getattr(args, 'tier', 'public')
+    user_id = args.user if tier == 'private' else None
+    bus = astor_bus(tier=tier, user_id=user_id)
+
+    event_id = bus.append_event(
+        namespace=args.user,
+        agent_id='cli.fail',
+        source='cli.fail',
+        action='write',
+        content=args.text,
+    )
+
+    facts = astor_extract_facts(
+        args.text, mode='auto',
+        tier=tier, user_id=user_id,
+        actor='cli.fail',
+        outcome=outcome,
+        why=why,
+    )
+    if not facts:
+        print(f'[astor] Saved event (no facts extracted): event_id={event_id}')
+        return 0
+
+    fact_ids = []
+    for f in facts:
+        # v1.13.1 fix (Ship E): override kind to failure_pattern + importance
+        # to 0.90 (matches the iron-rule convention from fact 3752). The
+        # extractor's auto-detected kind/importance is intentionally bypassed
+        # so `am fail` always lands in the right zone.
+        cand_id = bus.insert_candidate(
+            event_id=event_id,
+            namespace=args.user,
+            content=f.content,
+            kind='failure_pattern',
+            confidence=f.confidence,
+            importance=0.90,
+            tags=(f.tags or []) + ['failure', 'auto-detected' if is_failure else 'manual'],
+        )
+        canon_id = bus.promote_candidate(
+            cand_id, promoted_by='cli.fail',
+            user_id=args.user if tier == 'private' else None,
+            tier=tier,
+        )
+        fact_ids.append(canon_id)
+
+    print(f'[astor] fail: outcome={outcome} strength={strength:.2f}')
+    print(f'   tier={tier} fact_ids={fact_ids}')
+    print(f'   kind=failure_pattern importance=0.90 (forced)')
+    return 0
+
+
+def cmd_postmortem(args) -> int:
+    """v1.13.1 (2026-09-14, Ship E): LESSON zone writer.
+
+    Detects lesson pattern (error + root cause + fix). Forces kind to
+    'lesson' (or 'postmortem' if text starts with that keyword),
+    importance=0.99, tier='private'. Prefixes content with 'LESSON '
+    per astor iron rule (fact 3752).
+    """
+    from ..bus import astor_bus
+    from ..forge import astor_extract_facts
+    from ..forge.pattern_detector import (
+        astor_detect_lesson_pattern,
+        astor_score_lesson_strength,
+    )
+
+    is_lesson = astor_detect_lesson_pattern(args.text)
+    strength = astor_score_lesson_strength(args.text)
+    if not is_lesson:
+        print(
+            f'[WARN] text didn\'t match lesson pattern '
+            f'(needs error + root cause + fix; score={strength:.2f}). '
+            f'Writing anyway as lesson — verify before relying on this.',
+            file=sys.stderr,
+        )
+
+    tier = getattr(args, 'tier', 'private')
+    user_id = args.user if tier == 'private' else None
+    bus = astor_bus(tier=tier, user_id=user_id)
+
+    # v1.13.1 fix (Ship E): LESSON prefix per iron rule. Detect existing
+    # prefix to avoid double-prefix when user already wrote 'LESSON '.
+    content = args.text
+    if not content.upper().startswith('LESSON '):
+        content = f'LESSON {content}'
+
+    event_id = bus.append_event(
+        namespace=args.user,
+        agent_id='cli.postmortem',
+        source='cli.postmortem',
+        action='write',
+        content=content,
+    )
+
+    # Detect kind: text starting with POSTMORTEM → 'postmortem',
+    # else 'lesson'. Both belong to LESSON zone.
+    kind = 'postmortem' if content.upper().startswith('LESSON POSTMORTEM') else 'lesson'
+
+    facts = astor_extract_facts(
+        content, mode='auto',
+        tier=tier, user_id=user_id,
+        actor='cli.postmortem',
+        outcome='lesson',
+        why=(
+            f'auto-detected lesson-pattern (strength={strength:.2f})'
+            if is_lesson else None
+        ),
+    )
+    if not facts:
+        # Even with no extracted sub-facts, the user-typed text is the lesson.
+        # Write it as a single candidate via direct API (same pattern as
+        # bus_reflect.py's --mode none bypass).
+        from ..bus import astor_bus as _ab
+        bus2 = astor_bus(tier=tier, user_id=user_id)
+        cand_id = bus2.insert_candidate(
+            event_id=event_id,
+            namespace=args.user,
+            content=content,
+            kind=kind,
+            confidence=0.95,
+            importance=0.99,
+            tags=['lesson', 'auto-detected' if is_lesson else 'manual'],
+            metadata={'__lesson_zone__': True, '__severity__': 'high'},
+        )
+        canon_id = bus2.promote_candidate(
+            cand_id, promoted_by='cli.postmortem',
+            user_id=args.user if tier == 'private' else None,
+            tier=tier,
+        )
+        print(f'[astor] postmortem: lesson={is_lesson} strength={strength:.2f}')
+        print(f'   tier={tier} fact_ids=[{canon_id}]')
+        print(f'   kind={kind} importance=0.99 (forced, LESSON zone)')
+        return 0
+
+    fact_ids = []
+    for f in facts:
+        cand_id = bus.insert_candidate(
+            event_id=event_id,
+            namespace=args.user,
+            content=f.content if not f.content.upper().startswith('LESSON ') else f.content,
+            kind=kind,
+            confidence=0.95,
+            importance=0.99,
+            tags=(f.tags or []) + ['lesson', 'auto-detected' if is_lesson else 'manual'],
+            metadata={'__lesson_zone__': True, '__severity__': 'high'},
+        )
+        canon_id = bus.promote_candidate(
+            cand_id, promoted_by='cli.postmortem',
+            user_id=args.user if tier == 'private' else None,
+            tier=tier,
+        )
+        fact_ids.append(canon_id)
+
+    print(f'[astor] postmortem: lesson={is_lesson} strength={strength:.2f}')
+    print(f'   tier={tier} fact_ids={fact_ids}')
+    print(f'   kind={kind} importance=0.99 (forced, LESSON zone)')
+    return 0
+
+
 def cmd_recall(args) -> int:
-    """Recall facts."""
+    """Recall facts.
+
+    v1.13.1 (2026-09-14, Ship G): --kinds filter for zone-prioritized recall.
+    After getting semantic top-k from nest, optionally filter to only kinds
+    in the user's zone list (e.g. user_preference + failure_pattern).
+    """
     from .. import astor_nest  # wrapper from __init__.py (defaults tier='public')
     from ..nest.embeddings import astor_get_embedding_model
+    from ..bus import astor_bus
 
     # 2026-08-16 fix: use the wrapper astor_nest() from astor_memory top-level
     # (defaults tier='public') rather than the lower-level (which requires tier).
@@ -481,10 +711,35 @@ def cmd_recall(args) -> int:
     embeddings = list(model.embed([args.query]))
     query_emb = embeddings[0]
 
-    results = nest.search(
-        query_emb,
-        limit=args.top_k,
-    )
+    # v1.13.1 (2026-09-14, Ship G): oversample by 4x when --kinds is given,
+    # so post-filter still gives ~top_k matches even if most candidates
+    # land in the wrong zone. Cap at 100 to avoid runaway queries.
+    limit = min(args.top_k * 4, 100) if args.kinds else args.top_k
+    results = nest.search(query_emb, limit=limit)
+
+    # v1.13.1 Ship G: post-filter by --kinds if given. Build fact_kind map
+    # by reading canonical directly (faster than re-querying nest).
+    kinds_filter = None
+    if args.kinds:
+        kinds_filter = set(k.strip() for k in args.kinds.split(',') if k.strip())
+    if kinds_filter and results:
+        bus = astor_bus()
+        fact_ids = [r[0] for r in results]
+        placeholders = ','.join('?' for _ in fact_ids)
+        fact_kind_map = {}
+        try:
+            with bus._connect() as _c:
+                for row in _c.execute(
+                    f"SELECT id, kind FROM memory_canonical WHERE id IN ({placeholders})",
+                    fact_ids,
+                ).fetchall():
+                    fact_kind_map[row[0]] = row[1]
+        except Exception as e:
+            print(f'[WARN] --kinds filter lookup failed: {e}', file=sys.stderr)
+        results = [(fid, sim) for fid, sim in results
+                   if fact_kind_map.get(fid) in kinds_filter]
+        results = results[:args.top_k]
+
     if not results:
         print('No results found.')
         return 0
