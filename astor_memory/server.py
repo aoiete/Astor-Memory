@@ -1708,6 +1708,24 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         return (1, 0)
                 _legacy.sort(key=_legacy_key)
             enriched = _in_range + _out_of_range + _legacy
+        # v1.14.32 Ship G (2026-09-15): --kinds URL param for zone-filtered
+        # recall. Mirrors `am recall --kinds` behavior (cmd_recall main).
+        # Supports comma-separated kind list (e.g. kinds=user_preference,failure_pattern).
+        # Empty/missing = no filter (all kinds). Undergoes 4x oversample
+        # before post-filter so top_k matches survive — see cmd_recall doc.
+        _kinds_filter_set = None
+        if isinstance(body.get('kinds'), str) and body['kinds'].strip():
+            _kinds_filter_set = set(
+                k.strip() for k in body['kinds'].split(',') if k.strip()
+            )
+        elif isinstance(body.get('kinds'), list):
+            _kinds_filter_set = set(
+                str(k).strip() for k in body['kinds'] if str(k).strip()
+            )
+        if _kinds_filter_set and enriched:
+            enriched = [r for r in enriched
+                         if r.get('kind') in _kinds_filter_set][:top_k]
+
         # v1.14.x (2026-09-13): bump access_count + last_confirmed_at for
         # every fact that actually surfaced in this recall. Per wechat
         # article 3-layer memory best practice (long-term memory decay):
@@ -1777,6 +1795,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'used_hint': _used_hint,
                     'used_filter': _used_filter,
                     'used_time': _used_time,
+                    # v1.14.32 Ship G: zone filter passed (kinds=user_preference,failure_pattern).
+                    # Empty list means no filter applied.
+                    'kinds_used': sorted(_kinds_filter_set) if _kinds_filter_set else [],
                     # v1.14.29 Ship S1: wall-clock latency from request start
                     # to response ready. Used by astor_usage_stats --window
                     # to surface p50/p95 latency in the weekly Telegram push.
