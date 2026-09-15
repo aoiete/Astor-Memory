@@ -1,3 +1,30 @@
+## v1.14.20 (2026-09-13)
+
+### SIGSEGV fix in vector_store.py (threaded Flask concurrency)
+
+Promotes the unstaged v1.14.7 working-tree changes to ship.
+
+- `astor_memory/nest/vector_store.py` `.conn` property: wrap the
+  close-detect + `_reopen()` in `self._cache_lock` (RLock). Race fix —
+  thread A's `_reopen()` mutates `self._conn` while thread B still holds
+  a ref to the old (closed) connection → SIGSEGV in SQLite C bindings.
+- `.get()` method: move the entire body inside `self._cache_lock`. The
+  cache-touch + fetchone + cache-store sequence was racy across threads.
+- `_put()` is also locked; RLock allows re-entry from `.get()` inside
+  the same thread.
+
+Trigger: threaded Flask (`/v1/read`) on the dev server. The single-flight
+~1 req/min production cadence masked this for months; dev load exposed it.
+
+Verified:
+- Threaded eval harness (5 categories × 5 queries = 25 recalls in parallel)
+  no longer crashes; pre-fix would SIGSEGV after 8-10 concurrent /v1/read.
+- Single-flight /v1/read unaffected.
+
+Source: commit 4bddc76.
+
+
+
 ## v1.14.19 (2026-09-13)
 
 ### Access tracking + decay sweep (wechat article L3 memory best practice)
