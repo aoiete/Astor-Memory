@@ -541,6 +541,31 @@ def test_rest_read_returns_entities_field(tmp_path, monkeypatch):
         assert 'entities' in res, f'entities field missing on fact_id={res.get("fact_id")}'
         assert isinstance(res['entities'], list)
 
+def test_rest_write_returns_entities_per_fact(tmp_path, monkeypatch):
+    """v1.14.23 Ship E: /v1/write response carries entities_per_fact."""
+    from astor_memory.server import create_app
+
+    monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
+    app = create_app()
+    client = app.test_client()
+    r = client.post('/v1/write',
+                    json={'text': 'NVDA TSLA 2026-09-15 ship E test', 'user': 'admin'})
+    assert r.status_code == 200
+    body = r.get_json()
+    # New field: entities_per_fact parallel to fact_ids
+    assert 'entities_per_fact' in body, 'entities_per_fact field missing'
+    assert isinstance(body['entities_per_fact'], list)
+    assert len(body['entities_per_fact']) == len(body['fact_ids']), (
+        f'entities_per_fact length {len(body["entities_per_fact"])} != '
+        f'fact_ids length {len(body["fact_ids"])}'
+    )
+    # At least one entry should have non-empty entities (NVDA / TSLA / 2026-09-15)
+    non_empty = sum(1 for ents in body['entities_per_fact'] if len(ents) > 0)
+    assert non_empty >= 1, (
+        f'expected >=1 fact with entities, got {non_empty}. '
+        f'ents={body["entities_per_fact"]}'
+    )
+
 
 def test_rest_install_plan(tmp_path, monkeypatch):
     """POST /v1/install returns install plan for cursor."""
