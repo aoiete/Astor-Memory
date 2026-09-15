@@ -1707,6 +1707,35 @@ def create_app(astor_dir: str | None = None) -> Flask:
             import sys as _sys_acc
             print(f'[astor.server] access_count update failed: {_acc_exc}', file=_sys_acc.stderr)
 
+        # v1.14.28 Ship J: usage log best-effort.
+        try:
+            _usage_path = os.environ.get('ASTOR_DIR', 'D:/AI/Astor-Memory-Runtime')
+            _log_dir = os.path.join(_usage_path, 'astor', 'metrics')
+            os.makedirs(_log_dir, exist_ok=True)
+            _log_path = os.path.join(_log_dir, 'recall_log.jsonl')
+            import hashlib as _h_u
+            _qhash = _h_u.sha1(query.encode('utf-8')).hexdigest()[:12]
+            _used_hint = bool(missing_hint)
+            _used_filter = bool(entity_filter)
+            _used_time = bool(since_ts or until_ts)
+            import datetime as _dt_u
+            _ts_now = _dt_u.datetime.now(_dt_u.timezone.utc).isoformat()
+            import json as _j_u
+            with open(_log_path, 'a', encoding='utf-8') as _logf:
+                _logf.write(_j_u.dumps({
+                    'ts': _ts_now,
+                    'tier': tier,
+                    'user_id': user_id or 'none',
+                    'qhash': _qhash,
+                    'q_len': len(query),
+                    'top_k': top_k,
+                    'n_results': len(enriched),
+                    'used_hint': _used_hint,
+                    'used_filter': _used_filter,
+                    'used_time': _used_time,
+                }, ensure_ascii=False) + '\n')
+        except Exception:
+            pass
         return jsonify({'results': enriched, 'count': len(enriched)})
 
     @app.route('/v1/forget', methods=['POST'])
