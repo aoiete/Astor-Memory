@@ -127,7 +127,15 @@ class AstorClient:
         self.session_id = session_id
 
     def _identity_fields(self) -> dict[str, Any]:
-        """Return optional agent context while preserving legacy requests."""
+        """Return optional agent context while preserving legacy requests.
+
+        Also returns a header dict so _request can ship X-Actor (the
+        server's per-request ACL binding looks at X-Actor first). Without
+        it, server falls back to body.user/user_id and may resolve the
+        caller as 'admin:admin' or 'user:anonymous' depending on
+        user_meta lookup — neither matches the actual caller for non-admin
+        free users, so astor_check_write raises permission_denied.
+        """
         fields: dict[str, Any] = {}
         if self.agent_id:
             fields["agent_id"] = self.agent_id
@@ -146,7 +154,23 @@ class AstorClient:
         ):
             if value:
                 fields[key] = value
-        return fields
+        # 2026-09-16 R-class fix: derive X-Actor header from user_id. Server
+        # resolves X-Actor via bot-binding.db user_meta → role+plan. Format:
+        # 'admin:<id>' for admin, 'user:<id>' for non-admin. This is the
+        # convention used by the hermes gateway when forwarding requests,
+        # so the AstorClient now matches that path (was previously sending
+        # only body.user_id, which the server used to resolve the WRITE
+        # TARGET not the CALLER — resulting in 'permission_denied' for
+        # free users because their actor identity was never established).
+        headers: dict[str, str] = {}
+        if self.user_id and self.user_id != "anonymous":
+            # We don't know if this user is admin vs user without hitting
+            # bot-binding.db, so try 'user:<id>' first (most common), and
+            # callers who are admin can override via the api_key path or
+            # by constructing AstorClient(user_id='admin') directly which
+            # gets 'admin:admin' on the server side.
+            headers["X-Actor"] = f"user:{self.user_id}" if self.user_id != "admin" else "admin:admin"
+        return fields, headers
 
     # --- HTTP layer ---
 
@@ -156,6 +180,7 @@ class AstorClient:
         path: str,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
         if params:
@@ -167,6 +192,8 @@ class AstorClient:
             headers["Content-Type"] = "application/json"
         if self.api_key:
             headers["X-Astor-Key"] = self.api_key
+        if extra_headers:
+            headers.update(extra_headers)
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -211,13 +238,14 @@ class AstorClient:
             "tier": tier or self.tier,
             "user_id": self.user_id,
         }
-        body.update(self._identity_fields())
+        extra_fields, extra_headers = self._identity_fields()
+        body.update(extra_fields)
         if kind:
             body["kind"] = kind
         if min_importance is not None:
             body["min_importance"] = min_importance
 
-        d = self._request("POST", "/v1/read", json_body=body)
+        d = self._request("POST", "/v1/read", json_body=body, extra_headers=extra_headers)
         facts_raw = d.get("facts") or d.get("results") or d.get("items") or []
         return [Fact.from_api(f) for f in facts_raw]
 
@@ -247,12 +275,13 @@ class AstorClient:
             "user_id": self.user_id,
             "tier": tier or self.tier,
         }
-        body.update(self._identity_fields())
+        extra_fields, extra_headers = self._identity_fields()
+        body.update(extra_fields)
         if tags:
             body["tags"] = list(tags)
         if metadata:
             body["metadata"] = metadata
-        d = self._request("POST", "/v1/write", json_body=body)
+        d = self._request("POST", "/v1/write", json_body=body, extra_headers=extra_headers)
         # Server returns `fact_ids: [int]` (plural array, list of assigned ids).
         # Older server revisions returned `fact_id` / `id`; preserve compat.
         fact_ids = d.get("fact_ids")
