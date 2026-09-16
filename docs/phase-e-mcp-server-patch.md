@@ -42,7 +42,18 @@ if _sys_path_e:
         import mcp_server_extension as _mcp_ext_e  # noqa: F401
         # Phase E: explicitly pass the MCP gateway module so the extension
         # doesn't accidentally patch ``astor_memory.server``.
-        _mcp_ext_e.install(sys.modules.get("__main__"))
+        # When the script is invoked as ``python server.py``, ``__main__``
+        # is the server module itself. When invoked via ``python -c`` or
+        # ``import server``, ``__main__`` is the test driver and lacks
+        # ``list_tools``. Probe both names; prefer whichever has the gateway
+        # function.
+        _gw = None
+        for _name in ("__main__", "server"):
+            _mod = sys.modules.get(_name)
+            if _mod is not None and hasattr(_mod, "list_tools") and hasattr(_mod, "call_tool"):
+                _gw = _mod
+                break
+        _mcp_ext_e.install(_gw)
     except Exception as _e_exc:
         # If the extension can't be imported (e.g. ASTOR_MEMORY_SRC
         # not on disk), the gateway silently falls back to its
@@ -70,7 +81,13 @@ def list_tools() -> dict[str, Any]:
     # Phase E (2026-09-16): re-attempt install now that list_tools is defined.
     try:
         import mcp_server_extension as _mcp_ext_e_rt  # noqa: F401
-        _mcp_ext_e_rt.install(sys.modules.get("__main__"))
+        _gw = None
+        for _name in ("__main__", "server"):
+            _mod = sys.modules.get(_name)
+            if _mod is not None and hasattr(_mod, "list_tools") and hasattr(_mod, "call_tool"):
+                _gw = _mod
+                break
+        _mcp_ext_e_rt.install(_gw)
     except Exception:
         pass
     return {
@@ -132,7 +149,10 @@ hooks: distinct `agent_id="evox"` and `agent_id="astor_memory_adapter"`
 
 - `astor_memory/mcp_server_extension.py` — the actual monkey-patching
   module (committed at `3eeab4b`).
-- `astor_memory/mcp_auto_observe.py` — the pure-logic tool handler.
+- `astor_memory/mcp_auto_observe.py` — the pure-logic tool handler. **The
+  `/v1/write` body MUST include `transport: "direct"` or Astor's
+  `_resolve_agent_context` falls back to `agent_id='rest_api'`** (fixed
+  in commit `dcb895e`).
 - `astor_memory/forge/extractor.py` — provides
   `astor_auto_observe(text, agent_id, user_id, namespace)`.
 - `docs/auto-memory.md` — full Phase E spec and integration guide.
