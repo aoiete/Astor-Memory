@@ -13,6 +13,23 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Literal
+
+# Phase E (2026-09-16): auto-memory noise filter + tier routing for
+# auto-observed turns. ``astor_auto_observe`` consumes these.
+MIN_AUTO_OBSERVE_LENGTH = 30
+NOISE_PREFIXES = (
+    "嗯",
+    "ok",
+    "好",
+    "好的",
+    "thanks",
+    "谢谢",
+    "hi",
+    "hello",
+    "👍",
+    "你好",
+    "",
+)
 AstorExtractMode = Literal['auto', 'none', 'regex', 'llm']
 
 # Regex patterns for fact categorization (Plan § Forge regex patterns)
@@ -389,6 +406,152 @@ def astor_classify_outcome(text: str) -> str:
     if astor_detect_success_pattern(text) or astor_detect_capture_intent(text):
         return 'success'
     return 'neutral'
+
+
+def astor_should_skip_auto_observe(text: str) -> tuple[bool, str]:
+    """Phase E (2026-09-16): decide whether a turn should be skipped from
+    automatic ``astor_auto_observe`` ingestion.
+
+    Returns ``(skip, reason)``. ``skip=True`` means do not call ``astor_write``
+    at all; Astor would otherwise emit noise rows. Reasons:
+      - "empty": text is empty or whitespace-only
+      - "too_short": text length < MIN_AUTO_OBSERVE_LENGTH
+      - "noise_prefix": first whitespace-separated token (or its first 2 chars
+        for CJK) matches NOISE_PREFIXES. Handles ASCII ("hi", "thanks") and
+        CJK ("你好") greetings.
+    """
+    if not text or not text.strip():
+        return True, "empty"
+    if len(text) < MIN_AUTO_OBSERVE_LENGTH:
+        return True, "too_short"
+    stripped = text.lstrip()
+    first_token = stripped.split(maxsplit=1)[0].lower()
+    first_two = stripped[:2].lower()
+    if first_token in NOISE_PREFIXES or first_two in NOISE_PREFIXES:
+        return True, "noise_prefix"
+    return False, ""
+
+
+def _score_importance(text: str, outcome: str) -> float:
+    """Phase E: importance heuristic for auto-observed turns.
+
+    Heuristic:
+      - failure / lesson  → 0.85 (always publishable, admin tier)
+      - success + capture_intent keyword ("remember", "记住") → 0.8
+      - success + long text (> 200) → 0.6 (might be publishable)
+      - neutral + long text (> 200) → 0.6 (still might be a useful observation)
+      - neutral + medium text (60..200) → 0.5 (borderline)
+      - else neutral / short → 0.3 (admin-only, low signal)
+    """
+    if outcome in ("failure", "lesson"):
+        return 0.85
+    if outcome == "success":
+        if astor_detect_capture_intent(text):
+            return 0.8
+        if len(text) > 200:
+            return 0.6
+        return 0.4
+    # neutral: long content still might be useful as observation
+    if len(text) > 200:
+        return 0.6
+    if len(text) >= 60:
+        return 0.5
+    return 0.3
+
+
+def _pick_tier(outcome: str, importance: float) -> str | None:
+    """Phase E: route auto-observed turn to a tier.
+
+    - failure / lesson                  → source (admin-only)
+    - success / neutral, importance >= 0.7 → public (auto-extracted observations)
+    - success / neutral, importance >= 0.5 → public (general long content)
+    - else                              → None (skip / admin-only fallback)
+    """
+    if outcome in ("failure", "lesson"):
+        return "source"
+    if outcome in ("success", "neutral"):
+        if importance >= 0.5:
+            return "public"
+    return None
+
+
+def astor_auto_observe(
+    text: str,
+    agent_id: str,
+    user_id: str,
+    namespace: str | None = None,
+    *,
+    min_length: int = MIN_AUTO_OBSERVE_LENGTH,
+) -> dict:
+    """Phase E: one-call auto-memory hook for any agent.
+
+    Returns ``dict(observed, tier, importance, outcome, skipped_reason,
+    facts)``. When ``observed=True``, the caller should treat ``facts`` as
+    a sample of extracted statements (NOT a full ETL pipeline — this is
+    a quick filter for ``sync_turn``-style agents).
+
+    This function is **deliberately local-only**: it does NOT call
+    ``astor_write`` itself. The agent integration layer (Hermes adapter,
+    MCP server) decides when and where to actually write the fact.
+    """
+    if not agent_id:
+        return {
+            "observed": False,
+            "tier": None,
+            "importance": 0.0,
+            "outcome": "neutral",
+            "skipped_reason": "no_agent_id",
+            "facts": [],
+        }
+    skip, reason = astor_should_skip_auto_observe(text or "")
+    if skip:
+        return {
+            "observed": False,
+            "tier": None,
+            "importance": 0.0,
+            "outcome": "neutral",
+            "skipped_reason": reason,
+            "facts": [],
+        }
+    eff_min = max(MIN_AUTO_OBSERVE_LENGTH, int(min_length))
+    if len(text) < eff_min:
+        return {
+            "observed": False,
+            "tier": None,
+            "importance": 0.0,
+            "outcome": "neutral",
+            "skipped_reason": "too_short",
+            "facts": [],
+        }
+    outcome = astor_classify_outcome(text)
+    importance = _score_importance(text, outcome)
+    tier = _pick_tier(outcome, importance)
+    if tier is None:
+        return {
+            "observed": False,
+            "tier": None,
+            "importance": importance,
+            "outcome": outcome,
+            "skipped_reason": "low_signal",
+            "facts": [],
+        }
+    # Lightweight fact extraction (use existing extractor).
+    try:
+        facts = astor_regex_extract(text)
+        fact_contents = [f.content for f in facts[:3]]
+    except Exception:
+        fact_contents = []
+    return {
+        "observed": True,
+        "tier": tier,
+        "importance": importance,
+        "outcome": outcome,
+        "skipped_reason": "",
+        "facts": fact_contents,
+        "namespace": namespace or f"auto_observe/{agent_id}",
+        "agent_id": agent_id,
+        "user_id": user_id or "admin",
+    }
 
 
 def astor_choose_extract_mode(text: str) -> AstorExtractMode:
