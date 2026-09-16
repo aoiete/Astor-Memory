@@ -103,6 +103,62 @@ matrix 层强制(见 [ACL v1.2 加固](docs/acl-v1.2-hardening.md)),
 
 单用户模式 = `public + self-private`。多用户模式 = `am bot on` 按需创建 `private × N`。
 
+### 3 区架构 (success / failure / lesson)
+
+除了空间层 (public/source/private × N),astor 还把每条事实归到一个
+**outcome 区域**,驱动 recall 查询语言。三个区域:
+
+- **`success_pattern`** — 可复用的方法 / 模式 / 经验,验证过有效。
+  例如 "patch tool 替换 write_file 走通了 — 不再被 indent drift 卡住",
+  "unlock_trade: 调 SDK 的 unlock_trade + .env MOOMOO_PASSWORD"。
+- **`failure_pattern`** — 走不通的路 / 已知的坏主意 / R-class 规则。
+  例如 "走不通 debug 客户端 fallback", "patch tool 加 4 空格误判 —
+  改用 write_file"。
+- **`lesson`** — 完整的失败 → 根因 → 修复三元组 (例如 "critical bug
+  — fix is null check" 或 "崩溃 + 根因是 X")。
+
+`forge/extractor.py` 的 outcome → kind 映射全链路接通:
+`astor_classify_outcome` 在每个 `/v1/write` 上跑,extractor 把 LLM 输出的
+kind 覆盖成对应的区域 kind。recall 通过 `kinds=` 参数过滤:
+
+```python
+# 自动建议 (hermes 端启发式):
+#   "失败 / 出错 / 走不通 / crash / fail / 报错" → failure_pattern + lesson
+#   "成功 / ship / verified / 接通 / working"   → success_pattern + user_preference
+#   "教训 / 记得 / 切记 / lesson"               → lesson + failure_pattern
+am recall --kinds failure_pattern "上次 patch tool 走不通"
+am recall --kinds success_pattern "verify 模式怎么配"
+```
+
+这是 LLM 和人类心智模型之间的桥 — 没接通的话,每条事实都是 `kind=fact`,
+3 区分类形同虚设 (Ship F v1.13.1 是死代码,直到 v1.14.21 capture_intent
+hook 接通,v1.14.36 调成 `success_pattern` 而非 `user_preference`)。
+
+### Explicit-public 原则 (管理员感知)
+
+public 层最宽松 — 部署里任何人都能读。容易成为意外泄漏的入口。原则是:
+
+> **Public 只放明确想公开的内容:方法、模式、工作流、参考信息,以及
+> 真实的"我想要公开"信号 (`workflow / 方法 / 接口 / SDK / api /
+> 步骤 / 怎么 / 如何` 关键词集)。**
+
+`server.py._astor_classify_intent` 在写入时强制:
+
+- **强信号降级** (强制 `tier=private`): 文本含人称代词 (`我 / 我的 /
+  自己 / my / i am`)、金融标记 (`$ / € / bought / sold / AAPL /
+  TSLA / NVDA / SPY`)、日常标记 (`今天 / 昨天 / today / tonight /
+  10am`)、或情绪词 (`happy / sad / 累了 / 崩溃`)。
+- **方法信号** (`_METHOD_PATTERNS`): 文本含 15+ 方法意图关键词,
+  或 `怎么 \w{2,}` how-to 模式,或 SDK 动词白名单 (`place_order`、
+  `unlock_trade`、`accinfo_query` 等)。保留 `public`。
+- **无信号**: 默认 `private` (修复前是 `public`)。
+- **管理员同样适用** (Ship v1.14.36): 修复前 R236 的 `if user == 'admin':
+  return None` 短路是泄漏入口 ("我的 TFSA 余额是 $1234" 被管理员写
+  入成 public 事实)。现在管理员和用户走同一套 classify 逻辑。
+
+这是 **explicit-public**,不是 default-public。运营者必须在写入时
+展示方法意图才能落 public;没有信号就默认 private。
+
 ### Bots (多平台) 设计哲学
 
 astor 把**人** (`user_id`) 和 **bots** (`platform_id`) 当作两个独立的维度。关系是真正的多对多:
@@ -191,6 +247,23 @@ am write "bob 的偏好..."   --tier private --user-id bob
 ```
 
 **首次安装完全是空的**。没有任何种子用户、平台或绑定 — 你自己用 `am platform token-set` 和 `am bot add-user` 填入你自己的真实数据。
+
+### v1.14.36 (2026-09-16) 新增
+
+- **3 区架构** (`success_pattern` / `failure_pattern` / `lesson`):
+  outcome-driven kind 路由,见上文 "3 区架构" 段。
+- **Explicit-public 原则** (管理员感知): 见上文 "Explicit-public
+  原则" 段。修复了 admin 早期 `if user == 'admin': return None` 短路
+  导致的个人数据泄漏。
+- **按区过滤 recall**: `am recall --kinds success_pattern,failure_pattern`
+  或 `/v1/read kinds=success_pattern,failure_pattern`,以及 hermes
+  端 `auto_route_read.py` 关键词启发式自动建议。
+- **`forge/pattern_detector.py`**: +7 高信号 CJK+EN 标记
+  (`走不通 / 卡死 / 报错 / 接通 / ship 成功 / verified / working`)。
+  修复前 `走不通 debug` 类中文失败短语全部漏判。
+- **`restart.py` + `load_dotenv(.env)`**: OPENROUTER_API_KEY /
+  MINIMAX_API_KEY 现在能进 server 进程 env。修复前 `mode='llm'` 静默
+  fallback 到 regex (server.log 显示 `OPENROUTER_KEY=EMPTY`)。
 
 ## 一屏看懂 CLI
 
