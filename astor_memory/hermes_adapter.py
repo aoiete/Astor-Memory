@@ -370,16 +370,16 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
         messages: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """
-        Audit-log every completed turn to astor public bus.
+        Audit-log every completed turn to astor public bus AND auto-write
+        durable facts via ``astor_auto_observe``.
 
-        We don't extract facts here — that's the LLM-driven forge's job
-        (see astor.forge.astor_extract_facts). We just record the turn
-        happened so admins can audit conversation density + recall health.
-
+        v1.0: Audit event (bus.append_event) — turn recorded for density + audit.
         v1.1: After every `self._nudge_every` turns, return a memory-search
-        nudge via the system_prompt_block hook (Hermes calls it at session
-        boundary). Per MemoraX design, this fights "memory written but never
-        recalled" — the nudge makes the agent remember the tool exists.
+              nudge via the system_prompt_block hook.
+        Phase E (2026-09-16): Auto-memory hook — concatenate user + assistant
+              text and call ``astor_auto_observe``. Noise / outcome / tier
+              / publishable filtering happens server-side. Observation
+              failure MUST NOT break audit logging.
         """
         try:
             from astor_memory import astor_bus
@@ -406,7 +406,55 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
             if self._should_nudge:
                 self._last_nudge_turn = self._turn_count
         except Exception as exc:
-            logger.warning("astor_memory sync_turn failed: %s", exc)
+            logger.warning("astor_memory sync_turn audit failed: %s", exc)
+
+        # Phase E: auto-memory hook. Wrapped in its own try/except so
+        # observation failure cannot break audit logging above.
+        try:
+            from astor_memory.forge.extractor import astor_auto_observe
+            from astor_memory import astor_bus as _auto_bus
+            text = ((user_content or "") + "\n" + (assistant_content or "")).strip()
+            observe = astor_auto_observe(
+                text=text,
+                agent_id="astor_memory_adapter",
+                user_id=self._platform_user_id if getattr(self, "_platform_user_id", None) else "admin",
+                namespace=f"hermes/{self._platform}/{session_id or self._session_id}",
+            )
+            if observe.get("observed"):
+                tier = observe["tier"] or "public"
+                bus = _auto_bus(tier=tier, user_id=None if tier != "private" else None)
+                bus.append_event(
+                    namespace=f"hermes/{self._platform}/{session_id or self._session_id}",
+                    agent_id="astor_memory_adapter",
+                    source="hermes.astor_auto_observe",
+                    action="auto_observe",
+                    content=text[:500],
+                    metadata={
+                        "outcome": observe.get("outcome", "neutral"),
+                        "importance": observe.get("importance", 0.0),
+                        "tier": tier,
+                        "agent_id": "astor_memory_adapter",
+                    },
+                )
+                # Insert candidate for fact extraction pipeline. Use the
+                # forge capture_intent entry point so cascade promote runs.
+                try:
+                    from astor_memory.bus import capture_intent as _ci
+                    _ci(
+                        text=text,
+                        actor="astor_memory_adapter",
+                        tier=tier,
+                        user_id=None,
+                        source="hermes.astor_auto_observe",
+                        metadata={
+                            "importance": observe.get("importance", 0.0),
+                            "outcome": observe.get("outcome", "neutral"),
+                        },
+                    )
+                except Exception as ci_exc:
+                    logger.warning("astor_auto_observe capture_intent failed: %s", ci_exc)
+        except Exception as exc:
+            logger.warning("astor_auto_observe sync_turn failed: %s", exc)
 
     def shutdown(self) -> None:
         """Clean up the hermes adapter — flush pending writes, close pools."""
