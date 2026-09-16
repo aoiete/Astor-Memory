@@ -253,12 +253,20 @@ class AstorClient:
         if metadata:
             body["metadata"] = metadata
         d = self._request("POST", "/v1/write", json_body=body)
+        # Server returns `fact_ids: [int]` (plural array, list of assigned ids).
+        # Older server revisions returned `fact_id` / `id`; preserve compat.
+        fact_ids = d.get("fact_ids")
+        if isinstance(fact_ids, list) and fact_ids:
+            return int(fact_ids[0])
         return d.get("fact_id") or d.get("id") or 0
 
     def forget(self, fact_id: int, reason: str = "tombstoned via client") -> bool:
         """POST /v1/forget — soft-delete (tombstone) a fact."""
         body = {"fact_id": fact_id, "reason": reason, "user_id": self.user_id}
         d = self._request("POST", "/v1/forget", json_body=body)
+        # Server returns `forgotten: [{fact_id, score, ...}]`; empty list = no match.
+        if d.get("forgotten"):
+            return True
         return d.get("ret") == 0 or d.get("ok") is True
 
     def provenance(self, fact_id: int) -> dict[str, Any]:
