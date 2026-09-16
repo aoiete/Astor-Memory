@@ -1,3 +1,30 @@
+## v1.14.38 (2026-09-16)
+
+### Silent recall — auto-recall hits stay in agent context, never the chat bubble
+
+Auto-recall (hermes adapter `prefetch()` + `format_recall_as_system_prompt_block`)
+now carries an explicit "background context only — do NOT echo to the user"
+instruction. Previously, agents could (and did) render the 20-hit recall list
+into the conversation, which users found noisy when they never asked for it.
+
+**Fix (3 injection points):**
+1. `forge/extractor.py:RECALL_PREAMBLE` — appends the "do not echo" sentence
+   to every system-prompt block built by `format_recall_as_system_prompt_block`.
+2. `hermes_adapter.py:prefetch()` Block 1 ("## astor-memory recall (public
+   tier)") — same instruction on the header.
+3. `hermes_adapter.py:prefetch()` Block 2 ("## astor-memory SDK-error
+   lessons") — same instruction on the header.
+
+**Behavior:** auto-recall content still reaches the model (continuity +
+SDK-error lessons preserved). The agent simply must not paste the hit list
+into replies. Users who explicitly ask "查记忆 / show memory" can still see
+it — the instruction is "unless they explicitly ask."
+
+Applies to everyone who installs astor-memory (no memory dependency — the
+rule lives in the source, not in any single agent's memory store).
+
+---
+
 ## v1.14.37 (2026-09-16)
 
 ### AstorClient X-Actor header auto-derivation + 4-path integration lock-in
