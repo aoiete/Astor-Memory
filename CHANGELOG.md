@@ -1,3 +1,38 @@
+## v1.14.39 (2026-09-16)
+
+### Decay sweep default-on + competitive analysis sheet
+
+**Decay sweep flipped to default-on.** Previously gated by
+`ASTOR_DECAY_SWEEP=1` (off by default). Now: on by default, opt-out
+via `ASTOR_DECAY_SWEEP=0`. Validated by MemPalace v3.3.6's
+living-memory dynamics (Hebbian potentiation + Ebbinghaus decay) —
+facts that get surfaced stay hot, facts that don't fade out so the
+corpus doesn't grow stale forever.
+
+Behavior unchanged:
+- 30d no-recall: `access_count = MAX(1, access_count / 2)` (floor 1).
+- 90d no-recall: `tombstoned = 1`.
+
+5 new tests in `tests/test_decay_sweep.py` cover: default-on contract,
+`ASTOR_DECAY_SWEEP=0` escape hatch, halve-at-30d, tombstone-at-90d,
+and the floor-at-1 invariant. All pass.
+
+`.env.example` (both source and runtime copies) updated to reflect the
+new default — comment now reads "disable via ASTOR_DECAY_SWEEP=0"
+instead of "enable via ASTOR_DECAY_SWEEP=1".
+
+**New doc:** `docs/competitive-sheet.md` (T-sheet). Side-by-side
+comparison of astor against MemU, MemPalace, Mem0, Zep Graphiti.
+Nine dimensions: architecture, retrieval, ingest, multi-tenancy,
+observability, peer federation, lessons learned, astor's defensible
+surface, update cadence. Use this as the single source of truth when
+the user asks "what's X updating / how do we compare to Y / what can
+we learn." Reviewed quarterly.
+
+Version: 1.14.38 → 1.14.39.
+
+---
+
 ## v1.14.38 (2026-09-16)
 
 ### Silent recall — auto-recall hits stay in agent context, never the chat bubble
