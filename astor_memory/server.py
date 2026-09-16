@@ -216,6 +216,38 @@ def _astor_resolve_actor(user_id: str | None) -> tuple[str, str, str | None]:
     return (f'user:{user_id}', 'user', plan)
 
 
+def _resolve_agent_context(body: dict) -> dict[str, str | None]:
+    """Validate optional bot/direct agent context without changing ACL identity.
+
+    ``user``/``user_id`` remain the ACL subject. ``agent_id`` describes the
+    producer, while ``transport`` distinguishes a bot-backed agent from a
+    direct SDK/MCP/CLI agent. Legacy callers may omit the whole context.
+    """
+    agent_id = body.get('agent_id')
+    transport = body.get('transport')
+    platform = body.get('platform')
+    if agent_id is None and transport is None and platform is None:
+        return {'agent_id': None, 'transport': None, 'platform': None,
+                'source': body.get('source'), 'namespace': body.get('namespace'),
+                'session_id': body.get('session_id')}
+    if not isinstance(agent_id, str) or not agent_id.strip():
+        raise ValueError('agent_id must be a non-empty string when agent context is provided')
+    if transport not in ('bot', 'direct'):
+        raise ValueError("transport must be 'bot' or 'direct'")
+    if transport == 'bot' and (not isinstance(platform, str) or not platform.strip()):
+        raise ValueError('bot transport requires platform')
+    if transport == 'direct' and platform:
+        raise ValueError('direct transport must not declare platform')
+    for name in ('source', 'namespace', 'session_id'):
+        value = body.get(name)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(f'{name} must be a non-empty string when provided')
+    return {'agent_id': agent_id.strip(), 'transport': transport,
+            'platform': platform.strip() if isinstance(platform, str) else None,
+            'source': body.get('source'), 'namespace': body.get('namespace'),
+            'session_id': body.get('session_id')}
+
+
 def _extract_entities_for_fact(bus, canon_id):
     """v1.14.23 Ship E: read entities_json for one canonical row.
     Best-effort: returns [] on any error (caller can re-read via /v1/read)."""
@@ -264,7 +296,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # v1.13.2 (2026-09-04): add teardown_request hook to auto-close per-request
     # bus connections. Without this, server holds the WAL writer lock forever
     # and external direct-connect INSERT operations fail with 'database is
-    # locked' (verified bug 2026-09-04 after sunday-rejection incident).
+    # locked' (verified bug 2026-09-04 after a bot-rejection incident).
     _request_buses: list = []
     _request_nests: list = []
 
@@ -589,6 +621,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
           {fact_ids: [int], count: int}
         """
         body = request.get_json(force=True)
+        try:
+            agent_ctx = _resolve_agent_context(body)
+        except ValueError as exc:
+            return jsonify({'error': 'invalid_agent_context', 'detail': str(exc)}), 400
         text = body.get('text')
         if not text:
             return jsonify({'error': 'text required', 'detail': 'POST /v1/write requires JSON body with "text" field (string, 8+ chars)'}), 400
@@ -685,6 +721,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
             scope_user = user
         else:
             scope_user = '_'
+        # Use the resolved target user consistently for private/repo data.
+        # ``user`` is the caller/actor; ``bus_user_id`` is the data owner.
+        if tier in ('private', 'repo'):
+            scope_user = bus_user_id or user
         stable_id = f'{tier}:{scope_user}:{scope}:{content_hash}'
         try:
             existing_row = bus.conn.execute(
@@ -712,9 +752,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
         # 2. Append event
         event_id = bus.append_event(
-            namespace=user,
-            agent_id='rest_api',
-            source='rest.write',
+            namespace=agent_ctx['namespace'] or user,
+            agent_id=agent_ctx['agent_id'] or 'rest_api',
+            source=agent_ctx['source'] or 'rest.write',
             action='write',
             content=text,
         )
@@ -766,7 +806,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         for f in facts:
             cand_id = bus.insert_candidate(
                 event_id=event_id,
-                namespace=user,
+                namespace=agent_ctx['namespace'] or (bus_user_id or user),
                 content=f.content,
                 kind=f.kind,
                 confidence=f.confidence,
@@ -787,7 +827,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 entities=getattr(f, 'entities', None),
             )
             canon_id = bus.promote_candidate(
-                cand_id, promoted_by='rest.write', user_id=user, tier=tier,
+                cand_id, promoted_by='rest.write', user_id=bus_user_id or user, tier=tier,
                 scope_type=scope,  # P1-fix 2026-08-15: thread scope through
                 # v1.11.0: thread session_id for agentic neighbor-expand.
                 # Facts from the same session can be pulled as read/navigate
@@ -866,8 +906,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
             try:
                 src_bus = astor_bus(tier='source')
                 src_event_id = src_bus.append_event(
-                    namespace=user, agent_id='rest_api',
-                    source='rest.write.mirror', action='mirror',
+                    namespace=agent_ctx['namespace'] or user,
+                    agent_id=agent_ctx['agent_id'] or 'rest_api',
+                    source=(agent_ctx['source'] or 'rest.write') + '.mirror',
+                    action='mirror',
                     content=text,
                 )
                 src_facts = astor_forge().astor_extract_facts(
@@ -946,6 +988,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
           {results: [{fact_id, similarity, content, kind, ...}], count: int}
         """
         body = request.get_json(force=True)
+        try:
+            _read_agent_ctx = _resolve_agent_context(body)
+        except ValueError as exc:
+            return jsonify({'error': 'invalid_agent_context', 'detail': str(exc)}), 400
         query = body.get('query')
         if not query:
             return jsonify({'error': 'query required', 'detail': 'POST /v1/read requires JSON body with "query" field (string)'}), 400
@@ -978,7 +1024,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         query_anchor = (query_timestamp or '')[:10] or None
         # v1.15.0 (2026-09-15 Ship A): RippleMem evidence-gap hint. Optional.
         # Caller can pass missing_hint="user timezone" to expand the query;
-        # entity_filter=["sunday"] to post-filter; since_ts/until_ts to clamp
+        # entity_filter=["<user>"] to post-filter; since_ts/until_ts to clamp
         # time_range. All three are backward-compatible no-ops when absent.
         # RippleMem ablation: hint-based gap-aware recall beats naive top-k
         # on multi-hop without a full graph layer (skipped — mem0g/zep
