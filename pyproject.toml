@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "astor-memory"
 # Version unified across source, runtime, hooks, plugins.
-version = "1.14.35"
+version = "1.14.36"
 description = "Self-owned memory system for AI agents: 3-tier × 3-store × 3-scope = 9+ SQLite layout, multi-user ACL, WeChat/Telegram/Discord token manager, MCP server"
 readme = "README.md"
 license = "MIT"
@@ -64,6 +64,13 @@ test = [
     "pytest>=7.4,<9.0",
     "pytest-cov>=4.1,<6.0",
 ]
+mcp = [
+    # The MCP server sub-package has zero runtime deps beyond the stdlib
+    # (``urllib`` + ``sqlite3``). It is a thin adapter to the local
+    # astor REST API. Listed here so ``pip install "astor-memory[mcp]"``
+    # installs everything an operator needs to expose astor to any
+    # MCP-compatible agent framework (EvoX, Hermes, Claude, Cursor...).
+]
 
 [project.urls]
 Homepage = "https://github.com/<repo_owner>/<repo_name>"
@@ -74,13 +81,21 @@ Changelog = "https://github.com/<repo_owner>/<repo_name>/blob/main/CHANGELOG.md"
 
 [project.scripts]
 am = "astor_memory.cli:main"
+astor-mcp = "astor_memory_mcp.server:main"
+
+[project.entry-points."astor_memory.mcp_servers"]
+astor_memory = "astor_memory_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["astor_memory"]
+# Phase C (2026-09-15): include both the core astor_memory package and
+# the MCP server sub-package. They share version + README + git history
+# but are independent import roots: ``astor_memory`` and ``astor_memory_mcp``.
+packages = ["astor_memory", "astor_memory_mcp"]
 
 [tool.hatch.build.targets.sdist]
 include = [
     "astor_memory/",
+    "mcp/astor_memory_mcp/",
     "README.md",
     "README.zh-CN.md",
     "LICENSE",
