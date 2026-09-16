@@ -1,3 +1,71 @@
+## v1.14.37 (2026-09-16)
+
+### AstorClient X-Actor header auto-derivation + 4-path integration lock-in
+
+End-to-end verification of all four integration paths against the live `:7803`
+server, with no source changes required to the server itself — fixes
+shipped in the Python SDK + a 5-line test update.
+
+#### The bug it fixed
+
+`AstorClient.write/read` previously sent only body fields (`user_id`,
+`tier`, etc.) — never an `X-Actor` header. The server's per-request ACL
+binding (`server.py:_astor_bind_request_acl`) resolves actor from
+`X-Actor` first, then falls back to `body.user / body.user_id`. When
+`X-Actor` was missing for a free user (free Telegram / Discord / WeChat
+users), the
+fallback path mis-resolved caller identity and `astor_check_write`
+returned `permission_denied` (HTTP 403).
+
+The hermes gateway has been doing it right all along — it forwards an
+`X-Actor` header derived from `bot-binding.db.user_meta`. AstorClient now
+matches that convention.
+
+#### The fix
+
+`astor_memory/client.py:_identity_fields()` returns a `(fields, headers)`
+tuple. `fields` is the legacy body-fields dict (unchanged behavior for
+callers that use it). `headers` is a new dict that always includes
+`X-Actor: user:<id>` for non-admin users and `X-Actor: admin:admin` for
+admin. `client._request()` accepts `extra_headers=` and merges them into
+the urllib request.
+
+Verified paths (all 200 + correct fact_ids returned):
+
+| Caller | tier | Status |
+|---|---|---|
+| `<telegram_user>` (Telegram, free) | public | PASS |
+| `<discord_user>` (Discord, free) | public | PASS |
+| `<wechat_user>` (WeChat, free) | public | PASS |
+| admin (EvoX direct, admin) | private | PASS |
+
+Cross-user privacy probe (`<PRIVATE_PROBE_TOKEN>_<ts>`):
+- probe-owner recall: 1 hit (own probe)
+- other users recall: 0 hits (PASS, no leak)
+
+#### Tests updated
+
+`tests/test_agent_identity.py::test_client_identity_fields_are_optional_and_backward_compatible`
+updated to expect `(fields, headers)` tuple and `X-Actor` header
+auto-derivation. 5/5 agent_identity tests PASS.
+
+#### README
+
+New section **"Four integration paths (verified 2026-09-16)"** documents
+all 4 entry points with example code + ACL semantics + privacy isolation
+verification. New **"MCP server integration"** subsection shows how any
+MCP gateway (Codex / Claude Code / etc.) can drop in
+`astor_memory/mcp_server_extension.py` to surface `astor_auto_observe`
+as a native tool. New **"Roadmap — peer-to-peer public tier sync"**
+section locks the design direction (R12593) for the next ship cycle.
+
+#### Version bump
+
+`pyproject.toml` version 1.14.36 → 1.14.37. `astor_memory/__init__.py`
+`__version__` same. Both edited in same session.
+
+---
+
 ## v1.14.36 (2026-09-16)
 
 ### Zone mapping + explicit-public principle
