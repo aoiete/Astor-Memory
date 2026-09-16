@@ -554,6 +554,89 @@ def astor_auto_observe(
     }
 
 
+# Phase F (2026-09-16): per-turn auto-recall helpers.
+# These are pure utilities — they do not call Astor REST themselves.
+# The caller (Hermes adapter sync_turn, MCP gateway server.py) is
+# responsible for actually invoking astor_recall via /v1/read or
+# AstorClient.recall(), then formatting the result with
+# format_recall_as_system_prompt_block before injecting into the
+# agent's system prompt.
+MAX_RECALL_QUERY_CHARS = 200
+RECALL_PREAMBLE = (
+    "The following are relevant facts previously stored in Astor for "
+    "this user / session. Use them to maintain continuity, but verify "
+    "before relying on any specific item — they may be stale."
+)
+
+
+def build_recall_query(text: str, *, max_chars: int = MAX_RECALL_QUERY_CHARS) -> str:
+    """Phase F: turn a free-form text snippet into a stable recall query.
+
+    Strategy: drop noise prefixes (re-using astor_should_skip_auto_observe),
+    strip whitespace, and clamp to ``max_chars``. The query is intended
+    to be sent to ``/v1/read`` (POST body ``query=...``); Astor's recall
+    backend handles tokenization + embedding.
+
+    This function does not call out to Astor — the caller invokes
+    ``/v1/read`` (or ``AstorClient.recall``) with the returned query.
+    """
+    if not text:
+        return ""
+    cleaned = text.strip()
+    if not cleaned:
+        return ""
+    # Drop one leading noise token if present (greetings, etc.).
+    first_token = cleaned.split(maxsplit=1)[0].lower()
+    if first_token in NOISE_PREFIXES:
+        cleaned = cleaned.split(maxsplit=1)[1] if " " in cleaned else ""
+    cleaned = " ".join(cleaned.split())  # collapse whitespace
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars].rsplit(" ", 1)[0]
+    return cleaned
+
+
+def format_recall_as_system_prompt_block(
+    results: list[dict],
+    *,
+    max_items: int = 5,
+    include_confidence: bool = True,
+) -> str:
+    """Phase F: format recall results into a system-prompt block.
+
+    Args:
+        results: list of recall hit dicts (each typically has keys
+            ``content``, ``confidence``, ``importance``, ``kind``,
+            ``namespace``, ``fact_id``).
+        max_items: cap items included so the system prompt stays small.
+        include_confidence: show a small confidence indicator.
+
+    Returns:
+        Markdown-formatted block ready to be appended to the agent's
+        system prompt at start of each turn.
+    """
+    if not results:
+        return ""
+    items = results[:max_items]
+    lines = ["## Relevant past facts (Astor)"]
+    for i, item in enumerate(items, 1):
+        content = (item.get("content") or "").strip().replace("\n", " ")
+        if not content:
+            continue
+        meta = []
+        if include_confidence and "confidence" in item:
+            meta.append(f"conf={float(item['confidence']):.2f}")
+        if "kind" in item:
+            meta.append(f"kind={item['kind']}")
+        if "importance" in item:
+            meta.append(f"imp={float(item['importance']):.2f}")
+        meta_str = f" [{', '.join(meta)}]" if meta else ""
+        lines.append(f"{i}.{meta_str} {content}")
+    if len(lines) == 1:
+        return ""
+    body = "\n".join(lines)
+    return f"{RECALL_PREAMBLE}\n\n{body}"
+
+
 def astor_choose_extract_mode(text: str) -> AstorExtractMode:
     """Per Plan § Bus direct entry auto-mode heuristic."""
     text_len = len(text)

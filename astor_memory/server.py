@@ -145,7 +145,12 @@ _EMOTION_PATTERNS = [
 ]
 _METHOD_PATTERNS = [
     r"(?:workflow|method|model|rule|pattern|process|approach|framework|design)",
-    r"(?:流程|方法|规则|模式|模型|设计|架构|架构)",
+    r"(?:流程|方法|规则|模式|模型|设计|架构|接口|SDK|api|API|步骤|教程|开户|配置|怎么|如何)",
+    # 2026-09-16 Ship explicit-public: "怎么 X" questions are method-intent.
+    r"怎么\s+\w{2,}",
+    # Specific SDK / CLI verbs allowlist (narrow, no false positives on
+    # arbitrary snake_case like "moomoo 数据").
+    r"\b(?:place_order|unlock_trade|accinfo_query|get_positions|history_order_list|get_stock_quote|get_account_info|subscribe|connect|disconnect|login|logout|register|setup|configure|install|deploy|publish|commit|push|pull|merge|rebase|build|test|fix|patch|uninstall)\b",
 ]
 
 _PERSONAL_RE = re.compile("|".join(_PERSONAL_PATTERNS), re.IGNORECASE)
@@ -169,9 +174,13 @@ def _astor_classify_intent(text: str, tier: str, user: str | None) -> str | None
     """
     if tier != 'public':
         return None
-    if not isinstance(text, str) or not user or user == 'admin':
-        # admin user keeps admin role — never auto-demote admin's writes
+    if not isinstance(text, str) or not user:
         return None
+    # 2026-09-16 Ship explicit-public (admin-applies): admin also goes through
+    # demote logic. Previously admin was short-circuited to public (R236),
+    # but that leaked personal data (e.g. "我的 TFSA 余额是 $1234" landed as
+    # public fact). Now admin must SHOW method-intent via _METHOD_RE to stay
+    # public; otherwise demote to private.
     has_method = bool(_METHOD_RE.search(text))
     has_personal = bool(_PERSONAL_RE.search(text))
     has_financial = bool(_FINANCIAL_RE.search(text))
@@ -180,11 +189,15 @@ def _astor_classify_intent(text: str, tier: str, user: str | None) -> str | None
     # Strong-signal demote: any of these forces private.
     if has_personal or has_financial or has_daily or has_emotion:
         return 'private'
-    # Method/rule/model alone stays public (admin's call).
+    # Method/rule/model alone stays public (admin's explicit "this is a method"
+    # call). 2026-09-16 Ship explicit-public: any other public write with no
+    # method/personal signal is demoted to private. Default-public was too
+    # permissive; explicit-public means caller must SHOW method-intent via
+    # the keyword set (workflow/方法/规则/模式 etc.).
     if has_method:
         return None
-    # No strong signal — stays public (admin can later review via audit log).
-    return None
+    # No method signal — demote private (Ship explicit-public principle).
+    return 'private'
 
 
 def _astor_resolve_actor(user_id: str | None) -> tuple[str, str, str | None]:
@@ -793,6 +806,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # v1.10.9: doc_timestamp anchors relative-time resolution.
             doc_timestamp=caller_event_ts,
         )
+        # 2026-09-16 R-class fix: client-supplied `tags` were being silently
+        # dropped — forge extractor overwrites fact.tags with its own tags.
+        # Merge body.tags INTO each fact's tags so post_tool_call hooks
+        # (which rely on `lesson:sdk-auto-capture` filter) can find their
+        # facts downstream. Caller tags take precedence on collision.
+        body_tags = body.get('tags') or []
+        if body_tags:
+            for fx in facts:
+                fx.tags = list(dict.fromkeys((fx.tags or []) + body_tags))
         if not facts:
             return jsonify({'event_id': event_id, 'facts': [], 'count': 0})
         # 3. Insert candidates + promote (which auto-stores embeddings via nest)

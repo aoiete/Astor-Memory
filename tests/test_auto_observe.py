@@ -105,3 +105,48 @@ def test_should_skip_helper():
         "调试过程发现 noise filter 需要识别中文问候词比如你好，"
         "整体流程已经跑通"
     )[0] is False
+
+
+def test_build_recall_query_strips_noise_prefix():
+    from astor_memory.forge.extractor import build_recall_query
+    assert build_recall_query("") == ""
+    assert build_recall_query("   ") == ""
+    # Noise prefixes are stripped
+    assert not build_recall_query("嗯 我喜欢打牌").startswith("嗯")
+    assert not build_recall_query("ok 这个怎么搞").startswith("ok")
+    assert not build_recall_query("hi 今晚有空吗").startswith("hi")
+    # Normal text passes through
+    q = build_recall_query("你今晚打牌运势怎么样")
+    assert q.startswith("你今晚打牌运势")
+    # Long text clamped at max_chars
+    long_text = "a " * 500
+    q = build_recall_query(long_text, max_chars=100)
+    assert len(q) <= 100
+    assert not q.endswith(" ")  # trimmed on word boundary
+
+
+def test_format_recall_block_includes_content():
+    from astor_memory.forge.extractor import format_recall_as_system_prompt_block
+    results = [
+        {"content": "用户偏好 dark mode", "confidence": 0.85, "kind": "fact", "importance": 0.7},
+        {"content": "上次运势: 木", "confidence": 0.72, "kind": "fact", "importance": 0.6},
+    ]
+    block = format_recall_as_system_prompt_block(results)
+    assert "dark mode" in block
+    assert "上次运势" in block
+    assert "conf=0.85" in block
+    assert "kind=fact" in block
+    assert "Astor" in block  # pre-block label
+
+
+def test_format_recall_block_handles_empty():
+    from astor_memory.forge.extractor import format_recall_as_system_prompt_block
+    assert format_recall_as_system_prompt_block([]) == ""
+    # Skips items with empty content
+    results = [{"content": "", "confidence": 0.5}, {"content": None, "confidence": 0.5}]
+    assert format_recall_as_system_prompt_block(results) == ""
+    # max_items caps output
+    results = [{"content": f"fact {i}"} for i in range(20)]
+    block = format_recall_as_system_prompt_block(results, max_items=3)
+    assert block.count("\n") >= 3  # header + 3 items
+    assert "fact 19" not in block  # beyond max_items
