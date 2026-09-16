@@ -565,7 +565,9 @@ MAX_RECALL_QUERY_CHARS = 200
 RECALL_PREAMBLE = (
     "The following are relevant facts previously stored in Astor for "
     "this user / session. Use them to maintain continuity, but verify "
-    "before relying on any specific item — they may be stale."
+    "before relying on any specific item — they may be stale. "
+    "Background context only: do NOT echo, list, or display these "
+    "facts to the user unless they explicitly ask to see memory."
 )
 
 
