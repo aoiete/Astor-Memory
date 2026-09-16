@@ -126,20 +126,26 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
             detail.append({"qid": q["qid"], "error": str(e), "matched": False, "mrr": 0.0})
             continue
         s = score_results(results, q["expected_keywords"], q.get("min_hits", 1))
-        detail.append({
+        entry = {
             "qid": q["qid"],
             "query": q["query"],
             "category": q.get("category"),
             "latency_ms": round(lat_ms, 2),
+            "expected_miss": q.get("expected_miss", False),
             **{k: v for k, v in s.items()},
             "n_results": len(results),
             "top3_fids": [r.get("fact_id") for r in results[:3]],
-        })
+        }
+        detail.append(entry)
         latencies.append(lat_ms)
 
-    n = len(detail)
-    hit_rate = sum(1 for d in detail if d.get("matched")) / n if n else 0
-    mrr = statistics.mean(d.get("mrr", 0) for d in detail) if n else 0
+    # S22 (2026-09-15): expected_miss queries don't count toward hit_rate/mrr
+    # denominators. They test the recall DOESN'T surface something off-topic
+    # (e.g. lifestyle/fitness queries that have no astor representation).
+    scored = [d for d in detail if not d.get("expected_miss")]
+    n = len(scored)
+    hit_rate = sum(1 for d in scored if d.get("matched")) / n if n else 0
+    mrr = statistics.mean(d.get("mrr", 0) for d in scored) if n else 0
     avg_lat = statistics.mean(latencies) if latencies else 0
     p50_lat = statistics.median(latencies) if latencies else 0
     p95_lat = (statistics.quantiles(latencies, n=20)[18] if len(latencies) >= 20

@@ -107,12 +107,46 @@ class AstorClient:
         tier: Literal["public", "source", "private"] = "private",
         timeout: float = 30.0,
         api_key: str | None = None,
+        agent_id: str | None = None,
+        transport: Literal["bot", "direct"] | None = None,
+        platform: str | None = None,
+        source: str | None = None,
+        namespace: str | None = None,
+        session_id: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.user_id = user_id
         self.tier = tier
         self.timeout = timeout
         self.api_key = api_key
+        self.agent_id = agent_id
+        self.transport = transport
+        self.platform = platform
+        self.source = source
+        self.namespace = namespace
+        self.session_id = session_id
+
+    def _identity_fields(self) -> dict[str, Any]:
+        """Return optional agent context while preserving legacy requests."""
+        fields: dict[str, Any] = {}
+        if self.agent_id:
+            fields["agent_id"] = self.agent_id
+        if self.transport:
+            if self.transport not in ("bot", "direct"):
+                raise ValueError("transport must be 'bot' or 'direct'")
+            fields["transport"] = self.transport
+        if self.platform:
+            if self.transport == "direct":
+                raise ValueError("direct transport must not declare platform")
+            fields["platform"] = self.platform
+        for key, value in (
+            ("source", self.source),
+            ("namespace", self.namespace),
+            ("session_id", self.session_id),
+        ):
+            if value:
+                fields[key] = value
+        return fields
 
     # --- HTTP layer ---
 
@@ -177,6 +211,7 @@ class AstorClient:
             "tier": tier or self.tier,
             "user_id": self.user_id,
         }
+        body.update(self._identity_fields())
         if kind:
             body["kind"] = kind
         if min_importance is not None:
@@ -202,14 +237,17 @@ class AstorClient:
         Returns the fact_id assigned by the server.
         """
         body = {
-            "content": content,
+            # REST /v1/write currently names this field text. Keep content in
+            # the SDK signature, but send the server's canonical wire field.
+            "text": content,
             "kind": kind,
             "importance": importance,
             "confidence": confidence,
-            "namespace": namespace or self.user_id,
+            "namespace": namespace or self.namespace or self.user_id,
             "user_id": self.user_id,
             "tier": tier or self.tier,
         }
+        body.update(self._identity_fields())
         if tags:
             body["tags"] = list(tags)
         if metadata:

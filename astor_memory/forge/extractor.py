@@ -707,8 +707,13 @@ def astor_extract_facts(
             # (fact 3752). This is the bridge between capture_intent hook
             # and the zone taxonomy — without it, every fact lands as
             # kind='fact' and the 3-zone system never gets populated.
+            # 2026-09-16 Ship success-pattern routing: success outcome now maps
+            # to success_pattern (not user_preference) so the 3-zone architecture
+            # (success_pattern / failure_pattern / lesson) stays clean. Public
+            # bus already had user_preference for ad-hoc prefs; success_pattern
+            # is reserved for reusable methods/patterns/experiences.
             if outcome == 'success':
-                f.kind = 'user_preference'
+                f.kind = 'success_pattern'
                 f.importance = max(f.importance, 0.85)
             elif outcome == 'failure':
                 f.kind = 'failure_pattern'

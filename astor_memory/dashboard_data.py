@@ -267,14 +267,57 @@ def _eval_trend(metrics_dir: Path) -> dict:
             "mrr": _stats(h.get("mrr") for h in recent),
             "p95_latency_ms": _stats(h.get("p95_latency_ms") for h in recent),
         }
+        # S21 (2026-09-15): snapshot is median of last 3 baselines (not all-time max),
+        # so a single hot-cache outlier doesn't poison the comparison baseline.
+        # Matches tests/eval_trend.py and astor/metrics/last_good_snapshot.json.
+        snap_window = baselines[-3:]
+        snap_hr = sorted(h.get("hit_rate_at_k", 0) for h in snap_window)[len(snap_window) // 2]
+        snap_mrr = sorted(h.get("mrr", 0) for h in snap_window)[len(snap_window) // 2]
+        snap_ts = snap_window[-1].get("ts")
+        out["snapshot"] = {
+            "hit_rate_at_k": snap_hr,
+            "mrr": snap_mrr,
+            "ts": snap_ts,
+            "rationale": "dashboard median of last 3 baselines (matches tests/eval_trend.py)",
+        }
         if len(recent) >= 2:
-            cur, earl = recent[-1], recent[0]
+            cur = recent[-1]
+            # S21: prefer delta_vs_snapshot over window-earliest (which was misleading)
+            cur_hr = cur.get("hit_rate_at_k", 0)
+            cur_mrr = cur.get("mrr", 0)
+            d_hr = cur_hr - snap_hr
+            d_mrr = cur_mrr - snap_mrr
+            out["delta_vs_snapshot"] = {
+                "hit_rate": round(d_hr, 4),
+                "mrr": round(d_mrr, 4),
+            }
+            # Cold-cache variance: last-2 delta ≥3pp = warmup/regression signal.
+            if len(baselines) >= 2:
+                last_two = baselines[-2:]
+                cc_delta = last_two[1]["hit_rate_at_k"] - last_two[0]["hit_rate_at_k"]
+                out["cold_cache_variance"] = {
+                    "detected": abs(cc_delta) >= 0.03,
+                    "delta": round(cc_delta, 4),
+                    "interpretation": ("cold_cache_warmup" if cc_delta > 0.03
+                                       else "warm_cache_regression" if cc_delta < -0.03
+                                       else "stable"),
+                }
+            else:
+                out["cold_cache_variance"] = {"detected": False, "reason": "need >=2 baselines"}
+            # Trend logic — within 5pp of snapshot = stable, even if negative.
+            if d_hr >= -0.05:
+                out["trend_status"] = "stable"
+            elif out["cold_cache_variance"].get("detected") and \
+                    out["cold_cache_variance"].get("interpretation") == "cold_cache_warmup":
+                out["trend_status"] = "cold_cache"
+            else:
+                out["trend_status"] = "regressing"
+            # Legacy window-earliest delta (kept for backward compat in API).
+            earl = recent[0]
             out["delta"] = {
                 "mrr": round(cur["mrr"] - earl["mrr"], 4),
                 "hit_rate": round(cur["hit_rate_at_k"] - earl["hit_rate_at_k"], 4),
             }
-            md = out["delta"]["mrr"]
-            out["trend_status"] = "improving" if md > 0.02 else "regressing" if md < -0.02 else "stable"
 
     # Latest of each variant
     seen: dict[str, dict] = {}

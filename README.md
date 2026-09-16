@@ -236,6 +236,99 @@ That's the whole API. Five CLI commands, three Python functions. Everything else
 
 ---
 
+## MCP server (for AI agents)
+
+Astor-Memory ships a generic MCP (Model Context Protocol) server adapter
+in the ``astor_memory_mcp`` sub-package. Any MCP-compatible agent
+framework (EvoX, Hermes, Claude Desktop, Cursor, Aider, ...) can expose
+the local Astor REST API as MCP tools by installing this package.
+
+### Install
+
+```bash
+# Install everything (core + MCP sub-package) in one go.
+pip install "astor-memory[mcp]"
+
+# Or if you already have astor-memory installed, the MCP server ships
+# in the same wheel when you upgrade.
+pip install --upgrade "astor-memory[mcp]"
+```
+
+### Configure
+
+The MCP server picks up standard env vars. Defaults work for any
+single-user install:
+
+```bash
+# Where the local astor REST server listens.
+export ASTOR_MEMORY_URL="http://127.0.0.1:7803"
+
+# Whose data the MCP server acts as. Defaults to "admin".
+export ASTOR_MEMORY_USER_ID="admin"
+
+# Optional: only needed if you have multiple astor installs and want
+# a non-default bot-binding.db path.
+export ASTOR_BOT_BINDING_DB="/path/to/bot-binding.db"
+```
+
+### Register with your agent framework
+
+EvoX (canonical example — works for any other framework with the same JSON-RPC + stdio protocol):
+
+```json
+{
+  "mcp_servers": {
+    "astor-memory": {
+      "command": "python",
+      "args": ["-m", "astor_memory_mcp.server"]
+    }
+  }
+}
+```
+
+After registering, the agent framework can call these six tools:
+
+| Tool | Purpose |
+|---|---|
+| `astor_health` | Reachability check + dashboard summary |
+| `astor_read` | Single-record fetch by `memory_id` |
+| `astor_recall` | Semantic / text search over facts |
+| `astor_context` | Return the trusted identity + capability summary |
+| `astor_capabilities` | Advertise the boolean capability matrix |
+| `astor_resolve_binding` | Resolve `(platform_id, chat_id)` to its bot-binding |
+
+The MCP server is **read-only by design** — write/forget are deliberately
+not exposed. To capture new facts, use the CLI (`am write`) or your
+operator shell; never through MCP.
+
+### Bot-binding integration
+
+When a bot (Telegram / Discord / WeChat / Slack / ...) forwards a user
+message to your agent, the MCP server resolves the binding through your
+local ``bot-binding.db`` (a separate SQLite SSoT). It then tags the
+result with the binding's ``user_id`` so astor reads from the right
+namespace. See ``astor platform bind --help`` for managing bindings.
+
+### Source layout
+
+The MCP server source lives in the same git repo as ``astor-memory``:
+
+```
+astor-memory/
+├── astor_memory/        ← core package (REST server, agent_identity, ...)
+├── mcp/
+│   └── astor_memory_mcp/  ← MCP server sub-package
+│       ├── server.py
+│       ├── tests/
+│       └── README.md
+└── pyproject.toml       ← one version, both packages
+```
+
+Both packages share the same version number from ``pyproject.toml``
+(``astor-memory`` 1.14.35 at the time of writing).
+
+---
+
 ## What's in the box
 
 Astor-Memory v1.0 ships:
