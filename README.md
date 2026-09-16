@@ -112,6 +112,74 @@ If you've felt any of these, Astor-Memory is built for you.
 
 Single-user mode = `public + self-private`. Multi-user mode = `am bot on` creates `private × N` on demand.
 
+### 3-zone architecture (success / failure / lesson)
+
+Beyond the spatial tier (public/source/private × N), astor classifies
+every fact into an **outcome zone** that drives the recall query
+language. The three zones are:
+
+- **`success_pattern`** — a reusable method / pattern / experience that
+  worked. Examples: "patch tool 替换 write_file 走通了 — 不再被
+  indent drift 卡住", "unlock_trade: 调 SDK 的 unlock_trade + .env
+  MOOMOO_PASSWORD".
+- **`failure_pattern`** — a wasted path / known-bad idea / R-class
+  rule. Examples: "走不通 debug 客户端 fallback", "patch tool 加 4
+  空格误判 — 改用 write_file".
+- **`lesson`** — a complete failure → root-cause → fix triplet (e.g.
+  "critical bug — fix is null check" or "崩溃 + 根因是 X").
+
+The `forge/extractor.py` outcome → kind mapping is wired end-to-end:
+`astor_classify_outcome` runs on every `/v1/write` body, and the
+extractor overrides the LLM-output kind with the zone kind. Recall
+filters by zone via the `kinds=` parameter:
+
+```python
+# Auto-suggested zone from query keywords (hermes-side heuristic):
+#   "失败 / 出错 / 走不通 / crash / fail / 报错" → failure_pattern + lesson
+#   "成功 / ship / verified / 接通 / working"   → success_pattern + user_preference
+#   "教训 / 记得 / 切记 / lesson"               → lesson + failure_pattern
+am recall --kinds failure_pattern "上次 patch tool 走不通"
+am recall --kinds success_pattern "verify 模式怎么配"
+```
+
+This is the bridge between the LLM and the human operator's mental
+model — without it, every fact lands as `kind=fact` and the 3-zone
+taxonomy never gets populated (Ship F, v1.13.1, was dead code until
+the capture_intent hook wired it up in v1.14.21, then re-tuned in
+v1.14.36 to call `success_pattern` instead of `user_preference`).
+
+### Explicit-public principle (admin-aware)
+
+Public tier is the most permissive — anyone in the deployment can
+read it. Wittingly or unwittingly, that's where accidental data
+leaks land. The principle is:
+
+> **Public only contains content that is explicitly meant to be
+> shared: methods, patterns, workflows, reference info, plus a
+> genuine "I want this public" signal (the `workflow / 方法 / 接口 /
+> SDK / api / 步骤 / 怎么 / 如何` keyword set).**
+
+`server.py._astor_classify_intent` enforces this at write time:
+
+- **Strong-signal demote** (force `tier=private`): text contains
+  personal pronouns (`我 / 我的 / 自己 / my / i am`), financial
+  markers (`$ / € / bought / sold / AAPL / TSLA / NVDA / SPY`),
+  daily markers (`今天 / 昨天 / today / tonight / 10am`), or emotion
+  words (`happy / sad / 累了 / 崩溃`).
+- **Method signal** (`_METHOD_PATTERNS`): text contains any of the
+  15+ method-intent keywords or the `怎么 \w{2,}` how-to pattern
+  or one of the SDK verb allowlist (`place_order`, `unlock_trade`,
+  `accinfo_query`, etc.). Stays `public`.
+- **No signal**: defaults to `private` (was `public` pre-fix).
+- **Admin also applies** (Ship v1.14.36): the pre-fix R236 short-
+  circuit `if user == 'admin': return None` was a leak vector
+  ("我的 TFSA 余额是 $1234" landed as public fact under admin).
+  Now admin and users go through the same classify logic.
+
+This is **explicit-public**, not default-public. Operators must
+demonstrate method intent at write time to land in `public`; the
+absence of that signal defaults to `private`.
+
 ### Bots (multi-platform) design
 
 astor treats **people** (user_id) and **bots** (platform_id) as two independent dimensions. Relationship is many-to-many:
@@ -350,6 +418,9 @@ Astor-Memory v1.0 ships:
 | Cross-LLM adapter (works with OpenAI / Anthropic / Gemini / DeepSeek / 智谱 / Ollama) | ✅ |
 | 15 Core runtime iron rules (default) | ✅ |
 | **Zero-LLM mode** (FTS5 BM25 + lexical-only recall, no embedding / no API key required) | ✅ |
+| **3-zone architecture** (success_pattern / failure_pattern / lesson — outcome-driven kind routing) | ✅ |
+| **Explicit-public principle** (admin-aware demote: no method signal → `private`, never `public`) | ✅ |
+| **Zone-filtered recall** (`/v1/read kinds=success_pattern,failure_pattern` + auto-suggested zone from query keywords) | ✅ |
 
 Deferred to v1.1+:
 - Multi-user dashboard (`am ui`)
