@@ -39,12 +39,16 @@ def test_client_identity_fields_are_optional_and_backward_compatible():
     from astor_memory.client import AstorClient
 
     legacy = AstorClient(user_id="admin")
-    assert legacy._identity_fields() == {}
+    legacy_fields, legacy_headers = legacy._identity_fields()
+    assert legacy_fields == {}
+    # 2026-09-16: X-Actor header auto-derived from user_id.
+    assert legacy_headers == {"X-Actor": "admin:admin"}
 
     direct = AstorClient(
         user_id="admin", agent_id="evox", transport="direct", source="evox_mcp"
     )
-    assert direct._identity_fields() == {
+    direct_fields, _ = direct._identity_fields()
+    assert direct_fields == {
         "agent_id": "evox",
         "transport": "direct",
         "source": "evox_mcp",
