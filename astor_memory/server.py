@@ -1827,10 +1827,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
             if _surfaced_fids and _os_acc.environ.get('ASTOR_ACCESS_TRACKING', '1') != '0':
                 _ph_acc = ','.join('?' * len(_surfaced_fids))
                 _now_iso = _dt_acc.datetime.utcnow().isoformat(timespec='seconds') + 'Z'
-                # Decay sweep (disabled by default — enable via ASTOR_DECAY_SWEEP=1).
+                # Decay sweep (ENABLED by default as of v1.14.39 — disable via
+                # ASTOR_DECAY_SWEEP=0). MemPalace's living-memory dynamics (Hebbian
+                # potentiation + Ebbinghaus decay, v3.3.6) validates this direction:
+                # facts that get surfaced stay hot, facts that don't get surfaced
+                # fade out so the corpus doesn't grow stale forever.
                 # 30d no-recall: access_count halved (floor 1).
                 # 90d no-recall: tombstoned (archive).
-                if _os_acc.environ.get('ASTOR_DECAY_SWEEP', '0') == '1':
+                if _os_acc.environ.get('ASTOR_DECAY_SWEEP', '1') != '0':
                     _30d_iso = (_dt_acc.datetime.utcnow() - _dt_acc.timedelta(days=30)).isoformat(timespec='seconds') + 'Z'
                     _90d_iso = (_dt_acc.datetime.utcnow() - _dt_acc.timedelta(days=90)).isoformat(timespec='seconds') + 'Z'
                     bus.conn.execute(
