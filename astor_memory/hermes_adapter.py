@@ -353,7 +353,11 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
             emb = list(model.embed([query]))[0]
             hits = nest.search(emb, limit=5)
             if hits:
-                lines = ["## astor-memory recall (public tier)\n"]
+                lines = ["## astor-memory recall (public tier)\n"
+                         "Background context only: use these facts to "
+                         "maintain continuity. Do NOT echo, list, or "
+                         "display them to the user unless they explicitly "
+                         "ask to see memory.\n"]
                 for fact_id, _similarity in hits[:5]:
                     cid = fact_id
                     if cid is None:
@@ -381,7 +385,11 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                 "ORDER BY created_at DESC LIMIT 3"
             ).fetchall()
             if err_rows:
-                err_lines = ["\n## astor-memory SDK-error lessons (auto-recall, R12573)\n"]
+                err_lines = ["\n## astor-memory SDK-error lessons (auto-recall, R12573)\n"
+                             "Background context only: use these to avoid "
+                             "repeating known failures. Do NOT echo, list, "
+                             "or display them to the user unless they "
+                             "explicitly ask to see memory.\n"]
                 err_lines.append(
                     "If you are about to run an SDK/API command, scan these first. "
                     "They were captured by post_tool_call hook and contain "
