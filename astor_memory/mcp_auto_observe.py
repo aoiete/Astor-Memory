@@ -120,6 +120,7 @@ def astor_auto_observe_call(
         "tier": tier,
         "agent_id": agent_id,
         "source": source,
+        "transport": "direct",
         "namespace": observe.get("namespace")
             or arguments.get("namespace")
             or f"mcp/{arguments.get('session_id', 'unknown')}",
