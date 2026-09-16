@@ -83,11 +83,22 @@ imported before `list_tools` was defined.
 
 ## 3. Verify
 
-Set both env vars before launching the MCP server:
+Set the env vars before launching the MCP server:
 
 ```bash
 export ASTOR_DIR='D:\AI\Astor-Memory-Runtime'
 export ASTOR_MEMORY_SRC='D:\ai\astor-memory'
+
+# Per-agent identity — each agent framework sets its own:
+#   EvoX  desktop  → ASTOR_MEMORY_AGENT_ID=evox
+#   Claude        → ASTOR_MEMORY_AGENT_ID=claude
+#   Cursor        → ASTOR_MEMORY_AGENT_ID=cursor
+#   (default if unset → astor_memory_mcp)
+export ASTOR_MEMORY_AGENT_ID=evox
+
+# Per-user identity (optional override, default = admin):
+# export ASTOR_MEMORY_USER_ID=aoiete
+
 python server.py
 ```
 
@@ -103,6 +114,19 @@ printf '%s\n' \
 The second `tools/list` call must show **9 tools** including
 `astor_auto_observe`. If only 8, the deferred patch install has not
 fired — recheck the import order.
+
+Verify that Astor sees the per-agent identity:
+
+```bash
+sqlite3 $ASTOR_DIR/public/memory/astor_bus_public.db \
+  "SELECT agent_id, source, count(*) FROM events
+   WHERE source LIKE '%auto_observe%' OR source = 'hermes.astor_auto_observe'
+   GROUP BY agent_id, source"
+```
+
+Expected after EvoX + Hermes have run their respective auto-observe
+hooks: distinct `agent_id="evox"` and `agent_id="astor_memory_adapter"`
+(Hermes adapter's agent_id, distinct from EvoX's).
 
 ## Files referenced
 
