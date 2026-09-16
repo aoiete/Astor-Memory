@@ -16,9 +16,8 @@ TRUSTED = {
 
 
 def _fake_request(observed: bool = True, tier: str = "public"):
-    """Return a fake request_fn simulating /v1/write."""
-    def _fn(method, path, params, body):
-        assert method == "POST"
+    """Return a fake request_fn simulating /v1/write (v0.6+ astor-mcp signature)."""
+    def _fn(path, params, body):
         assert path == "v1/write"
         return {"event_id": 1, "fact_ids": [42], "tier": body.get("tier", "public")}
     return _fn
@@ -72,7 +71,7 @@ def test_error_observed_source():
 def test_400_falls_back_to_public():
     calls = {"n": 0}
 
-    def req(method, path, params, body):
+    def req(path, params, body):
         calls["n"] += 1
         if body.get("tier") == "source" and calls["n"] == 1:
             raise RuntimeError("ASTOR_UPSTREAM_HTTP_400: tier=source not allowed")
