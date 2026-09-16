@@ -89,10 +89,14 @@ def astor_auto_observe_call(
     if len(text) < 30:
         raise ValueError("ASTOR_AUTO_OBSERVE: text too short (min 30 chars)")
 
+    agent_id = trusted_profile.get("agent_id", "astor_memory_mcp")
+    user_id = trusted_profile.get("user_id", "admin")
+    source = trusted_profile.get("source", "astor_memory_mcp")
+
     observe = astor_auto_observe(
         text=text,
-        agent_id=trusted_profile.get("agent_id", "astor_memory_mcp"),
-        user_id=trusted_profile.get("user_id", "admin"),
+        agent_id=agent_id,
+        user_id=user_id,
         namespace=arguments.get("namespace")
             or f"mcp/{arguments.get('session_id', 'unknown')}",
     )
@@ -112,10 +116,10 @@ def astor_auto_observe_call(
     tier = observe["tier"] or "public"
     body = {
         "text": text,
-        "user": trusted_profile.get("user_id", "admin"),
+        "user": user_id,
         "tier": tier,
-        "agent_id": trusted_profile.get("agent_id", "astor_memory_mcp"),
-        "source": trusted_profile.get("source", "astor_memory_mcp"),
+        "agent_id": agent_id,
+        "source": source,
         "namespace": observe.get("namespace")
             or arguments.get("namespace")
             or f"mcp/{arguments.get('session_id', 'unknown')}",
@@ -123,13 +127,14 @@ def astor_auto_observe_call(
         "importance": observe["importance"],
     }
     try:
-        result = request_fn("POST", "v1/write", None, body)
+        # v0.6+ astor-memory-rest-mcp signature: _request(path, params, body)
+        result = request_fn("v1/write", None, body)
     except RuntimeError as exc:
         if "ASTOR_UPSTREAM_HTTP_400" in str(exc):
             body["tier"] = "public"
             body.pop("importance", None)
             try:
-                result = request_fn("POST", "v1/write", None, body)
+                result = request_fn("v1/write", None, body)
             except RuntimeError as exc2:
                 return {
                     "content": [
