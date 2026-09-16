@@ -1,3 +1,73 @@
+## v1.14.36 (2026-09-16)
+
+### Zone mapping + explicit-public principle
+
+Two related improvements to the outcome → kind / tier routing.
+
+#### Zone mapping (Ship F re-ship)
+
+`forge/extractor.py` outcome → kind mapping now produces a clean
+3-zone taxonomy:
+- `outcome=success` → `kind='success_pattern'` (was `'user_preference'`)
+- `outcome=failure` → `kind='failure_pattern'`
+- `outcome=lesson`  → `kind='lesson'`
+
+Previously `success` leaked into `user_preference` (semantic
+mismatch — `user_preference` is for ad-hoc prefs; `success_pattern`
+is for reusable methods/patterns/experiences). User noted: "成功里面
+还有会把模式 方法 经验存 public 对吧" (2026-09-16).
+
+Verified end-to-end: id=6158 in public bus, first-ever
+`kind=success_pattern` fact: "patch tool 替换 write_file 走通了 — 不再
+被 indent drift 卡住". Public bus now shows zone distribution:
+`success_pattern=1`, `failure_pattern=5`, `lesson=0`.
+
+`forge/pattern_detector.py` +7 high-signal CJK+EN markers:
+- failure: 走不通 / 卡死 / 报错
+- success: 接通 / ship 了 / ship 成功 / verified / working
+
+Pre-fix `'走不通' 报错 debug` would land as kind=fact (no marker).
+Post-fix it lands as kind=failure_pattern.
+
+#### Explicit-public principle (Ship admin-aware demote)
+
+User principle (2026-09-16): "public 只有显性提到公开 / 没有私人数据
+/ 模型方法流程". Implementation:
+
+`server.py._astor_classify_intent`:
+- Removed admin short-circuit. Admin now goes through demote logic
+  same as other users. Pre-fix R236 "default public for admin" leaked
+  personal data ("我的 TFSA 余额是 $1234" landed as public fact).
+- Default return changed: no method signal → `'private'`
+  (was `None` = stay public). Default-public was too permissive.
+- `_METHOD_PATTERNS` +12 method-intent keywords + `怎么 \w{2,}`
+  how-to pattern + SDK verb allowlist (`place_order`, `unlock_trade`,
+  `accinfo_query`, etc.).
+
+Verified 14/14 cases match expected classification:
+
+| input | classify | tier |
+|---|---|---|
+| "moomoo 啦账户怎么开户: 1. 注册 2. KYC" | None | public |
+| "我的 TFSA 余额是 $1234" | 'private' | private |
+| "怎么 unlock_trade: 调 SDK" | None | public |
+| "我刚 place_order 买了 NVDA 100 股" | 'private' | private |
+| "moomoo OpenD 调 RSA 接口" | None | public |
+| "今天 moomoo 又报错了" | 'private' | private |
+| "moomoo 数据" | 'private' | private (no signal) |
+| "如何接入 moomoo SDK" | None | public |
+| "我不清楚" | 'private' | private |
+
+#### Side ships
+
+- `restart.py` +`load_dotenv(.env, override=False)` so OPENROUTER_API_KEY
+  + MINIMAX_API_KEY reach the spawned server process. Without this,
+  `mode='llm'` silently fell back to regex (server.log showed
+  `OPENROUTER_KEY=EMPTY`).
+- `.env` copied from `hermes-agent/.env` (env, restart.py just loads it).
+- `python-dotenv==1.2.3` installed into PY-311.
+
+
 ## v1.14.20 (2026-09-13)
 
 ### SIGSEGV fix in vector_store.py (threaded Flask concurrency)
