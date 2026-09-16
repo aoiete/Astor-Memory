@@ -325,41 +325,95 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
         Returns formatted text to inject as context. Empty string on no match.
         Searches public + source tiers (admin can read both). Per-user
         private tier is excluded unless session carries explicit user_id.
+
+        2026-09-16: Added SDK-error auto-recall block. astor_capture_intent.py
+        hooks tag SDK errors with `lesson:sdk-auto-capture`; prefetch now
+        pulls those facts and injects them so the agent sees
+        `recommended_action` BEFORE running the same broken command again.
+        Closes R-class R12573 (moomoo unlock) — agent no longer needs to
+        manually astor_recall() the SDK error keyword.
         """
         if not query or not query.strip():
             return ""
+
+        blocks: list[str] = []
+
+        # Block 1: regular semantic recall (existing behavior).
         try:
             from astor_memory import astor_bus, astor_nest
         except Exception as exc:
             logger.warning("astor_memory prefetch import failed: %s", exc)
             return ""
+
         try:
             nest = astor_nest(tier="public")
             bus = astor_bus(tier="public")
-            # Use nest for vector search, then bus for canonical fact hydration.
             from astor_memory.nest.embeddings import astor_get_embedding_model
             model = astor_get_embedding_model()
             emb = list(model.embed([query]))[0]
             hits = nest.search(emb, limit=5)
-            if not hits:
-                return ""
-            lines = ["## astor-memory recall (public tier)\n"]
-            for fact_id, _similarity in hits[:5]:
-                cid = fact_id
-                if cid is None:
-                    continue
-                row = bus.conn.execute(
-                    "SELECT content, kind, tags FROM memory_canonical WHERE id=?",
-                    (cid,),
-                ).fetchone()
-                if row is None:
-                    continue
-                content, kind, tags = row
-                lines.append(f"- [{kind}] {content[:200]}")
-            return "\n".join(lines)
+            if hits:
+                lines = ["## astor-memory recall (public tier)\n"]
+                for fact_id, _similarity in hits[:5]:
+                    cid = fact_id
+                    if cid is None:
+                        continue
+                    row = bus.conn.execute(
+                        "SELECT content, kind, tags FROM memory_canonical WHERE id=?",
+                        (cid,),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    content, kind, tags = row
+                    lines.append(f"- [{kind}] {content[:200]}")
+                blocks.append("\n".join(lines))
         except Exception as exc:
             logger.warning("astor_memory prefetch failed: %s", exc)
-            return ""
+
+        # Block 2: 2026-09-16 SDK error auto-recall (closes R12573 loop).
+        # Pull recent `lesson:sdk-auto-capture` facts so the agent sees
+        # `recommended_action` automatically. Limit 3 (most recent only).
+        try:
+            err_rows = bus.conn.execute(
+                "SELECT id, content, metadata, importance, created_at "
+                "FROM memory_canonical "
+                "WHERE tags LIKE '%lesson:sdk-auto-capture%' "
+                "ORDER BY created_at DESC LIMIT 3"
+            ).fetchall()
+            if err_rows:
+                err_lines = ["\n## astor-memory SDK-error lessons (auto-recall, R12573)\n"]
+                err_lines.append(
+                    "If you are about to run an SDK/API command, scan these first. "
+                    "They were captured by post_tool_call hook and contain "
+                    "`recommended_action` for matching failures.\n"
+                )
+                for fid, content, metadata, imp, created in err_rows:
+                    # extract recall_keyword + recommended_action from content
+                    rk = ""
+                    ra = ""
+                    for part in content.split("|"):
+                        s = part.strip()
+                        if s.startswith("recall_keyword="):
+                            rk = s.split("=", 1)[1].strip()
+                        elif s.startswith("推荐:"):
+                            ra = s.split(":", 1)[1].strip()
+                    md = ""
+                    if metadata:
+                        try:
+                            import json as _json
+                            md_dict = _json.loads(metadata) if isinstance(metadata, str) else metadata
+                            sdk = md_dict.get("sdk", "?")
+                            tool = md_dict.get("tool", "?")
+                            md = f"sdk={sdk} tool={tool}"
+                        except Exception:
+                            pass
+                    snippet = f"- fact#{fid} [{md}] recall_keyword={rk!r}: {ra or content[:120]}"
+                    err_lines.append(snippet)
+                blocks.append("\n".join(err_lines))
+        except Exception as exc:
+            logger.warning("astor_memory sdk-error prefetch failed: %s", exc)
+
+        return "\n".join(b for b in blocks if b)
 
     def sync_turn(
         self,
