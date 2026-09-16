@@ -199,6 +199,66 @@ See `$ASTOR_DIR/bots/DESIGN.md` for the full treatment including the four canoni
 
 The bots/ directory also holds retired single-platform DBs (archive/) and reserved space for future session history (sessions/) and checks (check/).
 
+## Four integration paths (verified 2026-09-16)
+
+Astor-Memory is agent-agnostic. **Four verified entry points**, all using the same REST surface at `/v1/*`:
+
+| Path | How | When to use |
+|---|---|---|
+| **1. Telegram bot** | `AstorClient(transport='bot', platform='telegram')` via `bot-binding.db` | Telegram DM bot forwarding user requests to astor |
+| **2. Discord bot** | `AstorClient(transport='bot', platform='discord')` via `bot-binding.db` | Discord DM bot forwarding user requests |
+| **3. WeChat (5 bots)** | `AstorClient(transport='bot', platform='weixin')` via `bot-binding.db` | WeChat iLink bot — 1 bot → N users, chat_id = user |
+| **4. EvoX / Claude Code / Codex direct** | `AstorClient(transport='direct')` | Non-Hermes agents integrating without a bot platform |
+
+`AstorClient` (Python) auto-derives the `X-Actor` header from `self.user_id` — server resolves it via `bot-binding.db.user_meta.role` (admin / user) and `subscription_plan` (free / vip / power). Free users can write `public` tier; only admin can write `source`; private writes require `acc_id == caller.user_id` ACL guard.
+
+All four paths verified end-to-end 2026-09-16: recall works (200 + hits), write works (returns `fact_ids: [int]`), cross-user private facts do NOT leak (probe-owner-only recall, zero hits across other user accounts).
+
+### MCP server integration (for AI agents)
+
+`astor_memory/mcp_server_extension.py` is a drop-in monkey-patch for any MCP gateway that exposes `list_tools()` / `call_tool()` server-side. After install, the gateway surfaces `astor_auto_observe` as a native tool — every tool call is auto-captured to astor bus for audit + downstream learning.
+
+```python
+# Phase E (commit 459296f) install snippet
+import sys, os
+_p = os.environ.get("ASTOR_MEMORY_SRC")
+if _p:
+    sys.path.insert(0, _p)
+    sys.path.insert(0, os.path.join(_p, "astor_memory"))
+    import mcp_server_extension as _ext
+    _ext.install(sys.modules["__main__"])
+```
+
+Works for Codex / Claude Code / any MCP-compliant agent runtime.
+
+## Roadmap — peer-to-peer public tier sync (design phase)
+
+Today every Astor-Memory deployment is a single-server island. The **public** tier (shared knowledge base: methods, models, rules, flows) only reaches users on the same server. The next ship cycle adds **peer-to-peer public tier sync** so two (or more) Astor-Memory instances owned by trusted peers can keep their public tier in sync — without leaking private tier across the boundary.
+
+### Target design (locked 2026-09-16, R12593)
+
+- **New endpoint**: `POST /v1/peer/sync` (peer-to-peer only, separate from `/v1/read`+`/v1/write` rate-limit buckets — see R12593).
+- **Handshake**: per-peer shared token in `bot-binding.db` `peers` table; `actor_type='peer'` bypasses the per-actor free/vip/power rate-limit gate.
+- **Transport**: pull-based (peer A asks peer B "give me public facts with `updated_at > X`") — simpler than push and lets each peer throttle inbound.
+- **Conflict policy**: `stable_id` + `revision` columns already in `memory_canonical` (schema v9+) — last-write-wins by revision, ties broken by `lexicographic stable_id`.
+- **What does NOT cross the boundary**: `private` tier facts, `source` tier facts, audit events, embed vectors (re-embed locally), `user_meta.role`/`subscription_plan`.
+- **What crosses**: only `tier='public'` + `tombstoned=0` facts, plus their `keywords` for dedup.
+
+### Why peer (not federation / not single-tenant SaaS)
+
+- **Peer = trusted small group** (3-10 admin peers who know each other's real identity). Single-direction trust: `peers` table holds shared secrets; no global PKI needed.
+- **Federation** (open protocol with arbitrary nodes) needs identity + reputation layer — too much for v1.
+- **Single-tenant SaaS** centralizes trust in one operator — defeats the "self-owned memory" thesis of Astor-Memory.
+
+### Open questions before ship
+
+1. **Pull interval**: cron? on-write-trigger (push-style)? per-peer negotiated? — R12593 lock: cron-pull baseline (e.g. every 30min).
+2. **Fact payload size**: 1 fact per request, or batched up to N per pull? — defer to design.
+3. **Sync direction symmetry**: both peers pull each other, or one is "primary" + others pull from primary? — defer to design.
+4. **Audit**: `peers` table gets a `last_sync_at` + `last_sync_facts_count` column so admin can see what crossed the boundary.
+
+If you want to drive this, the first ship cycle is: design doc (`docs/peer-sync.md`) → `bot-binding.db.peers` table schema → `POST /v1/peer/sync` handler (no per-actor limit, returns public facts since `since_ts`) → smoke test against 2 local instances.
+
 ## Inspired by, not copied from
 
 Astor-Memory stands on shoulders. We explicitly learned architecture from and avoided copying code from:
