@@ -29,7 +29,7 @@ import sqlite3
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -134,10 +134,17 @@ def _now_iso() -> str:
 
 
 def _get_db_path(astor_dir: str | Path, tier: str, user_id: str | None) -> Path:
-    """Resolve tier DB path following the 9-DB layout (ADR-0001)."""
+    """Resolve tier DB path following the 9-DB layout (ADR-0001).
+
+    tier='all' or None + user_id → return that user's private DB (cross-tier
+        rows in a per-user DB will still be filtered by tier column).
+    """
     base = Path(astor_dir)
-    if tier == "private" and user_id:
+    if user_id and (tier in ("private", "all", None, "")):
         return base / "users" / user_id / "memory" / f"astor_bus_{user_id}.db"
+    if tier in ("private", "all", None, ""):
+        # Per-user DB but no user_id given — fall back to admin.
+        return base / "users" / "admin" / "memory" / "astor_bus_admin.db"
     return base / tier / "memory" / f"astor_bus_{tier}.db"
 
 
@@ -156,11 +163,34 @@ def _fetch_active_facts(
     tier: str,
     cap: int = 1000,
 ) -> list[dict]:
-    """Return up to `cap` active facts older than `age_days`."""
+    """Return up to `cap` active facts older than `age_days`.
+
+    Scope semantics:
+      user_id=None → ALL users (use for shared tiers like public/source).
+      tier='all'   → ALL tiers in the DB.
+      tier=None    → ALL tiers (alias for 'all').
+      tier='public'/'source' on a per-user DB: those DBs may also hold rows
+        that the caller promoted-to-public in-place; relax user_id filter.
+
+    Per-user DBs (e.g. users/admin/memory/astor_bus_admin.db) may contain
+    rows with tier=public/source (cross-tier rows living in admin's DB).
+    When tier filter is 'private', do NOT exclude rows whose tier column
+    is 'public'/'source' — they're admin's own data, in scope.
+    """
     cutoff_iso = (
         datetime.now(timezone.utc)
-        - __import__("datetime").timedelta(days=age_days)
+        - timedelta(days=age_days)
     ).isoformat(timespec="seconds") + "Z"
+
+    # Shared tiers (public/source on shared DB): relax user_id filter.
+    if tier in ("public", "source") and user_id:
+        effective_user_id = None
+    else:
+        effective_user_id = user_id
+
+    # 'all' or None → no tier filter (per-user DBs may have mixed tiers).
+    tier_filter = tier if tier not in (None, "all") else None
+
     rows = conn.execute(
         """
         SELECT id, content, kind, importance, access_count, provenance_kind
@@ -172,7 +202,7 @@ def _fetch_active_facts(
         ORDER BY id DESC
         LIMIT ?
         """,
-        (cutoff_iso, user_id, user_id, tier, tier, cap),
+        (cutoff_iso, effective_user_id, effective_user_id, tier_filter, tier_filter, cap),
     ).fetchall()
     return [
         {
@@ -318,7 +348,7 @@ def _action_promote(
             ).fetchone()
             if not src:
                 continue
-            cols = [d[0] for d in conn.execute(
+            cols = [d[1] for d in conn.execute(
                 "PRAGMA table_info(memory_canonical)"
             ).fetchall()]
             row = dict(zip(cols, src))
