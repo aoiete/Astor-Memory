@@ -517,3 +517,91 @@ def close() -> None:
     if _con is not None:
         _con.close()
         _con = None
+
+
+# ============================================================
+# Phase C-D: cross-channel consistency audit
+# ============================================================
+#
+# Phase B shipped multi-channel role routing (admin-only via evox, others
+# via hermes + bot-binding). The risk: a user_id could have one binding
+# that resolves to admin role and another binding that resolves to user
+# role, with different downstream paths. This helper audits that
+# invariant — for each active binding, the binding.role_inherit must
+# match user_meta.role and the platform must be enabled. Any mismatch
+# is returned as a structured inconsistency for admin review.
+
+
+def check_cross_channel_consistency() -> list[dict]:
+    """Audit all active bindings for cross-channel role consistency.
+
+    For every active binding, verifies:
+      1. ``binding.role_inherit`` matches the bound ``user_meta.role``
+      2. ``user_meta.active`` is 1 (a binding to a deactivated user is a
+         stale binding that should be revoked)
+      3. The bound ``platforms.enabled`` is 1 (a binding to a disabled
+         platform can never receive messages)
+
+    Returns a list of inconsistency dicts (empty list = all consistent).
+    Each inconsistency has: ``binding_id``, ``platform_id``, ``chat_id``,
+    ``user_id``, and ``issues`` (list of {field, ...} dicts).
+
+    Read-only — never mutates state. Audit row is NOT written here; the
+    REST endpoint that calls this is expected to write one audit row per
+    run so admins can correlate findings over time.
+    """
+    con = _connect()
+    rows = con.execute("""
+        SELECT b.binding_id, b.platform_id, b.chat_id, b.user_id,
+               b.role_inherit, b.scope, b.allow_from,
+               u.role AS user_role, u.active AS user_active,
+               u.default_tier AS user_default_tier,
+               u.trusted_agent AS user_trusted_agent,
+               p.enabled AS platform_enabled, p.platform_kind
+        FROM bindings b
+        JOIN user_meta u ON b.user_id = u.user_id
+        JOIN platforms p ON b.platform_id = p.platform_id
+        WHERE b.active = 1
+    """).fetchall()
+
+    inconsistencies: list[dict] = []
+    for r in rows:
+        issues: list[dict] = []
+        if r["role_inherit"] != r["user_role"]:
+            issues.append({
+                "field": "role_inherit",
+                "binding_value": r["role_inherit"],
+                "user_meta_value": r["user_role"],
+                "severity": "high",
+                "note": (
+                    "binding claims one role but user_meta says another; "
+                    "downstream ACL will use the binding's role_inherit"
+                ),
+            })
+        if not r["user_active"]:
+            issues.append({
+                "field": "user_active",
+                "value": False,
+                "severity": "medium",
+                "note": "binding points to a deactivated user",
+            })
+        if not r["platform_enabled"]:
+            issues.append({
+                "field": "platform_enabled",
+                "value": False,
+                "severity": "low",
+                "note": "binding points to a disabled platform",
+            })
+        if issues:
+            inconsistencies.append({
+                "binding_id": r["binding_id"],
+                "platform_id": r["platform_id"],
+                "platform_kind": r["platform_kind"],
+                "chat_id": r["chat_id"],
+                "user_id": r["user_id"],
+                "scope": r["scope"],
+                "user_default_tier": r["user_default_tier"],
+                "user_trusted_agent": bool(r["user_trusted_agent"]),
+                "issues": issues,
+            })
+    return inconsistencies

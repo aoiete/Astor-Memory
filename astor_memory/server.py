@@ -3018,6 +3018,48 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'user_id': hint_user,
         })
 
+    @app.route('/v1/consistency/check', methods=['GET'])
+    def consistency_check():
+        """Phase C-D: cross-channel consistency audit (admin-only).
+
+        Joins active bindings × user_meta × platforms and reports any
+        inconsistency:
+          - role_inherit ≠ user_meta.role
+          - user_meta.active = 0 (stale binding)
+          - platforms.enabled = 0 (binding to disabled platform)
+
+        Returns ``{"inconsistencies": [...], "count": N}``. Empty list =
+        all consistent. Never mutates state. Audit row is written for the
+        run so admins can correlate over time.
+        """
+        from ._internal.bot_binding import check_cross_channel_consistency
+        from ._internal.audit_logger import astor_audit
+        try:
+            ctx = astor_current_acl()
+            if ctx.role != 'admin':
+                return jsonify({'error': 'admin required'}), 403
+        except Exception as e:
+            return jsonify({'error': 'acl_unresolved', 'reason': repr(e)}), 401
+
+        inconsistencies = check_cross_channel_consistency()
+        # Write one audit row per run so the result is queryable later.
+        try:
+            astor_audit(
+                actor=ctx.actor,
+                tier='private',
+                action='admin_op',
+                target='consistency_check',
+                reason=f"cross-channel audit: {len(inconsistencies)} inconsistencies",
+                metadata={'count': len(inconsistencies)},
+            )
+        except Exception:
+            # Audit is best-effort; never block the response.
+            pass
+        return jsonify({
+            'inconsistencies': inconsistencies,
+            'count': len(inconsistencies),
+        })
+
     @app.route('/v1/reload', methods=['POST'])
     def reload():
         """Hot-reload server code (P3-fix 2026-08-15, fix 2026-09-17).
