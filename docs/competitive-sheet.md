@@ -82,7 +82,7 @@ differ" — answers should pull from this single source of truth.
 | **Health endpoint** | ✅ `/v1/health` + `/v1/health/diagnose` (Ship C v1.14.43, ADR-0005: +proxy_hijack_check +db_corruption_check +embedding_version_check) | `memU doctor` CLI | implicit |
 | **Recall log** | ✅ `recall_log.jsonl` + `latency_ms` (v1.14.29) | none published | none published |
 | **Usage stats** | ✅ weekly aggregator (v1.14.28) | none | none |
-| **Decay sweep** | ✅ default-on (v1.14.39) | n/a | living-memory dynamics |
+| **Decay sweep** | ✅ default-on (v1.14.39) + ✅ Consolidate CLI (v1.14.51, ADR-0007) — dedup/upgrade/classify/promote | n/a | living-memory dynamics |
 | **Audit log** | ✅ astor_audit.db | none | none |
 | **Crash-safe reload** | ✅ vector_store auto-reopen | ✅ (v1.14.3+) | n/a |
 

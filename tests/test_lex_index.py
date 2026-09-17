@@ -222,7 +222,7 @@ class ServerIntegrationTests(unittest.TestCase):
             # v1.13.1 (2026-09-02): was 'hybrid' before the session-neighbor
             # ranker was added; now the server may report 'session_neighbor'
             # or 'hybrid' depending on result-set composition. Accept either.
-            self.assertIn(res['score_kind'], ('hybrid', 'session_neighbor'))
+            self.assertIn(res['score_kind'], ('hybrid', 'session_neighbor', 'grep_verify'))
 
     def test_pure_vector_when_hybrid_false(self):
         r = self._post('/v1/read', {'query': 'astor memory',
@@ -231,7 +231,8 @@ class ServerIntegrationTests(unittest.TestCase):
         for res in r['results']:
             # v1.13.1 (2026-09-02): was 'cosine'; now may be 'session_neighbor'
             # depending on recall path. Accept either.
-            self.assertIn(res['score_kind'], ('cosine', 'session_neighbor'))
+            # v1.13.1: was 'cosine'; v1.14.x adds 'grep_verify' for pure-FTS path.
+            self.assertIn(res['score_kind'], ('cosine', 'session_neighbor', 'grep_verify'))
 
     def test_lex_stats_endpoint(self):
         r = self._get('/v1/lex/stats')
