@@ -179,12 +179,16 @@ def fetch_lock_rules(
     """
     existing = {row[1] for row in con.execute("PRAGMA table_info(memory_canonical)").fetchall()}
     select_cols = ["id", "kind", "content", "tags"]
-    for c in ("topic", "keywords", "context", "metadata", "namespace", "user_id"):
+    for c in ("topic", "keywords", "context", "metadata", "namespace", "user_id", "tombstoned"):
         if c in existing:
             select_cols.append(c)
+    # Wrap the tag-match OR in parens so the tombstone filter applies to
+    # both branches (SQL precedence would otherwise let `tags LIKE
+    # '%"LOCK"%'` short-circuit the AND).
     rows = con.execute(
         f"SELECT {', '.join(select_cols)} FROM memory_canonical "
-        "WHERE tags LIKE '%\"LOCK\"%' OR tags LIKE 'LOCK%' "
+        "WHERE (tags LIKE '%\"LOCK\"%' OR tags LIKE 'LOCK%') "
+        "  AND (tombstoned = 0 OR tombstoned IS NULL) "
         "ORDER BY id"
     ).fetchall()
 
