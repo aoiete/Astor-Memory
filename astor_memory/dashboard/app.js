@@ -150,6 +150,73 @@
       });
     }
 
+    // v1.14.37 Ship N: Recent Capture panel — grouped facts by kind/tier/platform/all
+    const rc = d.recent_capture || { by_kind: {}, by_tier: {}, by_platform: {}, counts: {} };
+    function _renderRecentCapture(axis) {
+      const body = document.getElementById('recent-capture-body');
+      if (!body) return;
+      body.innerHTML = '';
+      let entries;
+      if (axis === 'kind') {
+        entries = Object.entries(rc.by_kind || {}).sort((a,b) => b[1].length - a[1].length);
+      } else if (axis === 'tier') {
+        entries = Object.entries(rc.by_tier || {}).sort((a,b) => b[1].length - a[1].length);
+      } else if (axis === 'platform') {
+        entries = Object.entries(rc.by_platform || {}).sort((a,b) => b[1].length - a[1].length);
+      } else {
+        const seen = new Set();
+        const flat = [];
+        for (const bucket of Object.values(rc.by_kind || {})) {
+          for (const f of bucket) {
+            if (!seen.has(f.id)) { seen.add(f.id); flat.push(f); }
+          }
+        }
+        flat.sort((a,b) => (b.ts || '').localeCompare(a.ts || ''));
+        entries = [['all facts', flat.slice(0, (rc.limit_per_bucket || 10) * 3)]];
+      }
+      if (entries.length === 0 || entries.every(([,v]) => v.length === 0)) {
+        body.innerHTML = '<div class="rc-empty">No facts captured yet in this view.</div>';
+        return;
+      }
+      for (const [bucketName, rows] of entries) {
+        if (rows.length === 0) continue;
+        const group = document.createElement('div');
+        group.className = 'rc-group';
+        const heading = document.createElement('div');
+        heading.className = 'rc-group-heading';
+        heading.innerHTML = '<span class="rc-bucket">' + escapeHtml(bucketName) + '</span>'
+          + '<span class="rc-count">' + rows.length + '</span>';
+        group.appendChild(heading);
+        const ul = document.createElement('ul');
+        ul.className = 'rc-list';
+        rows.forEach(f => {
+          const li = document.createElement('li');
+          li.className = 'rc-row';
+          const tierTag = f.tier ? '<span class="rc-tag rc-tier">' + escapeHtml(f.tier) + '</span>' : '';
+          const kindTag = f.kind ? '<span class="rc-tag rc-kind">' + escapeHtml(f.kind) + '</span>' : '';
+          const platTag = f.platform ? '<span class="rc-tag rc-platform">' + escapeHtml(f.platform) + '</span>' : '';
+          const meta = '#' + f.id + ' · imp ' + fmt(f.importance) + ' · ' + (f.ts || '').slice(0, 16);
+          li.innerHTML = '<div class="rc-meta">'
+            + tierTag + kindTag + platTag
+            + '<span class="rc-meta-text">' + escapeHtml(meta) + '</span>'
+            + '</div>'
+            + '<div class="rc-content">' + escapeHtml(f.content || '(empty)') + '</div>';
+          ul.appendChild(li);
+        });
+        group.appendChild(ul);
+        body.appendChild(group);
+      }
+    }
+    document.querySelectorAll('.rc-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.rc-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        _renderRecentCapture(btn.dataset.axis);
+      });
+    });
+    _renderRecentCapture('kind');
+
+
     // health
     const h2 = d.health || {};
     const setHealth = (id, v) => {
