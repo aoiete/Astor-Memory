@@ -569,12 +569,15 @@ def _health(astor_dir: Path) -> dict[str, int]:
         return {"embedding_failed": 0, "audit_warnings": 0, "audit_total": 0}
 
 
-def _summarize_llm_spend(astor_dir: Path) -> dict:
+def _summarize_llm_spend(astor_dir) -> dict:
     """Per-tier / per-user LLM call aggregation across all forge DBs.
 
     Phase E5 (2026-09-17): spend tracking for the dashboard. Walks every
     ``astor_forge_*.db`` under ``<tier>/memory/`` and ``users/<u>/memory/``,
     aggregates ``llm_call_log`` rows by user_id + provider + operation.
+
+    Args:
+        astor_dir: Path or str pointing at the Astor-Memory-Runtime root.
 
     Returns a dict shaped:
       {
@@ -586,6 +589,8 @@ def _summarize_llm_spend(astor_dir: Path) -> dict:
 
     Best-effort: missing or empty forge DBs are silently skipped.
     """
+    if not isinstance(astor_dir, Path):
+        astor_dir = Path(astor_dir)
     # Approximate cost: 1 token ≈ 4 chars; gpt-4o-mini ~ $0.15/M input.
     # The number is informational; we expose raw counts so the admin
     # can map them to whatever pricing they actually pay.

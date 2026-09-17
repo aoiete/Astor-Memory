@@ -261,6 +261,40 @@ def main(argv: list[str] | None = None) -> int:
     admin_who = admin_sub.add_parser('whoami', help='Show current admin lock')
     admin_who.set_defaults(func=cmd_admin_whoami)
 
+    # am lock-rule ... (Phase E1: LOCK rules that drive /v1/classify)
+    lock_p = subparsers.add_parser('lock-rule',
+                                    help='Manage LOCK rules that drive /v1/classify')
+    lock_sub = lock_p.add_subparsers(dest='lock_rule_command', required=True)
+    lock_add = lock_sub.add_parser('add', help='Seed a new LOCK rule')
+    lock_add.add_argument('--topic', required=True, help='Unique rule name (e.g. personal-finance-private)')
+    lock_add.add_argument('--keyword', action='append', required=True,
+                          help='Trigger pattern (regex or literal, case-insensitive). Repeat for multiple.')
+    lock_add.add_argument('--tier', choices=['public', 'private', 'source', 'rule_ship'],
+                          default='private', help='Target tier (default private)')
+    lock_add.add_argument('--scope', choices=['global', 'user'], default='global',
+                          help='Rule scope (default global)')
+    lock_add.add_argument('--priority', type=int, default=5, help='Match priority 1-10 (default 5)')
+    lock_add.add_argument('--action', choices=['route', 'block', 'tag'], default='route',
+                          help='What to do on match (default route)')
+    lock_add.add_argument('--description', default='', help='Human-readable rule description')
+    lock_add.add_argument('--tag', action='append', default=[],
+                          help='Extra tag to add when rule matches. Repeat for multiple.')
+    lock_add.add_argument('--user', default='admin', help='Owner user_id (default admin)')
+    lock_add.set_defaults(func=cmd_lock_rule_add)
+
+    lock_list = lock_sub.add_parser('list', help='List LOCK rules')
+    lock_list.add_argument('--scope', choices=['global', 'user', 'all'], default='all')
+    lock_list.set_defaults(func=cmd_lock_rule_list)
+
+    lock_del = lock_sub.add_parser('delete', help='Soft-delete a LOCK rule by rule_id')
+    lock_del.add_argument('rule_id', type=int, help='rule_id (fact_id) to delete')
+    lock_del.set_defaults(func=cmd_lock_rule_delete)
+
+    lock_test = lock_sub.add_parser('test', help='Evaluate text against current LOCK rules')
+    lock_test.add_argument('text', help='Text to evaluate')
+    lock_test.add_argument('--user', default='admin', help='user_id scope (default admin)')
+    lock_test.set_defaults(func=cmd_lock_rule_test)
+
     # am platform ... (bot-binding.db CRUD)
     plat_p = subparsers.add_parser('platform', help='Manage bot-binding.db (platforms + bindings + users)')
     plat_sub = plat_p.add_subparsers(dest='platform_command')
@@ -2122,5 +2156,124 @@ def cmd_platform_verify(args) -> int:
     return 0
 
 
-    if __name__ == '__main__':
+# ---------------------------------------------------------------------------
+# Phase E1: LOCK rule CLI (am lock-rule add|list|delete|test)
+# ---------------------------------------------------------------------------
+
+def _open_lock_rule_bus():
+    """Open the public tier canonical DB for LOCK rule CRUD.
+
+    Bypasses the astor_bus() ACL check (read-side guard) so admin-only
+    writes from the CLI don't fail when no request context is bound.
+    """
+    import sqlite3 as _sqlite3
+    from .._internal.acl_layout import get_astor_dir as _get_astor_dir
+    from pathlib import Path as _Path
+    db = _get_astor_dir() / 'public' / 'memory' / 'astor_bus_public.db'
+    if not db.exists():
+        raise SystemExit(
+            f"[ERR] public tier bus DB not found: {db}\n"
+            "  run `am install` first or set ASTOR_DIR to your runtime root."
+        )
+    con = _sqlite3.connect(str(db))
+    con.row_factory = _sqlite3.Row
+    return con
+
+
+def cmd_lock_rule_add(args) -> int:
+    """Seed a new LOCK rule fact in the public tier bus DB."""
+    _require_admin()
+    con = _open_lock_rule_bus()
+    try:
+        from .._internal.lock_rules import seed_lock_rule, VALID_TARGET_TIERS
+        if args.tier not in VALID_TARGET_TIERS:
+            raise SystemExit(f"[ERR] invalid tier {args.tier!r}")
+        rule_id = seed_lock_rule(
+            con,
+            topic=args.topic,
+            keywords=list(args.keyword),
+            target_tier=args.tier,
+            scope=args.scope,
+            priority=args.priority,
+            action=args.action,
+            description=args.description,
+            tags_extra=list(args.tag),
+            user_id=args.user,
+        )
+        print(f'[OK] LOCK rule {rule_id} ({args.topic!r}) seeded '
+              f'tier={args.tier} scope={args.scope} priority={args.priority} '
+              f'keywords={list(args.keyword)}')
+        return 0
+    except Exception as e:
+        print(f'[ERR] {type(e).__name__}: {e}')
+        return 1
+    finally:
+        con.close()
+
+
+def cmd_lock_rule_list(args) -> int:
+    """List LOCK rules in the public tier bus DB."""
+    _require_admin()
+    con = _open_lock_rule_bus()
+    try:
+        from .._internal.lock_rules import fetch_lock_rules
+        scope = None if args.scope == 'all' else args.scope
+        rules = fetch_lock_rules(con, user_id=None, scope=scope)
+        if not rules:
+            print('[OK] no LOCK rules found.')
+            return 0
+        print(f'[OK] {len(rules)} LOCK rule(s):')
+        for r in rules:
+            print(
+                f"  id={r.rule_id:<5} {r.rule_name:<40} "
+                f"tier={r.target_tier:<10} scope={r.scope:<7} "
+                f"prio={r.priority} action={r.action:<6} "
+                f"keywords={list(r.keywords)}"
+            )
+        return 0
+    finally:
+        con.close()
+
+
+def cmd_lock_rule_delete(args) -> int:
+    """Soft-delete a LOCK rule by setting tombstoned=1."""
+    _require_admin()
+    con = _open_lock_rule_bus()
+    try:
+        cur = con.execute(
+            "UPDATE memory_canonical SET tombstoned = 1 "
+            "WHERE id = ? AND tags LIKE '%LOCK%'",
+            (args.rule_id,),
+        )
+        con.commit()
+        if cur.rowcount == 0:
+            print(f'[ERR] no LOCK rule with id={args.rule_id} (or already deleted)')
+            return 1
+        print(f'[OK] LOCK rule {args.rule_id} tombstoned.')
+        return 0
+    finally:
+        con.close()
+
+
+def cmd_lock_rule_test(args) -> int:
+    """Evaluate text against current LOCK rules (dry-run /v1/classify Path 2)."""
+    con = _open_lock_rule_bus()
+    try:
+        from .._internal.lock_rules import fetch_lock_rules, evaluate_text
+        rules = fetch_lock_rules(con, user_id=args.user, scope=None)
+        match = evaluate_text(args.text, rules)
+        if match is None:
+            print(f'[OK] no LOCK rule matches text: {args.text!r}')
+            return 0
+        print(f'[OK] matched LOCK rule {match["rule_id"]} ({match["rule_name"]!r})')
+        print(f'     tier={match["target_tier"]} '
+              f'(effective={match["target_tier"] if match["target_tier"] != "rule_ship" else "public"})')
+        print(f'     action={match["action"]} priority={match["priority"]}')
+        print(f'     description={match["description"]!r}')
+        return 0
+    finally:
+        con.close()
+
+
+if __name__ == '__main__':
         sys.exit(main())

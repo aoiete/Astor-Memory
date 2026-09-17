@@ -1,3 +1,280 @@
+## v1.14.61 (2026-09-17)
+
+### Phase E3+E4+E5 — namespace isolation + consistency enforce + spend dashboard
+
+Closes the remaining three of the five Phase C-D optimisation points.
+astor now auto-judges how to store and read across every agent entry
+mode (MCP direct, local direct SDK/CLI, Hermes bot via TG/DC/WX, game
+agent) without the caller having to declare tier or namespace.
+
+**Phase E3 — per-agent namespace isolation**
+- New `_resolve_namespace()` helper. When `agent_ctx['agent_id']` is
+  set but no explicit `namespace` was supplied, default becomes
+  `<agent_id>/<session_id or fallback>`. N agents on one machine auto-
+  bucket into disjoint namespaces without caller cooperation.
+- Wired into `bus.append_event`, `memory_candidate` insert, and the
+  source-mirror path in `server.py`.
+- Backwards-compatible: callers that supply an explicit `namespace` keep
+  using it verbatim.
+- Verified: `agent_id=evox` writes land in `evox/admin`, `agent_id=hermes`
+  in `hermes/admin`, explicit `namespace=custom/space` still honoured.
+
+**Phase E4 — pre-write cross-channel consistency enforcement**
+- `/v1/write` now checks every active bot binding of the target
+  user. If `binding.role_inherit != user_meta.role`, return
+  `409 cross_channel_inconsistency` with `binding_id`,
+  `expected_role`, `binding_role` so the admin can fix via
+  `am binding` before persisting.
+- Best-effort: a transient DB error here falls through (audit-only path
+  stays at `/v1/consistency/check`).
+- Verified: normal admin write returns 200; a write for `e4test`
+  (user_meta.role=admin, binding.role_inherit=user) returns 409 with
+  full diagnostic detail.
+
+**Phase E5 — LLM spend tracking in dashboard**
+- New `_summarize_llm_spend()` in `dashboard_data.py` walks every
+  `astor_forge_*.db` under `<tier>/memory/` and
+  `users/<u>/memory/`. Aggregates `llm_call_log` rows by tier / user_id /
+  provider.
+- `/v1/dashboard` now carries an `llm_spend` block with
+  `by_tier` / `by_user` / `by_provider` / `totals` (calls, success,
+  error_count, input_chars, latency_ms_sum).
+- No schema change: `llm_call_log` already has user_id / tier / provider.
+- Verified across the live deployment: 20,336 historical calls
+  aggregated, 12 users tracked, 5 providers visible
+  (`regex_fallback`, `m3`, `none`, `regex`, `openai`).
+
+---
+
+## v1.14.60 (2026-09-17)
+
+### Phase E1+E2 — LOCK rule schema + /v1/classify integration
+
+Astor can now auto-decide whether inbound content is private, public,
+or "rule-ship"-able (curated rule that ships to public) by matching
+against admin-seeded LOCK rules. No longer relies on the caller to
+truthfully declare tier.
+
+**Phase E1 — LOCK rule schema + helpers**
+- New module `astor_memory/_internal/lock_rules.py` with:
+  - `LockRule` dataclass (regex-or-literal keywords, target_tier,
+    scope, priority, action, tags_extra).
+  - `parse_lock_rule(fact)` — lenient parser; supports top-level
+    `keywords` / `context` columns AND legacy `metadata.__keywords__`
+    / `metadata.__context__` / `metadata.__topic__` payloads.
+  - `fetch_lock_rules(con, user_id, scope)` — schema-tolerant
+    (probes `PRAGMA table_info`; works on DBs missing `topic` /
+    `metadata` / `namespace` columns).
+  - `evaluate_text(text, rules)` — picks highest-priority match;
+    ties break on `rule_name` ascending (deterministic).
+  - `seed_lock_rule(con, **)` — inserts a LOCK rule fact with
+    `kind=lock_rule`, `tags=[LOCK]`, `metadata.__topic__`,
+    `metadata.__keywords__`, `metadata.__context__`; one audit row.
+- Tier values: `public` / `private` / `source` / `rule_ship`
+  (`rule_ship` is a meta-tier that maps to `public` storage).
+- DB path: `ASTOR_DIR/public/memory/astor_bus_public.db` (note: the
+  canonical facts live in `astor_bus_<tier>.db`, not
+  `astor_canonical_<tier>.db` — the naming is misleading).
+
+**Phase E2 — `/v1/classify` three-path decision**
+- Path 1 (trusted_agent): `user_meta.default_tier` (confidence 0.95).
+- Path 2 (LOCK rule): highest-priority match wins (confidence 0.8).
+  Meta-tier `rule_ship` is mapped to `public` storage.
+- Path 3 (safe_default): `public` (confidence 0.5).
+- Opens the canonical DB directly (not via `astor_bus()`) to avoid the
+  read-side ACL check that would block admin-free callers in test
+  contexts.
+
+Verified:
+- `admin + "my TFSA balance"` → `trusted_default admin` (Path 1)
+- `sunday + "my TFSA balance is 5000"` → `lock_rule private`
+  (rule `personal-finance-private`, priority 8)
+- `sunday + "workflow step 1 do X"` → `lock_rule public`
+  (rule `rule-ship-methods`, priority 3, rule_ship → public)
+- `sunday + "random chat"` → `safe_default public` (Path 3)
+
+Two test rules (rule_id 6232 and 6233) are seeded into the public tier
+bus DB so production can evaluate against them.
+
+---
+
+## v1.14.59 (2026-09-17)
+
+### /v1/reload force-bind admin to defeat stale ACL
+
+Bugfix: intermittent 403 on `POST /v1/reload`.
+
+**Root cause.** Flask's `before_request` hook only rebinds ACL when
+`request.is_json` is True. A plain `curl -X POST /v1/reload`
+(no body, no Content-Type) does not rebind, so the previous request's
+`_CURRENT.actor` carried over. After a sunday write the next reload
+saw `user:sunday`'s `role='user'` and returned 403.
+
+**Fix.** Force-bind admin at the top of the `reload()` handler before
+the role check, so reload always works regardless of prior request
+state. This is the only handler in the codebase that performs an
+admin-only operation triggered by an external POST without a body.
+
+Verified: `sunday write → reload` now returns `{reloading: true, pid: N}`
+and the PID switches to the new server.
+
+---
+
+## v1.14.58 (2026-09-17)
+
+### Defensive None-stderr guard + reload close_fds fix
+
+`/v1/write` was returning 500 with no traceback, blocking the entire
+write path. The cause was `_sys.stderr.write(...)` raising
+`AttributeError: 'NoneType' object has no attribute 'write'`
+because the process had been spawned with `subprocess.Popen(cmd,
+close_fds=True)`, which closed the inherited stderr handle and made
+`sys.stderr` return `None` in the child.
+
+Two fixes:
+
+1. **`/v1/reload` no longer passes `close_fds=True`.** pythonw.exe keeps
+   references to its stdio handles; closing them makes `sys.stderr`
+   vanish. Default `close_fds=False` on Windows lets the child inherit
+   the stdio handles so `sys.stderr` stays valid.
+
+2. **New module-level `_safe_stderr_write(msg)` helper.** Wraps every
+   `_sys.stderr.write(...)` call in `write()` + RERANK with a None-check
+   + try/except. Even if stderr ever does go None again (someone spawns
+   with `close_fds=True` in the future, or runs headless), debug logging
+   can no longer break the response path.
+
+Also enhanced `@app.errorhandler(500)` to write the full traceback to
+`astor memory/_server_500.log` (safe cwd, not critical path) so future
+500s are diagnosable without needing to capture the running process's
+stderr.
+
+Verified: `/v1/write` returns 200 across `mode=auto`, `mode=regex`, and
+non-admin (`sunday`) callers. `/v1/read` confirms the written facts
+land in the correct tier+namespace.
+
+---
+
+## v1.14.57 (2026-09-17)
+
+### Phase C-D finish — cross-channel consistency audit (admin)
+
+New `GET /v1/consistency/check` (admin-only). Joins active
+`bindings × user_meta × platforms` and reports any inconsistency:
+
+- `role_inherit != user_meta.role`
+- `user_meta.active = 0` (stale binding)
+- `platforms.enabled = 0` (binding to a disabled platform)
+
+Each inconsistency carries `binding_id`, `platform_id`, `platform_kind`,
+`chat_id`, `user_id`, `scope`, `user_default_tier`,
+`user_trusted_agent`, and an `issues` list with `field`, expected vs
+actual values, severity (`high` / `medium` / `low`), and a human note.
+
+Backed by `astor_memory/_internal/bot_binding.check_cross_channel_consistency()`
+(read-only, never mutates state). Audit row written per call so admins
+can correlate findings over time.
+
+Verified end-to-end: a deliberately injected `binding.role_inherit='user'`
+against `user_meta.role='admin'` is detected and reported with severity
+`high`.
+
+---
+
+## v1.14.56 (2026-09-17)
+
+### /v1/reload hot-respawn fix (subprocess + exit)
+
+The previous reload implementation crashed the server because
+`sys.argv[0]` is the script path (not the executable) when launched via
+`-m`. `os.execv(sys.executable, sys.argv)` therefore passed the script
+path as a positional arg, and the respawned process tried to run
+`server.py` as `__main__`, hitting
+`ImportError: attempted relative import with no known parent package`
+at line 63.
+
+New implementation:
+
+- Builds the new command as
+  `[sys.executable, '-m', 'astor_memory.server'] + sys.argv[1:]`
+  so the `-m` flag is preserved (user args like `--host` / `--port`
+  come from `sys.argv[1:]`).
+- Uses `subprocess.Popen` (default `close_fds=False` on Windows) so the
+  new process inherits the stdio handles and `sys.stderr` stays valid.
+- Calls `os._exit(0)` on the current process so it terminates cleanly
+  without running Flask teardown that could block the port.
+
+Verified on port 7804: pre-reload PID 70500 → `POST /v1/reload` returns
+`{reloading: true, pid: 70500}` → post-reload PID 68200 (DIFFERENT, new
+process bound the port). `GET /v1/health` and `GET /v1/context` both
+return 200 with my new fields.
+
+---
+
+## v1.14.55 (2026-09-17)
+
+### /v1/reload bugfix + new /v1/context + /v1/classify endpoints
+
+Bugfix + two new REST endpoints. Closes the remaining three of five
+Phase C-D optimisation points without touching the MCP server package
+or Hermes.
+
+**`/v1/reload` (admin)** — hot-respawn the REST server. The original
+implementation had two bugs: duplicated the executable (so `-m
+astor_memory.server` was parsed as a positional script arg), and lost
+the `-m` flag (so the respawned process ran `server.py` as `__main__`
+and crashed at line 63 with
+`ImportError: attempted relative import with no known parent package`).
+Fix in this version uses `os.execv(sys.executable, sys.argv)`.
+Bugfix #3 (force-bind admin) lands in v1.14.59.
+
+**`GET /v1/context` (any caller)** — return resolved identity:
+`{actor, role, user_id, default_tier, trusted_agent}`. Reads `default_tier`
+and `trusted_agent` from `user_meta` for admin callers (private tier);
+omits PII for non-admin. Companion to MCP `astor_context`.
+
+**`POST /v1/classify` (any caller)** — server-side tier decision.
+Decision priority:
+1. `hint_user` (or caller's `user_id`) is `trusted_agent` in
+   `user_meta` → use `user_meta.default_tier` (confidence 0.95).
+2. Otherwise → `public` `safe_default` (confidence 0.5). LOCK rule
+   evaluation ships in v1.14.60 as Path 2.
+
+---
+
+## v1.14.54 (2026-09-17)
+
+### Phase C-D base — default_tier + trusted_agent + MCP lock_rules
+
+Five-point optimisation kickoff. Astor now has per-user tier metadata
+that the server reads to route writes without trusting the caller's
+own tier argument, and an MCP-side tool to prefetch LOCK rules at
+handshake time so agents know what rules are in force without a
+separate recall round-trip.
+
+- `_internal/bot_binding.py`: new `default_tier` and `trusted_agent`
+  columns on `user_meta` (idempotent ALTER TABLE migration in
+  `_init_schema`); four new helpers `get_user_default_tier`,
+  `set_user_default_tier`, `is_trusted_agent`, `set_trusted_agent`
+  (all audited).
+- `agent_identity.py`: `default_tier` and `trusted_agent` fields on
+  `AgentIdentity`; new `trusted_direct_agent(...)` factory forces
+  `trusted_agent=True` and requires `default_tier`.
+- `mcp_server_extension.py`: new MCP tool `astor_lock_rules` (no-args,
+  returns LOCK rule summary) with 5-minute in-memory cache keyed by
+  `(user_id, agent_id)`. Loaded automatically on every MCP gateway
+  start via `ASTOR_MEMORY_SRC` sys.path injection.
+
+Admin user configured as `default_tier=admin, trusted_agent=True`
+via the new helpers so EvoX Desktop writes land correctly.
+
+Verified end-to-end:
+- `cold call` → `cache_miss=true, rules=0` (no LOCK facts yet)
+- `warm call` → `cache_miss=false, fetched_at` unchanged (cache hit)
+- `refresh=true call` → `cache_miss=true`, new `fetched_at` (cache bypassed)
+
+---
+
 ## v1.14.49 (2026-09-16)
 
 ### R3 — mock URL open (deterministic provenance tests)
