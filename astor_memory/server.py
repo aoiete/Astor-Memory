@@ -58,6 +58,29 @@ import sys
 from pathlib import Path
 from typing import Any
 
+
+def _safe_stderr_write(msg: str) -> None:
+    """Write to sys.stderr without crashing if it is None.
+
+    2026-09-17 fix: subprocess.Popen with ``close_fds=True`` closes the
+    inherited stderr handle, which makes ``sys.stderr`` return ``None``
+    in the child. Any handler that called ``_sys.stderr.write(...)`` for
+    debug logging then raised ``AttributeError: 'NoneType' object has
+    no attribute 'write'`` and the request turned into a 500.
+
+    Use this helper everywhere we previously did
+    ``_sys.stderr.write(...)`` so the debug path can never break the
+    response path.
+    """
+    _se = sys.stderr
+    if _se is None:
+        return  # stderr was closed (close_fds=True or detached console)
+    try:
+        _se.write(msg)
+        _se.flush()
+    except Exception:
+        pass  # never let debug logging break the request
+
 from flask import Flask, jsonify, request
 
 from . import __version__, astor_bus, astor_nest, astor_forge
@@ -1028,9 +1051,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 ).fetchone()
                 _ents = []
                 # DEBUG
-                import sys as _sys_d
-                _sys_d.stderr.write(f'[DEBUG-E] canon_id={canon_id} row={_ents_row!r}\n')
-                _sys_d.stderr.flush()
+                _safe_stderr_write(f'[DEBUG-E] canon_id={canon_id} row={_ents_row!r}\n')
                 if _ents_row and _ents_row[0] is not None and len(_ents_row[0]) > 2:
                     # len > 2 skips the literal '[]' string (Ship B writes
                     # the column with default '[]' before the 2nd UPDATE
@@ -1042,17 +1063,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         if not isinstance(_ents, list):
                             _ents = []
                     except Exception as _ex_in:
-                        import sys as _sys_d3
-                        _sys_d3.stderr.write(f'[DEBUG-E] EXCEPTION inner {_ex_in!r}\n')
-                        _sys_d3.stderr.flush()
+                        _safe_stderr_write(f'[DEBUG-E] EXCEPTION inner {_ex_in!r}\n')
                         _ents = []
-                _sys_d.stderr.write(f'[DEBUG-E] PRE-append _ents type={type(_ents).__name__} len={len(_ents) if hasattr(_ents, "__len__") else "?"}\n')
-                _sys_d.stderr.flush()
+                _safe_stderr_write(f'[DEBUG-E] PRE-append _ents type={type(_ents).__name__} len={len(_ents) if hasattr(_ents, "__len__") else "?"}\n')
                 facts_entities.append(_ents)
             except Exception as _ex:
-                import sys as _sys_d2
-                _sys_d2.stderr.write(f'[DEBUG-E] EXCEPTION outer {_ex!r}\n')
-                _sys_d2.stderr.flush()
+                _safe_stderr_write(f'[DEBUG-E] EXCEPTION outer {_ex!r}\n')
                 facts_entities.append([])
             # Index for BM25 keyword recall — best-effort
             try:
@@ -1489,9 +1505,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _rerank_on = str(_body_rr).lower() in ('1', 'on', 'true', 'yes')
             if _rerank_on and results and top_k >= 3:
                 try:
-                    import sys as _sys, traceback as _tb
-                    _sys.stderr.write(f"[RERANK] enabled, results={len(results)}, top_k={top_k}, calling LLM...\n")
-                    _sys.stderr.flush()
+                    _safe_stderr_write(f"[RERANK] enabled, results={len(results)}, top_k={top_k}, calling LLM...\n")
                     from .nest.llm_rerank import rerank_candidates as _llm_rr
                     # Build (fid, content) pairs from results.
                     # 2026-08-27 fix: results from hybrid_merge is list of (fid, score)
@@ -1515,8 +1529,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             _fid_text = {}
                         _pairs = [(f, _fid_text.get(f, '')) for f in _fids]
                     _ranked = _llm_rr(query, _pairs)
-                    _sys.stderr.write(f"[RERANK] returned {len(_ranked)} ranked fids\n")
-                    _sys.stderr.flush()
+                    _safe_stderr_write(f"[RERANK] returned {len(_ranked)} ranked fids\n")
                     if _ranked:
                         # Re-order results. results shape: list of (fid, score) tuples.
                         _by_fid = {r[0]: r for r in results} if results and isinstance(results[0], (tuple, list)) else {r.get('fact_id'): r for r in results}
@@ -1531,9 +1544,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         # v1.10.9: LLM rerank already optimized; skip stage_recall.
                         _skip_stage = True
                 except Exception as _e:
-                    import sys as _sys, traceback as _tb
-                    _sys.stderr.write(f"[RERANK] EXCEPTION: {type(_e).__name__}: {_e}\n{_tb.format_exc()}\n")
-                    _sys.stderr.flush()
+                    import traceback as _tb
+                    _safe_stderr_write(f"[RERANK] EXCEPTION: {type(_e).__name__}: {_e}\n{_tb.format_exc()}\n")
             # v1.10.9 (2026-08-27): stage_recall entity-coverage rerank.
             # Boosts candidates whose content mentions multiple entities
             # from the query. Free, <5ms.
@@ -3109,7 +3121,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _t.sleep(0.2)
             cmd = [sys.executable, '-m', 'astor_memory.server'] + sys.argv[1:]
             try:
-                _sp.Popen(cmd, close_fds=True)
+                # NOTE: do NOT pass close_fds=True here. pythonw.exe keeps
+                # references to sys.stdout/sys.stderr; closing those fds
+                # makes them None, which then crashes any handler that
+                # tries to print to stderr (e.g. server.py /v1/write uses
+                # ``_sys.stderr.write(...)`` for debug logging). Default
+                # close_fds=False on Windows is the safe choice — the
+                # child inherits stdio handles so sys.stderr stays valid.
+                _sp.Popen(cmd)
             except Exception:
                 # Respawn failed; do nothing (current process keeps running)
                 return
@@ -3351,7 +3370,29 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.errorhandler(500)
     def internal_error(e):
-        """Flask 500 handler that emits a structured JSON error + audit row."""
+        """Flask 500 handler that emits a structured JSON error + audit row.
+
+        2026-09-17 debug: also write the full traceback to a side log in
+        the source repo (NOT critical path) so we can diagnose 500s without
+        needing to capture the running process's stderr. Without this,
+        the only 500 signal is the JSON ``detail`` field which Flask
+        truncates for HTTP responses.
+        """
+        import logging as _logging
+        import os as _os_e
+        import traceback as _tb
+        _side_log = _os_e.path.join(
+            _os_e.path.dirname(_os_e.path.dirname(_os_e.path.abspath(__file__))),
+            'astor memory', '_server_500.log',
+        )
+        try:
+            with open(_side_log, 'a', encoding='utf-8') as _f:
+                _f.write('\n=== ' + _os_e.environ.get('COMPUTERNAME', '?') +
+                         ' port=' + str(request.environ.get('SERVER_PORT', '?')) +
+                         ' path=' + request.path + ' ===\n')
+                _f.write(_tb.format_exc())
+        except Exception:
+            pass  # never let the side-log write block the response
         return jsonify({'error': 'internal error', 'detail': str(e)}), 500
 
     return app
