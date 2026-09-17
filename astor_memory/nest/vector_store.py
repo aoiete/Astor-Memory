@@ -427,6 +427,177 @@ class AstorNest:
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:limit]
 
+    # ─────────────────────────────────────────────────────────────────
+    # v1.14.42 (2026-09-16, Ship A): L1/L2 multi-granularity recall
+    # ─────────────────────────────────────────────────────────────────
+    # MemU ADR 0007 (2026-07-23) inverted L1/L2: L1 = coarse doc/cluster,
+    # L2 = item slices. We adopt the same direction: cluster-level summary
+    # vectors are the L1 path, fact-level vectors are L2.
+    #
+    # Cluster key: today we group by session_id from memory_canonical.
+    # The mean of member embeddings becomes the cluster's L1 vector.
+    # rebuild_clusters() recomputes and writes them.
+    #
+    # search_l1_l2() does:
+    #   1. L1 cosine against cluster_embeddings → top-N clusters
+    #   2. L2 cosine against embeddings filtered to those clusters' fact_ids
+    #   3. return merged (cluster_key, fact_id, similarity) triples
+    #
+    # This stops similar facts in the same session from competing for the
+    # same recall slot — L1 picks the session, L2 picks the fact.
+
+    def rebuild_clusters(
+        self,
+        cluster_dim: str = 'session_id',
+        model_name: str | None = None,
+    ) -> int:
+        """Recompute cluster summary vectors by mean-pooling member embeddings.
+
+        Joins embeddings to memory_canonical via fact_id, groups by
+        `cluster_dim` (default: session_id), and writes one row per group
+        per model_name into `cluster_embeddings`.
+
+        Returns the number of clusters written. Skips clusters with
+        fewer than 2 members (single-fact clusters aren't useful for L1
+        disambiguation).
+
+        Idempotent — calling twice with no new facts is a no-op (same
+        vectors written, same member_count).
+        """
+        from .embeddings import astor_get_model_name_for_ram
+        if model_name is None:
+            model_name = astor_get_model_name_for_ram()
+
+        # Get per-cluster member fact_ids + their embeddings
+        rows = self.conn.execute("""
+            SELECT mc.{cluster_dim}, e.fact_id, e.embedding
+            FROM embeddings e
+            JOIN (
+                SELECT id FROM memory_canonical
+                WHERE tombstoned = 0 AND {cluster_dim} IS NOT NULL
+                  AND {cluster_dim} != ''
+            ) mc_filter ON mc_filter.id = e.fact_id
+            JOIN memory_canonical mc ON mc.id = e.fact_id
+            WHERE e.model_name = ?
+            ORDER BY mc.{cluster_dim}, e.fact_id
+        """.format(cluster_dim=cluster_dim), (model_name,)).fetchall()
+
+        # Group by cluster
+        groups: dict[str, list[tuple[int, np.ndarray]]] = {}
+        for cluster_key, fact_id, blob in rows:
+            emb = _unpack_embedding(blob)
+            groups.setdefault(cluster_key, []).append((fact_id, emb))
+
+        now = sqlite3.datetime.datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+        written = 0
+        for cluster_key, members in groups.items():
+            if len(members) < 2:
+                continue  # skip singleton clusters
+            # Mean-pool then L2-normalize (same shape as fact vectors)
+            stacked = np.stack([m[1] for m in members], axis=0)
+            mean = stacked.mean(axis=0)
+            norm = float(np.linalg.norm(mean))
+            if norm > 0:
+                mean = mean / norm
+            blob = _pack_embedding(mean)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO cluster_embeddings "
+                "(cluster_key, model_name, embedding, member_count, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (cluster_key, model_name, blob, len(members), now),
+            )
+            written += 1
+        self.conn.commit()
+        return written
+
+    def search_l1_l2(
+        self,
+        query_embedding: np.ndarray,
+        *,
+        l1_limit: int = 3,
+        l2_limit: int = 10,
+        cluster_dim: str = 'session_id',
+        model_name: str | None = None,
+    ) -> list[tuple[str, int, float]]:
+        """L1/L2 multi-granularity recall.
+
+        Step 1: L1 cosine against cluster_embeddings → top-l1_limit clusters.
+        Step 2: for each winning cluster, get its fact_ids; L2 cosine against
+                embeddings restricted to those fact_ids.
+        Step 3: return top-l2_limit (cluster_key, fact_id, similarity) triples.
+
+        Returns [] if cluster_embeddings is empty (run rebuild_clusters()
+        first, or fall back to plain search()).
+
+        Use ASTOR_MULTIGR_ENABLED=0 to disable and use plain search() path.
+        """
+        from .embeddings import astor_get_model_name_for_ram
+        import os as _os_l12
+        if _os_l12.environ.get('ASTOR_MULTIGR_ENABLED', '1') == '0':
+            return []
+        if model_name is None:
+            model_name = astor_get_model_name_for_ram()
+
+        # Step 1: L1 — brute force over cluster_embeddings
+        cluster_rows = self.conn.execute(
+            "SELECT cluster_key, embedding FROM cluster_embeddings WHERE model_name = ?",
+            (model_name,),
+        ).fetchall()
+        if not cluster_rows:
+            return []  # caller should rebuild_clusters() or fall back
+
+        ckeys = []
+        cembs = []
+        for ck, blob in cluster_rows:
+            ckeys.append(ck)
+            cembs.append(_unpack_embedding(blob))
+        cstack = np.stack(cembs, axis=0)
+        cn = float(np.linalg.norm(query_embedding))
+        if cn == 0:
+            return []
+        q = query_embedding / cn
+        c_norms = np.linalg.norm(cstack, axis=1)
+        c_norms[c_norms == 0] = 1.0
+        c_sim = (cstack @ q) / c_norms
+        top_cluster_idx = np.argsort(-c_sim)[:l1_limit]
+        winning_clusters = [(ckeys[int(i)], float(c_sim[int(i)])) for i in top_cluster_idx]
+
+        # Step 2: gather member fact_ids for winning clusters
+        cluster_keys = [c[0] for c in winning_clusters]
+        placeholders = ','.join('?' * len(cluster_keys))
+        member_rows = self.conn.execute(f"""
+            SELECT mc.{cluster_dim}, mc.id
+            FROM memory_canonical mc
+            WHERE mc.{cluster_dim} IN ({placeholders})
+              AND mc.tombstoned = 0
+        """.format(cluster_dim=cluster_dim), cluster_keys).fetchall()
+        cluster_to_fids: dict[str, list[int]] = {}
+        for ck, fid in member_rows:
+            cluster_to_fids.setdefault(ck, []).append(int(fid))
+
+        # Step 3: L2 — restricted search within winning clusters
+        all_fids = [fid for fids in cluster_to_fids.values() for fid in fids]
+        if not all_fids:
+            return []
+        fid_ph = ','.join('?' * len(all_fids))
+        emb_rows = self.conn.execute(
+            f"SELECT fact_id, embedding FROM embeddings "
+            f"WHERE model_name = ? AND fact_id IN ({fid_ph})",
+            (model_name,) + tuple(all_fids),
+        ).fetchall()
+        if not emb_rows:
+            return []
+        fids = np.fromiter((r[0] for r in emb_rows), dtype=np.int64, count=len(emb_rows))
+        embs = np.stack([_unpack_embedding(r[1]) for r in emb_rows], axis=0)
+        e_norms = np.linalg.norm(embs, axis=1)
+        e_norms[e_norms == 0] = 1.0
+        sims = (embs @ q) / e_norms
+        top_fid_idx = np.argsort(-sims)[:l2_limit]
+        # Build cluster lookup
+        fid_to_cluster = {fid: ck for ck, fids in cluster_to_fids.items() for fid in fids}
+        return [(fid_to_cluster[int(fids[int(i)])], int(fids[int(i)]), float(sims[int(i)]))
+                for i in top_fid_idx]
+
 
 # v1.10.8 (2026-08-26): correct type annotation. The runtime value is a
 # dict[(tier, user_id, str(db_path)) -> AstorNest]; previously annotated
