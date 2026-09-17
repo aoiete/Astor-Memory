@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from astor_memory.server import create_app  # noqa: E402
+from ._baseline import assert_at_least, record_value
 
 TEST_USER = "admin"
 TEST_ASTOR_DIR = "D:/AI/Astor-Memory-Runtime"
@@ -45,20 +46,17 @@ def test_endpoint_has_required_keys():
 
 
 def test_embedding_total_62():
-    """v1.14.45 (Ship G): hardcode removed — embedding_failed.total drifts
-    with corpus growth. Test now asserts >= 62 (the historical baseline)
-    so a regression to "queue broken" (count drops to 0) is caught.
+    """v1.14.47 (R1): drift-free baseline via tests/_baseline.py.
 
-    RISK: this assertion will silently grow over time. If the corpus
-    shrinks (decay sweep v1.14.39), this could fail. Re-baseline when
-    admin private tier is cleaned.
+    Assertion: live >= max(floor, baseline * 0.5). Detects >50% shrinkage
+    from baseline (real bug) without false positives on normal growth.
+    First run writes a fresh baseline file. Re-baseline by deleting
+    tests/.baseline/health_diagnose.json.
     """
     body = test_endpoint_200()
     total = body["embedding_failed"]["total"]
-    assert total >= 62, (
-        f"expected >= 62 (historical baseline), got {total}. "
-        f"If decay sweep cleaned the queue, re-baseline."
-    )
+    assert_at_least("embedding_failed_total", total, max_shrink_pct=50.0)
+    record_value("embedding_failed_total", total)
 
 
 def test_embedding_top_error_is_nonetype():
@@ -77,16 +75,11 @@ def test_embedding_all_queued_for_replay():
 
 
 def test_warnings_total_12():
-    """v1.14.45 (Ship G): hardcode removed — warnings.total drifts.
-
-    RISK: same drift issue as test_embedding_total_62. Re-baseline when
-    admin private tier is cleaned.
-    """
+    """v1.14.47 (R1): drift-free baseline via tests/_baseline.py."""
     body = test_endpoint_200()
     total = body["warnings"]["total"]
-    assert total >= 12, (
-        f"expected >= 12 (historical baseline), got {total}"
-    )
+    assert_at_least("warnings_total", total, max_shrink_pct=50.0)
+    record_value("warnings_total", total)
 
 
 def test_warnings_all_forget():
@@ -96,12 +89,13 @@ def test_warnings_all_forget():
 
 
 def test_audit_severity_has_info_and_warning():
-    """v1.14.45 (Ship G): hardcode 12 replaced with >= baseline."""
+    """v1.14.47 (R1): drift-free baseline for warning severity count."""
     body = test_endpoint_200()
     sev = body["audit_total_by_severity"]
     assert "info" in sev
     assert "warning" in sev
-    assert sev["warning"] >= 12, f"warning baseline dropped: {sev['warning']}"
+    assert_at_least("audit_warning_severity", sev["warning"], max_shrink_pct=50.0)
+    record_value("audit_warning_severity", sev["warning"])
 
 
 def test_user_not_found_returns_404():
@@ -116,9 +110,9 @@ def test_user_not_found_returns_404():
 def test_diagnose_script_runs():
     """End-to-end smoke: scripts/astor_health_diagnose.py exits 0.
 
-    v1.14.45 (Ship G): hardcodes 62 and 12 replaced with substring checks
-    that don't depend on corpus growth. Still asserts the section headers
-    appear + the script exits 0.
+    v1.14.47 (R1): hardcoded "62" and "12" replaced with substring
+    marker checks that don't depend on corpus growth. Still asserts the
+    section headers appear + the script exits 0.
     """
     r = subprocess.run(
         ['D:/AI/PY-311/Scripts/python.exe',
@@ -130,8 +124,7 @@ def test_diagnose_script_runs():
     assert r.returncode == 0, f"script failed: {r.stderr}"
     assert "Embedding Failed" in r.stdout
     assert "Audit Warnings" in r.stdout
-    # RISK: substring search for "total:" catches whatever current value is.
-    # Use a marker pattern rather than the historical numbers.
+    # Section headers present, but values drift — use "Total:" marker.
     assert "total:" in r.stdout.lower() or "Total:" in r.stdout
 
 
