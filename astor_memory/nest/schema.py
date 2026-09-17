@@ -26,7 +26,7 @@ import sqlite3
 # when bge-small rows replaced bge-base rows mid-run. Fix: re-create table
 # with composite PK, migrate existing rows by INSERT OR IGNORE into new
 # table, drop old, rename.
-NEST_SCHEMA_VERSION = 3
+NEST_SCHEMA_VERSION = 4
 
 NEST_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS embeddings (
@@ -62,6 +62,9 @@ def astor_init_nest_schema(conn: sqlite3.Connection) -> None:
 
     v1 (2026-08-15 prior): embeddings = (fact_id, embedding, model_name, dim, created_at, updated_at)
     v2 (this version):    + (user_id DEFAULT '_current', tier DEFAULT 'private', publishable DEFAULT 0)
+    v3 (2026-08-26):      composite PK (fact_id, model_name) — prevents cross-model overwrites
+    v4 (2026-09-16):      + cluster_embeddings table — L1 (coarse cluster) summary vectors
+                          for the L1/L2 multi-granularity recall path (Ship A, ADR-0004)
 
     Order matters:
       1. Create baseline schema (IF NOT EXISTS) — covers fresh DBs and is a no-op
@@ -70,19 +73,35 @@ def astor_init_nest_schema(conn: sqlite3.Connection) -> None:
       3. CREATE INDEX only AFTER columns exist — otherwise SQLite errors with
          "no such column: user_id" trying to reference a column that doesn't yet exist.
 
-    This handles both fresh DBs and existing v1 DBs in one call.
+    This handles both fresh DBs and existing v1/v2/v3 DBs in one call.
     """
     # Step 1: ensure table exists (no-op if v1 already there)
     conn.execute("""
     CREATE TABLE IF NOT EXISTS embeddings (
-        fact_id INTEGER PRIMARY KEY,
+        fact_id INTEGER NOT NULL,
         embedding BLOB NOT NULL,
         model_name TEXT NOT NULL,
         dim INTEGER NOT NULL,
         created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         tier TEXT NOT NULL DEFAULT 'private'
-            CHECK(tier IN ('public', 'source', 'private', 'repo'))
+            CHECK(tier IN ('public', 'source', 'private', 'repo')),
+        PRIMARY KEY (fact_id, model_name)
+    )
+    """)
+    # Step 1b (v4): cluster_embeddings table for L1 multi-granularity recall.
+    # cluster_key = the dimension we group on (e.g. session_id or topic). One
+    # row per cluster per model. embedding = mean of member embeddings, used
+    # for L1 cosine scoring to short-list candidate clusters before L2 fact
+    # search. member_count updated when cluster is rebuilt.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS cluster_embeddings (
+        cluster_key TEXT NOT NULL,
+        model_name TEXT NOT NULL,
+        embedding BLOB NOT NULL,
+        member_count INTEGER NOT NULL,
+        updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        PRIMARY KEY (cluster_key, model_name)
     )
     """)
     conn.execute("""
@@ -96,6 +115,8 @@ def astor_init_nest_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_user_tier ON embeddings(user_id, tier)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_publishable ON embeddings(publishable) WHERE publishable = 1")
+    # Step 3b (v4): cluster_embeddings index for L1 search
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cluster_embeddings_model ON cluster_embeddings(model_name)")
     # Step 4: record version
     conn.execute(
         "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
@@ -155,7 +176,6 @@ def _astor_upgrade_nest_v2_to_v3(conn: sqlite3.Connection) -> None:
         # Already composite PK
         return
     if len(pk_cols) == 0:
-        # Table doesn't exist (fresh DB) — schema create handles it
         return
     # v2: PK is just fact_id. Migrate.
     try:
