@@ -569,6 +569,140 @@ def _health(astor_dir: Path) -> dict[str, int]:
         return {"embedding_failed": 0, "audit_warnings": 0, "audit_total": 0}
 
 
+def _summarize_llm_spend(astor_dir: Path) -> dict:
+    """Per-tier / per-user LLM call aggregation across all forge DBs.
+
+    Phase E5 (2026-09-17): spend tracking for the dashboard. Walks every
+    ``astor_forge_*.db`` under ``<tier>/memory/`` and ``users/<u>/memory/``,
+    aggregates ``llm_call_log`` rows by user_id + provider + operation.
+
+    Returns a dict shaped:
+      {
+        "by_tier":   [{tier, calls, success, input_chars, latency_ms_sum}, ...],
+        "by_user":   [{user_id, calls, success, input_chars, latency_ms_sum}, ...],
+        "by_provider":[{provider, calls, success, input_chars, latency_ms_sum}, ...],
+        "totals":    {calls, success, input_chars, latency_ms_sum, error_count},
+      }
+
+    Best-effort: missing or empty forge DBs are silently skipped.
+    """
+    # Approximate cost: 1 token ≈ 4 chars; gpt-4o-mini ~ $0.15/M input.
+    # The number is informational; we expose raw counts so the admin
+    # can map them to whatever pricing they actually pay.
+    out: dict = {
+        "by_tier": [],
+        "by_user": [],
+        "by_provider": [],
+        "totals": {
+            "calls": 0,
+            "success": 0,
+            "error_count": 0,
+            "input_chars": 0,
+            "latency_ms_sum": 0,
+        },
+    }
+    forge_dbs: list[Path] = []
+    # Per-tier forge DBs (public, source, private, repo).
+    for tier in ("public", "source", "private", "repo"):
+        cand = astor_dir / tier / "memory" / f"astor_forge_{tier}.db"
+        if cand.exists():
+            forge_dbs.append(cand)
+    # Per-user forge DBs (one per user with their own private store).
+    users_root = astor_dir / "users"
+    if users_root.exists():
+        for user_dir in sorted(p for p in users_root.iterdir() if p.is_dir()):
+            cand = user_dir / "memory" / f"astor_forge_{user_dir.name}.db"
+            if cand.exists():
+                forge_dbs.append(cand)
+
+    if not forge_dbs:
+        return out
+
+    by_tier: dict[str, dict] = {}
+    by_user: dict[str, dict] = {}
+    by_provider: dict[str, dict] = {}
+    totals = {"calls": 0, "success": 0, "error_count": 0,
+              "input_chars": 0, "latency_ms_sum": 0}
+
+    for db_path in forge_dbs:
+        try:
+            co = sqlite3.connect(str(db_path))
+            cu = co.cursor()
+            # Confirm the table exists; older DBs may not have it.
+            tbls = {r[0] for r in cu.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()}
+            if "llm_call_log" not in tbls:
+                co.close()
+                continue
+            # Identify the tier/user from the path.
+            tier = "?"
+            user_id = "?"
+            parts = db_path.parts
+            if "memory" in parts:
+                mi = parts.index("memory")
+                if mi >= 1:
+                    tier = parts[mi - 1]
+            if "/users/" in str(db_path):
+                user_id = str(db_path).split("/users/")[1].split("/memory/")[0]
+            elif tier in ("public", "source", "private", "repo"):
+                user_id = f"<{tier}>"
+            # Aggregate from this DB.
+            for r in cu.execute(
+                "SELECT user_id, tier, provider, operation, input_length, "
+                "       success, latency_ms "
+                "FROM llm_call_log"
+            ).fetchall():
+                ruid, rtier, rprovider, _op, rlen, rsucc, rlat = r
+                if not rsucc:
+                    totals["error_count"] += 1
+                else:
+                    totals["success"] += 1
+                totals["calls"] += 1
+                totals["input_chars"] += (rlen or 0)
+                totals["latency_ms_sum"] += (rlat or 0)
+                # by_tier
+                bt = by_tier.setdefault(rtier or tier, {
+                    "tier": rtier or tier, "calls": 0,
+                    "success": 0, "input_chars": 0, "latency_ms_sum": 0,
+                })
+                if rsucc:
+                    bt["success"] += 1
+                bt["calls"] += 1
+                bt["input_chars"] += (rlen or 0)
+                bt["latency_ms_sum"] += (rlat or 0)
+                # by_user
+                bu = by_user.setdefault(ruid or user_id, {
+                    "user_id": ruid or user_id, "calls": 0,
+                    "success": 0, "input_chars": 0, "latency_ms_sum": 0,
+                })
+                if rsucc:
+                    bu["success"] += 1
+                bu["calls"] += 1
+                bu["input_chars"] += (rlen or 0)
+                bu["latency_ms_sum"] += (rlat or 0)
+                # by_provider
+                bp = by_provider.setdefault(rprovider or "?", {
+                    "provider": rprovider or "?", "calls": 0,
+                    "success": 0, "input_chars": 0, "latency_ms_sum": 0,
+                })
+                if rsucc:
+                    bp["success"] += 1
+                bp["calls"] += 1
+                bp["input_chars"] += (rlen or 0)
+                bp["latency_ms_sum"] += (rlat or 0)
+            co.close()
+        except Exception:
+            # Best-effort; skip DBs we can't open.
+            continue
+
+    out["by_tier"] = sorted(by_tier.values(), key=lambda x: -x["calls"])
+    out["by_user"] = sorted(by_user.values(), key=lambda x: -x["calls"])
+    out["by_provider"] = sorted(by_provider.values(), key=lambda x: -x["calls"])
+    out["totals"] = totals
+    return out
+
+
 def build_dashboard_payload(astor_dir: str | Path) -> dict:
     """Aggregate the 6 dashboard dimensions into a single JSON-ready dict.
 
@@ -597,6 +731,8 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
     entities_cov = _entities_coverage(astor)
     # v1.14.37 Ship N: Recent Capture panel — facts grouped by kind/tier/platform.
     recent_capture = _recent_capture(astor, limit=10)
+    # Phase E5 (2026-09-17): LLM call spend tracking.
+    llm_spend = _summarize_llm_spend(astor)
 
     delta_min: float | None = None
     if last_event_ts:
@@ -625,6 +761,7 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
         "top_keywords": [{"keyword": k, "count": c} for k, c in keywords],
         "recent_facts": recent,
         "importance_histogram": importance_hist,
+        "llm_spend": llm_spend,
         "health": health,
         # v1.14.25 Ship G (2026-09-15): structured entity binding coverage.
         # Useful for monitoring the Ship B backfill progress and tracking
