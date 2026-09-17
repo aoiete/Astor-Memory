@@ -54,6 +54,7 @@ Chosen option: <X>, because <reasons>.
 | 0003 | Time-decay sweep default-on (v1.14.39) | accepted | 2026-09-16 |
 | 0004 | L1/L2 multi-granularity recall (cluster summary → fact ranking) | accepted | 2026-09-16 |
 | 0006 | Kind-based routing (wing alias for /v1/read) | accepted | 2026-09-16 |
+| 0007 | Consolidate — sleep-period memory maintenance (dedup/upgrade/classify/promote) | accepted | 2026-09-17 |
 
 ## Conventions
 
