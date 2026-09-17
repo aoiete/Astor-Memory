@@ -45,9 +45,20 @@ def test_endpoint_has_required_keys():
 
 
 def test_embedding_total_62():
+    """v1.14.45 (Ship G): hardcode removed — embedding_failed.total drifts
+    with corpus growth. Test now asserts >= 62 (the historical baseline)
+    so a regression to "queue broken" (count drops to 0) is caught.
+
+    RISK: this assertion will silently grow over time. If the corpus
+    shrinks (decay sweep v1.14.39), this could fail. Re-baseline when
+    admin private tier is cleaned.
+    """
     body = test_endpoint_200()
-    assert body["embedding_failed"]["total"] == 62, \
-        f"expected 62, got {body['embedding_failed']['total']}"
+    total = body["embedding_failed"]["total"]
+    assert total >= 62, (
+        f"expected >= 62 (historical baseline), got {total}. "
+        f"If decay sweep cleaned the queue, re-baseline."
+    )
 
 
 def test_embedding_top_error_is_nonetype():
@@ -66,9 +77,16 @@ def test_embedding_all_queued_for_replay():
 
 
 def test_warnings_total_12():
+    """v1.14.45 (Ship G): hardcode removed — warnings.total drifts.
+
+    RISK: same drift issue as test_embedding_total_62. Re-baseline when
+    admin private tier is cleaned.
+    """
     body = test_endpoint_200()
-    assert body["warnings"]["total"] == 12, \
-        f"expected 12, got {body['warnings']['total']}"
+    total = body["warnings"]["total"]
+    assert total >= 12, (
+        f"expected >= 12 (historical baseline), got {total}"
+    )
 
 
 def test_warnings_all_forget():
@@ -78,11 +96,12 @@ def test_warnings_all_forget():
 
 
 def test_audit_severity_has_info_and_warning():
+    """v1.14.45 (Ship G): hardcode 12 replaced with >= baseline."""
     body = test_endpoint_200()
     sev = body["audit_total_by_severity"]
     assert "info" in sev
     assert "warning" in sev
-    assert sev["warning"] == 12
+    assert sev["warning"] >= 12, f"warning baseline dropped: {sev['warning']}"
 
 
 def test_user_not_found_returns_404():
@@ -95,7 +114,12 @@ def test_user_not_found_returns_404():
 
 
 def test_diagnose_script_runs():
-    """End-to-end smoke: scripts/astor_health_diagnose.py exits 0."""
+    """End-to-end smoke: scripts/astor_health_diagnose.py exits 0.
+
+    v1.14.45 (Ship G): hardcodes 62 and 12 replaced with substring checks
+    that don't depend on corpus growth. Still asserts the section headers
+    appear + the script exits 0.
+    """
     r = subprocess.run(
         ['D:/AI/PY-311/Scripts/python.exe',
          'scripts/astor_health_diagnose.py',
@@ -106,8 +130,9 @@ def test_diagnose_script_runs():
     assert r.returncode == 0, f"script failed: {r.stderr}"
     assert "Embedding Failed" in r.stdout
     assert "Audit Warnings" in r.stdout
-    assert "62" in r.stdout  # the total
-    assert "12" in r.stdout  # the warning count
+    # RISK: substring search for "total:" catches whatever current value is.
+    # Use a marker pattern rather than the historical numbers.
+    assert "total:" in r.stdout.lower() or "Total:" in r.stdout
 
 
 def test_diagnose_script_embedding_list():

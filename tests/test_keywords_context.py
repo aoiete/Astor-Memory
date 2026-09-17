@@ -63,9 +63,16 @@ def _insert_with_keywords_context(bus, *, content: str, keywords: list[str], con
 
 
 def test_schema_version_is_5():
-    """SCHEMA_VERSION is currently 8 (post-v1.12 ACL hardening).
-    Test was originally written for v5; updated as schema bumped."""
-    assert SCHEMA_VERSION == 8
+    """v1.14.45 (Ship G): SCHEMA_VERSION drifted from 5 → 8 → 10. Test
+    asserts the current value. If schema bumps again, this test fails —
+    update SCHEMA_VERSION in astor_memory/bus/schema.py and this test.
+
+    RISK: schema version bumps are normal; test will need re-baselining.
+    """
+    assert SCHEMA_VERSION == 10, (
+        f"schema bumped (current={SCHEMA_VERSION}). "
+        f"Update this test to assert the new value."
+    )
 
 
 def test_canonical_has_keywords_and_context_columns(fresh_bus):
