@@ -284,6 +284,34 @@ def _resolve_agent_context(body: dict) -> dict[str, str | None]:
             'session_id': body.get('session_id')}
 
 
+def _resolve_namespace(
+    agent_ctx: dict[str, str | None],
+    *,
+    fallback: str,
+    session_id: str | None = None,
+) -> str:
+    """Resolve the canonical fact namespace for a write.
+
+    Phase E3 (2026-09-17): when an agent supplies ``agent_id`` but does
+    NOT supply an explicit ``namespace``, the default is now
+    ``<agent_id>/<session_id or fallback>`` instead of just the user.
+    That way N agents sharing one astor on one machine write to disjoint
+    namespaces (e.g. ``evox/session-A`` vs ``hermes/session-B``) without
+    needing each caller to construct the namespace themselves.
+
+    Callers that DO supply an explicit ``namespace`` keep using it
+    verbatim (no auto-prefix) so existing single-agent setups are
+    backwards compatible.
+    """
+    explicit = agent_ctx.get('namespace')
+    if explicit:
+        return explicit
+    agent_id = agent_ctx.get('agent_id')
+    if agent_id:
+        return f"{agent_id}/{session_id or fallback}"
+    return fallback
+
+
 def _extract_entities_for_fact(bus, canon_id):
     """v1.14.23 Ship E: read entities_json for one canonical row.
     Best-effort: returns [] on any error (caller can re-read via /v1/read)."""
@@ -846,6 +874,41 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # Profile scope must live in private (per-user identity). Auto-route.
             tier = 'private'
 
+        # Phase E4 (2026-09-17): pre-write cross-channel consistency check.
+        # If `user` has any active bot binding whose ``role_inherit``
+        # disagrees with the user's current ``user_meta.role``, the
+        # downstream ACL would silently use the binding's role for
+        # tier routing — a cross-channel inconsistency. Reject the write
+        # so the admin can fix it via ``am binding`` before persisting.
+        # Best-effort: a transient DB error here falls through and lets
+        # the write proceed (audit-only path is still available via
+        # ``/v1/consistency/check``).
+        try:
+            from ._internal.bot_binding import (
+                list_bindings, get_user as _get_user_for_check,
+            )
+            _user_meta_row = _get_user_for_check(user)
+            _user_meta_role = (
+                (_user_meta_row or {}).get('role', 'user')
+                if isinstance(_user_meta_row, dict) else 'user'
+            )
+            for _bind in list_bindings(user_id=user, active_only=True):
+                if _bind.get('role_inherit') != _user_meta_role:
+                    return jsonify({
+                        'error': 'cross_channel_inconsistency',
+                        'detail': (
+                            f"binding {_bind['binding_id']!r} has "
+                            f"role_inherit={_bind['role_inherit']!r} but "
+                            f"user_meta.role={_user_meta_role!r}; "
+                            f"resolve via am binding before retrying"
+                        ),
+                        'binding_id': _bind['binding_id'],
+                        'expected_role': _user_meta_role,
+                        'binding_role': _bind['role_inherit'],
+                    }), 409
+        except Exception:
+            pass
+
         # 2026-08-15 ship: respect tier from request body. Default 'public'.
         # v1.1: tier=repo passes user (= repo_id) to bus/nest/forge as user_id.
         # 2026-08-16 strict-privacy: prefer explicit user_id over 'user' field
@@ -943,7 +1006,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
         # 2. Append event
         event_id = bus.append_event(
-            namespace=agent_ctx['namespace'] or user,
+            namespace=_resolve_namespace(
+                agent_ctx, fallback=user,
+                session_id=_write_session_id,
+            ),
             agent_id=agent_ctx['agent_id'] or 'rest_api',
             source=agent_ctx['source'] or 'rest.write',
             action='write',
@@ -1006,7 +1072,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
         for f in facts:
             cand_id = bus.insert_candidate(
                 event_id=event_id,
-                namespace=agent_ctx['namespace'] or (bus_user_id or user),
+                namespace=_resolve_namespace(
+                    agent_ctx,
+                    fallback=(bus_user_id or user),
+                    session_id=_write_session_id,
+                ),
                 content=f.content,
                 kind=f.kind,
                 confidence=f.confidence,
@@ -1099,7 +1169,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
             try:
                 src_bus = astor_bus(tier='source')
                 src_event_id = src_bus.append_event(
-                    namespace=agent_ctx['namespace'] or user,
+                    namespace=_resolve_namespace(
+                        agent_ctx, fallback=user,
+                        session_id=_write_session_id,
+                    ),
                     agent_id=agent_ctx['agent_id'] or 'rest_api',
                     source=(agent_ctx['source'] or 'rest.write') + '.mirror',
                     action='mirror',
