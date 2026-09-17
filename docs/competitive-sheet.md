@@ -55,7 +55,7 @@ differ" — answers should pull from this single source of truth.
 | **PDF/Office/HTML** | ❌ (text only) | ✅ MarkItDown (v2.0.0) | ✅ `--mode extract` (v3.3.6) |
 | **Conversation transcript split** | per-fact write | per-fact write | ✅ `mempalace split` |
 | **Office-document mining** | ❌ | ✅ (v2.0.0) | ✅ (v3.3.6) |
-| **API-tool call routing** | unified bus | unified bus | ✅ separate `wing_api` |
+| **API-tool call routing** | ✅ wing=agent filter on /v1/read (Ship F v1.14.44, ADR-0006) — separates hook-extracted facts from human-typed | unified bus | ✅ separate `wing_api` |
 
 **Key takeaway:** Both competitors added Office/PDF ingest (2026 H1). Astor has not — low ROI for current admin corpus (text-only), keep as S-candidate.
 
@@ -119,7 +119,7 @@ referring in chat or commit messages.
 | MemPalace v3.4.0 | Pluggable vector backend | Future S-candidate (only when scale demands) |
 | MemPalace v3.4.0 | drawer_id hash collision silently lost data | Astor immune (INTEGER PK, no hash) |
 | astor internal | Same-session facts compete for recall slot | ADR-0004 (L1/L2 multi-granularity) |
-| MemPalace v3.3.6 | `wing_api` separates tool-call from human-conversation traffic | Future S-candidate: kind-based routing |
+| MemPalace v3.3.6 | `wing_api` separates tool-call from human-conversation traffic | ✅ SHIPPED (Ship F v1.14.44, ADR-0006) — logical wing alias on /v1/read (no physical separation, 9-DB layout stays) |
 | MemU v2.0.0 | Multi-host adapters (Claude Code, Codex, Cursor) | ✅ SHIPPED (hermes_adapter.py, 2026-08-15, predates MemU's #536 by ~12 months) |
 | MemU v2.0.0 | `memU doctor` CLI for proxy hijack | ✅ SHIPPED (Ship C v1.14.43, ADR-0005) — diagnose endpoint adds proxy_hijack_check + db_corruption_check + embedding_version_check |
 
