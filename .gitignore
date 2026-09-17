@@ -84,3 +84,6 @@ scripts/ship_*.py
 
 # Test baseline (auto-managed by tests/_baseline.py)
 tests/.baseline/
+
+# Consolidate CLI scratch reports (do not commit)
+.tmp_*.json
