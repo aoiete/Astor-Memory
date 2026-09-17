@@ -280,6 +280,62 @@ def _extract_entities_for_fact(bus, canon_id):
         return []
 
 
+# Provenance-kind → wing mapping (single source of truth).
+# A "wing" is a logical partition of facts by origin:
+#   wing=human   — facts the human typed directly (provenance_kind=manual)
+#   wing=agent   — facts extracted / inferred / merged by the agent
+#   wing=rule    — system-injected rules / lessons (provenance_kind=rule)
+# A fact has ONE wing. MemPalace uses physical storage separation; we
+# keep physical storage shared (9-DB layout is per-tier, not per-wing)
+# but route recall by wing via the wing alias below.
+WING_TO_PROVENANCE = {
+    "human": {"manual"},
+    "agent": {"extracted", "inferred", "merged"},
+    "rule": {"rule"},
+}
+
+
+def _infer_provenance_kind(origin_session_id: str | None) -> str | None:
+    """Auto-derive provenance_kind from origin_session_id prefix.
+
+    Convention (matches hermes capture_intent hook):
+      - 'discord:' / 'telegram:' / 'wechat:' / 'cli:' / None → manual (human)
+      - 'cron:' / 'hook:post_tool_call' / 'hook:session_end' → extracted
+      - 'auto_link:' / 'auto_observe:' → inferred
+      - anything else → None (caller should set explicitly)
+
+    v1.14.44 (Ship F): previously the server defaulted to None; now it
+    infers from origin_session_id. Manual callers can still override
+    by passing provenance_kind in body.
+    """
+    if not origin_session_id:
+        return "manual"  # human typed it (no session metadata)
+    sid = origin_session_id.lower()
+    if sid.startswith(("discord:", "telegram:", "wechat:", "cli:")):
+        return "manual"
+    if sid.startswith(("cron:", "hook:post_tool_call", "hook:session_end",
+                       "hook:pre_compact")):
+        return "extracted"
+    if sid.startswith(("auto_link:", "auto_observe:", "merge:")):
+        return "inferred"
+    return None
+
+
+def _expand_wing_to_provenance(wing: str | None) -> set[str] | None:
+    """Map a wing alias to its provenance_kind set for SQL filtering.
+
+    Returns None if wing is None/empty/whitespace (no filter). Raises
+    ValueError on unknown wing (so the caller can return 400 instead of
+    silent zero results).
+    """
+    if not wing or not wing.strip():
+        return None
+    w = wing.strip().lower()
+    if w not in WING_TO_PROVENANCE:
+        raise ValueError(f"unknown wing: {wing!r} (valid: {sorted(WING_TO_PROVENANCE.keys())})")
+    return WING_TO_PROVENANCE[w]
+
+
 def create_app(astor_dir: str | None = None) -> Flask:
     """Create Flask app. astor_dir override for tests."""
     app = Flask(__name__)
@@ -957,7 +1013,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 stable_id=stable_id,
                 # v1.14.34 Ship I: thread provenance from caller so hook
                 # writes can be filtered from manual am writes.
-                provenance_kind=body.get('provenance_kind') or None,
+                provenance_kind=body.get('provenance_kind') or _infer_provenance_kind(_write_session_id),
                 provenance_agent=body.get('provenance_agent') or None,  # P1-fix 2026-08-15: enable content-hash dedup
             )
             fact_ids.append(canon_id)
@@ -1896,6 +1952,22 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if _kinds_filter_set and enriched:
             enriched = [r for r in enriched
                          if r.get('kind') in _kinds_filter_set][:top_k]
+
+        # v1.14.44 (2026-09-16, Ship F): wing alias for /v1/read. Maps a
+        # wing=human/agent/rule query to the underlying provenance_kind
+        # set. Runs AFTER kinds filter so users can combine (e.g.
+        # kinds=failure_pattern + wing=human).
+        _wing_filter_set = None
+        _wing_value = body.get('wing')
+        if _wing_value is not None and not isinstance(_wing_value, str):
+            return jsonify({"error": "wing_must_be_string", "got": type(_wing_value).__name__}), 400
+        try:
+            _wing_filter_set = _expand_wing_to_provenance(_wing_value)
+        except ValueError as exc:
+            return jsonify({"error": "invalid_wing", "detail": str(exc)}), 400
+        if _wing_filter_set is not None and enriched:
+            enriched = [r for r in enriched
+                         if r.get('provenance_kind') in _wing_filter_set][:top_k]
 
         # v1.14.33 Ship H (2026-09-15): --session_id URL param for session-scoped
         # recall. Mirrors Ship G kinds filter logic — post-enrichment client-side
