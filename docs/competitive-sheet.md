@@ -38,7 +38,7 @@ differ" — answers should pull from this single source of truth.
 |---|---|---|---|---|
 | **Default retriever** | embedding (multilingual-e5-large) + BM25 rerank | embedding + BM25 hybrid | semantic (cosine) + graph navigation | vector + LLM rerank |
 | **LLM rerank** | Optional (ASTOR_RERANK=1 default) | Optional | Built-in (Haiku rerank → 100% LongMemEval R@5) | Optional (gpt-4o-mini) |
-| **Multi-granularity** | fact-level | L1 (coarse doc) + L2 (item slices, ADR 0007 inverted) | drawers + closets + hallways | memory-level |
+| **Multi-granularity** | fact-level + ✅ L1/L2 cluster (Ship A v1.14.42, ADR-0004) | L1 (coarse doc) + L2 (item slices, ADR 0007 inverted) | drawers + closets + hallways | memory-level |
 | **Multilingual cosine** | e5-large default (verified) | e5-large family | embeddinggemma (0.35 → 0.88 cross-lingual) | multilingual-e5 |
 | **LongMemEval R@5** | Not yet benchmarked | Not published | **96.6% baseline / 100% with Haiku rerank** | ~85% (LoCoMo) |
 | **Time decay** | ✅ enabled (v1.14.39, default) — 30d halve, 90d tombstone | Not explicit | Living-memory dynamics (Hebbian + Ebbinghaus) | Access count only |
@@ -118,6 +118,7 @@ referring in chat or commit messages.
 | MemU v2.0.0 | ADR-driven architecture decisions | ✅ SHIPPED — `docs/adr/` directory (2026-09-16) |
 | MemPalace v3.4.0 | Pluggable vector backend | Future S-candidate (only when scale demands) |
 | MemPalace v3.4.0 | drawer_id hash collision silently lost data | Astor immune (INTEGER PK, no hash) |
+| astor internal | Same-session facts compete for recall slot | ADR-0004 (L1/L2 multi-granularity) |
 | MemPalace v3.3.6 | `wing_api` separates tool-call from human-conversation traffic | Future S-candidate: kind-based routing |
 | MemU v2.0.0 | Multi-host adapters (Claude Code, Codex, Cursor) | ✅ SHIPPED (hermes_adapter.py, 2026-08-15, predates MemU's #536 by ~12 months) |
 | MemU v2.0.0 | `memU doctor` CLI for proxy hijack | Future S-candidate for astor doctor |
