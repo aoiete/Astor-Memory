@@ -412,6 +412,119 @@ def _top_keywords_and_recent(astor_dir: Path) -> tuple[list[tuple[str, int]], li
     return keywords.most_common(20), recent
 
 
+def _recent_capture(astor_dir, limit: int = 10) -> dict:
+    """v1.14.37 Recent Capture panel — facts grouped by 3 axes for the dashboard.
+
+    Returns 3 buckets each capped at `limit` rows:
+      - by_kind: success_pattern / failure_pattern / lesson / user_preference / other
+      - by_tier: public / private / source
+      - by_platform: discord / telegram / wechat / cron / manual / other
+        (platform inferred from origin_session_id prefix: 'discord:' / 'telegram:'
+         / 'wechat:' / 'cron:' / cli/manual → 'manual')
+
+    Each row: {id, content[140ch], kind, tier, namespace, ts, importance,
+    origin_session_id, provenance_kind, provenance_agent}
+
+    Tier sources:
+      - admin private: users/admin/memory/astor_bus_admin.db
+      - source tier:   public/memory/astor_bus_source.db (admin writes from R&D)
+      - public tier:   public/memory/astor_bus_public.db (shared cross-user)
+    """
+    astor_dir = Path(astor_dir)
+    admin_db = astor_dir / "users/admin/memory/astor_bus_admin.db"
+    source_db = astor_dir / "public/memory/astor_bus_source.db"
+    public_db = astor_dir / "public/memory/astor_bus_public.db"
+
+    by_kind: dict[str, list[dict]] = {}
+    by_tier: dict[str, list[dict]] = {}
+    by_platform: dict[str, list[dict]] = {}
+
+    def _platform_from_session(sid: str | None) -> str:
+        if not sid:
+            return "manual"
+        s = sid.lower()
+        # Match exact prefix + dash (e.g. "telegram-..." without colon) AND colon form.
+        # Order matters: more specific first (wechat/weixin before generic checks).
+        for prefix in ("discord:", "dc:", "discord-", "dc-"):
+            if s.startswith(prefix):
+                return "discord"
+        for prefix in ("telegram:", "tg:", "telegram-", "tg-"):
+            if s.startswith(prefix):
+                return "telegram"
+        for prefix in ("wechat:", "wx:", "weixin:", "wechat-", "wx-", "weixin-"):
+            if s.startswith(prefix):
+                return "wechat"
+        for prefix in ("cron:", "cron-", "hermes-cron", "schedule-"):
+            if s.startswith(prefix):
+                return "cron"
+        for prefix in ("cli:", "manual:", "agent:", "cli-", "manual-", "agent-"):
+            if s.startswith(prefix):
+                return "manual"
+        return "other"
+
+    def _scan(db_path: Path, tier_label: str):
+        if not db_path.exists():
+            return
+        try:
+            co = sqlite3.connect(str(db_path))
+            cu = co.cursor()
+            rows = cu.execute(
+                "SELECT id, content, kind, importance, namespace, promoted_at, "
+                "origin_session_id, provenance_kind, provenance_agent "
+                "FROM memory_canonical WHERE tombstoned = 0 "
+                "ORDER BY promoted_at DESC LIMIT ?",
+                (limit * 3,),  # grab more then take top N per bucket below
+            ).fetchall()
+            for r in rows:
+                fid, content, kind, importance, ns, ts, sid, p_kind, p_agent = r
+                platform = _platform_from_session(sid)
+                # Truncate content for list rendering; full content on click.
+                row = {
+                    "id": fid,
+                    "content": (content or "")[:140],
+                    "kind": kind or "fact",
+                    "importance": importance or 0.0,
+                    "namespace": ns,
+                    "ts": ts,
+                    "tier": tier_label,
+                    "platform": platform,
+                    "origin_session_id": sid,
+                    "provenance_kind": p_kind,
+                    "provenance_agent": p_agent,
+                }
+                by_kind.setdefault(kind or "fact", []).append(row)
+                by_tier.setdefault(tier_label, []).append(row)
+                by_platform.setdefault(platform, []).append(row)
+            co.close()
+        except Exception:
+            pass
+
+    # Scan all 3 tiers.
+    _scan(admin_db, "private")
+    _scan(source_db, "source")
+    _scan(public_db, "public")
+
+    # Cap each bucket to `limit`.
+    by_kind = {k: v[:limit] for k, v in by_kind.items()}
+    by_tier = {k: v[:limit] for k, v in by_tier.items()}
+    by_platform = {k: v[:limit] for k, v in by_platform.items()}
+
+    # Counts for badges (use total scan size, not capped, so user sees real density).
+    counts = {
+        "by_kind": {k: len(v) for k, v in by_kind.items()},
+        "by_tier": {k: len(v) for k, v in by_tier.items()},
+        "by_platform": {k: len(v) for k, v in by_platform.items()},
+    }
+
+    return {
+        "by_kind": by_kind,
+        "by_tier": by_tier,
+        "by_platform": by_platform,
+        "counts": counts,
+        "limit_per_bucket": limit,
+    }
+
+
 def _importance_histogram(astor_dir: Path) -> dict[str, int]:
     """Bucket canonical.importance into critical/high/mid/low for visual histogram."""
     admin_db = astor_dir / "users/admin/memory/astor_bus_admin.db"
@@ -482,6 +595,8 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
     health = _health(astor)
     # v1.14.25 Ship G: entities_json coverage across all tiers.
     entities_cov = _entities_coverage(astor)
+    # v1.14.37 Ship N: Recent Capture panel — facts grouped by kind/tier/platform.
+    recent_capture = _recent_capture(astor, limit=10)
 
     delta_min: float | None = None
     if last_event_ts:
@@ -515,6 +630,8 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
         # Useful for monitoring the Ship B backfill progress and tracking
         # the % of facts that have at least 1 extracted entity.
         "entities_coverage": entities_cov,
+        # v1.14.37 Ship N: Recent Capture panel — grouped facts for dashboard UI.
+        "recent_capture": recent_capture,
     }
 
 
