@@ -112,7 +112,9 @@ def _init_schema(con: sqlite3.Connection) -> None:
             extra_json       TEXT,
             created_at       TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
-            source           TEXT
+            source           TEXT,
+            default_tier     TEXT NOT NULL DEFAULT 'public',
+            trusted_agent    INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_user_meta_alias ON user_meta(short_alias);
 
@@ -137,6 +139,20 @@ def _init_schema(con: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_bindings_active ON bindings(active);
     """)
     cur.execute("INSERT OR IGNORE INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+    con.commit()
+
+    # 2026-09-17: idempotent column migration for legacy DBs created before
+    # `default_tier` / `trusted_agent` existed. SQLite has no ADD COLUMN IF NOT
+    # EXISTS so we probe pragma_table_info first.
+    existing = {row[1] for row in con.execute("PRAGMA table_info(user_meta)").fetchall()}
+    if "default_tier" not in existing:
+        con.execute(
+            "ALTER TABLE user_meta ADD COLUMN default_tier TEXT NOT NULL DEFAULT 'public'"
+        )
+    if "trusted_agent" not in existing:
+        con.execute(
+            "ALTER TABLE user_meta ADD COLUMN trusted_agent INTEGER NOT NULL DEFAULT 0"
+        )
     con.commit()
 
 
@@ -274,6 +290,96 @@ def upsert_user(
         target=f"user_meta/{user_id}",
         metadata={"short_alias": short_alias, "role": role, "source": source},
         reason=f"upsert user {user_id} (alias={short_alias})",
+    )
+
+
+# ============================================================
+# Phase C-D: default_tier + trusted_agent (server-side role routing)
+# ============================================================
+#
+# These two columns let the server classify inbound writes by user_id without
+# trusting the caller. Both columns are audited on change because they escalate
+# privilege (a trusted_agent's writes default to admin-visible tiers).
+
+_VALID_TIERS = ("public", "source", "private", "admin")
+
+
+def get_user_default_tier(user_id: str) -> str | None:
+    """Return the default tier for a user_id, or None if no row / unknown user."""
+    con = _connect()
+    row = con.execute(
+        "SELECT default_tier FROM user_meta WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return row["default_tier"]
+
+
+def set_user_default_tier(
+    user_id: str,
+    tier: str,
+    *,
+    actor: str = "admin:admin",
+) -> None:
+    """Set the default tier for a user_id. Raises ValueError for unknown users
+    or invalid tier values. Audited as admin_op.
+    """
+    if tier not in _VALID_TIERS:
+        raise ValueError(
+            f"invalid tier {tier!r}; must be one of {_VALID_TIERS}"
+        )
+    con = _connect()
+    if con.execute("SELECT 1 FROM user_meta WHERE user_id = ?", (user_id,)).fetchone() is None:
+        raise ValueError(f"User {user_id} not found in user_meta")
+    con.execute(
+        "UPDATE user_meta SET default_tier = ?, updated_at = ? WHERE user_id = ?",
+        (tier, _now_iso(), user_id),
+    )
+    con.commit()
+    _audit(
+        action="admin_op",
+        target=f"user_meta/{user_id}",
+        metadata={"field": "default_tier", "value": tier, "actor": actor},
+        reason=f"set default_tier={tier} for user {user_id}",
+    )
+
+
+def is_trusted_agent(user_id: str) -> bool:
+    """Return True iff user_id has trusted_agent=1."""
+    con = _connect()
+    row = con.execute(
+        "SELECT trusted_agent FROM user_meta WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    return bool(row["trusted_agent"])
+
+
+def set_trusted_agent(
+    user_id: str,
+    trusted: bool,
+    *,
+    actor: str = "admin:admin",
+) -> None:
+    """Flip the trusted_agent flag for a user_id. Audited as admin_op.
+
+    Note: trust should always be paired with an explicit default_tier; the
+    caller is expected to call ``set_user_default_tier`` first or in the same
+    batch.
+    """
+    con = _connect()
+    if con.execute("SELECT 1 FROM user_meta WHERE user_id = ?", (user_id,)).fetchone() is None:
+        raise ValueError(f"User {user_id} not found in user_meta")
+    con.execute(
+        "UPDATE user_meta SET trusted_agent = ?, updated_at = ? WHERE user_id = ?",
+        (int(bool(trusted)), _now_iso(), user_id),
+    )
+    con.commit()
+    _audit(
+        action="admin_op",
+        target=f"user_meta/{user_id}",
+        metadata={"field": "trusted_agent", "value": bool(trusted), "actor": actor},
+        reason=f"set trusted_agent={bool(trusted)} for user {user_id}",
     )
 
 
