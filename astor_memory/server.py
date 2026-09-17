@@ -543,9 +543,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
         but as JSON for the dashboard to consume.
 
         Optional query: ?user=<id>&astor_dir=<path>
+
+        v1.14.43 (2026-09-16, Ship C, ADR-0005): expanded to include:
+        - proxy_hijack_check: detects if HTTPS_PROXY/HTTP_PROXY env vars
+          are set to non-loopback values (MemU's memU doctor pattern)
+        - db_corruption_check: PRAGMA integrity_check + PRAGMA foreign_key_check
+          on the user's bus DB
+        - embedding_version_check: verifies expected embedding model loads
+          and reports its dim + name
         """
         import time as _t
+        import os as _os_diag
         from .dashboard_data import _summarize_embedding_failures, _summarize_warnings
+        from .nest.embeddings import astor_get_model_name_for_ram, astor_get_embedding_model
         from pathlib import Path as _P
 
         user = request.args.get("user", "admin")
@@ -564,9 +574,93 @@ def create_app(astor_dir: str | None = None) -> Flask:
             sev_rows = cu.execute(
                 "SELECT severity, COUNT(*) FROM audit_log GROUP BY severity ORDER BY 2 DESC"
             ).fetchall()
+
+            # ── Ship C (ADR-0005): db_corruption_check ──────────────────
+            integrity = cu.execute("PRAGMA integrity_check").fetchone()
+            integrity_ok = integrity is not None and integrity[0] == "ok"
+            fk_violations = cu.execute(
+                "PRAGMA foreign_key_check"
+            ).fetchall()
+            fk_violation_count = len(fk_violations)
+            db_corruption_check = {
+                "integrity_check": integrity[0] if integrity else "unknown",
+                "integrity_ok": integrity_ok,
+                "foreign_key_violations": fk_violation_count,
+                "foreign_key_violation_samples": [
+                    {"table": row[0], "rowid": row[1], "parent": row[2]}
+                    for row in fk_violations[:5]
+                ],
+            }
+
             co.close()
         except Exception as exc:
             return jsonify({"error": "diagnosis_failed", "detail": str(exc)}), 500
+
+        # ── Ship C (ADR-0005): proxy_hijack_check ─────────────────────
+        # Detect unexpected proxy env vars. Loopback proxies (127.0.0.1,
+        # localhost) are typically intentional dev tools (e.g. mitmproxy);
+        # any non-loopback proxy env var is suspicious.
+        #
+        # On Windows, os.environ is case-insensitive (the OS layer dedupes
+        # HTTPS_PROXY and https_proxy to the same key), so we dedupe by
+        # case-folded key before counting.
+        proxy_vars = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
+        seen_keys = set()
+        proxy_findings = []
+        for var in proxy_vars:
+            val = _os_diag.environ.get(var)
+            if not val:
+                continue
+            lowered_var = var.lower()
+            if lowered_var in seen_keys:
+                continue  # case-insensitive duplicate
+            seen_keys.add(lowered_var)
+            lowered = val.lower()
+            is_loopback = any(
+                marker in lowered
+                for marker in ("127.0.0.1", "localhost", "::1", "[::1]")
+            )
+            proxy_findings.append({
+                "var": var,
+                "value": val,
+                "loopback": is_loopback,
+                "warn": not is_loopback,
+            })
+        proxy_hijack_check = {
+            "env_vars_set": len(proxy_findings),
+            "loopback_only": all(p["loopback"] for p in proxy_findings) if proxy_findings else True,
+            "findings": proxy_findings,
+            "warn": any(p["warn"] for p in proxy_findings),
+        }
+
+        # ── Ship C (ADR-0005): embedding_version_check ────────────────
+        embedding_version_check = {"checked": False}
+        try:
+            model_name = astor_get_model_name_for_ram()
+            model = astor_get_embedding_model()
+            # Probe dim by embedding a 1-char string
+            probe = next(iter(model.embed(["a"])))
+            embedding_version_check = {
+                "checked": True,
+                "model_name": model_name,
+                "dim": int(len(probe)),
+                "loaded": True,
+            }
+        except Exception as exc:
+            embedding_version_check = {
+                "checked": True,
+                "loaded": False,
+                "error": str(exc),
+                "warn": True,
+            }
+
+        # Aggregate warn flags
+        ship_c_warn = (
+            proxy_hijack_check["warn"]
+            or not db_corruption_check["integrity_ok"]
+            or db_corruption_check["foreign_key_violations"] > 0
+            or embedding_version_check.get("warn", False)
+        )
 
         return jsonify({
             "generated_at": _t.time(),
@@ -575,6 +669,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
             "embedding_failed": emb,
             "warnings": warn,
             "audit_total_by_severity": {row[0]: row[1] for row in sev_rows},
+            # Ship C additions:
+            "proxy_hijack_check": proxy_hijack_check,
+            "db_corruption_check": db_corruption_check,
+            "embedding_version_check": embedding_version_check,
+            "ship_c_warn": ship_c_warn,
         })
 
     @app.route('/dashboard/', methods=['GET'])
