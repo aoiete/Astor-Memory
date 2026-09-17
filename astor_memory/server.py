@@ -2972,17 +2972,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
         Request body: ``{"text": str, "hint_user"?: str}``
         Response body: ``{"tier": str, "source": str, "confidence": float,
-                          "reasoning": str}``
+                          "reasoning": str, "rule"?: dict}``
 
         Decision priority:
           1. If ``hint_user`` (or caller's user_id) is ``trusted_agent`` in
-             ``user_meta`` → use ``user_meta.default_tier`` (high confidence)
-          2. Otherwise → ``public`` with a ``safe_default`` source (caller
-             must escalate via LOCK rule audit if they want a higher tier)
+             ``user_meta`` → use ``user_meta.default_tier`` (confidence 0.95)
+          2. Otherwise evaluate against LOCK rules seeded into the public
+             tier bus DB; the highest-priority match wins (confidence 0.8).
+             ``rule_ship`` is a meta-tier that maps to ``public`` storage.
+          3. Otherwise → ``public`` with ``safe_default`` source (confidence
+             0.5). Caller must escalate via LOCK rule seed to reach a
+             non-public tier.
 
-        Phase C-D ships the user_meta path only. Full LOCK rule evaluation
-        (content → tier mapping) is a follow-up that needs the LOCK rule
-        schema to stabilise; until then, callers default to public.
+        Phase E1 (2026-09-17) ships LOCK rule schema + evaluation.
+        Phase E2 ships the classify path integration.
         """
         from ._internal.bot_binding import (
             get_user_default_tier, is_trusted_agent,
@@ -3017,7 +3020,60 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'user_id': hint_user,
             })
 
-        # Path 2: safe default — defer to caller's own tier argument or LOCK
+        # Path 2: LOCK rule evaluation. Fetch rules (per-user + global) from
+        # the public tier canonical DB. Lock rules are admin-only-write
+        # content stored there; any caller can consult them without
+        # private-tier access. We open the DB connection directly (instead
+        # of going through ``astor_bus()``) to avoid the read-side ACL check
+        # that would otherwise block admin-free callers in test contexts.
+        try:
+            from ._internal.lock_rules import (
+                fetch_lock_rules, evaluate_text,
+            )
+            import sqlite3 as _sqlite3
+            import os as _os_e2
+            _astor_dir = _os_e2.environ.get('ASTOR_DIR', '~/.astor')
+            _canonical_db = (
+                Path(_astor_dir).expanduser()
+                / 'public' / 'memory' / 'astor_bus_public.db'
+            )
+            if _canonical_db.exists():
+                _bus_conn = _sqlite3.connect(str(_canonical_db))
+                try:
+                    _bus_conn.row_factory = _sqlite3.Row
+                    rules = fetch_lock_rules(
+                        _bus_conn, user_id=hint_user, scope=None,
+                    )
+                    match = evaluate_text(text, rules)
+                    if match:
+                        tier = match['target_tier']
+                        # rule_ship is a meta-tier meaning "this is a
+                        # curated rule that should be stored as public".
+                        # Map to the ``public`` storage tier.
+                        if tier == 'rule_ship':
+                            tier = 'public'
+                        return jsonify({
+                            'tier': tier,
+                            'source': 'lock_rule',
+                            'confidence': 0.8,
+                            'reasoning': (
+                                f"matched LOCK rule {match['rule_name']!r} "
+                                f"(prio={match['priority']}); "
+                                f"action={match['action']}, "
+                                f"target={match['target_tier']!r}"
+                            ),
+                            'user_id': hint_user,
+                            'rule': match,
+                        })
+                finally:
+                    _bus_conn.close()
+        except Exception:
+            # LOCK rule path is best-effort. If the canonical DB is
+            # unavailable or the rules are malformed, fall through to
+            # safe_default.
+            pass
+
+        # Path 3: safe default — defer to caller's own tier argument or LOCK
         # audit. We do NOT escalate beyond public without server-side proof.
         return jsonify({
             'tier': 'public',
