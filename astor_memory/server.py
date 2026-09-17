@@ -3022,20 +3022,34 @@ def create_app(astor_dir: str | None = None) -> Flask:
     def reload():
         """Hot-reload server code (P3-fix 2026-08-15, fix 2026-09-17).
 
-        Re-execs the current process via os.execv so all module caches
-        (bus/store, forge/extractor, server) pick up fresh source. Used
-        after patching the code without restarting manually.
+        Spawns a fresh process via subprocess and exits the current one,
+        so all module caches (bus/store, forge/extractor, server) pick up
+        fresh source. Used after patching the code without restarting
+        manually.
 
         Restricted to admin (per ACL plan § reload requires root).
 
-        2026-09-17 bugfix: argv used to be ``[sys.executable] + sys.argv``
-        which duplicated the executable (``sys.argv[0]`` is already the
-        executable when launched via ``pythonw -m``). The duplicate made
-        ``-m astor_memory.server`` get parsed as a positional script arg,
-        so the respawned process hit ``from . import ...`` at line 63
-        without a parent package and crashed with
+        2026-09-17 bugfix: the previous implementation used
+        ``os.execv(sys.executable, [sys.executable] + sys.argv)`` which
+        (a) duplicated the executable because ``sys.argv[0]`` is the
+        script path (not the executable) when launched via ``-m``, and
+        (b) lost the ``-m`` flag so the respawned process tried to run
+        ``server.py`` as ``__main__``, hitting ``from . import ...`` at
+        line 63 with no parent package and crashing with
         ``ImportError: attempted relative import with no known parent
-        package``. Now uses ``sys.argv`` directly.
+        package``.
+
+        New implementation:
+          - Builds the new command as ``[sys.executable, '-m',
+            'astor_memory.server'] + sys.argv[1:]`` so the ``-m`` flag is
+            preserved (user args like ``--host`` / ``--port`` come from
+            ``sys.argv[1:]``).
+          - Uses ``subprocess.Popen`` with ``close_fds=True`` so the new
+            process is fully detached (no inherited stdio handles that
+            could trigger shutdown when the parent exits).
+          - Calls ``os._exit(0)`` on the current process so it terminates
+            cleanly without running Flask teardown that could block the
+            port.
         """
         import os as _os
         try:
@@ -3048,9 +3062,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # will bind the port after the old one closes it.
         import threading as _threading
         def _respawn():
+            import subprocess as _sp
             import time as _t
             _t.sleep(0.2)
-            _os.execv(sys.executable, sys.argv)
+            cmd = [sys.executable, '-m', 'astor_memory.server'] + sys.argv[1:]
+            try:
+                _sp.Popen(cmd, close_fds=True)
+            except Exception:
+                # Respawn failed; do nothing (current process keeps running)
+                return
+            # Hard-exit so Flask shutdown doesn't hold the port
+            _os._exit(0)
         _threading.Thread(target=_respawn, daemon=True).start()
         return jsonify({'reloading': True, 'pid': _os.getpid()})
 
