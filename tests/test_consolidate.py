@@ -97,13 +97,14 @@ def _insert_fact(
     kind: str = "fact",
     tombstoned: int = 0,
     created_at: str = "2020-01-01T00:00:00Z",
+    tier: str = "private",
 ):
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         """INSERT INTO memory_canonical
         (id, content, importance, access_count, kind, tombstoned, created_at, user_id, tier)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'admin', 'private')""",
-        (fact_id, content, importance, access_count, kind, tombstoned, created_at),
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'admin', ?)""",
+        (fact_id, content, importance, access_count, kind, tombstoned, created_at, tier),
     )
     conn.commit()
     conn.close()
@@ -282,6 +283,76 @@ class TestConsolidateUpgrade(unittest.TestCase):
         ).fetchone()[0]
         conn.close()
         assert new_imp == 0.5  # unchanged
+
+
+class TestConsolidateTierAll(unittest.TestCase):
+    """Bug fixes shipped in v1.14.53:
+
+    1. tier='all' resolves to per-user DB (not shared public/source).
+    2. tier='all' applies no tier filter, so cross-tier rows (tier=public
+       or tier=source living in a per-user DB) are still in scope.
+    3. PRAGMA table_info column-name fix (was using cid int, should be
+       name str) so promote's INSERT row dict doesn't crash.
+    """
+
+    def setUp(self):
+        self.tmp_path = Path(_TEST_TMP) / self.id()
+        self.tmp_path.mkdir(parents=True, exist_ok=True)
+        self.astor_dir = self.tmp_path
+        self.db_path = _setup_fake_bus(self.astor_dir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(str(self.tmp_path), ignore_errors=True)
+
+    def test_tier_all_resolves_to_per_user_db(self):
+        # tier='all' with user_id='admin' should resolve to admin's per-user DB,
+        # not to a shared "all/memory/astor_bus_all.db" path.
+        from astor_memory.consolidate import _get_db_path
+        p = _get_db_path(
+            astor_dir=str(self.astor_dir), tier="all", user_id="admin"
+        )
+        assert p == self.astor_dir / "users" / "admin" / "memory" / "astor_bus_admin.db"
+
+    def test_classify_processes_cross_tier_rows_in_user_db(self):
+        # Insert a fact whose tier='public' but lives in admin's per-user DB
+        # (real-world case: admin promoted a fact to public-in-place).
+        _insert_fact(
+            self.db_path, fact_id=99,
+            content="[success_pattern] tier=all includes cross-tier rows",
+            importance=0.5, access_count=0, kind="fact", tier="public",
+        )
+        report = consolidate(
+            actions=["classify"], dry_run=False,
+            astor_dir=str(self.astor_dir), user_id="admin", tier="all", cap=100,
+        )
+        assert report.total_proposed >= 1
+        conn = sqlite3.connect(str(self.db_path))
+        new_kind = conn.execute(
+            "SELECT kind FROM memory_canonical WHERE id = 99"
+        ).fetchone()[0]
+        conn.close()
+        assert new_kind == "success_pattern"
+
+    def test_promote_insert_does_not_crash_on_pragmacid(self):
+        # Pre-v1.14.53 bug: _action_promote used `cols = [d[0] for d in
+        # PRAGMA table_info]` but PRAGMA returns (cid:int, name:str, ...).
+        # We passed the ints as dict keys → ",.join(new_row.keys())" threw
+        # "expected str instance, int found" → CLI exited silently with
+        # no report file written. Fix: use d[1] (the name column).
+        _insert_fact(
+            self.db_path, fact_id=88,
+            content="test promote row",
+            importance=0.95, access_count=15, kind="rule", tier="private",
+        )
+        # Should NOT raise — pre-fix this threw TypeError.
+        report = consolidate(
+            actions=["promote"], dry_run=True,
+            astor_dir=str(self.astor_dir), user_id="admin", tier="all", cap=100,
+        )
+        # promote may or may not produce an action depending on dedup check,
+        # but it must not crash.
+        assert isinstance(report.total_proposed, int)
 
 
 if __name__ == "__main__":
