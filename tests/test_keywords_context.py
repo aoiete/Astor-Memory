@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-
+import tempfile
 import pytest
 
 from astor_memory._internal.acl import astor_init_acl
@@ -63,16 +63,59 @@ def _insert_with_keywords_context(bus, *, content: str, keywords: list[str], con
 
 
 def test_schema_version_is_5():
-    """v1.14.45 (Ship G): SCHEMA_VERSION drifted from 5 → 8 → 10. Test
-    asserts the current value. If schema bumps again, this test fails —
-    update SCHEMA_VERSION in astor_memory/bus/schema.py and this test.
+    """v1.14.48 (R2): structural check, not version-number check.
 
-    RISK: schema version bumps are normal; test will need re-baselining.
+    This test was originally written for SCHEMA_VERSION == 5, then bumped
+    to 8, then 10. Each schema bump required a test edit — a ticking bomb.
+
+    Replaced with structural assertions: critical columns that must exist
+    regardless of schema version. If someone drops one of these columns
+    in a future migration, the test fires immediately.
+
+    Asserted columns (with the schema version they were introduced):
+      - keywords, context            (v1.10 era)
+      - entities_json                (v1.14.21 Ship B)
+      - access_count, last_confirmed_at (v1.14.19 Ship S0)
+      - parent_fact_ids, provenance_kind, provenance_agent (v1.14.34 Ship I)
+      - origin_session_id            (v1.11 era)
+
+    If you add a new MUST-HAVE column in a future migration, add it to
+    the CRITICAL_COLUMNS list below. No version number to remember.
     """
-    assert SCHEMA_VERSION == 10, (
-        f"schema bumped (current={SCHEMA_VERSION}). "
-        f"Update this test to assert the new value."
-    )
+    from astor_memory.bus.schema import astor_init_schema
+    from astor_memory.config import get_default_bus_path
+    import sqlite3 as _sq
+    fd, path = tempfile.mkstemp(suffix='.db')
+    os.close(fd)
+    try:
+        conn = _sq.connect(path)
+        astor_init_schema(conn)
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(memory_canonical)"
+        ).fetchall()}
+        # Structural check: critical columns must exist. If you drop one
+        # of these in a future migration, this test will catch it.
+        CRITICAL_COLUMNS = [
+            'keywords', 'context',          # v1.10 era
+            'entities_json',                # v1.14.21 Ship B
+            'access_count',                 # v1.14.19 Ship S0
+            'last_confirmed_at',            # v1.14.19 Ship S0
+            'parent_fact_ids',              # v1.14.34 Ship I
+            'provenance_kind',              # v1.14.34 Ship I
+            'provenance_agent',             # v1.14.34 Ship I
+            'origin_session_id',            # v1.11 era
+        ]
+        missing = [c for c in CRITICAL_COLUMNS if c not in cols]
+        assert not missing, (
+            f"memory_canonical missing critical columns: {missing}. "
+            f"If you dropped a column, update CRITICAL_COLUMNS + document why."
+        )
+        conn.close()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def test_canonical_has_keywords_and_context_columns(fresh_bus):
