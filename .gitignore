@@ -81,3 +81,6 @@ astor/metrics/
 
 # One-shot ship helpers (S2 e5-large completion, etc.) - ship then delete
 scripts/ship_*.py
+
+# Test baseline (auto-managed by tests/_baseline.py)
+tests/.baseline/
