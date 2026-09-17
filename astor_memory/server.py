@@ -1666,6 +1666,32 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # back to vector-only so the caller doesn't get a hard empty.
             if not results:
                 results = nest.search(query_emb, limit=top_k)
+        # v1.14.46 (2026-09-16, Ship G): L1/L2 multi-granularity wiring.
+        # After hybrid + fallback, try the L1 (cluster) → L2 (fact)
+        # path. If cluster_embeddings is empty (fresh install), lazily
+        # rebuild ONCE per process (avoids repeated rebuilds). Disabled
+        # via ASTOR_MULTIGR_ENABLED=0 (already shipped in v1.14.42).
+        if os.environ.get('ASTOR_MULTIGR_ENABLED', '1') != '0':
+            _l12 = nest.search_l1_l2(query_emb, l1_limit=3, l2_limit=top_k)
+            if not _l12:
+                # Lazy rebuild guard: at most once per process. Stored as
+                # an attribute on nest (lives for the process lifetime).
+                if not getattr(nest, '_l12_rebuild_attempted', False):
+                    try:
+                        n_rebuilt = nest.rebuild_clusters()
+                        _l12 = nest.search_l1_l2(query_emb, l1_limit=3, l2_limit=top_k)
+                    except Exception:
+                        n_rebuilt = 0
+                        _l12 = []
+                    nest._l12_rebuild_attempted = True
+            if _l12:
+                # _l12 is list of (cluster_key, fact_id, sim). Merge into results.
+                _seen_l12 = {int(r[0]): r[1] for r in results}
+                for _ck, _fid, _sim in _l12:
+                    _fid = int(_fid)
+                    if _fid not in _seen_l12 or _sim > _seen_l12[_fid]:
+                        _seen_l12[_fid] = _sim
+                results = sorted(_seen_l12.items(), key=lambda x: x[1], reverse=True)[:top_k]
         # Enrich with bus metadata (content, kind)
         enriched = []
         for fact_id, sim in results:
