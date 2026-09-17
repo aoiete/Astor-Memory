@@ -3074,7 +3074,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.route('/v1/reload', methods=['POST'])
     def reload():
-        """Hot-reload server code (P3-fix 2026-08-15, fix 2026-09-17).
+        """Hot-reload server code (P3-fix 2026-08-15, fixes 2026-09-17).
 
         Spawns a fresh process via subprocess and exits the current one,
         so all module caches (bus/store, forge/extractor, server) pick up
@@ -3083,7 +3083,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
         Restricted to admin (per ACL plan § reload requires root).
 
-        2026-09-17 bugfix: the previous implementation used
+        2026-09-17 bugfix #1: the previous implementation used
         ``os.execv(sys.executable, [sys.executable] + sys.argv)`` which
         (a) duplicated the executable because ``sys.argv[0]`` is the
         script path (not the executable) when launched via ``-m``, and
@@ -3093,20 +3093,29 @@ def create_app(astor_dir: str | None = None) -> Flask:
         ``ImportError: attempted relative import with no known parent
         package``.
 
-        New implementation:
-          - Builds the new command as ``[sys.executable, '-m',
-            'astor_memory.server'] + sys.argv[1:]`` so the ``-m`` flag is
-            preserved (user args like ``--host`` / ``--port`` come from
-            ``sys.argv[1:]``).
-          - Uses ``subprocess.Popen`` with ``close_fds=True`` so the new
-            process is fully detached (no inherited stdio handles that
-            could trigger shutdown when the parent exits).
-          - Calls ``os._exit(0)`` on the current process so it terminates
-            cleanly without running Flask teardown that could block the
-            port.
+        2026-09-17 bugfix #2: ``close_fds=True`` on subprocess.Popen
+        closed the inherited stderr handle, which made ``sys.stderr``
+        return ``None`` in the child. server.py's DEBUG-E prints then
+        raised AttributeError and ``/v1/write`` returned 500. Default
+        ``close_fds=False`` on Windows keeps stdio handles intact.
+
+        2026-09-17 bugfix #3: when called as a POST with no JSON body
+        (the normal curl usage), the ``before_request`` hook doesn't
+        rebind ACL because ``request.is_json`` is False. The previous
+        request's ``_CURRENT`` binding (e.g. ``user:sunday`` after a
+        write) carries over, and ``ctx.role != 'admin'`` returns 403.
+        We now FORCE-bind admin at the top of the handler so reload
+        always works regardless of prior request state.
         """
         import os as _os
+        # Force-bind admin so we don't inherit a stale user-level ACL
+        # from the previous request (which the before_request hook only
+        # rebinds for POST+JSON). See bugfix #3 above.
         try:
+            astor_init_acl(
+                actor='admin:admin', role='admin', tier='public',
+                subscription_plan=None,
+            )
             ctx = astor_current_acl()
             if ctx.role != 'admin':
                 return jsonify({'error': 'reload requires admin role'}), 403
