@@ -63,7 +63,8 @@ class HermesAdapterToolTest(unittest.TestCase):
                              'hybrid': False},
         ))
         for r in result['results']:
-            self.assertIn(r['score_kind'], ('cosine', 'session_neighbor'))
+            # v1.14.x: 'grep_verify' is the new score_kind for pure-FTS path.
+            self.assertIn(r['score_kind'], ('cosine', 'session_neighbor', 'grep_verify'))
 
     def test_recall_cross_tier(self):
         """cross_tier=True with user_id='admin' should search public +
