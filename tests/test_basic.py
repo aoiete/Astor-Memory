@@ -452,21 +452,21 @@ def test_rest_read_entity_filter(tmp_path, monkeypatch):
     monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
     app = create_app()
     client = app.test_client()
-    client.post('/v1/write', json={'text': 'Sunday poker tournament win', 'user': 'admin', 'tier': 'public'})
+    client.post('/v1/write', json={'text': 'Weekend poker tournament win', 'user': 'admin', 'tier': 'public'})
     client.post('/v1/write', json={'text': 'Stock portfolio rebalance', 'user': 'admin', 'tier': 'public'})
-    # Filter by 'sunday' - should drop second (Stock) and keep first (Sunday)
+    # Filter by 'weekend' - should drop second (Stock) and keep first (Weekend)
     r = client.post('/v1/read', json={
         'query': 'win rebalance',
-        'entity_filter': ['sunday'],
+        'entity_filter': ['weekend'],
         'top_k': 5,
     })
     assert r.status_code == 200
     results = r.get_json()['results']
-    # Contract: every surviving result MUST contain 'sunday' (case-insensitive)
+    # Contract: every surviving result MUST contain 'weekend' (case-insensitive)
     # in content or keywords. Stock fact must be filtered out.
     for res in results:
-        content_has = 'sunday' in (res.get('content') or '').lower()
-        kw_has = any('sunday' in (k or '').lower() for k in (res.get('keywords') or []))
+        content_has = 'weekend' in (res.get('content') or '').lower()
+        kw_has = any('weekend' in (k or '').lower() for k in (res.get('keywords') or []))
         assert content_has or kw_has, (
             f"entity_filter leaked non-matching fact: {res.get('content')!r}"
         )
