@@ -24,7 +24,7 @@ differ" — answers should pull from this single source of truth.
 | **Graph layer** | Not default (R201) | Dropped (ADR 0007) | Built-in (hallways + tunnels) | Optional | First-class |
 | **Tier model** | public / source / private (× per-user DBs) | single tier | wings / rooms / halls / tunnels / closets / drawers | user-level | entity-relationship triples |
 | **Multi-user ACL** | Built-in (per-user dirs, role gate) | Single user | Single user (palace) | Single user | Single user |
-| **Multi-host adapters** | hermes (gateway) | Claude Code, Cursor, OpenClaw, Hermes, WorkBuddy, Codex | Claude Code + Claude.ai + ChatGPT | Mem0 API | Zep SDK |
+| **Multi-host adapters** | ✅ hermes (ship 2026-08-15, v1.5.0 era — before MemU's #536) | Claude Code, Cursor, OpenClaw, Hermes, WorkBuddy, Codex | Claude Code + Claude.ai + ChatGPT | Mem0 API | Zep SDK |
 | **Self-hosted** | Yes, single Python dep tree | Yes | Yes | Yes | Yes |
 | **License** | MIT | Apache 2.0 | MIT | Apache 2.0 | Apache 2.0 |
 
@@ -103,18 +103,23 @@ differ" — answers should pull from this single source of truth.
 
 ---
 
-## 7. Lessons Learned (locked into astor design)
+## Lessons Learned — ADR-linked
 
-| From | Lesson | astor impact |
+Every lesson with a `Locked into` clause points to an Architecture
+Decision Record under `docs/adr/`. Use ADR-NNNN short form when
+referring in chat or commit messages.
+
+| From | Lesson | ADR / Impact |
 |---|---|---|
-| MemU ADR 0007 | Drop graph, hybrid retrieval wins | R201 layer-selection lock (don't ship graph without multi-hop blocker proof) |
-| MemPalace v3.3.6 | Living-memory dynamics (Hebbian + decay) validate access_count decay | v1.14.39 decay sweep default-on |
+| MemU ADR 0007 | Drop graph, hybrid retrieval wins | ADR-0002 (R201 layer-selection lock) |
+| MemPalace v3.3.6 | Living-memory dynamics validate access_count decay | ADR-0003 (v1.14.39 default-on) |
+| astor multi-tenant | 9-DB layout gives physical tier isolation | ADR-0001 |
 | MemU v2.0.0 | MarkItDown ingest for rich docs | Future S-candidate (low ROI today) |
-| MemU v2.0.0 | ADR-driven architecture decisions | Future S-candidate: astor-docs/adr/ |
+| MemU v2.0.0 | ADR-driven architecture decisions | ✅ SHIPPED — `docs/adr/` directory (2026-09-16) |
 | MemPalace v3.4.0 | Pluggable vector backend | Future S-candidate (only when scale demands) |
 | MemPalace v3.4.0 | drawer_id hash collision silently lost data | Astor immune (INTEGER PK, no hash) |
 | MemPalace v3.3.6 | `wing_api` separates tool-call from human-conversation traffic | Future S-candidate: kind-based routing |
-| MemU v2.0.0 | Multi-host adapters (Claude Code, Codex, Cursor) | Astor has hermes gateway; Codex adapter is S-candidate |
+| MemU v2.0.0 | Multi-host adapters (Claude Code, Codex, Cursor) | ✅ SHIPPED (hermes_adapter.py, 2026-08-15, predates MemU's #536 by ~12 months) |
 | MemU v2.0.0 | `memU doctor` CLI for proxy hijack | Future S-candidate for astor doctor |
 
 ---
