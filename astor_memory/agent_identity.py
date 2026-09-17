@@ -28,6 +28,12 @@ class AgentIdentity:
     source: str | None = None
     namespace: str | None = None
     session_id: str | None = None
+    # Phase C-D: server-side tier routing. When ``trusted_agent`` is True the
+    # caller claims the user is on the local-direct trusted list and MUST
+    # supply ``default_tier`` so the server can route the write without
+    # trusting the caller's own tier argument.
+    default_tier: str | None = None
+    trusted_agent: bool = False
 
     def __post_init__(self) -> None:
         for field_name in ("agent_id", "user_id"):
@@ -40,6 +46,11 @@ class AgentIdentity:
             raise ValueError("bot transport requires platform")
         if self.transport == "direct" and self.platform:
             raise ValueError("direct transport must not declare a bot platform")
+        if self.trusted_agent and not self.default_tier:
+            raise ValueError(
+                "trusted_agent=True requires default_tier to be set "
+                "(server-side routing needs an explicit tier)"
+            )
 
     @property
     def actor(self) -> str:
@@ -48,15 +59,17 @@ class AgentIdentity:
 
     def as_request_fields(self) -> dict[str, str]:
         """Return only non-empty, protocol-safe context fields."""
-        fields = {
+        fields: dict[str, str] = {
             "agent_id": self.agent_id,
             "user_id": self.user_id,
             "transport": self.transport,
         }
-        for key in ("platform", "source", "namespace", "session_id"):
+        for key in ("platform", "source", "namespace", "session_id", "default_tier"):
             value = getattr(self, key)
             if value:
                 fields[key] = value
+        if self.trusted_agent:
+            fields["trusted_agent"] = "1"
         return fields
 
 
@@ -100,6 +113,36 @@ def bot_agent(
     )
 
 
+def trusted_direct_agent(
+    agent_id: str,
+    user_id: str,
+    *,
+    default_tier: str,
+    source: str | None = None,
+    namespace: str | None = None,
+    session_id: str | None = None,
+) -> AgentIdentity:
+    """Build a local-direct agent that the server recognises as trusted.
+
+    Phase C-D: a trusted_direct_agent must always declare its default_tier so
+    the server can route writes without trusting the caller's tier argument.
+    Use this for EvoX Desktop (admin), game agents, and any other direct
+    caller that has been whitelisted in user_meta.trusted_agent.
+    """
+    if not default_tier or not isinstance(default_tier, str):
+        raise ValueError("trusted_direct_agent requires a non-empty default_tier")
+    return AgentIdentity(
+        agent_id=agent_id,
+        user_id=user_id,
+        transport="direct",
+        source=source,
+        namespace=namespace,
+        session_id=session_id,
+        default_tier=default_tier,
+        trusted_agent=True,
+    )
+
+
 @dataclass(frozen=True)
 class AstorRequestContext:
     """Wire-level context for a single Astor request.
@@ -122,6 +165,10 @@ class AstorRequestContext:
     scopes: tuple[str, ...] = field(default_factory=tuple)
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     enabled: bool = True
+    # Phase C-D: server-side tier routing. May be supplied via the local-direct
+    # profile when the caller is on the trusted-agent list; the server cross-
+    # checks against user_meta.default_tier before honouring it.
+    default_tier: str | None = None
 
 
 DEFAULT_LOCAL_DIRECT = {
@@ -146,15 +193,21 @@ def parse_local_direct_profile(
     ``platform`` / ``platform_id`` / ``chat_id`` are explicitly rejected because
     local-direct agents must NOT claim a bot platform; use ``parse_bot_profile``
     for bot transports.
+
+    Phase C-D: ``default_tier`` is passed through when supplied so callers can
+    declare their server-side default tier for role routing. ``trusted_agent``
+    is intentionally NOT exposed through this path — it must be set by the
+    server (via ``set_trusted_agent``) after consulting user_meta, never
+    claimed by the caller.
     """
     merged: dict = {**DEFAULT_LOCAL_DIRECT, **(profile or {})}
 
-    for name in ("platform", "platform_id", "chat_id"):
+    for name in ("platform", "platform_id", "chat_id", "trusted_agent"):
         value = merged.get(name)
-        if isinstance(value, str) and value.strip():
+        if value:
             raise ValueError(
                 f"local-direct profile must not declare {name}; "
-                "use bot resolver for bot transports"
+                "use bot resolver for bot transports or server-side trust check"
             )
 
     return AstorRequestContext(
@@ -163,6 +216,12 @@ def parse_local_direct_profile(
         transport=str(merged.get("transport", "direct")).strip(),
         source=(str(merged["source"]).strip() if merged.get("source") else None),
         enabled=bool(merged.get("enabled", True)),
+        default_tier=(
+            str(merged["default_tier"]).strip()
+            if isinstance(merged.get("default_tier"), str)
+            and merged["default_tier"].strip()
+            else None
+        ),
     )
 
 
