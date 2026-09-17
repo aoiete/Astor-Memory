@@ -53,7 +53,7 @@ Chosen option: <X>, because <reasons>.
 | 0002 | Hybrid retrieval by default, graph optional (R201 lock) | accepted | 2026-09-15 |
 | 0003 | Time-decay sweep default-on (v1.14.39) | accepted | 2026-09-16 |
 | 0004 | L1/L2 multi-granularity recall (cluster summary → fact ranking) | accepted | 2026-09-16 |
-| 0005 | (reserved for Ship C — diagnose expansion) | proposed | TBD |
+| 0005 | Diagnose expansion (proxy + DB corruption + embedding version) | accepted | 2026-09-16 |
 
 ## Conventions
 

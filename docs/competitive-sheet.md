@@ -79,7 +79,7 @@ differ" — answers should pull from this single source of truth.
 
 | Dimension | astor | MemU | MemPalace |
 |---|---|---|---|
-| **Health endpoint** | ✅ `/v1/health` + `/v1/health/diagnose` | `memU doctor` CLI | implicit |
+| **Health endpoint** | ✅ `/v1/health` + `/v1/health/diagnose` (Ship C v1.14.43, ADR-0005: +proxy_hijack_check +db_corruption_check +embedding_version_check) | `memU doctor` CLI | implicit |
 | **Recall log** | ✅ `recall_log.jsonl` + `latency_ms` (v1.14.29) | none published | none published |
 | **Usage stats** | ✅ weekly aggregator (v1.14.28) | none | none |
 | **Decay sweep** | ✅ default-on (v1.14.39) | n/a | living-memory dynamics |
@@ -121,7 +121,7 @@ referring in chat or commit messages.
 | astor internal | Same-session facts compete for recall slot | ADR-0004 (L1/L2 multi-granularity) |
 | MemPalace v3.3.6 | `wing_api` separates tool-call from human-conversation traffic | Future S-candidate: kind-based routing |
 | MemU v2.0.0 | Multi-host adapters (Claude Code, Codex, Cursor) | ✅ SHIPPED (hermes_adapter.py, 2026-08-15, predates MemU's #536 by ~12 months) |
-| MemU v2.0.0 | `memU doctor` CLI for proxy hijack | Future S-candidate for astor doctor |
+| MemU v2.0.0 | `memU doctor` CLI for proxy hijack | ✅ SHIPPED (Ship C v1.14.43, ADR-0005) — diagnose endpoint adds proxy_hijack_check + db_corruption_check + embedding_version_check |
 
 ---
 
