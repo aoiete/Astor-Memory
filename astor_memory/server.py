@@ -2912,15 +2912,130 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
         return jsonify(out)
 
+    # === Phase C-D: context + classify endpoints ===
+    # 2026-09-17: ship 5/5 optimization points. Lets REST callers (and the
+    # MCP ``astor_context`` handshake) read the resolved identity + LOCK
+    # rules + server-side tier classification without hand-rolling recall.
+
+    @app.route('/v1/context', methods=['GET'])
+    def context_endpoint():
+        """Return resolved identity for the caller.
+
+        Companion to MCP ``astor_context``. Returns:
+          - ``actor`` / ``role`` / ``user_id`` from the trusted ACL context
+          - ``default_tier`` / ``trusted_agent`` from user_meta (admin-only)
+
+        LOCK rule prefetch lives in the MCP ``astor_lock_rules`` tool; REST
+        callers can use ``/v1/read/multi?tag=LOCK`` instead. Keeping the
+        two paths separate avoids a synchronous recall on every REST
+        handshake.
+        """
+        from ._internal.bot_binding import (
+            get_user_default_tier, is_trusted_agent,
+        )
+        try:
+            ctx = astor_current_acl()
+        except Exception as e:
+            return jsonify({'error': 'acl_unresolved', 'reason': repr(e)}), 401
+
+        user_id = (ctx.user_id or 'admin') if ctx else 'admin'
+        # Pull tier + trust from user_meta (PII table — only admin can read)
+        default_tier = None
+        trusted = False
+        if ctx and ctx.role == 'admin':
+            default_tier = get_user_default_tier(user_id)
+            trusted = is_trusted_agent(user_id)
+
+        return jsonify({
+            'actor': ctx.actor if ctx else 'unknown',
+            'role': ctx.role if ctx else 'unknown',
+            'user_id': user_id,
+            'default_tier': default_tier,
+            'trusted_agent': trusted,
+        })
+
+    @app.route('/v1/classify', methods=['POST'])
+    def classify():
+        """Server-side tier decision based on user_meta + LOCK rules.
+
+        Request body: ``{"text": str, "hint_user"?: str}``
+        Response body: ``{"tier": str, "source": str, "confidence": float,
+                          "reasoning": str}``
+
+        Decision priority:
+          1. If ``hint_user`` (or caller's user_id) is ``trusted_agent`` in
+             ``user_meta`` → use ``user_meta.default_tier`` (high confidence)
+          2. Otherwise → ``public`` with a ``safe_default`` source (caller
+             must escalate via LOCK rule audit if they want a higher tier)
+
+        Phase C-D ships the user_meta path only. Full LOCK rule evaluation
+        (content → tier mapping) is a follow-up that needs the LOCK rule
+        schema to stabilise; until then, callers default to public.
+        """
+        from ._internal.bot_binding import (
+            get_user_default_tier, is_trusted_agent,
+        )
+        body = request.get_json(force=True) or {}
+        text = (body.get('text') or '').strip()
+        if not text:
+            return jsonify({'error': 'text required'}), 400
+
+        try:
+            ctx = astor_current_acl()
+        except Exception as e:
+            return jsonify({'error': 'acl_unresolved', 'reason': repr(e)}), 401
+
+        hint_user = (
+            body.get('hint_user')
+            or (ctx.user_id if ctx else None)
+            or 'admin'
+        )
+
+        # Path 1: trusted_agent path — server resolves tier from user_meta.
+        if is_trusted_agent(hint_user):
+            tier = get_user_default_tier(hint_user) or 'public'
+            return jsonify({
+                'tier': tier,
+                'source': 'trusted_default',
+                'confidence': 0.95,
+                'reasoning': (
+                    f"user_id={hint_user!r} is trusted_agent; "
+                    f"using user_meta.default_tier={tier!r}"
+                ),
+                'user_id': hint_user,
+            })
+
+        # Path 2: safe default — defer to caller's own tier argument or LOCK
+        # audit. We do NOT escalate beyond public without server-side proof.
+        return jsonify({
+            'tier': 'public',
+            'source': 'safe_default',
+            'confidence': 0.5,
+            'reasoning': (
+                f"user_id={hint_user!r} not in trusted_agent list; "
+                f"defaulting to public. Caller may override via LOCK rule audit."
+            ),
+            'user_id': hint_user,
+        })
+
     @app.route('/v1/reload', methods=['POST'])
     def reload():
-        """Hot-reload server code (P3-fix 2026-08-15).
+        """Hot-reload server code (P3-fix 2026-08-15, fix 2026-09-17).
 
         Re-execs the current process via os.execv so all module caches
         (bus/store, forge/extractor, server) pick up fresh source. Used
         after patching the code without restarting manually.
 
         Restricted to admin (per ACL plan § reload requires root).
+
+        2026-09-17 bugfix: argv used to be ``[sys.executable] + sys.argv``
+        which duplicated the executable (``sys.argv[0]`` is already the
+        executable when launched via ``pythonw -m``). The duplicate made
+        ``-m astor_memory.server`` get parsed as a positional script arg,
+        so the respawned process hit ``from . import ...`` at line 63
+        without a parent package and crashed with
+        ``ImportError: attempted relative import with no known parent
+        package``. Now uses ``sys.argv`` directly.
         """
         import os as _os
         try:
@@ -2935,7 +3050,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         def _respawn():
             import time as _t
             _t.sleep(0.2)
-            _os.execv(sys.executable, [sys.executable] + sys.argv)
+            _os.execv(sys.executable, sys.argv)
         _threading.Thread(target=_respawn, daemon=True).start()
         return jsonify({'reloading': True, 'pid': _os.getpid()})
 
