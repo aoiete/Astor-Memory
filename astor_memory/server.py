@@ -3836,6 +3836,110 @@ def create_app(astor_dir: str | None = None) -> Flask:
     except Exception as _peer_init_exc:
         print(f'   Peer identity: init deferred ({_peer_init_exc})')
 
+    # v1.14.72 (2026-09-17) — Phase 3: /v1/peer/recv
+    # Endpoint for receiving signed peer messages. Wire format:
+    #   {"msg_type": "rekey" | "topic_index" | <future>, "msg": <dict>}
+    # - rekey:       verify + decide + record (admin applies via CLI)
+    # - topic_index: update topic_index with per-(topic, sender) entries
+    @app.route('/v1/peer/recv', methods=['POST'])
+    def peer_recv():
+        """Phase 3: receive a signed peer message."""
+        from ._internal.peer_identity import verify_rekey_message
+        from ._internal.peer_relationships import (
+            record_rekey, get_peer, set_topic, add_peer,
+        )
+        import datetime as _dt_recv
+        body = request.get_json(silent=True) or {}
+        msg_type = body.get('msg_type')
+        msg = body.get('msg')
+        if not msg_type or not msg:
+            return jsonify({
+                'error': 'missing msg_type or msg',
+                'detail': 'body must be {"msg_type": "...", "msg": {...}}',
+            }), 400
+        now = _dt_recv.datetime.now(_dt_recv.timezone.utc).isoformat(
+            timespec='seconds').replace('+00:00', 'Z')
+        try:
+            if msg_type == 'rekey':
+                if not verify_rekey_message(msg):
+                    record_rekey(
+                        msg.get('old_peer_id', ''),
+                        msg.get('new_peer_id', ''),
+                        msg.get('signature', ''),
+                        msg.get('signer_pubkey', ''),
+                        status='rejected',
+                        note='signature_invalid (recv endpoint)',
+                    )
+                    return jsonify({
+                        'received': True,
+                        'msg_type': 'rekey',
+                        'action': 'rejected',
+                        'reason': 'signature_invalid',
+                    }), 200
+                existing = get_peer(msg['old_peer_id'])
+                trust = existing['trust'] if existing else None
+                if trust is None:
+                    action = 'manual_pending'
+                elif trust < 30:
+                    action = 'reject'
+                elif trust < 70:
+                    action = 'manual_pending'
+                else:
+                    action = 'auto_accept'
+                rid = record_rekey(
+                    msg['old_peer_id'], msg['new_peer_id'],
+                    msg['signature'], msg['signer_pubkey'],
+                    status=('auto_accepted' if action == 'auto_accept'
+                            else 'manual_pending' if action == 'manual_pending'
+                            else 'rejected'),
+                    note=f'received via /v1/peer/recv at {now}',
+                )
+                return jsonify({
+                    'received': True,
+                    'msg_type': 'rekey',
+                    'action': action,
+                    'rekey_id': rid,
+                    'old_peer_id': msg['old_peer_id'],
+                    'new_peer_id': msg['new_peer_id'],
+                }), 200
+            elif msg_type == 'topic_index':
+                sender = msg.get('sender_peer_id', '')
+                if not sender.startswith('astor:'):
+                    return jsonify({'error': 'invalid sender_peer_id'}), 400
+                existing = get_peer(sender)
+                if not existing:
+                    add_peer(
+                        sender,
+                        kind='pending',
+                        trust=30,
+                        public_key=msg.get('sender_pubkey'),
+                    )
+                count = 0
+                for t in msg.get('topics', []):
+                    topic_name = t.get('topic')
+                    weight = float(t.get('weight', 1.0))
+                    if topic_name and 0.0 <= weight <= 1.0:
+                        set_topic(topic_name, sender, weight=weight,
+                                  source='peer_recv')
+                        count += 1
+                return jsonify({
+                    'received': True,
+                    'msg_type': 'topic_index',
+                    'sender_peer_id': sender,
+                    'topics_applied': count,
+                }), 200
+            else:
+                return jsonify({
+                    'error': 'unknown msg_type',
+                    'msg_type': msg_type,
+                    'supported': ['rekey', 'topic_index'],
+                }), 400
+        except Exception as e:
+            return jsonify({
+                'error': 'recv_failed',
+                'detail': str(e),
+            }), 500
+
     return app
 
 
