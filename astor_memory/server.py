@@ -1368,6 +1368,16 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 top_k = 5
         except (TypeError, ValueError):
             top_k = 5
+        # v1.14.74.5 (2026-09-18): Hindsight-style token_budget — overrides top_k after retrieval.
+        _raw_budget = body.get('token_budget', None)
+        try:
+            token_budget = int(_raw_budget) if _raw_budget is not None else None
+            if token_budget is not None and token_budget < 50:
+                token_budget = 50
+            if token_budget is not None and token_budget > 20000:
+                token_budget = 20000
+        except (TypeError, ValueError):
+            token_budget = None
         # v1.14.74 (2026-09-18): memory_class filter — accepts list[str] or comma-sep string.
         raw_mc = body.get('memory_class')
         mc_filter = None
@@ -2352,6 +2362,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _safe_stderr_write(
                 f'[astor.server] access_count update failed: {_acc_exc}\n'
             )
+
+        # v1.14.74.5 — Hindsight-style token-budget trim for /v1/read (Ship #1).
+        # When token_budget is set, trim `enriched` so the total char count of all
+        # returned content fits within ~token_budget * 2 (mixed CJK + ASCII heuristic:
+        # ~2 chars per token conservatively). Preserves relevance order. If even one
+        # fact exceeds the budget alone, it is still returned (single-fact overflow is
+        # allowed; the trim only kicks in for second-and-later facts).
+        if token_budget is not None and enriched:
+            _max_chars = token_budget * 2  # CJK-friendly token estimate
+            _used = 0
+            _kept = []
+            for r in enriched:
+                _text = (r.get('content') or '') + (r.get('memory_class') or '')
+                _tlen = len(_text)
+                if _used + _tlen > _max_chars and _kept:
+                    break  # budget exhausted (and we have at least 1 fact)
+                _kept.append(r)
+                _used += _tlen
+            enriched = _kept
 
         # v1.14.28 Ship J: usage log best-effort.
         try:
