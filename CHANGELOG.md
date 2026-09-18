@@ -1,3 +1,39 @@
+## v1.14.69 (2026-09-17)
+
+### Opening thesis + docs polish
+
+No code changes. This is a docs + philosophy ship that frames the WHY
+behind phases 1-5 ship and the roadmap for the peer network.
+
+**Opening thesis** added to `docs/peer-network.md`:
+
+> One person's memory is finite. The collective memory of all astor peers
+> grows without bound.
+
+User-stated (verbatim, 2026-09-17): "一个人的记忆总是有限的 所有人的才能无限增长".
+
+**Why this matters**:
+- Astor is not a backup system. **Astor is a memory system whose ceiling
+  grows with every mind that joins.**
+- Each peer contributes: identity (peer_id + ed25519 keypair) +
+  personal trust decisions (who to trust, who to blacklist) +
+  trust-weighted signals (rekey, fact provenance, sync frequency).
+- The sum of these signals across all peers exceeds what any single
+  node could hold alone.
+
+**Changes**:
+- `docs/peer-network.md`: Added "Opening thesis" section before the
+  existing "Why a peer network" section.
+- Status banner: "Phase 1 shipped" → "Phase 1+2 shipped".
+- `astor_memory/__init__.py`: `__version__ = "1.14.69"`.
+- `pyproject.toml`: `version = "1.14.69"`.
+- Fact 300008 (source tier, kind=knowledge) captures the thesis statement
+  with verbatim user quote and ship context.
+
+**Tests**: 0 new (docs-only ship). All existing tests still pass.
+
+---
+
 ## v1.14.68 (2026-09-17)
 
 ### Peer network Phase 2 — friend + trust + rekey notification
