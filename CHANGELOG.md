@@ -1,3 +1,78 @@
+## v1.14.68 (2026-09-17)
+
+### Peer network Phase 2 — friend + trust + rekey notification
+
+Closes the social-graph question from v1.14.67. Now every astor install can
+manage friends, set trust scores, blacklist bad actors, and recover from
+peer_id changes via signed REKEY messages — without manual export/import.
+
+**peer_relationships schema** (`astor_memory/_internal/peer_relationships.py`)
+- New SQLite database at `$ASTOR_DIR/identity/relationships.db`
+- Two tables:
+  - `peer_relationships` (peer_id PK, alias, kind, trust, public_key,
+    rekey_chain, topic_weights, last_sync, last_topic_seen, metadata)
+  - `rekey_log` (audit trail for every rekey event)
+- CRUD: `add_peer / get_peer / list_peers / remove_peer / update_trust`
+- Rekey audit: `record_rekey / update_rekey_status / get_rekey_log / apply_rekey`
+- `close_all_connections()` for test isolation + graceful shutdown
+
+**Trust semantics** (locked 2026-09-16, facts 12610/12611)
+- 0 = blacklisted (auto-reject)
+- 1-29 = very low (quarantine)
+- 30 = default for new peers
+- 31-69 = low (manual accept only)
+- 70-89 = high (auto-accept, KEEP trust on rekey)
+- 90-100 = very high (auto-accept, KEEP trust on rekey, broadcast back)
+
+**REKEY message design** (Phase 2 ships this; Phase 3 ships broadcast)
+- Wire format: JSON with `old_peer_id + new_peer_id + new_public_key +
+  timestamp + signature + signer_pubkey`
+- Signature covers (old_pid + new_pid + new_pubkey + timestamp)
+- Verifier reconstructs payload and checks signature with signer_pubkey
+- Decision matrix:
+  - trust ≥ 70 → `auto_accept` (KEEP trust, swap peer_id, apply immediately)
+  - trust 30-69 → `manual_pending` (notify admin, await confirmation)
+  - trust < 30 → `reject` (log only)
+  - no existing relationship → `manual_pending` (first contact)
+- `rekey_chain` accumulates across multiple rekeys: peer can trace
+  their full peer_id history for forensics
+
+**New CLI commands** (13 total in `am peer` namespace)
+- `am peer friend add <peer_id> [--alias=X] [--trust=N] [--pubkey=B]`
+- `am peer friend list [--kind=friend|blacklist|whitelist|pending] [--min-trust=N]`
+- `am peer friend remove <peer_id>`
+- `am peer trust <peer_id> <0-100>`
+- `am peer blacklist <peer_id> [--reason=X]`
+- `am peer export [--out=path.yaml]`
+- `am peer import <path.yaml> [--strategy=skip|overwrite|merge]`
+- `am peer rekey [--old=<old_peer_id>] [--out=path.json]`
+- `am peer rekey-apply <path.json> [--auto]`
+- `am peer rekey-log [--status=auto_accepted|manual_pending|rejected]`
+
+**Tests** (`tests/test_peer_relationships.py`, 20 cases, all pass)
+- CRUD: add/get/list/remove/update_trust (8 tests)
+- Decision matrix: trust tier boundaries (4 tests)
+- REKEY roundtrip: build + verify + tamper detection (3 tests)
+- Apply rekey: rename + trust preservation + chain accumulation (3 tests)
+- Rekey log: status filtering + status update (2 tests)
+
+**Verified end-to-end**:
+- alice (trust=80) → rekey msg → auto-accepted, trust preserved at 80
+- bob (trust=50) → rekey msg → manual_pending (admin must confirm)
+- eve (trust=10) → rekey msg → rejected
+- Export/import with 3 conflict strategies (skip / overwrite / merge)
+
+**Closed user prompt**: "peerid 变是不是可以通过好友列表通知？" — YES,
+via signed REKEY message + friend list verification flow.
+
+**Deferred to Phase 3+**:
+- Network-level broadcast (peer-to-peer transport over HTTP/gossip)
+- Topic-aware routing
+- Consensus verification (3+ peer agree)
+- Anti-spam rate limiting
+
+---
+
 ## v1.14.67 (2026-09-17)
 
 ### Peer network Phase 1 — identity + status CLI

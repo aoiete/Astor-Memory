@@ -13,6 +13,7 @@ Provides v1.0 minimal commands:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -341,6 +342,86 @@ def main(argv: list[str] | None = None) -> int:
     peer_verify.add_argument('signature_b64', help='Base64 signature')
     peer_verify.add_argument('public_key_b64', help='Base64 public key')
     peer_verify.set_defaults(func=cmd_peer_verify)
+
+    # v1.14.68 (2026-09-17) — Phase 2: friend + trust + blacklist + rekey
+    # am peer friend add <peer_id> [--alias=X] [--trust=N] [--pubkey=B]
+    # am peer friend list [--kind=friend|blacklist|whitelist|pending]
+    # am peer friend remove <peer_id>
+    # am peer trust <peer_id> <0-100>
+    # am peer blacklist <peer_id> [--reason="..."]
+    # am peer export [--out=path.yaml]
+    # am peer import <path.yaml> [--strategy=skip|overwrite|merge]
+    # am peer rekey [--old=<old_peer_id>]   # build rekey msg JSON
+    # am peer rekey-apply <path.json> [--auto]  # apply received rekey msg
+    peer_friend = peer_sub.add_parser('friend',
+        help='Manage friend list (Phase 2)')
+    friend_sub = peer_friend.add_subparsers(dest='friend_command')
+    friend_add = friend_sub.add_parser('add',
+        help='Add or update a friend')
+    friend_add.add_argument('peer_id', help='Peer ID (astor:<32-hex>)')
+    friend_add.add_argument('--alias', help='Human-readable alias')
+    friend_add.add_argument('--trust', type=int, default=30,
+        help='Trust score 0-100 (default 30 = new peer default)')
+    friend_add.add_argument('--pubkey', help='Base64 public key for verify')
+    friend_add.set_defaults(func=cmd_peer_friend_add)
+
+    friend_list = friend_sub.add_parser('list',
+        help='List friends and other relationships')
+    friend_list.add_argument('--kind', choices=['friend', 'blacklist',
+        'whitelist', 'pending'], help='Filter by kind')
+    friend_list.add_argument('--min-trust', type=int,
+        help='Filter by minimum trust score')
+    friend_list.set_defaults(func=cmd_peer_friend_list)
+
+    friend_remove = friend_sub.add_parser('remove',
+        help='Remove a peer relationship')
+    friend_remove.add_argument('peer_id', help='Peer ID to remove')
+    friend_remove.set_defaults(func=cmd_peer_friend_remove)
+
+    peer_trust = peer_sub.add_parser('trust',
+        help='Update trust score for a peer')
+    peer_trust.add_argument('peer_id', help='Peer ID')
+    peer_trust.add_argument('score', type=int, help='New trust score (0-100)')
+    peer_trust.set_defaults(func=cmd_peer_trust)
+
+    peer_blacklist = peer_sub.add_parser('blacklist',
+        help='Blacklist a peer (trust=0)')
+    peer_blacklist.add_argument('peer_id', help='Peer ID to blacklist')
+    peer_blacklist.add_argument('--reason', help='Reason for blacklist')
+    peer_blacklist.set_defaults(func=cmd_peer_blacklist)
+
+    peer_export = peer_sub.add_parser('export',
+        help='Export social_graph to YAML for backup')
+    peer_export.add_argument('--out', help='Output path (default: peer_social_<ts>.yaml in ASTOR_DIR)')
+    peer_export.set_defaults(func=cmd_peer_export)
+
+    peer_import = peer_sub.add_parser('import',
+        help='Import social_graph from YAML bundle')
+    peer_import.add_argument('path', help='Path to YAML bundle')
+    peer_import.add_argument('--strategy', choices=['skip', 'overwrite', 'merge'],
+        default='merge', help='Conflict strategy (default merge)')
+    peer_import.set_defaults(func=cmd_peer_import)
+
+    peer_rekey = peer_sub.add_parser('rekey',
+        help='Build a signed REKEY message (announces peer_id change)')
+    peer_rekey.add_argument('--old', default='',
+        help='Old peer_id (if known). Default: current (bootstrap)')
+    peer_rekey.add_argument('--out', help='Output JSON path (default: stdout)')
+    peer_rekey.set_defaults(func=cmd_peer_rekey)
+
+    peer_rekey_apply = peer_sub.add_parser('rekey-apply',
+        help='Apply a received REKEY message')
+    peer_rekey_apply.add_argument('path', help='Path to REKEY JSON')
+    peer_rekey_apply.add_argument('--auto', action='store_true',
+        help='Auto-apply without manual confirmation (trust>=70 only)')
+    peer_rekey_apply.set_defaults(func=cmd_peer_rekey_apply)
+
+    peer_rekey_log = peer_sub.add_parser('rekey-log',
+        help='Show REKEY message audit log')
+    peer_rekey_log.add_argument('--status', choices=['pending', 'auto_accepted',
+        'manual_pending', 'rejected'],
+        help='Filter by status')
+    peer_rekey_log.set_defaults(func=cmd_peer_rekey_log)
 
     # am platform ... (bot-binding.db CRUD)
     plat_p = subparsers.add_parser('platform', help='Manage bot-binding.db (platforms + bindings + users)')
@@ -2449,6 +2530,228 @@ def cmd_peer_verify(args) -> int:
         return 0
     print('[ERR] signature INVALID')
     return 1
+
+
+def cmd_peer_friend_add(args) -> int:
+    """v1.14.68 (Phase 2): add or update a friend."""
+    from .._internal.peer_relationships import add_peer
+    try:
+        result = add_peer(
+            args.peer_id,
+            alias=args.alias,
+            trust=args.trust,
+            public_key=args.pubkey,
+            kind='friend',
+        )
+        alias_str = f' alias={result.get("alias")!r}' if result.get('alias') else ''
+        print(f'[OK] added friend: {args.peer_id} trust={args.trust}{alias_str}')
+        return 0
+    except (ValueError, Exception) as e:
+        print(f'[ERR] {e}', file=sys.stderr)
+        return 1
+
+
+def cmd_peer_friend_list(args) -> int:
+    """v1.14.68 (Phase 2): list peer relationships."""
+    from .._internal.peer_relationships import list_peers
+    peers = list_peers(kind=args.kind, min_trust=args.min_trust)
+    if not peers:
+        kind_str = f' kind={args.kind}' if args.kind else ''
+        print(f'(no peers{kind_str})')
+        return 0
+    print(f'[OK] {len(peers)} peer(s):')
+    for p in peers:
+        alias = p.get('alias') or '(no alias)'
+        chain = p.get('rekey_chain') or []
+        chain_str = f' rekey_chain={chain}' if chain else ''
+        print(f'  {p["peer_id"]}  alias={alias!r}  '
+              f'kind={p["kind"]}  trust={p["trust"]}{chain_str}')
+    return 0
+
+
+def cmd_peer_friend_remove(args) -> int:
+    """v1.14.68 (Phase 2): remove a peer."""
+    from .._internal.peer_relationships import remove_peer
+    if remove_peer(args.peer_id):
+        print(f'[OK] removed peer: {args.peer_id}')
+        return 0
+    print(f'[ERR] peer not found: {args.peer_id}')
+    return 1
+
+
+def cmd_peer_trust(args) -> int:
+    """v1.14.68 (Phase 2): update trust for a peer."""
+    from .._internal.peer_relationships import update_trust
+    try:
+        result = update_trust(args.peer_id, args.score)
+        if result:
+            print(f'[OK] trust updated: {args.peer_id} = {args.score}')
+            return 0
+        print(f'[ERR] peer not found: {args.peer_id}')
+        return 1
+    except ValueError as e:
+        print(f'[ERR] {e}', file=sys.stderr)
+        return 1
+
+
+def cmd_peer_blacklist(args) -> int:
+    """v1.14.68 (Phase 2): blacklist a peer (trust=0)."""
+    from .._internal.peer_relationships import add_peer
+    metadata = {'blacklist_reason': args.reason} if args.reason else None
+    add_peer(args.peer_id, kind='blacklist', trust=0, metadata=metadata)
+    reason_str = f' reason={args.reason!r}' if args.reason else ''
+    print(f'[OK] blacklisted: {args.peer_id}{reason_str}')
+    return 0
+
+
+def cmd_peer_export(args) -> int:
+    """v1.14.68 (Phase 2): export social_graph to YAML bundle."""
+    from .._internal.peer_relationships import list_peers
+    import datetime as _dt
+    import yaml as _yaml
+    peers = list_peers()
+    bundle = {
+        'version': '1.0',
+        'exported_at': _dt.datetime.now(_dt.timezone.utc).isoformat()
+            .replace('+00:00', 'Z'),
+        'friend_count': sum(1 for p in peers if p['kind'] == 'friend'),
+        'blacklist_count': sum(1 for p in peers if p['kind'] == 'blacklist'),
+        'friends': [p for p in peers if p['kind'] == 'friend'],
+        'blacklist': [p for p in peers if p['kind'] == 'blacklist'],
+        'whitelist': [p for p in peers if p['kind'] == 'whitelist'],
+        'pending': [p for p in peers if p['kind'] == 'pending'],
+    }
+    out_path = args.out
+    if not out_path:
+        ts = _dt.datetime.now().strftime('%Y%m%d_%H%M%S')
+        astor_dir = os.environ.get('ASTOR_DIR', '')
+        out_path = (
+            os.path.join(astor_dir, f'peer_social_{ts}.yaml')
+            if astor_dir else f'peer_social_{ts}.yaml'
+        )
+    with open(out_path, 'w', encoding='utf-8') as f:
+        _yaml.safe_dump(bundle, f, allow_unicode=True, sort_keys=False)
+    print(f'[OK] exported {len(peers)} peer(s) to {out_path}')
+    print(f'   friends={bundle["friend_count"]} '
+          f'blacklist={bundle["blacklist_count"]}')
+    return 0
+
+
+def cmd_peer_import(args) -> int:
+    """v1.14.68 (Phase 2): import social_graph from YAML bundle."""
+    from .._internal.peer_relationships import add_peer
+    import yaml as _yaml
+    with open(args.path, 'r', encoding='utf-8') as f:
+        bundle = _yaml.safe_load(f)
+    if not bundle or bundle.get('version') != '1.0':
+        print(f'[ERR] unsupported bundle version: {bundle.get("version")}')
+        return 1
+    sections = ('friends', 'blacklist', 'whitelist', 'pending')
+    added = 0
+    skipped = 0
+    overwritten = 0
+    for section in sections:
+        for entry in bundle.get(section, []):
+            existing = (section == 'friends' and
+                        entry.get('kind') == 'friend')
+            if args.strategy == 'skip' and existing:
+                skipped += 1
+                continue
+            if args.strategy == 'overwrite' and existing:
+                overwritten += 1
+            add_peer(
+                entry['peer_id'],
+                kind=entry.get('kind', section[:-1] if section != 'friends'
+                              else 'friend'),
+                trust=entry.get('trust', 30),
+                alias=entry.get('alias'),
+                public_key=entry.get('public_key'),
+                topic_weights=entry.get('topic_weights'),
+                metadata=entry.get('metadata'),
+            )
+            added += 1
+    print(f'[OK] imported {added} peer(s) from {args.path}')
+    print(f'   strategy={args.strategy} skipped={skipped} '
+          f'overwritten={overwritten}')
+    return 0
+
+
+def cmd_peer_rekey(args) -> int:
+    """v1.14.68 (Phase 2): build a signed REKEY message."""
+    from .._internal.peer_identity import build_rekey_message
+    msg = build_rekey_message(old_peer_id=args.old, new_peer_id='')
+    json_str = json.dumps(msg, indent=2, ensure_ascii=False)
+    if args.out:
+        with open(args.out, 'w', encoding='utf-8') as f:
+            f.write(json_str)
+        print(f'[OK] rekey message written to {args.out}')
+    else:
+        print(json_str)
+    return 0
+
+
+def cmd_peer_rekey_apply(args) -> int:
+    """v1.14.68 (Phase 2): apply a received REKEY message."""
+    from .._internal.peer_identity import (
+        verify_rekey_message, decide_rekey_action,
+    )
+    from .._internal.peer_relationships import (
+        get_peer, record_rekey, update_rekey_status, apply_rekey,
+    )
+    with open(args.path, 'r', encoding='utf-8') as f:
+        msg = json.load(f)
+    # Step 1: verify signature
+    if not verify_rekey_message(msg):
+        print('[ERR] rekey signature INVALID — refusing to apply')
+        record_rekey(
+            msg.get('old_peer_id', ''), msg.get('new_peer_id', ''),
+            msg.get('signature', ''), msg.get('signer_pubkey', ''),
+            status='rejected', note='signature_invalid',
+        )
+        return 1
+    # Step 2: look up existing relationship
+    existing = get_peer(msg['old_peer_id'])
+    trust = existing['trust'] if existing else None
+    # Step 3: decide
+    action = decide_rekey_action(msg, trust)
+    print(f'[INFO] rekey action: {action} '
+          f'(old_trust={trust}, new_peer_id={msg["new_peer_id"][:24]}...)')
+    # Step 4: record + apply (if auto)
+    rid = record_rekey(
+        msg['old_peer_id'], msg['new_peer_id'],
+        msg['signature'], msg['signer_pubkey'],
+        status=('auto_accepted' if action == 'auto_accept'
+                else 'manual_pending' if action == 'manual_pending'
+                else 'rejected'),
+    )
+    if action == 'auto_accept':
+        result = apply_rekey(rid)
+        print(f'[OK] auto-applied: trust preserved at {result.get("trust_preserved")}')
+    elif action == 'manual_pending':
+        if args.auto:
+            print('[INFO] --auto specified but action is manual_pending; '
+                  'requires admin confirmation')
+            return 0
+        print(f'[INFO] pending admin confirmation. '
+              f'Run: am peer rekey-apply {args.path} --auto (after manual check)')
+    else:  # reject
+        print(f'[OK] rejected (trust={trust}, threshold=30)')
+    return 0
+
+
+def cmd_peer_rekey_log(args) -> int:
+    """v1.14.68 (Phase 2): show REKEY audit log."""
+    from .._internal.peer_relationships import get_rekey_log
+    entries = get_rekey_log(status=args.status)
+    if not entries:
+        print('(no rekey log entries)')
+        return 0
+    print(f'[OK] {len(entries)} rekey log entries:')
+    for e in entries:
+        print(f'  id={e["id"]} {e["old_peer_id"][:20]}... → '
+              f'{e["new_peer_id"][:20]}... status={e["status"]} '
+              f'at={e["applied_at"]}')
+    return 0
 
 
 if __name__ == '__main__':

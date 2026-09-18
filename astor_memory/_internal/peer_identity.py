@@ -292,3 +292,99 @@ def verify(data: bytes, signature_b64: str, public_key_b64: str) -> bool:
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# v1.14.68 (2026-09-17) — REKEY message helpers (Phase 2).
+# See docs/peer-network.md § "Rekey flow" for design.
+# ---------------------------------------------------------------------------
+
+
+def build_rekey_message(
+    old_peer_id: str,
+    new_peer_id: str,
+    astor_dir: str | None = None,
+) -> dict:
+    """Build a signed REKEY message announcing a peer_id change.
+
+    Wire format (JSON-serializable):
+        {
+            "old_peer_id": "astor:abc...",
+            "new_peer_id": "astor:def...",
+            "new_public_key": "base64...",
+            "timestamp": "2026-09-17T19:30:00Z",
+            "signature": "base64...",
+            "signer_pubkey": "base64..."
+        }
+
+    The signature covers: old_peer_id + new_peer_id + new_public_key + timestamp.
+    Verifiers reconstruct the same payload and verify with signer_pubkey.
+    """
+    new_identity = init_identity(astor_dir=astor_dir)
+    # If old_peer_id is empty (first install), use current peer_id as both
+    # — verifier will recognise this as a first-time bootstrap.
+    if not old_peer_id:
+        old_peer_id = new_identity["peer_id"]
+    timestamp = (_dt.datetime.now(_dt.timezone.utc)
+                 .isoformat(timespec="seconds")
+                 .replace("+00:00", "Z"))
+    payload = (
+        old_peer_id.encode("utf-8") +
+        b"\n" +
+        new_identity["peer_id"].encode("utf-8") + b"\n" +
+        new_identity["public_key"].encode("utf-8") + b"\n" +
+        timestamp.encode("utf-8")
+    )
+    sig = sign(payload, astor_dir=astor_dir)
+    return {
+        "old_peer_id": old_peer_id,
+        "new_peer_id": new_identity["peer_id"],
+        "new_public_key": new_identity["public_key"],
+        "timestamp": timestamp,
+        "signature": sig,
+        "signer_pubkey": new_identity["public_key"],
+    }
+
+
+def verify_rekey_message(msg: dict) -> bool:
+    """Verify a REKEY message signature. Returns True if valid.
+
+    Verifier must reconstruct the same byte payload and check signature
+    against signer_pubkey (NOT the new_public_key — the new key isn't
+    trusted yet, the old trust chain is the source of trust here).
+    """
+    try:
+        required = ("old_peer_id", "new_peer_id", "new_public_key",
+                    "timestamp", "signature", "signer_pubkey")
+        for k in required:
+            if k not in msg:
+                return False
+        payload = (
+            msg["old_peer_id"].encode("utf-8") + b"\n" +
+            msg["new_peer_id"].encode("utf-8") + b"\n" +
+            msg["new_public_key"].encode("utf-8") + b"\n" +
+            msg["timestamp"].encode("utf-8")
+        )
+        return verify(payload, msg["signature"], msg["signer_pubkey"])
+    except Exception:
+        return False
+
+
+def decide_rekey_action(msg: dict, current_trust: int | None) -> str:
+    """Decide what to do with an incoming REKEY message.
+
+    Decision matrix (per docs/peer-network.md):
+        trust >= 70 → 'auto_accept' (KEEP trust, swap peer_id)
+        trust 30-69 → 'manual_pending' (notify admin)
+        trust < 30  → 'reject' (drop, audit log only)
+        trust is None (new peer) → 'manual_pending' (first contact)
+
+    Returns one of: 'auto_accept', 'manual_pending', 'reject'.
+    """
+    if current_trust is None:
+        return "manual_pending"
+    if current_trust >= 70:
+        return "auto_accept"
+    if current_trust >= 30:
+        return "manual_pending"
+    return "reject"
