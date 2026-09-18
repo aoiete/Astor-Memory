@@ -313,6 +313,8 @@ def astor_init_schema(conn: sqlite3.Connection) -> None:
     _astor_upgrade_v7_to_v8(conn)
     _astor_upgrade_v8_to_v9(conn)
     _astor_upgrade_v9_to_v10(conn)
+    _astor_upgrade_v10_to_v11(conn)
+    _astor_upgrade_v11_to_v12(conn)
     # Index that depends on the publishable column must be created AFTER the column exists.
     # The executescript above emits CREATE INDEX inside the same script as the table,
     # which works for fresh DBs but errors on v1 databases because the column doesn't exist yet.
@@ -520,6 +522,32 @@ def _astor_upgrade_v9_to_v10(conn: sqlite3.Connection) -> None:
             "UPDATE memory_canonical SET created_at = "
             "strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
             "WHERE created_at IS NULL OR created_at = ''"
+        )
+    except Exception:
+        pass
+
+
+
+
+
+def _astor_upgrade_v10_to_v11(conn):
+    """v1.14.73 stub fix migration (no DB schema changes, audit-only)."""
+    return None
+
+
+def _astor_upgrade_v11_to_v12(conn):
+    """v1.14.74 (2026-09-18): Hindsight 4-tier memory_class taxonomy column."""
+    try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(memory_canonical)"
+        ).fetchall()}
+    except Exception:
+        return
+    if "memory_class" in cols:
+        return
+    try:
+        conn.execute(
+            "ALTER TABLE memory_canonical ADD COLUMN memory_class TEXT NOT NULL DEFAULT \'world_fact\'"
         )
     except Exception:
         pass
