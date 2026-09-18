@@ -389,6 +389,16 @@ def astor_classify_outcome(text: str) -> str:
     """
     if not text or not text.strip():
         return 'neutral'
+    # v1.14.64 (2026-09-17, R-class fix): if the text is an R-class
+    # locked rule (verified learning + marker), force success outcome.
+    # Without this guard, an R-class fact that mentions "卡", "报错",
+    # "hang", "timeout", "fail" anywhere in its body — even in
+    # negative context like "github 不报错就 hang" — trips the failure
+    # regexes and gets mis-classified as failure_pattern. This breaks
+    # the contract that R-class = locked rule = positive learning.
+    first_line = text.split("\n", 1)[0].strip()
+    if re.match(r"^R-class\b", first_line, re.IGNORECASE):
+        return 'success'
     try:
         # Lazy import — pattern_detector also imports from extractor in some
         # cases, avoid circular.
