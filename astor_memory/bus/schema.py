@@ -103,6 +103,12 @@ CREATE TABLE IF NOT EXISTS memory_canonical (
     -- Insight 6: temporal scope
     scope_type TEXT NOT NULL DEFAULT 'user'
         CHECK(scope_type IN ('user', 'short_term', 'long_term', 'profile')),
+    -- v1.14.74 (2026-09-18): 4-tier memory taxonomy inspired by Hindsight ACL 2026 paper
+    -- memory_class discriminates "world_fact" (objective) / "experience" (subjective) /
+    -- "observation" (multi-evidence synthesis) / "mental_model" (cross-cutting).
+    -- Earlier rows default to 'world_fact' (safest fallback for old data).
+    memory_class TEXT NOT NULL DEFAULT 'world_fact'
+        CHECK(memory_class IN ('world_fact', 'experience', 'observation', 'mental_model')),
     -- Plan § Cross-platform identity (Gap 7): per-user isolation
     user_id TEXT,
     session_id TEXT,
