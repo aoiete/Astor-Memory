@@ -1343,8 +1343,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
           query: str (required)
           user: str (optional, filter by user_id)
           top_k: int (default 5)
+          memory_class: list[str] or comma-separated str (optional, v1.14.74)
+                        — Hindsight ACL 2026 taxonomy. Each value must be one of
+                          {world_fact, experience, observation, mental_model}.
+                        Filter restricts recall to facts classified into those tiers.
+          token_budget: int (optional, v1.14.75 planned) — reserved, not yet shipped.
         Returns:
-          {results: [{fact_id, similarity, content, kind, ...}], count: int}
+          {results: [{fact_id, similarity, content, kind, memory_class, ...}], count: int}
         """
         body = request.get_json(force=True)
         try:
@@ -1363,6 +1368,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 top_k = 5
         except (TypeError, ValueError):
             top_k = 5
+        # v1.14.74 (2026-09-18): memory_class filter — accepts list[str] or comma-sep string.
+        raw_mc = body.get('memory_class')
+        mc_filter = None
+        if raw_mc is not None:
+            if isinstance(raw_mc, str):
+                mc_filter = [s.strip() for s in raw_mc.split(',') if s.strip()]
+            elif isinstance(raw_mc, list):
+                mc_filter = [str(s).strip() for s in raw_mc if str(s).strip()]
+        if mc_filter:
+            _allowed = {'world_fact', 'experience', 'observation', 'mental_model'}
+            mc_filter = [m for m in mc_filter if m in _allowed]
+            if not mc_filter:
+                mc_filter = None  # silently no-op if everything invalid
 
         # v1.14.29 (2026-09-15 Ship S1): latency timer for usage stats.
         import time as _t_s1
@@ -1875,7 +1893,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         for fact_id, sim in results:
             row = bus.conn.execute(
                 "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
-                "event_date, event_date_precision, origin_session_id, metadata, entities_json, created_at "
+                "event_date, event_date_precision, origin_session_id, metadata, entities_json, created_at, memory_class "
                 "FROM memory_canonical WHERE id = ?",
                 (fact_id,),
             ).fetchone()
@@ -1925,7 +1943,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # can use it as a soft proximity signal for legacy facts
                 # (no event_date). Caller can also use this to display
                 # "ingested at" timestamps.
-                'created_at': (row[15] if len(row) > 15 and row[15] else '')[:19],
+                'created_at': ((row[15] if len(row) > 15 else '') or '')[:19],
+                # v1.14.74 (2026-09-18) Hindsight 4-tier classification
+                'memory_class': (row[16] if len(row) > 16 and row[16] else 'world_fact'),
             })
         # v1.15.0 Ship A: entity_filter + time_range post-filter.
         # entity_filter = list of strings; fact must contain ANY of them in
@@ -1949,6 +1969,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     return True  # no date = keep (don't punish legacy facts)
                 return _ts_lo <= _ed[:10] <= _ts_hi
             enriched = [r for r in enriched if _in_tr(r)]
+        # v1.14.74 (2026-09-18) Hindsight taxonomy post-filter: mc_filter is a list of
+        # memory_class values to allow (4-tier scheme — world_fact / experience /
+        # observation / mental_model). None / empty = no filter (backward-compat).
+        # Note: pristine pre-v1.14.74 rows default to memory_class='world_fact', so they
+        # only show up in recalls filtered on 'world_fact' or in unfiltered recalls.
+        # No-op when mc_filter is None.
+        if mc_filter:
+            enriched = [r for r in enriched
+                        if (r.get('memory_class') or 'world_fact') in mc_filter]
         # NOTE: v1.15.0 entity_filter + time_range post-filters are placed
         # AFTER grep_verify + neighbor-expand below so they also prune any
         # rows those passes append. (Otherwise grep_verify can re-leak facts
