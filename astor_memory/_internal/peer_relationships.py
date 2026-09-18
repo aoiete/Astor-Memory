@@ -70,6 +70,20 @@ CREATE INDEX IF NOT EXISTS idx_rekey_log_new ON rekey_log(new_peer_id);
 CREATE INDEX IF NOT EXISTS idx_rekey_log_status ON rekey_log(status);
 CREATE INDEX IF NOT EXISTS idx_rel_kind ON peer_relationships(kind);
 CREATE INDEX IF NOT EXISTS idx_rel_trust ON peer_relationships(trust);
+
+CREATE TABLE IF NOT EXISTS topic_index (
+    topic           TEXT NOT NULL,
+    peer_id         TEXT NOT NULL,
+    weight          REAL NOT NULL DEFAULT 1.0,
+    fact_count      INTEGER NOT NULL DEFAULT 0,
+    last_seen_at    TEXT NOT NULL,
+    source          TEXT NOT NULL DEFAULT 'manual',
+    PRIMARY KEY (topic, peer_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_topic_index_topic ON topic_index(topic);
+CREATE INDEX IF NOT EXISTS idx_topic_index_peer ON topic_index(peer_id);
+CREATE INDEX IF NOT EXISTS idx_topic_index_weight ON topic_index(weight);
 """
 
 
@@ -397,3 +411,153 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
             except Exception:
                 pass
     return d
+
+
+# ---------------------------------------------------------------------------
+# v1.14.70 (2026-09-17) — Topic-aware routing (S1)
+# ---------------------------------------------------------------------------
+
+
+def set_topic(
+    topic: str,
+    peer_id: str,
+    weight: float = 1.0,
+    *,
+    source: str = "manual",
+    astor_dir: str | None = None,
+) -> dict:
+    """Set or update a (topic, peer_id) entry in topic_index.
+
+    weight 0.0-1.0 controls routing preference. Higher = more relevant.
+    Use 1.0 for fully trusted topic, 0.5 for partially trusted, 0.0 to disable.
+    """
+    if not 0.0 <= weight <= 1.0:
+        raise ValueError(f"weight must be 0.0-1.0; got {weight}")
+    con = _get_conn(astor_dir)
+    now = _now_iso()
+    with _RELATIONSHIPS_LOCK:
+        con.execute("""
+            INSERT INTO topic_index (topic, peer_id, weight, last_seen_at, source)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (topic, peer_id) DO UPDATE SET
+                weight = excluded.weight,
+                last_seen_at = excluded.last_seen_at,
+                source = excluded.source
+        """, (topic, peer_id, weight, now, source))
+        con.commit()
+    return get_topic(topic, peer_id, astor_dir=astor_dir) or {}
+
+
+def get_topic(
+    topic: str,
+    peer_id: str,
+    astor_dir: str | None = None,
+) -> dict | None:
+    """Get a single (topic, peer_id) entry."""
+    con = _get_conn(astor_dir)
+    row = con.execute("""
+        SELECT * FROM topic_index WHERE topic = ? AND peer_id = ?
+    """, (topic, peer_id)).fetchone()
+    return dict(row) if row else None
+
+
+def list_topics_for_peer(
+    peer_id: str,
+    *,
+    min_weight: float | None = None,
+    astor_dir: str | None = None,
+) -> list[dict]:
+    """List all topics for a peer, optionally filtered by min weight."""
+    con = _get_conn(astor_dir)
+    sql = "SELECT * FROM topic_index WHERE peer_id = ?"
+    args = [peer_id]
+    if min_weight is not None:
+        sql += " AND weight >= ?"
+        args.append(min_weight)
+    sql += " ORDER BY weight DESC, last_seen_at DESC"
+    rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_peers_for_topic(
+    topic: str,
+    *,
+    min_weight: float | None = None,
+    astor_dir: str | None = None,
+) -> list[dict]:
+    """List all peers that have this topic, optionally filtered by min weight.
+
+    This is the core 'topic-aware routing' query: given a topic, which peers
+    are relevant and how strongly?
+    """
+    con = _get_conn(astor_dir)
+    sql = "SELECT * FROM topic_index WHERE topic = ?"
+    args = [topic]
+    if min_weight is not None:
+        sql += " AND weight >= ?"
+        args.append(min_weight)
+    sql += " ORDER BY weight DESC, fact_count DESC"
+    rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_all_topics(
+    *,
+    min_weight: float | None = None,
+    astor_dir: str | None = None,
+) -> list[dict]:
+    """List all topics across all peers (for /v1/read topic discovery)."""
+    con = _get_conn(astor_dir)
+    sql = """
+        SELECT topic,
+               COUNT(DISTINCT peer_id) AS peer_count,
+               AVG(weight) AS avg_weight,
+               MAX(weight) AS max_weight,
+               MAX(last_seen_at) AS most_recent
+        FROM topic_index
+        WHERE 1=1
+    """
+    args = []
+    if min_weight is not None:
+        sql += " AND weight >= ?"
+        args.append(min_weight)
+    sql += " GROUP BY topic ORDER BY avg_weight DESC, peer_count DESC"
+    rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def bump_topic_seen(
+    topic: str,
+    peer_id: str,
+    astor_dir: str | None = None,
+) -> None:
+    """Bump last_seen_at and fact_count for a (topic, peer_id) entry.
+
+    Called when a fact for this topic arrives from this peer. Idempotent
+    if the entry doesn't exist (no-op, since manual seeding is required).
+    """
+    con = _get_conn(astor_dir)
+    now = _now_iso()
+    with _RELATIONSHIPS_LOCK:
+        con.execute("""
+            UPDATE topic_index
+            SET last_seen_at = ?, fact_count = fact_count + 1
+            WHERE topic = ? AND peer_id = ?
+        """, (now, topic, peer_id))
+        con.commit()
+
+
+def remove_topic(
+    topic: str,
+    peer_id: str,
+    astor_dir: str | None = None,
+) -> bool:
+    """Remove a (topic, peer_id) entry. Returns True if removed."""
+    con = _get_conn(astor_dir)
+    with _RELATIONSHIPS_LOCK:
+        cur = con.execute("""
+            DELETE FROM topic_index WHERE topic = ? AND peer_id = ?
+        """, (topic, peer_id))
+        con.commit()
+    return cur.rowcount > 0
+
