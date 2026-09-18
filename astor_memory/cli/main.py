@@ -13,6 +13,7 @@ Provides v1.0 minimal commands:
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -363,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
     friend_add.add_argument('--trust', type=int, default=30,
         help='Trust score 0-100 (default 30 = new peer default)')
     friend_add.add_argument('--pubkey', help='Base64 public key for verify')
+    friend_add.add_argument('--endpoint', help='HTTP endpoint URL (Phase 3)')
     friend_add.set_defaults(func=cmd_peer_friend_add)
 
     friend_list = friend_sub.add_parser('list',
@@ -422,6 +424,50 @@ def main(argv: list[str] | None = None) -> int:
         'manual_pending', 'rejected'],
         help='Filter by status')
     peer_rekey_log.set_defaults(func=cmd_peer_rekey_log)
+
+    # v1.14.72 (2026-09-17) — Phase 3: peer_endpoint
+    # am peer endpoint set <peer_id> <url>
+    # am peer endpoint get <peer_id>
+    # am peer endpoint clear <peer_id>
+    peer_endpoint = peer_sub.add_parser('endpoint',
+        help='Manage peer HTTP endpoint (Phase 3 transport)')
+    endpoint_sub = peer_endpoint.add_subparsers(dest='endpoint_command')
+    ep_set = endpoint_sub.add_parser('set',
+        help='Set the HTTP endpoint URL for a peer')
+    ep_set.add_argument('peer_id', help='Peer ID')
+    ep_set.add_argument('url', help='Full URL including https://, e.g. '
+                    'https://alice.example.com:7803')
+    ep_set.set_defaults(func=cmd_peer_endpoint_set)
+
+    ep_get = endpoint_sub.add_parser('get',
+        help='Get the endpoint URL for a peer')
+    ep_get.add_argument('peer_id', help='Peer ID')
+    ep_get.set_defaults(func=cmd_peer_endpoint_get)
+
+    ep_clear = endpoint_sub.add_parser('clear',
+        help='Clear the endpoint URL for a peer')
+    ep_clear.add_argument('peer_id', help='Peer ID')
+    ep_clear.set_defaults(func=cmd_peer_endpoint_clear)
+
+    # v1.14.72 — Phase 3: outbound message send
+    # am peer send-rekey <peer_id> [--old=<old_peer_id>]
+    # am peer send-topic <peer_id>          # broadcasts my topic_index
+    # am peer recv <path.json>              # alias for rekey-apply
+    peer_send_rekey = peer_sub.add_parser('send-rekey',
+        help='Build + POST signed REKEY msg to a peer (Phase 3 transport)')
+    peer_send_rekey.add_argument('peer_id', help='Peer ID (recipient)')
+    peer_send_rekey.add_argument('--old', default='',
+        help='Old peer_id (default: current = bootstrap case)')
+    peer_send_rekey.add_argument('--dry-run', action='store_true',
+        help='Build + verify the msg without sending')
+    peer_send_rekey.set_defaults(func=cmd_peer_send_rekey)
+
+    peer_send_topic = peer_sub.add_parser('send-topic',
+        help='Build + POST my topic_index to a peer (Phase 3 transport)')
+    peer_send_topic.add_argument('peer_id', help='Peer ID (recipient)')
+    peer_send_topic.add_argument('--dry-run', action='store_true',
+        help='Build + verify without sending')
+    peer_send_topic.set_defaults(func=cmd_peer_send_topic)
 
     # v1.14.70 (2026-09-17) — S1 topic-aware routing
     # am peer topic set <topic> <peer_id> [--weight=0.0-1.0]
@@ -2591,10 +2637,13 @@ def cmd_peer_friend_add(args) -> int:
             alias=args.alias,
             trust=args.trust,
             public_key=args.pubkey,
+            endpoint=args.endpoint,
             kind='friend',
         )
         alias_str = f' alias={result.get("alias")!r}' if result.get('alias') else ''
-        print(f'[OK] added friend: {args.peer_id} trust={args.trust}{alias_str}')
+        ep_str = f' endpoint={result.get("endpoint")}' if result.get('endpoint') else ''
+        print(f'[OK] added friend: {args.peer_id} trust={args.trust}'
+              f'{alias_str}{ep_str}')
         return 0
     except (ValueError, Exception) as e:
         print(f'[ERR] {e}', file=sys.stderr)
@@ -2614,8 +2663,10 @@ def cmd_peer_friend_list(args) -> int:
         alias = p.get('alias') or '(no alias)'
         chain = p.get('rekey_chain') or []
         chain_str = f' rekey_chain={chain}' if chain else ''
+        ep = p.get('endpoint') or ''
+        ep_str = f' endpoint={ep}' if ep else ''
         print(f'  {p["peer_id"]}  alias={alias!r}  '
-              f'kind={p["kind"]}  trust={p["trust"]}{chain_str}')
+              f'kind={p["kind"]}  trust={p["trust"]}{chain_str}{ep_str}')
     return 0
 
 
@@ -2911,6 +2962,155 @@ def cmd_peer_topic_bump(args) -> int:
     bump_topic_seen(args.topic, args.peer_id)
     print(f'[OK] bumped topic={args.topic!r} peer={args.peer_id[:20]}...')
     return 0
+
+
+# v1.14.72 (2026-09-17) — Phase 3 transport handlers
+
+
+def cmd_peer_endpoint_set(args) -> int:
+    """v1.14.72 (Phase 3): set endpoint URL for a peer."""
+    from .._internal.peer_relationships import update_endpoint
+    try:
+        result = update_endpoint(args.peer_id, args.url)
+        if result:
+            print(f'[OK] endpoint set: {args.peer_id[:20]}... → {args.url}')
+            return 0
+        print(f'[ERR] peer not found: {args.peer_id}')
+        return 1
+    except ValueError as e:
+        print(f'[ERR] {e}', file=sys.stderr)
+        return 1
+
+
+def cmd_peer_endpoint_get(args) -> int:
+    """v1.14.72 (Phase 3): get endpoint URL for a peer."""
+    from .._internal.peer_relationships import get_peer
+    p = get_peer(args.peer_id)
+    if not p:
+        print(f'[ERR] peer not found: {args.peer_id}')
+        return 1
+    ep = p.get('endpoint')
+    if ep:
+        print(f'  {args.peer_id}  endpoint={ep}')
+    else:
+        print(f'  {args.peer_id}  endpoint=(not set)')
+    return 0
+
+
+def cmd_peer_endpoint_clear(args) -> int:
+    """v1.14.72 (Phase 3): clear endpoint URL for a peer."""
+    from .._internal.peer_relationships import update_endpoint
+    result = update_endpoint(args.peer_id, '')
+    if result:
+        print(f'[OK] endpoint cleared: {args.peer_id[:20]}...')
+        return 0
+    print(f'[ERR] peer not found: {args.peer_id}')
+    return 1
+
+
+def cmd_peer_send_rekey(args) -> int:
+    """v1.14.72 (Phase 3): build signed REKEY msg + POST to peer's /v1/peer/recv."""
+    from .._internal.peer_identity import build_rekey_message
+    from .._internal.peer_relationships import get_peer
+    import urllib.request, urllib.error
+    peer = get_peer(args.peer_id)
+    if not peer:
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        return 1
+    endpoint = peer.get('endpoint')
+    if not endpoint:
+        print(f'[ERR] no endpoint for peer {args.peer_id}; '
+              f'run: am peer endpoint set {args.peer_id} <url>',
+              file=sys.stderr)
+        return 1
+    # Build signed msg
+    msg = build_rekey_message(old_peer_id=args.old, new_peer_id='')
+    if args.dry_run:
+        print(json.dumps(msg, indent=2, ensure_ascii=False))
+        print('[INFO] --dry-run: msg built + verified but not sent')
+        return 0
+    # POST
+    url = endpoint.rstrip('/') + '/v1/peer/recv'
+    data = json.dumps({
+        "msg_type": "rekey",
+        "msg": msg,
+    }).encode('utf-8')
+    req = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json"},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode('utf-8')
+            print(f'[OK] sent rekey to {url}')
+            print(f'   response ({resp.status}): {body[:200]}')
+        return 0
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        print(f'[ERR] HTTP {e.code} from peer: {body[:200]}', file=sys.stderr)
+        return 1
+    except (urllib.error.URLError, TimeoutError) as e:
+        print(f'[ERR] cannot reach peer at {url}: {e}', file=sys.stderr)
+        return 1
+
+
+def cmd_peer_send_topic(args) -> int:
+    """v1.14.72 (Phase 3): build + POST my topic_index to a peer."""
+    from .._internal.peer_identity import init_identity
+    from .._internal.peer_relationships import (
+        get_peer, list_topics_for_peer,
+    )
+    import urllib.request, urllib.error
+    peer = get_peer(args.peer_id)
+    if not peer:
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        return 1
+    endpoint = peer.get('endpoint')
+    if not endpoint:
+        print(f'[ERR] no endpoint for peer {args.peer_id}', file=sys.stderr)
+        return 1
+    # Build topic_index msg (my local topics)
+    me = init_identity()
+    my_peer_id = me['peer_id']
+    # NOTE: my own topic_index entries are usually empty (we track topics
+    # for OTHER peers). For broadcast, we tag myself as the source.
+    topics = list_topics_for_peer(my_peer_id)
+    msg = {
+        "sender_peer_id": my_peer_id,
+        "sender_pubkey": me['public_key'],
+        "topics": [
+            {"topic": t["topic"], "weight": t["weight"],
+             "fact_count": t["fact_count"]}
+            for t in topics
+        ],
+        "timestamp": (datetime.datetime.now(datetime.timezone.utc)
+                       .isoformat(timespec="seconds").replace("+00:00", "Z")),
+    }
+    if args.dry_run:
+        print(json.dumps(msg, indent=2, ensure_ascii=False))
+        print('[INFO] --dry-run: msg built but not sent')
+        return 0
+    url = endpoint.rstrip('/') + '/v1/peer/recv'
+    data = json.dumps({"msg_type": "topic_index", "msg": msg}).encode('utf-8')
+    req = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json"},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode('utf-8')
+            print(f'[OK] sent topic_index ({len(msg["topics"])} topics) to {url}')
+            print(f'   response ({resp.status}): {body[:200]}')
+        return 0
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        print(f'[ERR] HTTP {e.code} from peer: {body[:200]}', file=sys.stderr)
+        return 1
+    except (urllib.error.URLError, TimeoutError) as e:
+        print(f'[ERR] cannot reach peer at {url}: {e}', file=sys.stderr)
+        return 1
 
 
 if __name__ == '__main__':

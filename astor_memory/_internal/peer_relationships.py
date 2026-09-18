@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS peer_relationships (
     kind           TEXT NOT NULL DEFAULT 'friend',
     trust          INTEGER NOT NULL DEFAULT 30,
     public_key     TEXT,
+    endpoint       TEXT,
     added_at       TEXT NOT NULL,
     updated_at     TEXT NOT NULL,
     rekey_chain    TEXT,
@@ -143,6 +144,7 @@ def add_peer(
     trust: int = 30,
     alias: str | None = None,
     public_key: str | None = None,
+    endpoint: str | None = None,
     topic_weights: dict | None = None,
     metadata: dict | None = None,
     astor_dir: str | None = None,
@@ -153,7 +155,7 @@ def add_peer(
     if not 0 <= trust <= 100:
         raise ValueError(f"trust must be 0-100; got {trust}")
     if kind not in ("friend", "blacklist", "whitelist", "pending"):
-        raise ValueError(f"invalid kind: {kind!r}")
+        raise ValueError(f"invalid kind: {kind}")
 
     now = _now_iso()
     con = _get_conn(astor_dir)
@@ -170,6 +172,7 @@ def add_peer(
                     kind = ?,
                     trust = ?,
                     public_key = COALESCE(?, public_key),
+                    endpoint = COALESCE(?, endpoint),
                     topic_weights = COALESCE(?, topic_weights),
                     metadata = COALESCE(?, metadata),
                     updated_at = ?
@@ -179,6 +182,7 @@ def add_peer(
                 kind,
                 trust,
                 public_key,
+                endpoint,
                 json.dumps(topic_weights) if topic_weights else None,
                 json.dumps(metadata) if metadata else None,
                 now,
@@ -187,15 +191,16 @@ def add_peer(
         else:
             con.execute("""
                 INSERT INTO peer_relationships
-                (peer_id, alias, kind, trust, public_key, added_at, updated_at,
+                (peer_id, alias, kind, trust, public_key, endpoint, added_at, updated_at,
                  topic_weights, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 peer_id,
                 alias,
                 kind,
                 trust,
                 public_key,
+                endpoint,
                 now,
                 now,
                 json.dumps(topic_weights) if topic_weights else None,
@@ -203,6 +208,26 @@ def add_peer(
             ))
         con.commit()
     return get_peer(peer_id, astor_dir=astor_dir) or {}
+
+
+def update_endpoint(peer_id: str, endpoint: str,
+                   astor_dir: str | None = None) -> dict | None:
+    """Update endpoint URL for a peer. Returns updated row or None."""
+    # Validate endpoint format (loose check)
+    if endpoint and not (endpoint.startswith("http://")
+                         or endpoint.startswith("https://")):
+        raise ValueError(
+            f"endpoint must start with http:// or https://; got {endpoint!r}"
+        )
+    con = _get_conn(astor_dir)
+    with _RELATIONSHIPS_LOCK:
+        con.execute("""
+            UPDATE peer_relationships
+            SET endpoint = ?, updated_at = ?
+            WHERE peer_id = ?
+        """, (endpoint, _now_iso(), peer_id))
+        con.commit()
+    return get_peer(peer_id, astor_dir=astor_dir)
 
 
 def remove_peer(peer_id: str, astor_dir: str | None = None) -> bool:
@@ -370,15 +395,16 @@ def apply_rekey(
         # Insert new row, delete old row, in transaction
         con.execute("""
             INSERT OR REPLACE INTO peer_relationships
-            (peer_id, alias, kind, trust, public_key, added_at, updated_at,
+            (peer_id, alias, kind, trust, public_key, endpoint, added_at, updated_at,
              rekey_chain, topic_weights, last_sync, last_topic_seen, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             new_pid,
             old_rel["alias"],
             old_rel["kind"],
             old_rel["trust"],
             entry["sender_pubkey"],  # use the new public key from rekey msg
+            old_rel["endpoint"],     # preserve endpoint across rekey
             old_rel["added_at"],
             _now_iso(),
             json.dumps(existing_chain),
