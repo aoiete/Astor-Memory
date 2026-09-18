@@ -314,6 +314,34 @@ def main(argv: list[str] | None = None) -> int:
                         help='Show oldest first (default newest first)')
     hist_p.set_defaults(func=cmd_recall_history)
 
+    # am peer ... (v1.14.67 Phase 1: peer_id + keypair + status)
+    # Full peer network ships Phase 2-5 (friend list, topic routing,
+    # gossip, rekey, anti-spam). Phase 1 ships just identity + status CLI.
+    peer_p = subparsers.add_parser('peer', help='Peer network identity + relationships (Phase 1: status only)')
+    peer_sub = peer_p.add_subparsers(dest='peer_command', required=True)
+
+    peer_status = peer_sub.add_parser('status',
+        help='Show this peer identity (peer_id + key + DB path)')
+    peer_status.add_argument('--reveal-private', action='store_true',
+        help='Also print private key (DANGEROUS, only for backup)')
+    peer_status.set_defaults(func=cmd_peer_status)
+
+    peer_init = peer_sub.add_parser('init',
+        help='Initialize peer identity if not yet present (idempotent)')
+    peer_init.set_defaults(func=cmd_peer_init)
+
+    peer_sign = peer_sub.add_parser('sign',
+        help='Sign a payload (for testing)')
+    peer_sign.add_argument('payload', help='String to sign')
+    peer_sign.set_defaults(func=cmd_peer_sign)
+
+    peer_verify = peer_sub.add_parser('verify',
+        help='Verify a signature against a public key')
+    peer_verify.add_argument('payload', help='Original payload')
+    peer_verify.add_argument('signature_b64', help='Base64 signature')
+    peer_verify.add_argument('public_key_b64', help='Base64 public key')
+    peer_verify.set_defaults(func=cmd_peer_verify)
+
     # am platform ... (bot-binding.db CRUD)
     plat_p = subparsers.add_parser('platform', help='Manage bot-binding.db (platforms + bindings + users)')
     plat_sub = plat_p.add_subparsers(dest='platform_command')
@@ -2368,6 +2396,59 @@ def cmd_recall_history(args) -> int:
               f"hits={n_results:<3} lat={lat_ms}ms qhash={qhash}")
         print(f"    query: {qtext!r}")
     return 0
+
+
+def cmd_peer_status(args) -> int:
+    """v1.14.67 (2026-09-17): print this peer's identity.
+
+    Reads from $ASTOR_DIR/identity/. Initializes on first run (idempotent).
+    Default output hides private key; pass --reveal-private to print it
+    (DANGEROUS, only when explicitly backing up the key).
+    """
+    from .._internal.peer_identity import init_identity
+    identity = init_identity()
+    print(f'[OK] peer identity:')
+    print(f'     peer_id      : {identity["peer_id"]}')
+    print(f'     first_run_ts : {identity["first_run_ts"]}')
+    print(f'     db_path      : {identity["db_path"]}')
+    print(f'     public_key   : {identity["public_key"]}')
+    if args.reveal_private:
+        print(f'     private_key  : {identity["private_key"]}')
+        print(f'     [WARNING] private key revealed — keep this output secure')
+    print()
+    print(f'  Storage: $ASTOR_DIR/identity/')
+    print(f'  Phase 1: status only. Phase 2 ships friend list, gossip, rekey.')
+    return 0
+
+
+def cmd_peer_init(args) -> int:
+    """v1.14.67: explicitly initialize peer identity (idempotent)."""
+    from .._internal.peer_identity import init_identity
+    identity = init_identity()
+    print(f'[OK] identity ready: peer_id={identity["peer_id"]}')
+    return 0
+
+
+def cmd_peer_sign(args) -> int:
+    """v1.14.67: sign a payload with the peer's private key. Test helper."""
+    from .._internal.peer_identity import init_identity, sign
+    init_identity()
+    sig = sign(args.payload.encode('utf-8'))
+    print(f'payload    : {args.payload!r}')
+    print(f'signature  : {sig}')
+    return 0
+
+
+def cmd_peer_verify(args) -> int:
+    """v1.14.67: verify a signature. Returns 0 if valid, 1 if invalid."""
+    from .._internal.peer_identity import verify
+    ok = verify(args.payload.encode('utf-8'),
+                args.signature_b64, args.public_key_b64)
+    if ok:
+        print('[OK] signature valid')
+        return 0
+    print('[ERR] signature INVALID')
+    return 1
 
 
 if __name__ == '__main__':
