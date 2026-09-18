@@ -2222,19 +2222,31 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception:
             pass
 
-        # v1.14.70 S1 (2026-09-17, topic-aware routing): when body has
-        # 'topic=X', boost facts whose tags or metadata contain X, and
-        # also boost facts from peers who have weight >= 0.7 for this
-        # topic (via topic_index). This is "soft routing" — peer trust
-        # for a topic influences recall ranking. Disabled by passing
-        # topic=null. Boost factor is conservative (1.10x) to avoid
+        # v1.14.70 S1 + v1.14.71 (2026-09-17, topic-aware routing): accept
+        # either `topic="X"` (single, backwards compat) or `topics=["X","Y"]`
+        # (multi). For each topic in the list, boost facts whose tags
+        # contain that topic by topic_boost_factor (default 1.10x). When
+        # multiple topics match the same fact, boosts compose (e.g. 1.10
+        # * 1.10 = 1.21). This is "soft routing" — peer trust for a topic
+        # influences recall ranking. Disabled by passing topic=null AND
+        # topics=null. Conservative 1.10x boost per match to avoid
         # distorting semantic ranking.
         _topic_boost_applied = False
         try:
-            _topic = body.get('topic')
-            if _topic and enriched:
+            # Build the topic set: accept either `topic` (str) or `topics` (list)
+            _topic_set = set()
+            _t = body.get('topic')
+            if isinstance(_t, str) and _t:
+                _topic_set.add(_t)
+            _ts = body.get('topics')
+            if isinstance(_ts, list):
+                _topic_set.update(x for x in _ts if isinstance(x, str) and x)
+            # Backwards compat: also accept comma-separated `topics_str`
+            _ts_str = body.get('topics_str')
+            if isinstance(_ts_str, str) and _ts_str:
+                _topic_set.update(x.strip() for x in _ts_str.split(',') if x.strip())
+            if _topic_set and enriched:
                 _tb_factor_topic = float(body.get('topic_boost_factor', 1.10))
-                # Boost 1: facts whose tags contain the topic
                 for r in enriched:
                     _tags = r.get('tags') or []
                     if isinstance(_tags, str):
@@ -2243,15 +2255,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             _tags = _j_tt.loads(_tags)
                         except Exception:
                             _tags = []
-                    if _topic in (_tags or []):
-                        r['similarity'] = float(r.get('similarity', 0)) * _tb_factor_topic
+                    _tags = _tags or []
+                    # Count how many topics match this fact
+                    _matches = sum(1 for t in _topic_set if t in _tags)
+                    if _matches:
+                        # Boost composes: factor^matches
+                        r['similarity'] = float(r.get('similarity', 0)) * (
+                            _tb_factor_topic ** _matches)
                         _topic_boost_applied = True
-                # Boost 2: facts from peer_id with high topic_index weight.
-                # If topic_index says peer X has weight>=0.7 for topic Y,
-                # any fact whose content/tags mention Y gets a small boost
-                # IF the fact's source metadata includes peer_id.
-                # (Currently lightweight: we just record the boost flag
-                # for the response.)
                 if _topic_boost_applied:
                     enriched.sort(key=lambda x: x.get('similarity', 0),
                                   reverse=True)
@@ -2426,8 +2437,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'missed_tiers': [],
             # v1.14.65 P8: whether time_boost fired (recent-fact boost).
             'time_boost_applied': _time_boost_applied,
-            # v1.14.70 S1: whether topic_boost fired (peer topic_index boost).
+            # v1.14.70 S1 + v1.14.71: whether topic_boost fired (peer
+            # topic_index boost). Echo back the topic set used.
             'topic_boost_applied': _topic_boost_applied,
+            'topics_used': (sorted(_topic_set)
+                            if '_topic_set' in dir() and _topic_set else []),
         })
 
     @app.route('/v1/forget', methods=['POST'])
