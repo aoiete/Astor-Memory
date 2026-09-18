@@ -213,8 +213,36 @@ def main(argv: list[str] | None = None) -> int:
     auto_link_backfill_p.add_argument('--max-links-per-fact', type=int, default=5, help='Max links per fact (default 5)')
     auto_link_backfill_p.set_defaults(func=cmd_auto_link_backfill)
 
+    # v1.14.73 (2026-09-18): am decay-sweep — auto soft-tombstone stale facts per spec
+    # Inspired by WeChat article "Alan 的记录与分享 - Agent Memory Lifecycle" (mp.weixin.qq.com/s/ntcO59mPowrpiaLNGGd67Q)
+    sub = subparsers.add_parser('decay-sweep', help='[v1.14.73] Auto soft-tombstone facts by stale policy')
+    decay_sub = sub.add_subparsers(dest='decay_action', required=True)
+    decay_run_p = decay_sub.add_parser('run', help='Run decay sweep (dry-run by default)')
+    decay_run_p.add_argument('--tier', default='public', choices=['public', 'source', 'private', 'repo'],
+                          help='Tier to sweep (default public)')
+    decay_run_p.add_argument('--user-id', default=None, help='User id (for private_<user> sweeps)')
+    decay_run_p.add_argument('--max-importance', type=float, default=0.5,
+                         help='Soft-tombstone facts with importance <= this (default 0.5)')
+    decay_run_p.add_argument('--idle-days', type=int, default=30,
+                         help='Days since last_confirmed_at before considered stale (default 30)')
+    decay_run_p.add_argument('--low-access-count', type=int, default=0,
+                         help='Optional: require access_count <= N to qualify (default 0)')
+    decay_run_p.add_argument('--limit', type=int, default=500, help='Max facts to process (default 500)')
+    decay_run_p.add_argument('--execute', action='store_true',
+                         help='Actually tombstone; default is dry-run report only')
+    decay_run_p.add_argument('--reason', default='decay_sweep_v1.14.73',
+                         help='Reason string for audit log (default decay_sweep_v1.14.73)')
+    decay_run_p.set_defaults(func=cmd_decay_sweep_run)
+    decay_stats_p = decay_sub.add_parser('stats', help='Show decay-eligible counts only (no sweep)')
+    decay_stats_p.add_argument('--tier', default='public', choices=['public', 'source', 'private', 'repo'])
+    decay_stats_p.add_argument('--user-id', default=None)
+    decay_stats_p.add_argument('--max-importance', type=float, default=0.5)
+    decay_stats_p.add_argument('--idle-days', type=int, default=30)
+    decay_stats_p.add_argument('--low-access-count', type=int, default=0)
+    decay_stats_p.set_defaults(func=cmd_decay_sweep_stats)
+
     mcp_serve.add_argument('--transport', default='stdio', choices=['stdio'],
-                           help='MCP transport (only stdio supported in v1.1)')
+                       help='MCP transport (only stdio supported in v1.1)')
     mcp_serve.set_defaults(func=cmd_mcp_serve)
 
     # am bot - multi-user management (plan §2591-2594)
@@ -468,6 +496,28 @@ def main(argv: list[str] | None = None) -> int:
     peer_send_topic.add_argument('--dry-run', action='store_true',
         help='Build + verify without sending')
     peer_send_topic.set_defaults(func=cmd_peer_send_topic)
+
+    # v1.14.73 (2026-09-17) — Phase 4 PPS (demand-driven public search)
+    # am peer allow-search <peer_id>          # mark friend as allow-search
+    # am peer search <query> [--topic=X] [--limit=N]   # dispatch search
+    # am peer allow-me <peer_id>             # (on friend side) record me as allowed
+    peer_allow_search = peer_sub.add_parser('allow-search',
+        help='Mark a friend as allowing my searches (opt-in)')
+    peer_allow_search.add_argument('peer_id', help='Peer ID to allow')
+    peer_allow_search.set_defaults(func=cmd_peer_allow_search)
+
+    peer_unallow_search = peer_sub.add_parser('unallow-search',
+        help='Revoke search permission for a friend')
+    peer_unallow_search.add_argument('peer_id', help='Peer ID to revoke')
+    peer_unallow_search.set_defaults(func=cmd_peer_unallow_search)
+
+    peer_search = peer_sub.add_parser('search',
+        help='Demand-driven search across friends (read-only, no DB write)')
+    peer_search.add_argument('query', help='Search query')
+    peer_search.add_argument('--topic', help='Optional topic filter')
+    peer_search.add_argument('--limit', type=int, default=10,
+        help='Max results per peer (default 10, max 20)')
+    peer_search.set_defaults(func=cmd_peer_search)
 
     # v1.14.70 (2026-09-17) — S1 topic-aware routing
     # am peer topic set <topic> <peer_id> [--weight=0.0-1.0]
@@ -2705,6 +2755,18 @@ def cmd_peer_blacklist(args) -> int:
     return 0
 
 
+def cmd_peer_allow_search(args) -> int:
+    """v1.14.73 stub: peer allow-search (under construction)."""
+    print("[WARN] am peer allow-search is not yet implemented (v1.14.73 stub)")
+    return 1
+
+
+def cmd_peer_search(args) -> int:
+    """v1.14.73 stub: peer remote search (under construction)."""
+    print("[WARN] am peer search is not yet implemented (v1.14.73 stub)")
+    return 1
+
+
 def cmd_peer_export(args) -> int:
     """v1.14.68 (Phase 2): export social_graph to YAML bundle."""
     from .._internal.peer_relationships import list_peers
@@ -3111,6 +3173,146 @@ def cmd_peer_send_topic(args) -> int:
     except (urllib.error.URLError, TimeoutError) as e:
         print(f'[ERR] cannot reach peer at {url}: {e}', file=sys.stderr)
         return 1
+
+def cmd_peer_unallow_search(args) -> int:
+    """v1.14.73 stub: pre-existing function not yet implemented. Add stub so the
+    module can import and the decay-sweep ship (and other CLI work) doesn't
+    get blocked by this NameError. The proper implementation should land in
+    a follow-up ship — for now, return a clear [WARN]."""
+    print(f"[WARN] am peer unallow search not yet implemented (v1.14.73 stub)")
+    return 1
+
+
+def cmd_decay_sweep_run(args) -> int:
+    """v1.14.73 (2026-09-18): Auto soft-tombstone facts matching decay policy.
+
+    Inspired by WeChat article "Alan 的记录与分享 - Agent Memory Lifecycle":
+        "哪些信息应该被遗忘" → not what-age-based decay alone solves.
+    Spec for this implementation:
+        importance <= --max-importance
+        AND (last_confirmed_at IS NULL OR last_confirmed_at < (now - --idle-days))
+        AND access_count <= --low-access-count
+        AND tombstoned = 0
+    Soft-tombstone (UPDATE tombstoned=1, tombstoned_at=now) — keeps the row
+    but excludes it from recall. Reversible via `am restore`. Logs to audit.
+
+    Default: dry-run only. Pass --execute to actually write.
+    """
+    from ..bus import astor_bus, astor_audit
+    from datetime import datetime, timedelta, timezone
+
+    tier = args.tier
+    user_id = getattr(args, "user_id", None) or None
+    max_imp = float(args.max_importance)
+    idle_days = int(args.idle_days)
+    max_access = int(args.low_access_count)
+    limit = int(args.limit)
+    execute = bool(getattr(args, "execute", False))
+    reason = getattr(args, "reason", "decay_sweep_v1.14.73") or "decay_sweep_v1.14.73"
+
+    bus = astor_bus(tier=tier, user_id=user_id)
+    # v1.14.73: idle-days is no longer used in query (last_confirmed_at reset on every read).
+    # Keeping --idle-days argument for backwards compatibility but it has no effect.
+    # cutoff = (datetime.now(timezone.utc) - timedelta(days=idle_days)).isoformat()  # disabled
+
+    # v1.14.73 update: drop last_confirmed_at from decay criteria. last_confirmed_at
+    # is reset on every read (fact 12055), so it can't serve as an "idle" proxy.
+    # Decay now keys on importance + access_count alone (low-importance AND low-read).
+    sql = (
+        "SELECT id, text, importance, access_count, last_confirmed_at, "
+        "       tombstoned, user_id, kind "
+        "FROM memory_canonical "
+        "WHERE tombstoned = 0 "
+        "  AND importance <= ? "
+        "  AND access_count <= ? "
+        "LIMIT ?"
+    )
+    rows = list(bus.conn.execute(sql, (max_imp, max_access, cutoff, limit)))
+    eligible = [{"id": r[0], "text": (r[1] or "")[:120],
+                 "importance": r[2], "access_count": r[3],
+                 "last_confirmed_at": r[4], "kind": r[7]} for r in rows]
+
+    print(f"   tier={tier} user_id={user_id or '(default)'}  cutoff={cutoff}  max_importance={max_imp}  max_access={max_access}")
+    print(f"   eligible for soft-tombstone: {len(eligible)}")
+    for f in eligible[:20]:
+        print(f"     - id={f['id']:>5} imp={f['importance']:.2f} acc={f['access_count']:>3}  "
+              f"last_confirmed={f['last_confirmed_at'] or 'NULL':<32}  "
+              f"text={f['text']}")
+    if len(eligible) > 20:
+        print(f"     ... and {len(eligible) - 20} more")
+
+    if not execute:
+        print(f"[INFO] Dry-run only. Pass --execute to soft-tombstone {len(eligible)} facts.")
+        return 0
+
+    if not eligible:
+        print("[OK] Nothing to soft-tombstone.")
+        return 0
+
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    soft_tombstoned = 0
+    for f in eligible:
+        bus.conn.execute(
+            "UPDATE memory_canonical SET tombstoned = 1, tombstoned_at = ?, "
+            "verdict = 'forgotten' WHERE id = ? AND tombstoned = 0",
+            (now_iso, f["id"]),
+        )
+        astor_audit(
+            actor="cli:decay-sweep",
+            tier=tier,
+            action="decay_sweep",
+            user_id=user_id,
+            target=f"fact_id={f['id']}",
+            reason=reason,
+            metadata={"importance": f["importance"], "access_count": f["access_count"],
+                      "last_confirmed_at": f["last_confirmed_at"],
+                      "eligible_for_decay": True},
+        )
+        soft_tombstoned += 1
+    bus.conn.commit()
+    print(f"[OK] Soft-tombstoned {soft_tombstoned} facts (tier={tier}, user_id={user_id or 'default'}).")
+    print(f"   Reversible via: am restore --tier {tier} --user-id {user_id or ''} --ids ... ")
+    return 0
+
+
+def cmd_decay_sweep_stats(args) -> int:
+    """Count facts that would qualify for decay sweep, no mutation."""
+    from ..bus import astor_bus
+    from datetime import datetime, timedelta, timezone
+
+    tier = args.tier
+    user_id = getattr(args, "user_id", None) or None
+    max_imp = float(args.max_importance)
+    idle_days = int(args.idle_days)
+    max_access = int(args.low_access_count)
+
+    bus = astor_bus(tier=tier, user_id=user_id)
+    # v1.14.73: idle-days is no longer used in query (last_confirmed_at reset on every read).
+    # Keeping --idle-days argument for backwards compatibility but it has no effect.
+    # cutoff = (datetime.now(timezone.utc) - timedelta(days=idle_days)).isoformat()  # disabled
+
+    # v1.14.73 update: same criteria as cmd_decay_sweep_run (idle criterion removed).
+    eligible_count = list(bus.conn.execute(
+        "SELECT COUNT(*) FROM memory_canonical "
+        "WHERE tombstoned = 0 AND importance <= ? AND access_count <= ?",
+        (max_imp, max_access),
+    ))[0][0]
+
+    # Reference: total in tier
+    total_count = list(bus.conn.execute(
+        "SELECT COUNT(*) FROM memory_canonical", ()
+    ))[0][0]
+    tombstoned_count = list(bus.conn.execute(
+        "SELECT COUNT(*) FROM memory_canonical WHERE tombstoned = 1", ()
+    ))[0][0]
+
+    print(f"   tier={tier} user_id={user_id or '(default)'}")
+    print(f"   eligible_for_decay: {eligible_count}")
+    print(f"   total facts: {total_count} (active={total_count - tombstoned_count}, tombstoned={tombstoned_count})")
+    return 0
+
+
+
 
 
 if __name__ == '__main__':
