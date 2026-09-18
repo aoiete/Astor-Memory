@@ -145,8 +145,16 @@ def _astor_quality_ok(text: str) -> str | None:
 # Methods/rules/models stay public: includes pattern keywords (workflow /
 # method / model / rule / pattern / 流程 / 方法 / 规则 / 模式 / 模型 / 设计).
 _PERSONAL_PATTERNS = [
-    r"\b我(?:今天|昨天|明天|现在)?\b",
-    r"\b我的\b|\b自己\b",
+    # v1.14.66: require 我 / 我的 / 自己 / my as the core. The old
+    # `\b我(?:今天|昨天|明天|现在)?\b` matched nothing for Chinese
+    # because \b requires ASCII word boundary and Chinese chars are
+    # not \w. Fixed by removing \b around Chinese and using a Chinese-
+    # aware negative lookbehind. Note: each pattern must be its OWN
+    # list item — joining multiple patterns with | inside one string
+    # confuses the lookbehind parsing (verified v1.14.66 debugging).
+    r"(?<![一鿿])我(?:今天|昨天|明天|现在)?(?![一鿿])",
+    r"(?<![一鿿])我的",
+    r"自己(?![一鿿])",
     r"\bi\s+(?:am|was|will|just|got|had|have)\b",
     r"\bmy\s+(?:day|mood|trade|position|portfolio|stocks?)\b",
     r"\bmine\b",
@@ -163,6 +171,10 @@ _DAILY_PATTERNS = [
     r"\b\d+\s*(?:am|pm)\b",
 ]
 _EMOTION_PATTERNS = [
+    # v1.14.66: include 好累 / 好开心 / 很难过 (modifier + emotion).
+    # Old pattern required exact word match, missed "好累" / "很开心"
+    # which is the dominant Chinese emotion phrasing.
+    r"(?:好累|很累|累死|开心|很难过|沮丧|激动|无聊|郁闷|崩溃|开心得|难过|担心|焦虑|压力|放松|平静|紧张)",
     r"(?:累了|开心|难过|沮丧|激动|无聊|郁闷|崩溃)",
     r"\b(?:happy|sad|tired|excited|stressed|anxious|depressed|frustrated)\b",
 ]
@@ -189,11 +201,23 @@ def _astor_classify_intent(text: str, tier: str, user: str | None) -> str | None
     Only acts on tier='public' — private writes always stay private. Returns
     None when content should stay as caller requested.
 
-    Rules (admin decides):
-      - text contains method/rule/model pattern → stays public (good content)
-      - text contains personal/financial/daily/emotion pattern → demote
-        to 'private' (the explicit_uid / bus_user_id logic picks user_id)
-      - tier != 'public' → return None (no reclassification needed)
+    v1.14.66 (2026-09-17, user feedback round 5): data/method separation.
+    User wants data剥离, mode/method 留下. So the demote logic must
+    be smart enough to keep method-intent text public even if it
+    mentions personal/financial keywords in passing. New rules:
+
+      - method signal present → stays public regardless of personal/
+        financial keywords (user wants to share rules about their
+        own data, e.g. "R-class: personal filter 必须 demote to private"
+        is a rule about personal data, the rule itself is public).
+      - multiple (>=2) personal/financial/emotion signals together
+        → demote to private (this is actual personal content).
+      - single weak signal (just "今天" or just "happy") → stays public
+        (too common, false positive).
+      - strong personal pronoun (我/我的/my) + financial ticker (NVDA/
+        AAPL) → demote regardless of method count.
+
+    Net effect: data goes to private, modes/methods stay public.
     """
     if tier != 'public':
         return None
@@ -209,18 +233,59 @@ def _astor_classify_intent(text: str, tier: str, user: str | None) -> str | None
     has_financial = bool(_FINANCIAL_RE.search(text))
     has_daily = bool(_DAILY_RE.search(text))
     has_emotion = bool(_EMOTION_RE.search(text))
-    # Strong-signal demote: any of these forces private.
-    if has_personal or has_financial or has_daily or has_emotion:
-        return 'private'
-    # Method/rule/model alone stays public (admin's explicit "this is a method"
-    # call). 2026-09-16 Ship explicit-public: any other public write with no
-    # method/personal signal is demoted to private. Default-public was too
-    # permissive; explicit-public means caller must SHOW method-intent via
-    # the keyword set (workflow/方法/规则/模式 etc.).
+    # v1.14.66 method takes priority over weak personal signals. A user
+    # writing "R-class rule about personal filter" is documenting a
+    # rule, not sharing personal data. The rule itself should be public.
     if has_method:
+        # Method + multiple STRONG personal signals → private (real personal
+        # content with method framing). Threshold: at least 2 distinct
+        # personal/financial/emotion signals must fire alongside method.
+        # Daily alone (今天/明天/yesterday) is too common to count as
+        # strong — "astor v1.14.66 ship 完成" or "今天是星期三" should
+        # stay public even without method. So daily doesn't count in the
+        # strong-signals sum.
+        strong_signals = sum([
+            has_personal, has_financial, has_emotion,
+        ])
+        # Strong-personal override: pronoun + financial ticker = always
+        # private even with method framing (e.g. "我的 NVDA 仓位 workflow"
+        # is real personal data wearing a method hat).
+        _personal_strong = bool(re.search(
+            r"(?:我|我的|自己|\bmy\b|\bI\s+(?:am|was|will|just|got|had|have)\b)", text, re.IGNORECASE))
+        _financial_strong = bool(re.search(
+            r"(?:AAPL|TSLA|NVDA|MSFT|GOOG|AMZN|META|SPY|QQQ|\$\d+)", text, re.IGNORECASE))
+        if _personal_strong and _financial_strong:
+            return 'private'
+        # v1.14.66b: when method + first-person pronoun appears as
+        # subject (sentence-initial 我), it's the user talking about
+        # their own action — treat as strong personal signal even with
+        # just 1. Pattern: "我今天想 X" / "我的 NVDA" / "我要 ship"
+        # sentence-initial, not embedded in a rule description.
+        _first_person_subject = bool(re.match(
+            r"\s*(?:我|我的|自己)", text))
+        if _first_person_subject:
+            # First-person subject + method = user framing their
+            # personal action with method vocabulary. Demote.
+            return 'private'
+        if strong_signals >= 2:
+            return 'private'
+        # Method + 0-1 weak signals → stays public (default).
         return None
-    # No method signal — demote private (Ship explicit-public principle).
-    return 'private'
+    # No method signal. Old behavior: personal/financial/emotion signal
+    # → demote to private. Daily alone (no personal/financial/emotion)
+    # does NOT demote — too common in normal release notes / status
+    # updates. Same goes for "no signal at all" — a fact with no
+    # personal/financial/emotion/daily/method markers is method-neutral
+    # (e.g. "今天是星期三" or "astor v1.14.66 ship 完成") and should
+    # stay public per user's "data 剥离 mode/method 留下" instruction.
+    if has_personal or has_financial or has_emotion:
+        return 'private'
+    # No method signal, no personal signal — stay public. v1.14.66
+    # reverses v1.14.64's explicit-public default-private, because
+    # real-world content (release notes, dates, neutral status) is
+    # mostly public-safe. The classifier only demotes when clear
+    # personal/financial/emotion intent is present.
+    return None
 
 
 def _astor_resolve_actor(user_id: str | None) -> tuple[str, str, str | None]:
