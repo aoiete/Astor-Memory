@@ -34,6 +34,8 @@ LOCK-rule path stays auditable.
 """
 from __future__ import annotations
 
+import datetime as _dt_lr
+
 import json
 import re
 import sqlite3
@@ -44,6 +46,15 @@ from typing import Any
 VALID_TARGET_TIERS = ("public", "private", "source", "rule_ship")
 VALID_SCOPES = ("user", "global")
 VALID_ACTIONS = ("route", "block", "tag")
+
+
+def _now_iso() -> str:
+    """UTC ISO-8601 with 'Z' suffix. v1.14.63 helper."""
+    return (
+        _dt_lr.datetime.now(_dt_lr.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
 _LOCK_RULE_KIND = "lock_rule"
 _LOCK_RULE_TAG = "LOCK"
 
@@ -358,6 +369,20 @@ def seed_lock_rule(
             "__context__": ctx,
             "__topic__": topic,
         }))
+    # v1.14.63 (2026-09-17, R-class fix): explicit tombstoned=0. The
+    # column default is 0, but decay sweep + dedup + reflection can race
+    # on freshly seeded rules. Pinning the value here makes the contract
+    # explicit so a future schema-default flip doesn't silently tombstone
+    # LOCK rules. Also force last_confirmed_at = NOW so the 90d decay
+    # gate doesn't trip on rules that haven't been /v1/read.
+    if "tombstoned" in existing:
+        cols.append("tombstoned")
+        vals.append("?")
+        bind.append(0)
+    if "last_confirmed_at" in existing:
+        cols.append("last_confirmed_at")
+        vals.append("?")
+        bind.append(_now_iso())
 
     # candidate_id has a UNIQUE constraint, event_id is NOT NULL. Synthesize
     # both from current max so LOCK rule inserts never collide with normal
