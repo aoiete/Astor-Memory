@@ -40,10 +40,18 @@ from typing import Iterable
 _SUCCESS_PATTERNS = [
     re.compile(r"^\[success_pattern\]", re.IGNORECASE),
     re.compile(r"^(verified|ship 接通|搞定|跑通|worked)", re.IGNORECASE),
+    # v1.14.64 (2026-09-17, R-class fix): "R-class" is a positive learning
+    # marker (locked rule + verification), NOT a failure. Previously the
+    # consolidate._FAILURE_PATTERNS regex included "R-class" as a
+    # failure-marker, which caused the consolidator to silently flip
+    # successful R-class learnings into failure_pattern facts during
+    # the nightly cleanup sweep. This line overrides that: R-class
+    # content wins as success_pattern.
+    re.compile(r"^R-class\b", re.IGNORECASE),
 ]
 _FAILURE_PATTERNS = [
     re.compile(r"^\[failure_pattern\]", re.IGNORECASE),
-    re.compile(r"^(走不通|fail|failed|debug 一晚上|R-class)", re.IGNORECASE),
+    re.compile(r"^(走不通|fail|failed|debug 一晚上)", re.IGNORECASE),
 ]
 _LESSON_PATTERNS = [
     re.compile(r"^\[LESSON\]", re.IGNORECASE),
@@ -58,6 +66,10 @@ def _classify_content(content: str, current_kind: str) -> str | None:
     if not content:
         return None
     first_line = content.split("\n", 1)[0].strip()
+    # v1.14.64 (2026-09-17, R-class fix): evaluate in zone-priority
+    # order. SUCCESS must beat FAILURE/LESSON when an R-class fact
+    # contains failure-related keywords (e.g. "timeout", "fail",
+    # "hang") in its body — the headline zone marker is the truth.
     for rx in _SUCCESS_PATTERNS:
         if rx.search(first_line):
             return "success_pattern"
