@@ -850,6 +850,30 @@ def create_app(astor_dir: str | None = None) -> Flask:
         user = body.get('user', 'admin')
         mode = body.get('mode', 'auto')
         tier = body.get('tier', 'public')
+        # v1.14.63 (R-class fix): validate tier early. Acceptable values
+        # are public / source / private_<user> / repo. The string 'auto'
+        # is reserved for the astor_auto_observe tool flow (not HTTP
+        # /v1/write) and used to silently 500 inside the forge layer —
+        # reject it cleanly with 400 so callers know to switch tools.
+        if tier not in ('public', 'source'):
+            if tier == 'auto':
+                return jsonify({
+                    'error': 'invalid_tier',
+                    'detail': (
+                        "tier='auto' is reserved for the astor_auto_observe tool. "
+                        "Use that tool instead of POST /v1/write, or pass an "
+                        "explicit tier ('public' / 'source' / 'private_<user>')."
+                    ),
+                }), 400
+            if not (tier == 'private' or tier.startswith('private_')):
+                if tier != 'repo':
+                    return jsonify({
+                        'error': 'invalid_tier',
+                        'detail': (
+                            f"tier={tier!r} is not one of "
+                            "'public', 'source', 'private', 'private_<user>', 'repo'."
+                        ),
+                    }), 400
         scope = body.get('scope', 'long_term')
         # v1.11.0: optional session_id — enables session-neighbor recall
         _write_session_id = body.get('session_id') or None
@@ -1001,8 +1025,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 })
         except Exception as dedup_exc:
             # Dedup check failure should not block write path.
-            import sys as _sys
-            print(f'[astor.server] dedup check failed (continuing): {dedup_exc}', file=_sys.stderr)
+            _safe_stderr_write(
+                f'[astor.server] dedup check failed (continuing): {dedup_exc}\n'
+            )
 
         # 2. Append event
         event_id = bus.append_event(
@@ -1144,8 +1169,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
             try:
                 _lex.index_fact(int(canon_id), f.content)
             except Exception as _lex_exc:
-                import sys as _sys
-                print(f'[astor.server] lex index_fact failed (continuing): {_lex_exc}', file=_sys.stderr)
+                _safe_stderr_write(
+                    f'[astor.server] lex index_fact failed (continuing): {_lex_exc}\n'
+                )
             # v1.2.3: Zettelkasten auto-link (A-MEM pattern). After
             # promote, find existing same-kind facts with cosine > 0.85
             # and add bidirectional auto-link edges. Audit-safe (no
@@ -1159,8 +1185,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     tier=tier, user_id=bus_user_id,
                 )
             except Exception as _auto_link_exc:
-                import sys as _sys
-                print(f'[astor.server] auto_link failed (continuing): {_auto_link_exc}', file=_sys.stderr)
+                _safe_stderr_write(
+                    f'[astor.server] auto_link failed (continuing): {_auto_link_exc}\n'
+                )
         # P2-fix 2026-08-15: optional source-tier mirror. Best-effort — if
         # mirror fails (e.g. ACL denial for non-admin caller), the
         # primary write still succeeds.
@@ -1206,8 +1233,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     mirrored_fact_ids.append(m_id)
             except Exception as mirror_exc:
                 # Log to stderr; do not fail the primary write.
-                import sys as _sys
-                print(f'[astor.server] mirror_to_source failed: {mirror_exc}', file=_sys.stderr)
+                _safe_stderr_write(
+                    f'[astor.server] mirror_to_source failed: {mirror_exc}\n'
+                )
 
         # 2026-09-02 ship: audit row for every successful public write so
         # admin can review what users contributed (and which got through the
@@ -2119,16 +2147,23 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 if _os_acc.environ.get('ASTOR_DECAY_SWEEP', '1') != '0':
                     _30d_iso = (_dt_acc.datetime.utcnow() - _dt_acc.timedelta(days=30)).isoformat(timespec='seconds') + 'Z'
                     _90d_iso = (_dt_acc.datetime.utcnow() - _dt_acc.timedelta(days=90)).isoformat(timespec='seconds') + 'Z'
+                    # v1.14.63 (R-class fix): skip LOCK rules. They are
+                    # administrative configuration, not recall-derived facts;
+                    # auto-tombstoning them would silently break /v1/classify
+                    # Path 2 (rule_ship / private routing). Same applies to
+                    # `rule` facts (compiled Ship A/B rules).
                     bus.conn.execute(
                         f"UPDATE memory_canonical SET access_count = MAX(1, access_count / 2) "
                         f"WHERE id NOT IN ({_ph_acc}) AND tombstoned = 0 "
-                        f"AND (last_confirmed_at IS NULL OR last_confirmed_at < ?)",
+                        f"AND (last_confirmed_at IS NULL OR last_confirmed_at < ?) "
+                        f"AND kind NOT IN ('lock_rule', 'rule')",
                         _surfaced_fids + [_30d_iso],
                     )
                     bus.conn.execute(
                         f"UPDATE memory_canonical SET tombstoned = 1 "
                         f"WHERE id NOT IN ({_ph_acc}) AND tombstoned = 0 "
-                        f"AND (last_confirmed_at IS NULL OR last_confirmed_at < ?)",
+                        f"AND (last_confirmed_at IS NULL OR last_confirmed_at < ?) "
+                        f"AND kind NOT IN ('lock_rule', 'rule')",
                         _surfaced_fids + [_90d_iso],
                     )
                 # Always: bump surfaced facts' access_count + last_confirmed_at.
@@ -2140,8 +2175,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 bus.conn.commit()
         except Exception as _acc_exc:
             # Tracking is best-effort; never fail the recall response.
-            import sys as _sys_acc
-            print(f'[astor.server] access_count update failed: {_acc_exc}', file=_sys_acc.stderr)
+            _safe_stderr_write(
+                f'[astor.server] access_count update failed: {_acc_exc}\n'
+            )
 
         # v1.14.28 Ship J: usage log best-effort.
         try:
@@ -2342,8 +2378,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
             else:
                 lex.remove_fact_hard(cfid)
         except Exception as e:
-            import sys as _sys
-            print(f'[astor.server] lex remove failed (continuing): {e}', file=_sys.stderr)
+            _safe_stderr_write(
+                f'[astor.server] lex remove failed (continuing): {e}\n'
+            )
         # 3. audit (with old_state snapshot for opt6 versioning)
         try:
             bus.conn.execute(
@@ -2359,8 +2396,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
             )
             bus.conn.commit()
         except Exception as _audit_exc:
-            import sys as _sys
-            print(f'[astor.server] forget audit_log failed: {_audit_exc}', file=_sys.stderr)
+            _safe_stderr_write(
+                f'[astor.server] forget audit_log failed: {_audit_exc}\n'
+            )
         return jsonify({
             'forgotten': [{
                 'fact_id': cfid, 'score': round(cscore, 3),
