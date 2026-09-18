@@ -726,7 +726,7 @@ def _collect_all_bus_db_paths(astor_dir: Path) -> list[Path]:
         if not c.exists():
             continue
         if c.is_dir():
-            for p in c.rglob("*bus_canonical*.db"):
+            for p in c.rglob("*bus*.db"):
                 rp = p.resolve()
                 if rp not in seen:
                     seen.add(rp)
@@ -743,31 +743,22 @@ def _collect_all_bus_db_paths(astor_dir: Path) -> list[Path]:
 def _tier_alias_for(db_path: Path, astor_dir: Path) -> str:
     """Map a bus db Path to its tier alias string for dashboard grouping.
 
-    Returns one of: 'public', 'source', 'private_admin' / 'private_<user>',
-    'users_<user>' (alias form for the users/<uid>/memory/ canonical bus).
+    Filename-based fast path (more reliable than path-based for our 9-db layout).
     """
-    s = str(db_path).lower()
-    if "/public/" in s or s.endswith("/public/memory") or "/public/" in s.replace("\\", "/"):
+    fname = db_path.name.lower()
+    if fname == "astor_bus_public.db":
         return "public"
-    if "/source/" in s:
+    if fname == "astor_bus_source.db":
         return "source"
-    if "/users/" in s:
-        # users/<u>/memory/astor_canonical_<u>.db or similar — extract the user segment
-        parts = db_path.parts
-        if "users" in parts:
-            idx = parts.index("users")
-            if idx + 1 < len(parts):
-                return f"users_{parts[idx + 1]}"
-        return "users"
-    # private/<u>/ ... or private/...
-    if "/private/" in s:
-        parts = db_path.parts
-        if "private" in parts:
-            idx = parts.index("private")
-            segs_after = [p for p in parts[idx + 1:] if p not in ("memory",)]
-            if segs_after:
-                return f"private_{segs_after[0]}"
-            return "private"
+    if fname.startswith("astor_bus_users_"):
+        return fname.replace("astor_bus_", "").replace(".db", "")
+    if fname.startswith("astor_bus_"):
+        stem = fname.replace("astor_bus_", "").replace(".db", "")
+        if stem in {"admin", "anyu", "aran", "bo-wang", "demo_external_agent",
+                    "halama", "jason", "jaydon", "nelson", "owen", "rita",
+                    "roy", "steve", "sunday", "xian-ding", "xindi", "yuqi"}:
+            return f"private_{stem}"
+        return stem
     return "other"
 
 
@@ -787,6 +778,13 @@ def _memory_class_distribution(astor_dir: Path) -> dict[str, dict[str, int]]:
         tier_alias = _tier_alias_for(dbp, astor_dir)
         try:
             c = sqlite3.connect(dbp, timeout=3)
+            # Probe: only query if memory_class column exists
+            cols = {r[1] for r in c.execute(
+                "PRAGMA table_info(memory_canonical)"
+            ).fetchall()}
+            if "memory_class" not in cols:
+                c.close()
+                continue  # pre-v1.14.74 DB, skip until next reload runs migration
             rows = c.execute(
                 "SELECT memory_class, COUNT(*) FROM memory_canonical "
                 "WHERE tombstoned = 0 GROUP BY memory_class"
@@ -833,7 +831,10 @@ def _decayed_count(astor_dir: Path) -> dict[str, int]:
             buckets["total"] += 1
             if not ts:
                 buckets["no_timestamp"] += 1
-            elif ts > cutoff:
+                continue
+            # tombstoned_at can be ISO string OR epoch int (legacy)
+            ts_str = str(ts) if not isinstance(ts, str) else ts
+            if ts_str > cutoff:
                 buckets["recent_30d"] += 1
             else:
                 buckets["old"] += 1
