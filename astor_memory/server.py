@@ -2291,6 +2291,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
             import datetime as _dt_u
             _ts_now = _dt_u.datetime.now(_dt_u.timezone.utc).isoformat()
             import json as _j_u
+            # v1.14.67 R-class fix: chmod 600 the log file (Unix) + set
+            # ACL on Windows so other users on the box can't read user
+            # query history. Done on every write so a fresh file also
+            # gets correct perms.
+            try:
+                import os as _os_perm
+                import stat as _st_perm
+                _os_perm.chmod(_log_path, _st_perm.S_IRUSR | _st_perm.S_IWUSR)
+            except Exception:
+                # Windows: chmod is no-op; icacls is the real fix.
+                # Skipped here; admin must run icacls once. Documented
+                # in docs/peer-network.md § Permissions.
+                pass
             with open(_log_path, 'a', encoding='utf-8') as _logf:
                 _logf.write(_j_u.dumps({
                     'ts': _ts_now,
@@ -3751,6 +3764,26 @@ def create_app(astor_dir: str | None = None) -> Flask:
             pass  # never let the side-log write block the response
         return jsonify({'error': 'internal error', 'detail': str(e)}), 500
 
+    # v1.14.67 (2026-09-17): eager-load embedding model + init peer
+    # identity at app boot so first /v1/read and Phase 3 sync layer
+    # both have zero warmup latency. Bounded with try/except so a
+    # missing model doesn't block server start. Must run BEFORE return
+    # app (Python doesn't execute code after return in a function).
+    try:
+        from .nest.embeddings import astor_get_embedding_model
+        _warm_model = astor_get_embedding_model()
+        _warm_vec = _warm_model.encode(['astor warmup probe'])
+        if hasattr(_warm_vec, 'shape') and len(_warm_vec.shape) >= 2:
+            print(f'   Warmup: embedding model ready (dim={_warm_vec.shape[1]})')
+    except Exception as _warm_exc:
+        print(f'   Warmup skipped: {_warm_exc}')
+    try:
+        from ._internal.peer_identity import init_identity
+        _peer_id = init_identity(astor_dir=astor_dir)
+        print(f'   Peer identity: {_peer_id["peer_id"]}')
+    except Exception as _peer_init_exc:
+        print(f'   Peer identity: init deferred ({_peer_init_exc})')
+
     return app
 
 
@@ -3768,6 +3801,9 @@ def main():
     print(f'[*] Astor-Memory v{__version__} REST API')
     print(f'   Listening on http://{args.host}:{args.port}')
     print(f'   Endpoints: /v1/health /v1/dashboard /v1/write /v1/read /v1/install')
+    # Note: server warmup (model load + peer_id init) is now inside
+    # create_app() so it fires on both `python -m astor_memory.server`
+    # and any future gunicorn entrypoint. See create_app above.
     # v1.14.7 (2026-09-11): threaded=False. Earlier `threaded=True` enabled
     # concurrent Flask workers, but AstorNest._conn is a singleton (per
     # (tier, user_id, db_path)) and SQLite + numpy ndarray are not safe to

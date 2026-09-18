@@ -1,3 +1,62 @@
+## v1.14.67 (2026-09-17)
+
+### Peer network Phase 1 — identity + status CLI
+
+Lays the foundation for peer-to-peer fact sync. Phases 2-5 (friend
+list, gossip, rekey, topic routing, consensus) ship in future versions.
+
+**Identity module** (`astor_memory/_internal/peer_identity.py`)
+- New `peer_identity.py` with `init_identity()`, `get_identity()`, `sign()`, `verify()`.
+- `peer_id` = `astor:<sha256(DB_path + first_run_ts)[:32]>` — DB-bound, so
+  reinstall with the same DB keeps peer_id. Fresh install → new peer_id.
+- Ed25519 keypair (via `nacl.signing`) auto-generated for signing fact provenance.
+- Files on disk: `$ASTOR_DIR/identity/{peer_id, first_run_ts, keypair.json}`.
+- `keypair.json` chmod 600 (Unix) + keypair regenerated if corrupted
+  (DB-bound identity preserved even when key is lost).
+
+**CLI** (`am peer status|init|sign|verify`)
+- `am peer status` — show peer_id, first_run_ts, db_path, public_key.
+- `am peer status --reveal-private` — also print private key (DANGEROUS, backup only).
+- `am peer init` — explicit init (idempotent).
+- `am peer sign <payload>` — sign with private key, output base64 signature.
+- `am peer verify <payload> <sig> <pubkey>` — verify signature, returns 0/1.
+
+**Server warmup** (`server.py` startup)
+- v1.14.67: eager-load embedding model + 1-shot encode probe on server
+  start. First /v1/read no longer pays 1-3 second model load cost.
+- Non-fatal: warmup failure logs and continues; lazy load still works.
+
+**recall_log permissions** (R6)
+- v1.14.65 ship added `query` field to recall_log.jsonl (PII exposure).
+- v1.14.67 fix: chmod 600 on every write (Unix). On Windows, run icacls
+  once per installation. Documented in docs/peer-network.md § Permissions.
+
+**Architecture decisions locked** (see docs/peer-network.md for full):
+- **Rekey notification** (Phase 3): when peer_id changes, broadcast signed
+  REKEY message to friend list. Friend verify signature, decide based on
+  trust level: trust ≥ 70 auto-accept, 30-70 pending, < 30 reject.
+- **Social graph export/import**: friend/trust/blacklist are portable
+  (portable across reinstall). peer_id itself is DB-bound (not portable).
+- **Trust recovery** via rekey: avoids "new install = transparent (trust=30)"
+  penalty from fact 12611.
+
+**Files added/modified**:
+- `astor_memory/_internal/peer_identity.py` (new, 175 lines)
+- `astor_memory/cli/main.py` (added `peer` subcommand + 4 handlers)
+- `astor_memory/server.py` (warmup at startup, chmod 600 on recall-log write)
+- `docs/peer-network.md` (new, ~150 lines: architecture + phases + permissions)
+
+**Verified** on live runtime:
+- `am peer status` → `peer_id=astor:ea1c7c3110128ee1b828c54269341a98`
+- Sign + verify roundtrip works
+- Identity persists across `am peer init` calls (idempotent)
+- Files written to `$ASTOR_DIR/identity/`
+
+**Deferred** (Phase 2+): friend list CRUD, gossip protocol, rekey broadcast,
+topic_index, anti-spam, consensus verification.
+
+---
+
 ## v1.14.61 (2026-09-17)
 
 ### Phase E3+E4+E5 — namespace isolation + consistency enforce + spend dashboard
