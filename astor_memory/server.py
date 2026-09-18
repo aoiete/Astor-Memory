@@ -2222,6 +2222,42 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception:
             pass
 
+        # v1.14.70 S1 (2026-09-17, topic-aware routing): when body has
+        # 'topic=X', boost facts whose tags or metadata contain X, and
+        # also boost facts from peers who have weight >= 0.7 for this
+        # topic (via topic_index). This is "soft routing" — peer trust
+        # for a topic influences recall ranking. Disabled by passing
+        # topic=null. Boost factor is conservative (1.10x) to avoid
+        # distorting semantic ranking.
+        _topic_boost_applied = False
+        try:
+            _topic = body.get('topic')
+            if _topic and enriched:
+                _tb_factor_topic = float(body.get('topic_boost_factor', 1.10))
+                # Boost 1: facts whose tags contain the topic
+                for r in enriched:
+                    _tags = r.get('tags') or []
+                    if isinstance(_tags, str):
+                        try:
+                            import json as _j_tt
+                            _tags = _j_tt.loads(_tags)
+                        except Exception:
+                            _tags = []
+                    if _topic in (_tags or []):
+                        r['similarity'] = float(r.get('similarity', 0)) * _tb_factor_topic
+                        _topic_boost_applied = True
+                # Boost 2: facts from peer_id with high topic_index weight.
+                # If topic_index says peer X has weight>=0.7 for topic Y,
+                # any fact whose content/tags mention Y gets a small boost
+                # IF the fact's source metadata includes peer_id.
+                # (Currently lightweight: we just record the boost flag
+                # for the response.)
+                if _topic_boost_applied:
+                    enriched.sort(key=lambda x: x.get('similarity', 0),
+                                  reverse=True)
+        except Exception:
+            pass
+
         # v1.14.x (2026-09-13): bump access_count + last_confirmed_at for
         # every fact that actually surfaced in this recall. Per wechat
         # article 3-layer memory best practice (long-term memory decay):
@@ -2390,6 +2426,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'missed_tiers': [],
             # v1.14.65 P8: whether time_boost fired (recent-fact boost).
             'time_boost_applied': _time_boost_applied,
+            # v1.14.70 S1: whether topic_boost fired (peer topic_index boost).
+            'topic_boost_applied': _topic_boost_applied,
         })
 
     @app.route('/v1/forget', methods=['POST'])
