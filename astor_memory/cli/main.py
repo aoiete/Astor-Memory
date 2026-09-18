@@ -3198,7 +3198,8 @@ def cmd_decay_sweep_run(args) -> int:
 
     Default: dry-run only. Pass --execute to actually write.
     """
-    from ..bus import astor_bus, astor_audit
+    from ..bus import astor_bus
+    from .._internal.audit_logger import astor_audit
     from datetime import datetime, timedelta, timezone
 
     tier = args.tier
@@ -3219,7 +3220,7 @@ def cmd_decay_sweep_run(args) -> int:
     # is reset on every read (fact 12055), so it can't serve as an "idle" proxy.
     # Decay now keys on importance + access_count alone (low-importance AND low-read).
     sql = (
-        "SELECT id, text, importance, access_count, last_confirmed_at, "
+        "SELECT id, content, importance, access_count, last_confirmed_at, "
         "       tombstoned, user_id, kind "
         "FROM memory_canonical "
         "WHERE tombstoned = 0 "
@@ -3227,17 +3228,17 @@ def cmd_decay_sweep_run(args) -> int:
         "  AND access_count <= ? "
         "LIMIT ?"
     )
-    rows = list(bus.conn.execute(sql, (max_imp, max_access, cutoff, limit)))
-    eligible = [{"id": r[0], "text": (r[1] or "")[:120],
+    rows = list(bus.conn.execute(sql, (max_imp, max_access, limit)))
+    eligible = [{"id": r[0], "content": (r[1] or "")[:120],
                  "importance": r[2], "access_count": r[3],
                  "last_confirmed_at": r[4], "kind": r[7]} for r in rows]
 
-    print(f"   tier={tier} user_id={user_id or '(default)'}  cutoff={cutoff}  max_importance={max_imp}  max_access={max_access}")
+    print(f"   tier={tier} user_id={user_id or '(default)'}  max_importance={max_imp}  max_access={max_access}")
     print(f"   eligible for soft-tombstone: {len(eligible)}")
     for f in eligible[:20]:
         print(f"     - id={f['id']:>5} imp={f['importance']:.2f} acc={f['access_count']:>3}  "
               f"last_confirmed={f['last_confirmed_at'] or 'NULL':<32}  "
-              f"text={f['text']}")
+              f"content={f['content']}")
     if len(eligible) > 20:
         print(f"     ... and {len(eligible) - 20} more")
 
