@@ -295,6 +295,25 @@ def main(argv: list[str] | None = None) -> int:
     lock_test.add_argument('--user', default='admin', help='user_id scope (default admin)')
     lock_test.set_defaults(func=cmd_lock_rule_test)
 
+    # am recall-history ... (v1.14.65 P7: list past recall queries so
+    # users can find what they've asked before. Solves the "I forget
+    # what I asked" dead-end.)
+    hist_p = subparsers.add_parser('recall-history',
+                                   help='List recent recall queries (from recall_log.jsonl)')
+    hist_p.add_argument('--limit', type=int, default=20,
+                        help='Max entries to show (default 20)')
+    hist_p.add_argument('--tier', default=None,
+                        help='Filter by tier (public/source/private)')
+    hist_p.add_argument('--user', default=None,
+                        help='Filter by user_id')
+    hist_p.add_argument('--hours', type=int, default=None,
+                        help='Only show entries from the last N hours')
+    hist_p.add_argument('--contains', default=None,
+                        help='Substring filter on query text')
+    hist_p.add_argument('--reverse', action='store_true',
+                        help='Show oldest first (default newest first)')
+    hist_p.set_defaults(func=cmd_recall_history)
+
     # am platform ... (bot-binding.db CRUD)
     plat_p = subparsers.add_parser('platform', help='Manage bot-binding.db (platforms + bindings + users)')
     plat_sub = plat_p.add_subparsers(dest='platform_command')
@@ -2273,6 +2292,82 @@ def cmd_lock_rule_test(args) -> int:
         return 0
     finally:
         con.close()
+
+
+def cmd_recall_history(args) -> int:
+    """v1.14.65 P7 (2026-09-17, end-to-end completeness): list recent
+    recall queries from the per-runtime usage log so users can find
+    what they (or another user) asked in past recall calls. Solves
+    the "I forget what I asked" / "I don't know what's in memory"
+    dead-ends.
+
+    Reads $ASTOR_DIR/astor/metrics/recall_log.jsonl. The query text
+    is truncated to 256 chars at log time so PII exposure is bounded.
+    Filters: --tier, --user, --hours (last N hours), --contains
+    (substring on query), --reverse (oldest first), --limit (cap rows).
+    """
+    import json as _jh
+    import datetime as _dt_h
+    from pathlib import Path as _Path_h
+
+    astor_dir = os.environ.get('ASTOR_DIR', 'D:/AI/Astor-Memory-Runtime')
+    log_path = _Path_h(astor_dir) / 'astor' / 'metrics' / 'recall_log.jsonl'
+    if not log_path.exists():
+        print(f'[ERR] recall_log not found at {log_path}')
+        print('  no /v1/read calls have been logged yet')
+        return 1
+    cutoff = None
+    if args.hours and args.hours > 0:
+        cutoff = (_dt_h.datetime.now(_dt_h.timezone.utc)
+                  - _dt_h.timedelta(hours=args.hours)).isoformat()
+    rows = []
+    try:
+        with open(log_path, 'r', encoding='utf-8') as _fh:
+            for line in _fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = _jh.loads(line)
+                except Exception:
+                    continue
+                if args.tier and rec.get('tier') != args.tier:
+                    continue
+                if args.user and rec.get('user_id') != args.user:
+                    continue
+                if cutoff and rec.get('ts', '') < cutoff:
+                    continue
+                if args.contains:
+                    if args.contains not in (rec.get('query') or ''):
+                        continue
+                rows.append(rec)
+    except Exception as _exc:
+        print(f'[ERR] failed to read {log_path}: {_exc}')
+        return 1
+    if args.reverse:
+        rows.sort(key=lambda r: r.get('ts', ''))
+    else:
+        rows.sort(key=lambda r: r.get('ts', ''), reverse=True)
+    rows = rows[:args.limit]
+    if not rows:
+        print('[OK] no recall entries match the filters.')
+        return 0
+    print(f'[OK] {len(rows)} recall entr{"y" if len(rows)==1 else "ies"}'
+          f' (out of {len(rows)} shown, file={log_path.name}):')
+    for r in rows:
+        ts = (r.get('ts') or '')[:19]
+        tier = r.get('tier', '?')
+        uid = r.get('user_id', '?')
+        qhash = r.get('qhash', '?')
+        qtext = (r.get('query') or '').replace('\n', ' ')
+        if len(qtext) > 80:
+            qtext = qtext[:77] + '...'
+        n_results = r.get('n_results', '?')
+        lat_ms = r.get('latency_ms', '?')
+        print(f"  {ts} tier={tier:<8} user={uid:<8} "
+              f"hits={n_results:<3} lat={lat_ms}ms qhash={qhash}")
+        print(f"    query: {qtext!r}")
+    return 0
 
 
 if __name__ == '__main__':
