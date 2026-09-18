@@ -423,6 +423,50 @@ def main(argv: list[str] | None = None) -> int:
         help='Filter by status')
     peer_rekey_log.set_defaults(func=cmd_peer_rekey_log)
 
+    # v1.14.70 (2026-09-17) — S1 topic-aware routing
+    # am peer topic set <topic> <peer_id> [--weight=0.0-1.0]
+    # am peer topic list [--peer=X] [--min-weight=N]
+    # am peer topic list-peers <topic> [--min-weight=N]
+    # am peer topic list-all [--min-weight=N]
+    # am peer topic remove <topic> <peer_id>
+    # am peer topic bump <topic> <peer_id>  # mark as recently seen
+    peer_topic = peer_sub.add_parser('topic',
+        help='Manage topic_index for soft routing (S1)')
+    topic_sub = peer_topic.add_subparsers(dest='topic_command')
+    topic_set = topic_sub.add_parser('set',
+        help='Set or update a topic weight for a peer')
+    topic_set.add_argument('topic', help='Topic name (e.g. poker, fortune, nlp)')
+    topic_set.add_argument('peer_id', help='Peer ID (astor:<32-hex>)')
+    topic_set.add_argument('--weight', type=float, default=1.0,
+        help='Topic weight 0.0-1.0 (default 1.0)')
+    topic_set.set_defaults(func=cmd_peer_topic_set)
+
+    topic_list = topic_sub.add_parser('list',
+        help='List topics for a peer (or all topics)')
+    topic_list.add_argument('--peer', help='Peer ID (omit to list all topics)')
+    topic_list.add_argument('--min-weight', type=float,
+        help='Filter by minimum weight')
+    topic_list.set_defaults(func=cmd_peer_topic_list)
+
+    topic_list_peers = topic_sub.add_parser('list-peers',
+        help='List peers that have a given topic')
+    topic_list_peers.add_argument('topic', help='Topic name')
+    topic_list_peers.add_argument('--min-weight', type=float,
+        help='Filter by minimum weight')
+    topic_list_peers.set_defaults(func=cmd_peer_topic_list_peers)
+
+    topic_remove = topic_sub.add_parser('remove',
+        help='Remove a topic for a peer')
+    topic_remove.add_argument('topic', help='Topic name')
+    topic_remove.add_argument('peer_id', help='Peer ID')
+    topic_remove.set_defaults(func=cmd_peer_topic_remove)
+
+    topic_bump = topic_sub.add_parser('bump',
+        help='Bump last_seen_at + fact_count for (topic, peer)')
+    topic_bump.add_argument('topic', help='Topic name')
+    topic_bump.add_argument('peer_id', help='Peer ID')
+    topic_bump.set_defaults(func=cmd_peer_topic_bump)
+
     # am platform ... (bot-binding.db CRUD)
     plat_p = subparsers.add_parser('platform', help='Manage bot-binding.db (platforms + bindings + users)')
     plat_sub = plat_p.add_subparsers(dest='platform_command')
@@ -2751,6 +2795,82 @@ def cmd_peer_rekey_log(args) -> int:
         print(f'  id={e["id"]} {e["old_peer_id"][:20]}... → '
               f'{e["new_peer_id"][:20]}... status={e["status"]} '
               f'at={e["applied_at"]}')
+    return 0
+
+
+def cmd_peer_topic_set(args) -> int:
+    """v1.14.70 (S1): set topic weight for a peer."""
+    from .._internal.peer_relationships import set_topic
+    try:
+        result = set_topic(args.topic, args.peer_id, weight=args.weight)
+        print(f'[OK] topic={args.topic!r} peer={args.peer_id[:20]}... '
+              f'weight={result.get("weight")}')
+        return 0
+    except ValueError as e:
+        print(f'[ERR] {e}', file=sys.stderr)
+        return 1
+
+
+def cmd_peer_topic_list(args) -> int:
+    """v1.14.70 (S1): list topics for a peer OR all topics."""
+    from .._internal.peer_relationships import (
+        list_topics_for_peer, list_all_topics,
+    )
+    if args.peer:
+        entries = list_topics_for_peer(
+            args.peer, min_weight=args.min_weight,
+        )
+        if not entries:
+            print(f'(no topics for peer {args.peer[:20]}...)')
+            return 0
+        print(f'[OK] {len(entries)} topic(s) for {args.peer[:20]}...:')
+        for e in entries:
+            print(f'  {e["topic"]:<20} weight={e["weight"]:.2f} '
+                  f'fact_count={e["fact_count"]} last_seen={e["last_seen_at"]}')
+    else:
+        entries = list_all_topics(min_weight=args.min_weight)
+        if not entries:
+            print('(no topics in topic_index)')
+            return 0
+        print(f'[OK] {len(entries)} topic(s) across all peers:')
+        for e in entries:
+            print(f'  {e["topic"]:<20} '
+                  f'avg_weight={e["avg_weight"]:.2f} '
+                  f'max_weight={e["max_weight"]:.2f} '
+                  f'peers={e["peer_count"]} '
+                  f'most_recent={e["most_recent"]}')
+    return 0
+
+
+def cmd_peer_topic_list_peers(args) -> int:
+    """v1.14.70 (S1): list peers that have a given topic."""
+    from .._internal.peer_relationships import list_peers_for_topic
+    entries = list_peers_for_topic(args.topic, min_weight=args.min_weight)
+    if not entries:
+        print(f'(no peers have topic {args.topic!r})')
+        return 0
+    print(f'[OK] {len(entries)} peer(s) for topic={args.topic!r}:')
+    for e in entries:
+        print(f'  {e["peer_id"][:20]}... weight={e["weight"]:.2f} '
+              f'fact_count={e["fact_count"]} last_seen={e["last_seen_at"]}')
+    return 0
+
+
+def cmd_peer_topic_remove(args) -> int:
+    """v1.14.70 (S1): remove a topic entry."""
+    from .._internal.peer_relationships import remove_topic
+    if remove_topic(args.topic, args.peer_id):
+        print(f'[OK] removed topic={args.topic!r} peer={args.peer_id[:20]}...')
+        return 0
+    print(f'[ERR] topic entry not found')
+    return 1
+
+
+def cmd_peer_topic_bump(args) -> int:
+    """v1.14.70 (S1): bump last_seen_at + fact_count for (topic, peer)."""
+    from .._internal.peer_relationships import bump_topic_seen
+    bump_topic_seen(args.topic, args.peer_id)
+    print(f'[OK] bumped topic={args.topic!r} peer={args.peer_id[:20]}...')
     return 0
 
 
