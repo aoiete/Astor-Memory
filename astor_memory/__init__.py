@@ -6,7 +6,7 @@ astor-memory: Self-owned memory system for AI agents.
 See: docs/architecture.md in this repository for the full architecture overview.
 """
 
-__version__ = "1.14.63"  # 2026-09-17 (Ship v1.14.63: R-class fixes — seed_lock_rule pins tombstoned=0 + last_confirmed_at=NOW; decay sweep + dedup + reflection skip kind=lock_rule,rule; 7 raw print(file=sys.stderr) in server.py wrapped with _safe_stderr_write; /v1/write tier='auto' returns 400 instead of silent 500; 11 new tests in tests/test_lock_rules.py; version bump sync (was 1.14.53, CHANGELOG lagged).)
+__version__ = "1.14.64"  # 2026-09-17 (Ship v1.14.64: R-class classifier guard — astor_classify_outcome now short-circuits to 'success' when text starts with 'R-class' marker, even if body contains failure keywords like 卡/报错/hang/timeout; consolidator _classify_content also adds R-class as SUCCESS_PATTERN and removes from FAILURE_PATTERNS; 6 new tests in tests/test_classify_rclass_guard.py; Fact 12642 (SSH push) and Fact 3241 (Agent×classifier meta-rule) re-classified from failure_pattern to success_pattern on disk. Last ship was v1.14.63 LOCK rule + stderr hardening.)
     # 2026-09-16 (v1.14.40) Recent Capture panel: dashboard `/v1/dashboard` now exposes `recent_capture` grouped by 3 axes (kind / tier / platform) plus an 'all' flatten view. Frontend tab-toggle UI (By Kind / By Tier / By Platform / All). Each bucket capped at 10 rows. Discord/Telegram/WeChat/Cron/Manual/Other routing via `origin_session_id` prefix.
 
 # Top-level singleton accessors. Per Plan § Naming:
