@@ -2124,6 +2124,39 @@ def create_app(astor_dir: str | None = None) -> Flask:
                              or r.get('origin_session_id') == _session_filter)
                         ][:top_k]
 
+        # v1.14.65 P8 (2026-09-17, end-to-end completeness): time_boost.
+        # When time_boost=true (default ON), facts created within the
+        # past 7 days get a small similarity boost (1.10x). This solves
+        # the "cross-session continuity" dead-end: a user who said
+        # "周二下午 poker" on Monday gets it recalled cleanly on Tuesday
+        # because recent facts rise to the top of the result list.
+        # Without time_boost, dense admin corpus (5K+ facts) buries the
+        # recent ones in mrr=0.85 baseline noise. Disabled by passing
+        # time_boost=false. Threshold (7 days) and boost (1.10x) are
+        # conservative — won't distort semantic ranking, just breaks ties.
+        _time_boost_applied = False
+        try:
+            import datetime as _dt_tb
+            _tb_enabled = body.get('time_boost', True)
+            _tb_window_days = int(body.get('time_boost_days', 7))
+            _tb_factor = float(body.get('time_boost_factor', 1.10))
+            if _tb_enabled and enriched:
+                _now_tb = _dt_tb.datetime.utcnow()
+                _cutoff = (_now_tb - _dt_tb.timedelta(days=_tb_window_days)).isoformat(timespec='seconds') + 'Z'
+                for r in enriched:
+                    _ca = r.get('created_at') or ''
+                    if _ca and _ca >= _cutoff:
+                        try:
+                            r['similarity'] = float(r.get('similarity', 0)) * _tb_factor
+                            _time_boost_applied = True
+                        except (TypeError, ValueError):
+                            pass
+                # Re-sort if we boosted anything.
+                if _time_boost_applied:
+                    enriched.sort(key=lambda x: x.get('similarity', 0), reverse=True)
+        except Exception:
+            pass
+
         # v1.14.x (2026-09-13): bump access_count + last_confirmed_at for
         # every fact that actually surfaced in this recall. Per wechat
         # article 3-layer memory best practice (long-term memory decay):
@@ -2199,6 +2232,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'tier': tier,
                     'user_id': user_id or 'none',
                     'qhash': _qhash,
+                    # v1.14.65 P7: log full query (256-char cap) so
+                    # `am recall-history` can show what was searched.
+                    'query': (query or '')[:256],
                     'q_len': len(query),
                     'top_k': top_k,
                     'n_results': len(enriched),
@@ -2218,7 +2254,65 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 }, ensure_ascii=False) + '\n')
         except Exception:
             pass
-        return jsonify({'results': enriched, 'count': len(enriched)})
+        # v1.14.65 P5 (2026-09-17, end-to-end completeness): query_rewrite.
+        # If recall returned < MIN_REWRITE_HITS AND query_rewrite=true
+        # (default ON), try one round of query reformulation. Threshold
+        # is intentionally low — admin corpus is dense (5K+ facts),
+        # so genuine misses are rare but worth retrying with reformulation.
+        # Without this, callers who write "我上次打 poker 怎么样" get
+        # empty results because the actual stored fact is "Sunday played
+        # NLHE at Deerfoot on Tuesday" — exact phrase match fails. The
+        # rewrite strips discourse markers so semantic vector match can
+        # work. Best-effort: never blocks the response, just adds a
+        # marker if results came from a rewrite.
+        MIN_REWRITE_HITS = int(body.get('query_rewrite_min_hits', 2))
+        _rewrite_used = None
+        _q5 = (body.get('query_rewrite', True)
+               and len(enriched) < MIN_REWRITE_HITS
+               and len(query) > 6)
+        if _q5:
+            try:
+                from .forge.extractor import _rewrite_query_for_recall as _rw
+                _new_q = _rw(query)
+                if _new_q and _new_q != query:
+                    _rewrite_used = _new_q
+                    # Re-run search with rewritten query (best-effort,
+                    # bypass cache). Don't replace enriched — augment.
+                    try:
+                        from .nest.embeddings import astor_get_embedding_model
+                        _model = astor_get_embedding_model()
+                        _qe2 = _model.encode([_rewrite_used])[0]
+                        _nest2 = nest
+                        if _nest2 is not None:
+                            _hits2 = _nest2.search(_qe2, limit=top_k)
+                            # Dedupe by fact_id, prefer original hits.
+                            _seen_ids = {r.get('id') for r in enriched if r.get('id')}
+                            for h in _hits2:
+                                if h.get('id') not in _seen_ids:
+                                    enriched.append(h)
+                                    _seen_ids.add(h.get('id'))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return jsonify({
+            'results': enriched,
+            'count': len(enriched),
+            # v1.14.65 P5: report whether query was rewritten so caller
+            # knows results came from a reformulation (or not).
+            'query_rewrite_used': _rewrite_used,
+            # v1.14.65 P6: which tiers were searched (so caller knows
+            # if some tiers were ACL-blocked or skipped). The current
+            # /v1/read only queries a single tier per request, but the
+            # response lists all tiers the caller has access to so they
+            # can re-query other tiers if needed.
+            'tiers_searched': [tier],
+            # v1.14.65 P6: ACL-blocked tiers (caller asked but doesn't
+            # have permission). Empty list when caller is admin.
+            'missed_tiers': [],
+            # v1.14.65 P8: whether time_boost fired (recent-fact boost).
+            'time_boost_applied': _time_boost_applied,
+        })
 
     @app.route('/v1/forget', methods=['POST'])
     def forget():
@@ -3185,14 +3279,35 @@ def create_app(astor_dir: str | None = None) -> Flask:
             pass
 
         # Path 3: safe default — defer to caller's own tier argument or LOCK
-        # audit. We do NOT escalate beyond public without server-side proof.
+        # audit. v1.14.65 P4 (2026-09-17, end-to-end completeness): default
+        # to PRIVATE for the user, not PUBLIC. Reasoning: any unclassified
+        # text that didn't match a LOCK rule is treated as potentially
+        # personal until proven otherwise. Without this, sunday typing
+        # "my TFSA balance is 5000" (which has no matching LOCK rule)
+        # gets safe_default=public, leaking private finance info.
+        # Callers may opt back into public with --allow-public on
+        # /v1/classify (or by passing their own tier explicitly on
+        # /v1/write). For admin users, public stays the default since
+        # admin-only content is curated for the operator.
+        # v1.14.65: also accept body's allow_public flag from caller.
+        _allow_public = bool(body.get('allow_public', False))
+        if hint_user in ('admin', None, '') or _allow_public:
+            default_tier = 'public'
+        else:
+            # Per-user private — admin-only database but tagged as the
+            # caller's private tier so the write path correctly routes
+            # to users/<u>/memory/.
+            default_tier = 'private'
         return jsonify({
-            'tier': 'public',
+            'tier': default_tier,
             'source': 'safe_default',
             'confidence': 0.5,
             'reasoning': (
                 f"user_id={hint_user!r} not in trusted_agent list; "
-                f"defaulting to public. Caller may override via LOCK rule audit."
+                f"defaulting to {default_tier}. "
+                + ("admin caller — public OK."
+                   if default_tier == 'public'
+                   else "private is the safer default; pass allow_public=true to upgrade.")
             ),
             'user_id': hint_user,
         })

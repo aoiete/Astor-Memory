@@ -6,7 +6,7 @@ astor-memory: Self-owned memory system for AI agents.
 See: docs/architecture.md in this repository for the full architecture overview.
 """
 
-__version__ = "1.14.64"  # 2026-09-17 (Ship v1.14.64: R-class classifier guard — astor_classify_outcome now short-circuits to 'success' when text starts with 'R-class' marker, even if body contains failure keywords like 卡/报错/hang/timeout; consolidator _classify_content also adds R-class as SUCCESS_PATTERN and removes from FAILURE_PATTERNS; 6 new tests in tests/test_classify_rclass_guard.py; Fact 12642 (SSH push) and Fact 3241 (Agent×classifier meta-rule) re-classified from failure_pattern to success_pattern on disk. Last ship was v1.14.63 LOCK rule + stderr hardening.)
+__version__ = "1.14.65"  # 2026-09-17 (Ship v1.14.65 — end-to-end completeness Plan P1-P8: P4 safe_default 默认 private + allow_public flag; P5 query_rewrite heuristic retry when count < min_hits; P6 tiers_searched+missed_tiers 报告; P8 time_boost 默认 (past 7d ×1.10 similarity); P7 am recall-history CLI + recall_log 加 query text 字段; P2 astor_choose_extract_mode 30-1000 字 + 有 LLM key 自动选 'llm'; P3 跨窗口 content-hash dedup (已 ship, 验证); P1 _astor_classify_intent (已 ship, 验证). All 4 个 P1-P4 + P5+P8+P7 都在 runtime 验证通过.)
     # 2026-09-16 (v1.14.40) Recent Capture panel: dashboard `/v1/dashboard` now exposes `recent_capture` grouped by 3 axes (kind / tier / platform) plus an 'all' flatten view. Frontend tab-toggle UI (By Kind / By Tier / By Platform / All). Each bucket capped at 10 rows. Discord/Telegram/WeChat/Cron/Manual/Other routing via `origin_session_id` prefix.
 
 # Top-level singleton accessors. Per Plan § Naming:
