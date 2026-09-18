@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -708,6 +708,138 @@ def _summarize_llm_spend(astor_dir) -> dict:
     return out
 
 
+def _collect_all_bus_db_paths(astor_dir: Path) -> list[Path]:
+    """Discover every memory_canonical SQLite db under {public, source, users/*, private*/}.
+
+    Used by per-tier dashboard aggregations. Returns deduplicated list of Paths.
+    Walks well-known locations to find bus dbs without iterating all .db files.
+    """
+    seen: set[Path] = set()
+    out: list[Path] = []
+    candidates = [
+        astor_dir / "public" / "memory",
+        astor_dir / "source" / "memory",
+        astor_dir / "private" / "memory",
+        astor_dir / "users",  # dir of users/<uid>/memory/
+    ]
+    for c in candidates:
+        if not c.exists():
+            continue
+        if c.is_dir():
+            for p in c.rglob("*bus_canonical*.db"):
+                rp = p.resolve()
+                if rp not in seen:
+                    seen.add(rp)
+                    out.append(p)
+        else:
+            # legacy: the file itself
+            rp = c.resolve()
+            if rp not in seen:
+                seen.add(rp)
+                out.append(c)
+    return out
+
+
+def _tier_alias_for(db_path: Path, astor_dir: Path) -> str:
+    """Map a bus db Path to its tier alias string for dashboard grouping.
+
+    Returns one of: 'public', 'source', 'private_admin' / 'private_<user>',
+    'users_<user>' (alias form for the users/<uid>/memory/ canonical bus).
+    """
+    s = str(db_path).lower()
+    if "/public/" in s or s.endswith("/public/memory") or "/public/" in s.replace("\\", "/"):
+        return "public"
+    if "/source/" in s:
+        return "source"
+    if "/users/" in s:
+        # users/<u>/memory/astor_canonical_<u>.db or similar — extract the user segment
+        parts = db_path.parts
+        if "users" in parts:
+            idx = parts.index("users")
+            if idx + 1 < len(parts):
+                return f"users_{parts[idx + 1]}"
+        return "users"
+    # private/<u>/ ... or private/...
+    if "/private/" in s:
+        parts = db_path.parts
+        if "private" in parts:
+            idx = parts.index("private")
+            segs_after = [p for p in parts[idx + 1:] if p not in ("memory",)]
+            if segs_after:
+                return f"private_{segs_after[0]}"
+            return "private"
+    return "other"
+
+
+def _memory_class_distribution(astor_dir: Path) -> dict[str, dict[str, int]]:
+    """v1.14.74 (2026-09-18) Hindsight 4-tier count per tier + per user.
+
+    Walks every bus db under {public, source, users/<u>, private/private_<u>}
+    and tallies memory_class for active facts (tombstoned=0). Returns dict
+    keyed by tier alias with sub-totals + overall distribution.
+
+    Returns: {"public": {"world_fact": N, "experience": N, ...}, ...,
+              "overall": {"world_fact": N, "experience": N, ...}}
+    """
+    buckets: dict[str, dict[str, int]] = {}
+    db_paths = _collect_all_bus_db_paths(astor_dir)
+    for dbp in db_paths:
+        tier_alias = _tier_alias_for(dbp, astor_dir)
+        try:
+            c = sqlite3.connect(dbp, timeout=3)
+            rows = c.execute(
+                "SELECT memory_class, COUNT(*) FROM memory_canonical "
+                "WHERE tombstoned = 0 GROUP BY memory_class"
+            ).fetchall()
+            c.close()
+        except Exception:
+            continue
+        buckets.setdefault(tier_alias, {})
+        for mc, n in rows:
+            buckets[tier_alias][mc] = buckets[tier_alias].get(mc, 0) + n
+
+    # Aggregate overall
+    overall: dict[str, int] = {}
+    for tier in buckets.values():
+        for mc, n in tier.items():
+            overall[mc] = overall.get(mc, 0) + n
+    if overall:
+        buckets["overall"] = overall
+    return buckets
+
+
+def _decayed_count(astor_dir: Path) -> dict[str, int]:
+    """v1.14.74 (2026-09-18) — Count of tombstoned facts (decay soft-deleted or manual).
+
+    Useful metric for the dashboard panel that visualizes decay policy outcome.
+    Note: this overlaps with `hero.tombstoned` but breaks it down further:
+      tombstoned_recent_30d = tombstoned AND tombstoned_at > 30 days ago
+      tombstoned_old        = tombstoned AND tombstoned_at <= 30 days ago (or NULL)
+      tombstoned_no_ts      = tombstoned AND tombstoned_at IS NULL (pre-feature)
+    """
+    buckets = {"total": 0, "recent_30d": 0, "old": 0, "no_timestamp": 0}
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    db_paths = _collect_all_bus_db_paths(astor_dir)
+    for dbp in db_paths:
+        try:
+            c = sqlite3.connect(dbp, timeout=3)
+            rows = c.execute(
+                "SELECT tombstoned_at FROM memory_canonical WHERE tombstoned = 1"
+            ).fetchall()
+            c.close()
+        except Exception:
+            continue
+        for (ts,) in rows:
+            buckets["total"] += 1
+            if not ts:
+                buckets["no_timestamp"] += 1
+            elif ts > cutoff:
+                buckets["recent_30d"] += 1
+            else:
+                buckets["old"] += 1
+    return buckets
+
+
 def build_dashboard_payload(astor_dir: str | Path) -> dict:
     """Aggregate the 6 dashboard dimensions into a single JSON-ready dict.
 
@@ -716,7 +848,8 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
 
     Returns:
         Dict with keys: generated_at, hero, eval_trend, per_user, growth_30d,
-        top_keywords, recent_facts, importance_histogram, health.
+        top_keywords, recent_facts, importance_histogram, health, plus
+        v1.14.74 additions memory_class_distribution + decayed_count.
     """
     astor = Path(astor_dir)
     metrics_dir = astor.parent / "astor-memory" / "astor" / "metrics"
@@ -738,6 +871,9 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
     recent_capture = _recent_capture(astor, limit=10)
     # Phase E5 (2026-09-17): LLM call spend tracking.
     llm_spend = _summarize_llm_spend(astor)
+    # v1.14.74 (2026-09-18) Hindsight insights: taxonomy distribution + decay stats.
+    memory_class_distribution = _memory_class_distribution(astor)
+    decayed_count = _decayed_count(astor)
 
     delta_min: float | None = None
     if last_event_ts:
@@ -766,6 +902,8 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
         "top_keywords": [{"keyword": k, "count": c} for k, c in keywords],
         "recent_facts": recent,
         "importance_histogram": importance_hist,
+        "memory_class_distribution": memory_class_distribution,
+        "decayed_count": decayed_count,
         "llm_spend": llm_spend,
         "health": health,
         # v1.14.25 Ship G (2026-09-15): structured entity binding coverage.
