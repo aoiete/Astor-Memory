@@ -199,6 +199,7 @@ def _fetch_active_facts(
           AND (created_at IS NULL OR created_at < ?)
           AND (? IS NULL OR user_id = ?)
           AND (? IS NULL OR tier = ?)
+          AND kind NOT IN ('lock_rule', 'rule')
         ORDER BY id DESC
         LIMIT ?
         """,

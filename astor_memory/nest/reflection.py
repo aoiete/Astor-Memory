@@ -232,6 +232,12 @@ def deprecate_old_facts(bus, loser_ids: list[int], winner_id: int, actor: str) -
         row = bus.conn.execute(
             'SELECT id, content, kind, tier, user_id FROM memory_canonical WHERE id = ?',
             (loser_id,)).fetchone()
+        # v1.14.63 (R-class fix): NEVER tombstone a LOCK rule or rule fact
+        # via reflection. These are admin-authored configuration, not
+        # recall candidates. Silently skip them so a merge cluster can't
+        # ever accidentally archive /v1/classify machinery.
+        if row is not None and row[2] in ('lock_rule', 'rule'):
+            continue
         if row is None:
             continue
         existing_id, content, kind, tier, user_id = row
