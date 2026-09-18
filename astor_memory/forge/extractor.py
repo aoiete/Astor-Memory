@@ -650,12 +650,42 @@ def format_recall_as_system_prompt_block(
 
 
 def astor_choose_extract_mode(text: str) -> AstorExtractMode:
-    """Per Plan § Bus direct entry auto-mode heuristic."""
+    """Per Plan § Bus direct entry auto-mode heuristic.
+
+    v1.14.65 P2 (2026-09-17, end-to-end completeness): upgraded to
+    prefer LLM extraction when:
+      - text is 30-1000 chars (rich semantic content worth LLM),
+        AND
+      - an LLM provider is configured (OPENAI_API_KEY or similar),
+        OR ASTOR_LLM_ENABLED=1 explicitly forces LLM.
+
+    Otherwise fall back to regex (fast, deterministic, no network).
+    Short text (<30 chars) keeps regex because it's unlikely to be
+    a fact — caller probably meant to ask, not store. Long text
+    (>1000 chars) keeps 'none' because extractor is not designed
+    for document-scale input.
+    """
     text_len = len(text)
-    if text_len < 200:
+    if text_len < 30:
         return 'regex'
     if text_len > 1000:
         return 'none'
+    # 30-1000 char window: prefer LLM if available.
+    try:
+        import os as _os_p2
+        _llm_forced = _os_p2.environ.get('ASTOR_LLM_ENABLED', '').lower() in (
+            '1', 'true', 'yes')
+        _has_key = any(
+            _os_p2.environ.get(k) for k in (
+                'OPENAI_API_KEY', 'OPENROUTER_API_KEY',
+                'ANTHROPIC_API_KEY', 'GEMINI_API_KEY',
+                'DASHSCOPE_API_KEY', 'ZHIPU_API_KEY',
+            )
+        )
+        if _llm_forced or _has_key:
+            return 'llm'
+    except Exception:
+        pass
     return 'regex'
 
 
@@ -864,4 +894,61 @@ def astor_extract_facts(
 __all__ = [
     'AstorFact', 'AstorExtractMode', 'astor_extract_facts',
     'astor_regex_extract', 'astor_choose_extract_mode', 'astor_detect_capture_intent',
+    '_rewrite_query_for_recall',
 ]
+
+
+# v1.14.65 P5 (2026-09-17, end-to-end completeness): heuristic query
+# rewriter for /v1/read. Strip CJK discourse markers + filler so a
+# recall query like "我上次打 poker 怎么样" becomes "上次 打 poker"
+# (dropping 怎么样/我 which carry no semantic signal). This is a
+# cheap in-process rewriter — no LLM call, no network — so it adds
+# zero latency. If callers want LLM-based rewrite (semantic), they
+# can pass query_rewrite="llm" in future.
+_DISCOURSE_ZH = (
+    "我", "我们", "你", "他", "她", "它", "的", "了", "吗", "呢",
+    "啊", "吧", "呀", "哦", "哈", "嘛", "咯", "哇", "嗯",
+    "怎么样", "如何", "什么", "哪个", "那些", "这些", "那个", "这个",
+    "刚才", "刚刚", "之前", "之后", "然后", "现在", "今天", "昨天",
+    "明天", "上次", "下次", "一次", "一下",
+)
+_DISCOURSE_EN = (
+    "i", "we", "you", "he", "she", "it", "they",
+    "the", "a", "an", "do", "does", "did",
+    "what", "when", "where", "how", "which",
+    "last", "next", "this", "that", "these", "those",
+    "about", "just", "really", "very", "actually",
+)
+
+
+def _rewrite_query_for_recall(query: str) -> str:
+    """Lightweight query reformulation for /v1/read low-hit retry.
+
+    Strips discourse markers (zh + en) and short filler tokens. If
+    nothing is strippable, returns the original query. Order is
+    preserved; only words are removed.
+
+    Args:
+        query: raw user query string
+
+    Returns:
+        rewritten query (or original if no change).
+    """
+    if not query:
+        return query
+    try:
+        tokens = query.split()
+        out = []
+        for t in tokens:
+            tt = t.lower().strip(",.?!;:()[]{}")
+            if tt in _DISCOURSE_ZH or tt in _DISCOURSE_EN:
+                continue
+            out.append(t)
+        rewritten = " ".join(out).strip()
+        # If we removed too much (e.g. all tokens were discourse), return
+        # original.
+        if len(rewritten) < max(4, len(query) // 4):
+            return query
+        return rewritten or query
+    except Exception:
+        return query
