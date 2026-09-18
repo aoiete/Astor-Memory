@@ -1,7 +1,24 @@
 # Astor Peer Network — Architecture & Status
 
-**Status (v1.14.67, 2026-09-17)**: Phase 1 shipped (identity + keypair + status CLI).
-Phases 2-5 are planned but not yet implemented.
+**Status (v1.14.68, 2026-09-17)**: Phase 1 + Phase 2 shipped (identity + friend
+list + rekey notification). Phases 3-5 are planned but not yet implemented.
+
+---
+
+## Opening thesis
+
+> **One person's memory is finite. The collective memory of all astor peers grows without bound.**
+
+Each peer ships (a) identity — `peer_id` + `ed25519` keypair; (b) personal trust
+decisions — who to trust, who to blacklist; (c) trust-weighted signals —
+rekey notifications, fact provenance, sync frequency. Combined, peers form a
+distributed long-term memory that no single node could hold alone. Astor is
+not a backup system. **Astor is a memory system whose ceiling grows with
+every mind that joins.**
+
+Phases 1-2 lay the foundation. Phases 3-5 wire peers together over the wire.
+
+---
 
 ## Why a peer network
 
