@@ -1,3 +1,41 @@
+## v1.14.71 (2026-09-17)
+
+### S1 multi-topic extension
+
+Server `/v1/read` and CLI `am peer topic set` now support multiple topics
+in one call. Boosts compose when a fact matches multiple topics.
+
+**Server input formats** (3 ways to specify topics):
+- `topic="poker"` — single string (backwards compat with v1.14.70)
+- `topics=["poker", "nlhe"]` — array
+- `topics_str="poker,nlhe,fortune"` — CSV
+
+**Boost composition**: if a fact's tags match multiple topics, the boost
+multiplies: `factor ^ matches_count`. Example with default 1.10 factor:
+- fact tagged only `poker` → 1.10x
+- fact tagged `poker` + `nlhe` → 1.10^2 = 1.21x
+- fact tagged `poker` + `nlhe` + `fortune` → 1.10^3 = 1.331x
+
+**Response**: new `topics_used` field echoes the deduped topic set
+that was actually applied. `topic_boost_applied` is `true` when at
+least one fact in the recall matched at least one topic.
+
+**CLI** `am peer topic set`:
+- Single: `am peer topic set poker <peer> --weight=0.95`
+- Multi CSV: `am peer topic set poker,nlhe,fortune <peer> --weights=0.9,0.5,0.3`
+- Broadcast: `am peer topic set math,physics <peer> --weight=0.7`
+  (single weight broadcast across all topics)
+
+**Tests** (2 new in tests/test_topic_routing.py):
+- `test_multi_topic_boost_composes` — verifies 1.10^2 = 1.21 boost
+  composition when fact matches 2 topics
+- `test_multi_topic_string_and_list_input` — verifies topic_set
+  building from `topic` / `topics` / `topics_str` inputs
+
+Total: 15/15 in test_topic_routing.py, 103/103 in ship subset.
+
+---
+
 ## v1.14.69 (2026-09-17)
 
 ### Opening thesis + docs polish

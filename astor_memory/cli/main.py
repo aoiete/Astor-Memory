@@ -434,11 +434,17 @@ def main(argv: list[str] | None = None) -> int:
         help='Manage topic_index for soft routing (S1)')
     topic_sub = peer_topic.add_subparsers(dest='topic_command')
     topic_set = topic_sub.add_parser('set',
-        help='Set or update a topic weight for a peer')
-    topic_set.add_argument('topic', help='Topic name (e.g. poker, fortune, nlp)')
+        help='Set or update topic weight(s) for a peer. '
+             'Single: `am peer topic set poker <peer>`. '
+             'Multi: `am peer topic set poker,nlhe <peer> --weights=0.9,0.5`.')
+    topic_set.add_argument('topic', help='Topic name, OR comma-separated topics '
+                            '(e.g. "poker,nlhe,fortune")')
     topic_set.add_argument('peer_id', help='Peer ID (astor:<32-hex>)')
-    topic_set.add_argument('--weight', type=float, default=1.0,
-        help='Topic weight 0.0-1.0 (default 1.0)')
+    topic_set.add_argument('--weight', type=float, default=None,
+        help='Single weight 0.0-1.0 (default 1.0). Ignored if --weights given.')
+    topic_set.add_argument('--weights', type=str, default=None,
+        help='Comma-separated weights matching comma-separated topics '
+             '(e.g. "0.9,0.5"). Use when topic has multiple values.')
     topic_set.set_defaults(func=cmd_peer_topic_set)
 
     topic_list = topic_sub.add_parser('list',
@@ -2799,12 +2805,45 @@ def cmd_peer_rekey_log(args) -> int:
 
 
 def cmd_peer_topic_set(args) -> int:
-    """v1.14.70 (S1): set topic weight for a peer."""
+    """v1.14.70 + v1.14.71 (S1 multi): set topic weight(s) for a peer.
+
+    Accepts either:
+      - single topic + single weight (default 1.0)
+      - comma-separated topics + comma-separated weights via --weights
+      - if --weights is omitted but topic is comma-separated, all topics
+        get the same weight (--weight or 1.0 default)
+    """
     from .._internal.peer_relationships import set_topic
+    # Parse topics
+    if ',' in args.topic:
+        topics = [t.strip() for t in args.topic.split(',') if t.strip()]
+    else:
+        topics = [args.topic]
+    # Parse weights
+    if args.weights:
+        try:
+            weights = [float(w.strip()) for w in args.weights.split(',')]
+        except ValueError as e:
+            print(f'[ERR] invalid --weights: {e}', file=sys.stderr)
+            return 1
+    elif args.weight is not None:
+        weights = [args.weight]
+    else:
+        weights = [1.0] * len(topics)
+    if len(weights) == 1 and len(topics) > 1:
+        weights = weights * len(topics)
+    if len(weights) != len(topics):
+        print(f'[ERR] topic count ({len(topics)}) != weight count ({len(weights)})',
+              file=sys.stderr)
+        return 1
+    # Apply each
     try:
-        result = set_topic(args.topic, args.peer_id, weight=args.weight)
-        print(f'[OK] topic={args.topic!r} peer={args.peer_id[:20]}... '
-              f'weight={result.get("weight")}')
+        for topic, weight in zip(topics, weights):
+            result = set_topic(topic, args.peer_id, weight=weight)
+            print(f'[OK] topic={topic!r} peer={args.peer_id[:20]}... '
+                  f'weight={result.get("weight")}')
+        if len(topics) > 1:
+            print(f'   ({len(topics)} topics set in one call)')
         return 0
     except ValueError as e:
         print(f'[ERR] {e}', file=sys.stderr)

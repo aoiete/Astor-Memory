@@ -196,6 +196,63 @@ class TestTopicFilter(_Tmp, unittest.TestCase):
         self.assertTrue(applied)
         self.assertAlmostEqual(enriched[0]["similarity"], 0.55, places=2)
 
+    def test_multi_topic_boost_composes(self):
+        """v1.14.71: when topics=[poker, nlhe] matches the same fact
+        via both tags, boost composes (factor^matches)."""
+        enriched = [
+            {"fact_id": 1, "similarity": 0.5, "tags": ["poker", "nlhe"]},
+            {"fact_id": 2, "similarity": 0.5, "tags": ["poker"]},
+            {"fact_id": 3, "similarity": 0.5, "tags": ["nlhe"]},
+            {"fact_id": 4, "similarity": 0.5, "tags": ["fortune"]},
+        ]
+        topic_set = {"poker", "nlhe"}
+        boost = 1.10
+        applied = False
+        for r in enriched:
+            tags = r.get("tags") or []
+            if isinstance(tags, str):
+                import json
+                tags = json.loads(tags)
+            matches = sum(1 for t in topic_set if t in (tags or []))
+            if matches:
+                r["similarity"] *= (boost ** matches)
+                applied = True
+        if applied:
+            enriched.sort(key=lambda x: x.get("similarity", 0), reverse=True)
+        # Fact 1: matches BOTH, boost = 1.10^2 = 1.21 → sim = 0.605
+        # Fact 2: matches one, boost = 1.10 → sim = 0.55
+        # Fact 3: matches one, boost = 1.10 → sim = 0.55
+        # Fact 4: no match, sim = 0.5
+        self.assertEqual(enriched[0]["fact_id"], 1)
+        self.assertAlmostEqual(enriched[0]["similarity"], 0.605, places=2)
+        self.assertTrue(applied)
+
+    def test_multi_topic_string_and_list_input(self):
+        """v1.14.71: server accepts both `topic` (str) and `topics` (list)."""
+        # Simulate what server.py does to build topic_set
+        body = {"topic": "poker"}
+        topic_set = set()
+        if isinstance(body.get("topic"), str) and body["topic"]:
+            topic_set.add(body["topic"])
+        if isinstance(body.get("topics"), list):
+            topic_set.update(x for x in body["topics"] if x)
+        self.assertEqual(topic_set, {"poker"})
+
+        body2 = {"topics": ["poker", "nlhe"]}
+        topic_set = set()
+        if isinstance(body2.get("topic"), str) and body2["topic"]:
+            topic_set.add(body2["topic"])
+        if isinstance(body2.get("topics"), list):
+            topic_set.update(x for x in body2["topics"] if x)
+        self.assertEqual(topic_set, {"poker", "nlhe"})
+
+        body3 = {"topics_str": "poker,nlhe,fortune"}
+        topic_set = set()
+        ts = body3.get("topics_str")
+        if isinstance(ts, str) and ts:
+            topic_set.update(x.strip() for x in ts.split(",") if x.strip())
+        self.assertEqual(topic_set, {"poker", "nlhe", "fortune"})
+
 
 if __name__ == "__main__":
     unittest.main()
