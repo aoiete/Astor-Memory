@@ -1,415 +1,421 @@
-# 0008. Peer-Public Network — federating the public tier across astor nodes
+# 0008. Peer-Public Network — background sync for the public tier
 
 - Status: accepted
 - Date: 2026-09-19
 - Deciders: admin (first_admin), astor-memory maintainers
-- Source: Phase C-D ship log (v1.14.54–62), Phase B identity model
-  (cross-channel role routing), operational observation that
-  production (PID 67292, hostname lts-nutspc) is one of N intended
-  peers and currently has no way to share public-tier facts with
-  other peers
+- Source: Phase C-D ship log (v1.14.54–62), Phase B identity model,
+  **existing untracked implementation** at
+  `astor_memory/_internal/peer_relationships.py` (v1.14.68, the friend +
+  trust + blacklist schema) and
+  `astor_memory/_internal/peer_search.py` (v1.14.73, demand-driven PPS),
+  Hermes-Telegram bridge in `platform_bridge.py`,
+  operational observation that production (PID 67292) is one of N
+  intended peers.
 
 ## Context and Problem Statement
 
-astor-memory today runs as a single-node deployment on one machine.
-Phase C-D locked the identity model (`agent_id` / `user_id` /
-`transport`) and the tier routing rules. Phase B shipped
-cross-channel role resolution for bot transports. The **public** tier
-exists as a SQLite DB on disk (`public/memory/astor_bus_public.db`)
-and is the one tier that *could* be safely shared across nodes — every
-fact there is either admin-curated (`rule_ship` LOCK rule action) or
-explicitly publishable, with no per-user privacy concerns.
+astor-memory today runs as a single-node deployment. Phase C-D locked
+the identity model (`agent_id` / `user_id` / `transport`) and the
+tier routing rules. The **public** tier exists as a SQLite DB on
+disk and is the one tier that *could* be safely shared across nodes.
+The user explicitly committed to a **federation model** — peers sync
+public content with each other, no central server, no remote-direct
+RPC.
 
-The gap: today there is no way for facts in peer A's `public` tier to
-reach peer B. The user's stated direction ("we don't do remote direct;
-only future is peer-to-peer public network design") commits astor to a
-**federation model** — peers sync public content with each other, no
-central server, no remote-direct RPC. This ADR specifies that
-federation model end-to-end so it can be implemented and shipped
-incrementally even if work is interrupted (a partial implementation
-must still produce a working, auditable state).
+Two pieces of the federation already exist as untracked files:
+
+1. **`peer_relationships.py`** (v1.14.68) — the social graph: who this
+   astor trusts, who it ignores, per-topic trust weights, rekey
+   chain. Schema uses `peer_id = "astor:" + <32 hex>`, trust 0-100 with
+   tiered semantics, topic_index for per-topic subscriptions, separate
+   SQLite DB at `$ASTOR_DIR/identity/relationships.db`.
+
+2. **`peer_search.py`** (v1.14.73) — Demand-driven Peer Public Search
+   (PPS): on `recall`, query friends' public tier; signed requests
+   with trust ≥ 50 gate, opt-in per friend, 7-day timestamp freshness,
+   3s per-peer timeout, 1MB response cap. **NO push, NO continuous
+   pull — pure demand-driven.**
+
+What is **missing** as a documented design + a shippable surface:
+
+- **Background sync.** PPS is on-demand only; nothing pulls facts
+  continuously so a peer B can have stale or missing public content
+  until somebody searches for it. Without background sync, the public
+  tier of B diverges from A until the next search hits.
+- **REST endpoints** (`/v1/peer/*`) and **CLI** (`am peer ...`) that
+  let the existing `peer_relationships` and `peer_search` modules be
+  exercised remotely. Right now the modules are import-only.
+- **Manifest sync protocol** for the background sync (analogous to
+  PPS's signed request, but pull-based and idempotent).
+- **Tombstone propagation** so a fact deleted on peer A disappears on
+  peer B.
+- **Decision and ADR** so the user has a single document to read
+  before changing any of this — the design lives in 8 files now and
+  is hard to keep in your head.
+
+This ADR documents the existing implementation, identifies what's
+missing, and decides the missing pieces. It also commits to git-
+tracking the two untracked files so they don't get lost between
+sessions.
 
 ## Goals
 
-- **G1.** Multiple astor peers (≥ 2) on different machines can sync
-  public-tier facts without a central coordinator.
-- **G2.** Each peer retains full local control over what it accepts
-  from whom (admin allowlist + signed manifest).
-- **G3.** Sync is **public tier only**. `private_*user*` and `source`
-  never leave the originating peer, even at the wire level.
-- **G4.** Sync is **eventually consistent**. No synchronous global
-  ordering; CRDTs or last-write-wins are acceptable for v1.
-- **G5.** A peer can run **read-only** (never publishes, only
-  subscribes). Symmetric publish+subscribe is the default.
-- **G6.** The public tier remains useful for a **single peer with no
-  network** — no regression to local-only setups.
+- **G1.** Document the existing friend + trust + PPS design so future
+  agents and the user can read it from one place.
+- **G2.** Add background sync on top of the existing PPS so a peer's
+  public tier converges without requiring active search.
+- **G3.** Every existing peer operation (add/list/remove/sync/audit/
+  search) is reachable via CLI + REST, not just import.
+- **G4.** Backwards compatible: a peer running only PPS keeps working.
+- **G5.** Git-track the two untracked modules so they survive
+  sessions.
+- **G6.** Each phase ships independent value. A user who stops after
+  F1 still has a working CLI; F2 adds background sync; F3 adds gossip.
 
 ## Non-Goals
 
-- N1. Private / source / repo tier sync (deliberately out of scope;
-  tier semantics never change).
-- N2. Per-fact pub/sub for live updates (the model is bulk-sync
-  via manifest diff, not streaming).
-- N3. Central server, central index, central discovery (the design
-  is point-to-point + gossip only).
-- N4. Crypto beyond signed manifest + TLS — no end-to-end encryption
-  layer above what HTTPS / mTLS gives us.
-- N5. Mobile / embedded targets. Peers are full astor installs on
-  machines an admin runs.
-- N6. Sync during the initial install (a peer with no `peer_id` /
-  no peer public key cannot sync until `am peer init` runs).
+- N1. Sync of `private_*user*` or `source` tiers (deliberately out of
+  scope; tier semantics never change).
+- N2. Replacing the existing on-demand PPS with background sync. Both
+  coexist — background sync for convergence, PPS for explicit cross-
+  peer search.
+- N3. Central server / central index / central discovery.
+- N4. Per-fact streaming push (the model is bulk manifest + bulk fact
+  fetch; no live updates).
+- N5. End-to-end encryption above what TLS gives.
+
+## Existing design (Phase F0 — already shipped, untracked)
+
+Capture the design that's already in the repo as untracked files. This
+section is the source of truth for what's there; the implementation
+plan below is what to ADD.
+
+### Peer identity
+
+- `peer_id` format: `"astor:" + <32-hex>`. Total length ~38 chars.
+  Validated in `peer_relationships.add_peer`.
+- Ed25519 keypair per peer. Public key stored in `peer_relationships.
+  public_key`. Private key lives at `~/.astor/identity/` (chmod 0600).
+- `kind`: `friend` | `blacklist` | `whitelist` | `pending`.
+
+### Trust semantics (locked 2026-09-16, fact 12610/12611)
+
+| Range | Meaning | Sync behavior |
+|-------|---------|----------------|
+| 0 | blacklisted | auto-reject all incoming |
+| 1–29 | very low | quarantine all incoming |
+| 30 (default) | new peer | quarantine |
+| 31–49 | low | manual accept only |
+| 50–69 | medium | auto-accept with caution |
+| 70–89 | high | auto-accept, KEEP trust on rekey |
+| 90–100 | very high | auto-accept, KEEP trust on rekey, broadcast back |
+
+### Per-topic trust
+
+`topic_weights`: JSON dict, e.g. `{"poker": 0.9, "cooking": 0.4}`. Per-
+topic multiplier on the trust threshold for PPS requests. Stored in
+`peer_relationships.topic_weights`, separate table `topic_index`
+tracks (topic, peer_id, weight, fact_count, last_seen_at, source).
+
+### Rekey
+
+When a peer's identity rotates (private key compromise, migration),
+the new peer_id is published alongside `rekey_chain: [<old_ids>...]`.
+Trust ≥ 70 is preserved across rekey; trust < 70 drops back to 30.
+Stored in `rekey_log` table.
+
+### Storage location
+
+```
+~/.astor/
+├── identity/
+│   └── relationships.db   # peer_relationships + rekey_log + topic_index
+└── peer_identity/         # private key (chmod 0600)
+```
+
+### On-demand PPS (peer_search.py)
+
+- Caller builds `PeerSearchRequest` dataclass (construct-time
+  validation: invalid fields raise before the object exists).
+- Signed ed25519 over `(requestor_peer_id + query + topic + ts)`.
+- Timestamp freshness: `now-7d < ts < now+60s` (skew tolerance).
+- Trust gate: target list filtered to friends with trust ≥ 50.
+- Opt-in: friend must run `am peer allow-search <my_peer_id>` (default
+  off) before their public tier will respond.
+- Per-call caps: 20 facts, 1 MB / peer, 3 s / peer, 10 s total.
+- Read-only: results come back, caller manually adopts via
+  `am peer adopt <fact_id>` if they want to persist.
+- Tier restriction: friends only return public tier.
+
+## What's missing — Phase F1 (this ADR's decision)
+
+Add the **background manifest sync** layer on top of the existing
+social graph + PPS. Specifically:
+
+### F1.A — REST endpoints for peer operations
+
+Mount the existing module functions as REST. Admin-only.
+
+| Endpoint | Verb | Body / params | Calls |
+|----------|------|----------------|-------|
+| `/v1/peer/peers` | GET | — | `list_peers()` |
+| `/v1/peer/peers` | POST | `{peer_id, alias?, trust?, public_key?, endpoint?, topic_weights?, metadata?}` | `add_peer()` |
+| `/v1/peer/peers/<id>` | GET | — | `get_peer()` |
+| `/v1/peer/peers/<id>` | PATCH | `{trust?, alias?, endpoint?, ...}` | partial update |
+| `/v1/peer/peers/<id>` | DELETE | — | `remove_peer()` |
+| `/v1/peer/peers/<id>/trust` | POST | `{trust: 0-100}` | `update_trust()` |
+| `/v1/peer/peers/<id>/allow-search` | POST | `{allow: bool}` | (toggle opt-in) |
+| `/v1/peer/manifest` | GET | `?since=<unix_ts>` | (new) |
+| `/v1/peer/facts` | POST | `{fact_ids: [...]}` | (new) |
+| `/v1/peer/tombstone` | POST | `{fact_id, reason}` | (new) |
+| `/v1/peer/topics` | GET | — | `list_all_topics()` |
+| `/v1/peer/topics` | POST | `{topic, peer_id, weight?, source?}` | `set_topic()` |
+| `/v1/peer/topics` | DELETE | `{topic, peer_id}` | `remove_topic()` |
+| `/v1/peer/search` | POST | `{query, topic?, limit?, friends_only?}` | `dispatch_search_to_peers()` |
+| `/v1/peer/sync` | POST | `{peer_id?}` | (new — triggers pull) |
+| `/v1/peer/audit` | GET | `?since=<unix_ts>` | (new — audit log of sync events) |
+
+All `/v1/peer/*` endpoints require admin role. Sync endpoints also
+require `X-Astor-Peer-Token` header (per-peer random 256-bit secret
+stored in `peer_relationships.metadata.auth_token`).
+
+### F1.B — `am peer` CLI
+
+Wire existing module functions + new sync into a CLI subcommand:
+
+```
+am peer init [<peer_id>]              # generate keypair if missing
+am peer show                          # show my peer_id + pubkey fingerprint
+am peer add <id> [--pubkey=...] [--endpoint=...] [--trust=30]
+am peer list                          # show all relationships + last_sync + last_topic_seen
+am peer show <id>                     # one peer detail
+am peer trust <id> <0-100>            # update trust
+am peer remove <id>
+am peer sync                          # one-shot pull from all sync-enabled peers
+am peer sync --peer=<id>             # one-shot pull from one peer
+am peer allow-search <id>             # toggle my opt-in for peer <id>'s PPS queries
+am peer topic add <topic> [--peer=<id>] [--weight=1.0]
+am peer topic list
+am peer topic remove <topic> [--peer=<id>]
+am peer audit                          # recent sync events from audit log
+am peer search <query> [--topic=X] [--limit=20]   # PPS dispatch
+```
+
+### F1.C — Manifest sync protocol (new)
+
+On top of the existing social graph, add a pull-based manifest sync:
+
+1. **My manifest:** local astor computes `{"peer_id", "ts",
+   "fact_ids": [int], "manifest_sig"}` from the `public` tier bus DB
+   (only `tombstoned=0` facts, sorted by id). Signed with my
+   ed25519 private key.
+2. **Pull loop:** every `sync_interval_seconds` (default 300), for each
+   peer where `kind='friend' and trust >= 50` and `peer_sync_enabled=true`:
+   - `GET https://peer/v1/peer/manifest` (over mTLS, with
+     `X-Astor-Peer-Token`).
+   - Verify manifest_sig against peer's stored `public_key`. Reject
+     on mismatch (audit WARNING).
+   - Compute diff: facts in remote manifest NOT in my public tier.
+   - `POST /v1/peer/facts` with the diff (max 500 facts / call per
+     rate cap).
+   - For each received fact, insert into my public bus DB with
+     synthetic tags `peer:<remote_peer_id>`, `synced:<iso_ts>`. Caller
+     field set to `peer:<remote_peer_id>` for audit.
+3. **Tombstone propagation:** `POST /v1/peer/tombstone` propagates
+   deletions; receivers tombstone locally.
+4. **Manifest signature format:** canonical JSON, sorted keys, signed
+   over `{"peer_id", "ts", "fact_ids"}` (signature excluded from the
+   signed bytes).
+5. **Replay window:** reject manifests with `ts` older than 5 minutes
+   (clock-skew tolerance).
+6. **LWW conflict resolution:** if both peers have a fact with same
+   `stable_id`, the one with newer `last_confirmed_at` wins; tie =
+   keep both, dedup at read time.
+
+### F1.D — Rate limiting & backpressure
+
+Per-peer caps in `peer_relationships.metadata`:
+- `max_facts_per_pull = 500` (default)
+- `max_concurrent_pulls = 2`
+- `pull_timeout_seconds = 30`
+- `burst_limit = 1000` per 60 s
+
+A peer exceeding burst gets auto-quarantined for 10 minutes (WARNING
+audit row, sync paused).
+
+### F1.E — Git-track the untracked files
+
+Add `peer_relationships.py` and `peer_search.py` to the repo. They
+should be in v1.14.63+ once committed. Update CHANGELOG.
+
+## Considered Options
+
+### A — Replace existing PPS with background sync
+- Pro: simpler model.
+- Con: loses on-demand search; breaks backwards compat.
+- **Decision: rejected.** PPS + background sync coexist; they serve
+  different access patterns (push vs pull, on-demand vs continuous).
+
+### B — Central relay
+- Pro: simplest sync.
+- Con: violates user's "no central" constraint.
+- **Decision: rejected.**
+
+### C — Pull-based manifest sync on top of existing social graph (chosen)
+- Pro: deterministic, auditable, works offline, builds on what's there.
+- Con: still no auto-discovery; admin maintains `peer_relationships`.
+- **Decision: chosen.** Auto-discovery is non-goal N3.
+
+## Implementation Plan
+
+### F1.1 — Endpoints + CLI (smallest shippable unit)
+
+1. **REST endpoints** (`server.py`): add `/v1/peer/*` routes.
+   - Map each route to existing `peer_relationships` module function.
+   - Sync routes (`/v1/peer/manifest`, `/v1/peer/facts`,
+     `/v1/peer/tombstone`, `/v1/peer/sync`) call into a new
+     `astor_memory/peer/sync.py` module.
+   - PPS route (`/v1/peer/search`) calls existing
+     `peer_search.dispatch_search_to_peers`.
+   - Auth: admin role + `X-Astor-Peer-Token` header check.
+
+2. **CLI subcommand** (`cli/main.py`):
+   - `am peer init|show|add|list|show|trust|remove|sync|allow-search|
+     topic|audit|search`.
+   - Wire to existing functions.
+
+3. **Tests** (`tests/test_peer_endpoints.py` + `tests/test_peer_cli.py`):
+   - Two test peers on ports 7803 + 7805 sharing the same peer DB.
+   - Add peer via CLI; verify it shows in `/v1/peer/peers`.
+   - Seed fact on 7803 public tier; trigger sync on 7805; assert
+     fact appears in 7805's public DB with `peer:<id>` tag.
+
+4. **CHANGELOG** entry for v1.14.63 (or whatever the ship target is).
+
+### F1.2 — Background sync daemon
+
+1. `astor_memory/peer/sync.py` — `pull_from_peer(peer_entry,
+   astor_dir) -> SyncReport`. Idempotent (re-runnable).
+2. `astor_memory/peer/daemon.py` — optional daemon loop. Default off
+   (admin opts in via `peer_sync_enabled = true` in
+   `peer_relationships.metadata`). Falls back to one-shot
+   `am peer sync` cron if daemon is undesirable.
+3. `am peer sync` (one-shot) usable as a systemd timer / cron job for
+   the daemon-free path.
+4. Audit log rows for every sync (success / failure / rate-limit /
+   quarantine).
+
+### F1.3 — Rate limiting + backpressure + quarantine
+
+1. Per-peer caps stored in `peer_relationships.metadata`.
+2. `astor_memory/peer/rate_limit.py` — sliding-window counter.
+3. Auto-quarantine on burst violation (trust → 1 for 10 minutes).
+
+### F1.4 — CHANGELOG + ADR revisions
+
+Update ADR 0008 to reflect what F1 actually shipped (vs what was
+planned here).
 
 ## Architecture at a Glance
 
 ```
-┌─────────────────┐         ┌─────────────────┐
-│  peer A          │         │  peer B          │
-│  peer_id: alice   │ ◄────► │  peer_id: bob     │
-│  public_key: A   │  sync   │  public_key: B   │
-│  ┌─────────────┐ │  over  │  ┌─────────────┐ │
-│  │ public tier  │ │ HTTPS /│  │ public tier  │ │
-│  │ astor_bus_   │ │ mTLS / │  │ astor_bus_   │ │
-│  │ public.db    │ │gossip  │  │ public.db    │ │
-│  └─────────────┘ │        │  └─────────────┘ │
-│  + am peer ...   │         │  + am peer ...   │
-└─────────────────┘         └─────────────────┘
-       ▲                              ▲
-       │                              │
-       └────── /v1/peer/sync ────────┘
-              (admin allowlist)
+┌──────────────────────┐         ┌──────────────────────┐
+│  peer A                │         │  peer B                │
+│  peer_id: astor:a1b2   │ ◄─────► │  peer_id: astor:c3d4   │
+│  pubkey: ed25519:AAAA   │  HTTPS   │  pubkey: ed25519:CCCC  │
+│  trust(B) = 70         │  mTLS    │  trust(A) = 70        │
+│  ┌──────────────────┐ │  /v1/    │  ┌──────────────────┐ │
+│  │ public tier       │ │  peer/   │  │ public tier       │ │
+│  │ astor_bus_public  │ │  manifest│  │ astor_bus_public  │ │
+│  │ .db               │ │  facts   │  │ .db               │ │
+│  └──────────────────┘ │  tombstone│  └──────────────────┘ │
+│  + peer_relationships  │         │  + peer_relationships  │
+│    db (trust, etc.)     │         │    db (trust, etc.)     │
+│  + PPS (on-demand)      │         │  + PPS (on-demand)      │
+│  + background sync (F1.2)│         │  + background sync (F1.2)│
+└──────────────────────┘         └──────────────────────┘
+                ▲                              ▲
+                └──── am peer CLI / REST ──────┘
 ```
-
-## Considered Options
-
-### A — Central relay server
-A single always-on relay that all peers push to and pull from.
-- Pro: simplest sync semantics.
-- Con: violates G2/G3 in spirit (relay can inspect or drop facts);
-  contradicts user's "no central" constraint; operationally fragile.
-
-### B — Gossip / epidemic
-Each peer gossips its manifest to N random peers on a timer;
-receivers pull diffs lazily.
-- Pro: scales to hundreds of peers; no fixed topology.
-- Con: eventually consistent with long convergence tails; harder to
-  reason about for ≤ 10 peers (the realistic fleet size).
-
-### C — Static peer allowlist + pull-based diff (chosen)
-Each peer has `~/.astor/peers.toml` listing trusted peer endpoints
-(`https://host:port`). Each peer periodically pulls `/v1/peer/manifest`
-from each trusted peer, computes the diff, and fetches missing facts
-via `/v1/peer/facts?ids=...`.
-- Pro: deterministic; auditable; works offline; trivially testable
-  with two peers on one machine on different ports.
-- Con: doesn't auto-discover peers (admin adds them by hand).
-
-**Decision: C.** Convergence within the realistic fleet (≤ 10
-peers) is fast (one pull every N minutes per peer). Auto-discovery is
-explicitly out of scope (N3). When the fleet grows, the same
-allowlist can be reused by a thin gossip layer in Phase F3.
-
-### D — Push-based (peer A pushes whenever it writes)
-- Pro: lower latency.
-- Con: requires every peer to know every other peer; pushes don't
-  survive downtime (need queues); denial-of-service surface.
-
-**Decision: pull-based.** Push is a Phase F3 optimization for
-high-churn public tiers.
-
-## Decision
-
-Adopt **option C (static peer allowlist + pull-based diff)** as the
-federation model. Phase F1 ships a minimum-viable version of all nine
-mechanism groups listed in §Implementation Plan; later phases harden
-each one.
-
-## Detailed Design
-
-### 1. Peer Identity
-
-- Each peer has a stable `peer_id` (string, kebab-case, 1-64 chars)
-  and an ed25519 keypair. The private key never leaves the peer.
-- Keypair lives at `~/.astor/peer_identity/` (private key chmod 0600).
-- Public key is published in the peer manifest; receivers verify
-  signatures against the allowlist-known pubkey.
-- `am peer init <peer_id>` generates a keypair if missing.
-- `am peer show` prints peer_id + public key fingerprint.
-- Migration: if no peer_id is set, the peer is **single-node only**
-  — sync endpoints return 403 until `am peer init` runs.
-
-### 2. Discovery
-
-- No mDNS, no bootstrap nodes, no DHT (per N3).
-- Admin maintains `~/.astor/peers.toml`:
-
-  ```toml
-  [[peer]]
-  id            = "alice-laptop"
-  base_url      = "https://alice.lan:7803"
-  public_key    = "ed25519:abcd1234..."
-  allow_publish = true   # false = read-only pull from this peer
-  last_seen_ts  = 0       # filled in by sync loop
-
-  [[peer]]
-  id            = "bob-server"
-  base_url      = "https://bob.example.com:7803"
-  public_key    = "ed25519:efgh5678..."
-  allow_publish = false
-  last_seen_ts  = 0
-  ```
-
-- Sync loop reads this file every `sync_interval_seconds` (default
-  300 = 5 min).
-
-### 3. Sync Protocol
-
-For each peer in `peers.toml`:
-
-1. **Fetch manifest:** `GET /v1/peer/manifest?since=<last_manifest_ts>`
-   - Returns: `{peer_id, ts, fact_ids: [int], manifest_sig: ...}`
-   - The manifest is signed by the source peer's private key.
-   - `since` is optional; if omitted, full manifest.
-2. **Verify signature** against the configured `public_key` for that
-   peer_id. Mismatch → log warning, skip peer this round.
-3. **Compute diff:** local `public` facts minus remote `fact_ids`.
-4. **Fetch missing facts:** `POST /v1/peer/facts {fact_ids: [...]}`
-   - Returns a list of fact rows (same shape as `/v1/read/multi`).
-5. **Apply locally:** insert into public bus DB. Tags get a synthetic
-   `peer:<peer_id>` prefix so the receiver can later prove the origin
-   (audit trail).
-6. **Update `last_seen_ts` + `last_manifest_ts`** in `peers.toml`.
-
-Sync is single-direction per round: the receiver never auto-replies
-back unless the receiver also pulls in its own loop. This keeps
-topology explicit.
-
-### 4. Conflict Resolution
-
-- **LWW (last-write-wins) on `last_confirmed_at`** — if both peers
-  have a fact with the same `stable_id`, the one with the newer
-  `last_confirmed_at` wins. Ties: keep both, dedup at read-time by
-  `stable_id`.
-- **No CRDTs in v1.** Rationale: the public tier is admin-curated
-  (LOCK-rule-ship'd) so churn is low; CRDTs would be over-engineering.
-- **Tombstones propagate.** If peer A tombstones a fact it previously
-  published, peer B sees the tombstone in the next manifest pull and
-  tombstones locally.
-
-### 5. Tier Semantics at Receive Side
-
-- Synced facts land in the **public** tier only. Private/source/repo
-  tiers are unreachable from the sync protocol.
-- Public facts arriving from a peer are NOT auto-promoted to higher
-  tiers locally. They stay public. If the local LOCK rule evaluator
-  (`/v1/classify` Path 2) needs them, it'll find them.
-- Tag enrichment: each synced fact gets `peer:<source_peer_id>` and
-  `synced:<iso_ts>` added to its tags so audit can distinguish
-  locally-authored from peer-authored.
-
-### 6. Rate Limiting & Backpressure
-
-- **Default caps** (admin-tunable in `peers.toml` per-peer):
-  - `max_facts_per_pull = 500` (per round)
-  - `max_concurrent_pulls = 2`
-  - `pull_timeout_seconds = 30`
-- On rate-limit hit, receiver applies **backpressure**: returns
-  `429 Too Many Requests` with `Retry-After`. Sender halves
-  `sync_interval_seconds` for that peer (with floor).
-- Hard cap: a peer sending > `burst_limit` in any 60-second window
-  gets **auto-quarantined** for 10 minutes (logged at WARNING level,
-  alert row written to audit log).
-
-### 7. Manifest & Signature
-
-- **Manifest** = sorted list of public-tier fact_ids + the peer's
-  current manifest timestamp.
-- Format: `{"peer_id": "alice-laptop", "ts": 1700000000,
-  "fact_ids": [1, 2, 3, ...], "manifest_sig": "ed25519:<base64>"}`
-- Signature covers everything except `manifest_sig` itself
-  (canonical JSON, sorted keys, no whitespace).
-- Verification: receiver decodes signature with the allowlist
-  public_key; reject on mismatch.
-- Manifests are NOT chained (each is independent). A peer that
-  missed 3 syncs can re-sync by omitting `since`.
-
-### 8. Security Boundaries
-
-- **Transport:** HTTPS or mTLS. The sync HTTP client MUST verify
-  TLS cert (no `verify=False`).
-- **Auth:** The peer endpoints (`/v1/peer/*`) require a `X-Astor-Peer-Token`
-  header. Token = a per-peer random 256-bit secret, stored in
-  `peers.toml` as `auth_token = "..."`. Server side validates the token
-  matches the peer_id; mismatch → 401.
-- **Body content:** Manifest + facts payload are NOT additionally
-  encrypted — the tier semantics + LOCK-rule path already keep PII out
-  of public. We rely on TLS for in-transit confidentiality.
-- **Replay protection:** Each manifest carries `ts`; receivers reject
-  manifests older than 5 minutes (clock skew tolerance).
-
-### 9. Phased Rollout
-
-| Phase | Scope | Ship target |
-|-------|-------|--------------|
-| **F1 (MVP)** | Identity + manifest endpoint + pull-based diff + admin CLI for peer add/list. One-direction. No rate limiting. Tombstones propagate. | 1-2 weeks |
-| **F2 (Hardening)** | Signatures enforced, rate limits, backpressure, audit log entries, replay window, peer quarantine. | 1-2 weeks |
-| **F3 (Scale)** | Gossip overlay (peers pull from peers they trust, who in turn pull from *their* peers), conflict reduction via vector clocks. | Later |
-| **F4 (GA)** | Multi-region replication, conflict-free merge for tags / metadata. | Later |
-
-F1 alone gets us from "single peer" to "two peers sync the public
-tier". That's enough to test the design end-to-end before committing
-to the heavier F2 work.
-
-## API surface (new endpoints)
-
-All peer endpoints live under `/v1/peer/*` and require admin
-(allowlist membership) + `X-Astor-Peer-Token`.
-
-### `GET /v1/peer/manifest?since=<unix_ts>`
-
-Response 200:
-```json
-{
-  "peer_id": "alice-laptop",
-  "ts": 1700000000,
-  "fact_ids": [12, 13, 14],
-  "manifest_sig": "ed25519:<base64>"
-}
-```
-
-Response 403: peer not initialized (`am peer init` first).
-
-### `POST /v1/peer/facts`
-
-Request:
-```json
-{ "fact_ids": [12, 13] }
-```
-
-Response 200: list of fact rows, same shape as `/v1/read/multi` (only
-public tier, only non-tombstoned).
-
-Response 400: too many ids (over `max_facts_per_pull`).
-
-### `POST /v1/peer/tombstone`
-
-Request:
-```json
-{ "fact_id": 14, "reason": "duplicate of 12 after merge" }
-```
-
-Response 200: `{ "tombstoned": 14 }`.
-
-Response 403: not admin.
-
-## CLI surface
-
-```
-am peer init [<peer_id>]              # generate keypair if missing
-am peer show                          # show peer_id + public key fingerprint
-am peer add <id> <base_url> [--pubkey=...] [--readonly]
-am peer list                          # show allowlist + last_seen + status
-am peer remove <id>
-am peer sync                          # one-shot pull from all peers
-am peer sync --peer=<id>             # one-shot pull from one peer
-am peer audit                          # show recent sync events from audit log
-```
-
-## Implementation Plan (F1 detail)
-
-Files to add (in approximate order):
-
-1. **`astor_memory/_internal/peer_identity.py`**
-   - Generate / load ed25519 keypair at `~/.astor/peer_identity/`.
-   - `peer_id()`, `public_key_b64()`, `sign(data)`, `verify(data, sig, pubkey)`.
-
-2. **`astor_memory/peer/manifest.py`**
-   - `compute_manifest(astor_dir) -> dict` — sorted fact_ids + ts.
-   - `sign_manifest(manifest, private_key) -> str` — return base64 sig.
-   - `verify_manifest(manifest, signature, public_key) -> bool`.
-
-3. **`astor_memory/peer/sync.py`**
-   - `pull_from_peer(peer_entry, astor_dir) -> SyncReport`.
-   - `apply_remote_facts(facts, source_peer_id, astor_dir) -> int` —
-     inserts into public bus DB with synthetic peer tags.
-
-4. **Server endpoints** (`astor_memory/server.py`):
-   - `GET /v1/peer/manifest` (admin + peer token)
-   - `POST /v1/peer/facts` (admin + peer token)
-   - `POST /v1/peer/tombstone` (admin)
-
-5. **`astor_memory/cli/peer.py` + wire into `cli/main.py`**:
-   - `am peer init|show|add|list|remove|sync|audit`
-
-6. **Tests** (`tests/test_peer_sync.py`):
-   - Two test peers on ports 7803 + 7805 with a shared peer allowlist.
-   - Seed fact on 7803, run `am peer sync` on 7805, assert fact
-     appears in 7805's public bus DB with `peer:alice-laptop` tag.
-
-7. **CHANGELOG entry** for F1.
-
-## Open Questions
-
-- **Q1.** Should `am peer sync` be a one-shot CLI command or a
-  background daemon (systemd / `nohup` loop)? Defer to F2.
-- **Q2.** When peer B receives peer A's facts, do we also re-run the
-  local LOCK rule evaluator on them, or trust the sender's tags?
-  Default in F1: trust sender's tags; re-evaluate in F3.
-- **Q3.** Tombstone propagation: do we propagate *deletions* of
-  rule_ship'd rules? Yes — once a peer tombstones, all peers
-  tombstone. No "undo over federation" in v1.
-- **Q4.** What about source-tier admin facts that should be readable
-  cross-peer (e.g. shared admin guidelines)? Out of scope — source
-  tier never syncs. Admin can manually re-publish if needed.
 
 ## Security Considerations
 
-- A compromised peer can sign manifests as itself; receivers verify
-  the signature against the **allowlist-stored public_key**, so a
-  compromised peer cannot impersonate another. To add/rotate a
-  peer's key, the admin edits `peers.toml` and restarts the sync
-  loop.
-- A peer that consistently sends bad signatures or stale manifests
-  gets **auto-quarantined** (see §6) and the admin gets a
-  `WARNING` audit row.
-- Private-tier data never crosses the wire. Source-tier admin facts
-  also never cross (per G3). A misbehaving peer can only inject or
-  hide PUBLIC content — which is the explicit trust boundary.
-- Token storage: per-peer `auth_token` is stored in `peers.toml`
-  with chmod 0600 on the receiving peer. Rotation is by file edit.
+- **Transport:** HTTPS or mTLS. Client MUST verify TLS cert.
+- **Auth (REST endpoints):** admin role + `X-Astor-Peer-Token` header.
+  Token = per-peer random 256-bit secret, stored in
+  `peer_relationships.metadata.auth_token` (chmod 0600 on the
+  receiving peer).
+- **Auth (PPS):** ed25519 signature on every request, 7-day freshness,
+  replay window.
+- **Manifest signature:** ed25519 over canonical-JSON payload
+  (`peer_id`, `ts`, sorted `fact_ids`). Receiver verifies against
+  allowlist-stored public_key.
+- **Replay protection:** manifests older than 5 minutes rejected.
+- **Tombstones propagate:** if peer A tombstones a fact, all
+  tombstone-listening peers see it in the next sync.
+- **A compromised peer can only inject/withhold PUBLIC content.**
+  Private tier never crosses the wire; tier semantics enforced at the
+  receiver's local LOCK-rule path.
+- **Rekey chain:** trust ≥ 70 survives rekey; < 70 drops to 30
+  (quarantine). Audited in `rekey_log`.
 
 ## Rollback
 
-- F1 ships behind a feature flag `peer_sync_enabled = false` in
-  `peers.toml` (default off). Admin opts in per-peer.
-- If a sync misbehaves, admin sets `peer_sync_enabled = false` for
-  that peer or runs `am peer remove <id>` to drop it.
-- Sync never deletes local data (only adds + tombstones tombstoned
-  facts). To undo a bad sync, admin can re-seed affected facts and
-  manually tombstone the bad ones.
+- Each F1.X phase ships behind `peer_sync_enabled = false` per peer
+  (or daemon opt-out). Admin enables incrementally.
+- Misbehaving peer: `am peer trust <id> 0` (blacklist) or
+  `am peer remove <id>`.
+- Sync never deletes local data (only adds + tombstones facts already
+  tombstoned upstream). Admin can re-seed and manually tombstone bad
+  rows.
 
 ## Consequences
 
 ### Positive
 
-- Multiple peers can share the public tier without a central server.
-- Each peer remains the sole authority over its own private tier.
-- Sync is deterministic, auditable, and offline-resilient.
-- Phased rollout (F1 → F4) lets us ship value early and harden later.
+- The 8-file design collapses to one ADR. Future agents + the user
+  can read this single document.
+- The two existing untracked modules get git-tracked, surviving
+  sessions.
+- Background sync complements PPS: peer B's public tier converges
+  with peer A's without requiring active queries.
+- Reuses existing trust model + rekey chain — no parallel infra.
 
 ### Negative
 
-- Manual peer configuration (`peers.toml` editing). Acceptable for
-  ≤ 10 peers; will need a discovery layer past that.
-- LWW conflict resolution can lose data in pathological concurrent
-  edit scenarios. Public tier is admin-curated so this is unlikely;
-  F4 will revisit.
-- Public tier becomes a shared resource across machines; admins
-  must agree on curating LOCK rules carefully (a bad `rule_ship`
-  rule in one peer's LOCK rules now propagates to all peers).
+- A new admin surface (CLI + 13 REST routes) to maintain.
+- Sync adds write-side DB activity that doesn't exist today
+  (every 5 minutes per peer) — small but real.
+- The peer_id format change (`astor:<32hex>`) is locked in; any
+  existing peer with a different format needs to migrate.
 
 ### Neutral
 
-- Adds 3 new REST endpoints (`/v1/peer/*`), 1 new internal module
-  family (`astor_memory/peer/`), 1 new identity module
-  (`_internal/peer_identity.py`), 1 new CLI subcommand family
-  (`am peer`). Total new surface: ~600 lines Python + tests.
+- On-demand PPS stays as-is. Background sync is additive.
+- Admin's `peers.toml` becomes `peer_relationships` (DB-backed).
+- Total new surface: ~400 lines (routes + sync + CLI) + tests.
+
+## Open Questions
+
+- Q1. Should `am peer sync` be one-shot CLI (cron-friendly) or a
+  background daemon by default? Default to one-shot, daemon is opt-in.
+- Q2. When peer B receives peer A's facts, do we also re-run the
+  local LOCK rule evaluator on them, or trust the sender's tags?
+  Default: trust sender's tags, re-evaluate on demand.
+- Q3. What about source-tier admin facts that should be readable
+  cross-peer (e.g. shared admin guidelines)? Out of scope; admin can
+  re-publish to public tier if needed.
+- Q4. Does the trust ≥ 70 "broadcast back" semantic interact with the
+  pull-only sync model? "Broadcast back" implies push; defer to F2.
+
+## References
+
+- `astor_memory/_internal/peer_relationships.py` (v1.14.68) —
+  existing schema, friend + trust + rekey. Untracked; commit as
+  part of F1.
+- `astor_memory/_internal/peer_search.py` (v1.14.73) — existing PPS
+  on-demand search. Untracked; commit as part of F1.
+- `astor_memory/_internal/platform_bridge.py` — Hermes-Telegram
+  bridge; reference for how peer ops interact with the bot layer.
+- `docs/adr/0001-9db-layout.md` — tier isolation (G3 foundation).
+- `docs/adr/0007-consolidate.md` — recent ship pattern for context.
