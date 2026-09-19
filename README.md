@@ -1,6 +1,6 @@
 # Astor-Memory
 
-> **Self-owned memory system for AI agents.** Three stores, three tiers, zero vendor lock-in.
+> **Self-owned memory system for AI agents.** Three stores, three tiers, federated public tier, zero vendor lock-in.
 
 > **中文文档:** [README.zh-CN.md](README.zh-CN.md) | **Architecture 中文:** [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md) | **API 中文:** [docs/api.zh-CN.md](docs/api.zh-CN.md) | **Dashboard:** [docs/dashboard.md](docs/dashboard.md)
 
@@ -78,6 +78,7 @@ If you've felt any of these, Astor-Memory is built for you.
 | **Lifecycle that self-evolves** | Ebbinghaus-style decay + cosine-merge + promote-after-3-occurrences. Agents actively forget, merge, and graduate facts to rules. |
 | **Append-only + revision tracking** | Updates create new revisions; old content stays queryable for audit. No silent overwrites. |
 | **Cross-LLM adapter** | A recall() output trained on Qwen2.5-7B still works as guidance for GPT-5-mini. Insight from Mem-π paper. |
+| **Peer-to-peer public tier sync** | Multiple Astor instances sync their `public` tier directly — no central server. Per-peer trust (0-100) + per-topic weights let you curate what to share with whom. Private / source tiers never cross the boundary. See [ADR 0008](docs/adr/0008-peer-public-network.md). |
 
 ---
 
@@ -231,33 +232,21 @@ if _p:
 
 Works for Codex / Claude Code / any MCP-compliant agent runtime.
 
-## Roadmap — peer-to-peer public tier sync (design phase)
+## Roadmap — peer-to-peer public tier sync
 
-Today every Astor-Memory deployment is a single-server island. The **public** tier (shared knowledge base: methods, models, rules, flows) only reaches users on the same server. The next ship cycle adds **peer-to-peer public tier sync** so two (or more) Astor-Memory instances owned by trusted peers can keep their public tier in sync — without leaking private tier across the boundary.
+The detailed design lives in [ADR 0008](docs/adr/0008-peer-public-network.md) (status: accepted, 2026-09-19). Key decisions:
 
-### Target design (locked 2026-09-16, R12593)
+- **Identity**: ed25519 keypair per peer, `peer_id` format `astor:<32hex>`. Storage at `~/.astor/identity/relationships.db` (separate from memory DBs).
+- **Trust**: 0-100 scale with tiered semantics — 0 = blacklist (auto-reject), 30 = default for new peers (quarantine), 50+ = auto-accept, 70+ = KEEP trust on rekey, 90+ = broadcast-back. Per-topic weights further modulate trust.
+- **Sync model**: pull-based manifest diff on the **public** tier only. Private / source / repo tiers never cross the boundary. Conflict policy: last-write-wins by `last_confirmed_at`, ties keep both + dedup at read time by `stable_id`.
+- **Companion**: demand-driven PPS (Peer Public Search) for on-demand cross-peer search — signed ed25519 request, trust ≥ 50 gate, friend opt-in, 7-day timestamp freshness, 1MB / 3s per-peer caps. Read-only; manual adopt to persist.
+- **Schedule**:
+  - **F1** (current): git-track `peer_relationships.py` + `peer_search.py`, add `/v1/peer/*` REST endpoints + `am peer` CLI.
+  - **F2**: background sync daemon (manifest pull every 5 min per peer).
+  - **F3**: gossip overlay, vector clocks, broadcast-back for trust ≥ 90.
+  - **F4** = GA: multi-region replication, CRDT merges.
 
-- **New endpoint**: `POST /v1/peer/sync` (peer-to-peer only, separate from `/v1/read`+`/v1/write` rate-limit buckets — see R12593).
-- **Handshake**: per-peer shared token in `bot-binding.db` `peers` table; `actor_type='peer'` bypasses the per-actor free/vip/power rate-limit gate.
-- **Transport**: pull-based (peer A asks peer B "give me public facts with `updated_at > X`") — simpler than push and lets each peer throttle inbound.
-- **Conflict policy**: `stable_id` + `revision` columns already in `memory_canonical` (schema v9+) — last-write-wins by revision, ties broken by `lexicographic stable_id`.
-- **What does NOT cross the boundary**: `private` tier facts, `source` tier facts, audit events, embed vectors (re-embed locally), `user_meta.role`/`subscription_plan`.
-- **What crosses**: only `tier='public'` + `tombstoned=0` facts, plus their `keywords` for dedup.
-
-### Why peer (not federation / not single-tenant SaaS)
-
-- **Peer = trusted small group** (3-10 admin peers who know each other's real identity). Single-direction trust: `peers` table holds shared secrets; no global PKI needed.
-- **Federation** (open protocol with arbitrary nodes) needs identity + reputation layer — too much for v1.
-- **Single-tenant SaaS** centralizes trust in one operator — defeats the "self-owned memory" thesis of Astor-Memory.
-
-### Open questions before ship
-
-1. **Pull interval**: cron? on-write-trigger (push-style)? per-peer negotiated? — R12593 lock: cron-pull baseline (e.g. every 30min).
-2. **Fact payload size**: 1 fact per request, or batched up to N per pull? — defer to design.
-3. **Sync direction symmetry**: both peers pull each other, or one is "primary" + others pull from primary? — defer to design.
-4. **Audit**: `peers` table gets a `last_sync_at` + `last_sync_facts_count` column so admin can see what crossed the boundary.
-
-If you want to drive this, the first ship cycle is: design doc (`docs/peer-sync.md`) → `bot-binding.db.peers` table schema → `POST /v1/peer/sync` handler (no per-actor limit, returns public facts since `since_ts`) → smoke test against 2 local instances.
+The earlier R12593 design (single shared token in `bot-binding.db.peers` table) was replaced by this ADR — see commit log for the rewrite history. Implementation files for F1: `astor_memory/_internal/peer_relationships.py` (friend + trust + rekey), `astor_memory/_internal/peer_search.py` (PPS).
 
 ## Inspired by, not copied from
 
