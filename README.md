@@ -4,6 +4,8 @@
 
 > **中文文档:** [README.zh-CN.md](README.zh-CN.md) | **Architecture 中文:** [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md) | **API 中文:** [docs/api.zh-CN.md](docs/api.zh-CN.md) | **Dashboard:** [docs/dashboard.md](docs/dashboard.md)
 
+> **Coming: peer-to-peer public tier federation (ADR 0008).** Multiple astor instances owned by trusted peers will sync their `public` tier directly — no central server, no remote-direct RPC. Per-peer trust (0-100) + per-topic weights let curating admins decide what to share with whom. Private / source tiers never cross the boundary. F1 lands `/v1/peer/*` REST endpoints + `am peer` CLI on top of the existing `peer_relationships.py` schema.
+
 ---
 
 ## Who this is for
