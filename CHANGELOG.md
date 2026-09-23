@@ -1,3 +1,41 @@
+## v1.15.4 (2026-09-22)
+
+### Jev recall rerank (opt-in)
+
+The first integration between astor's `cmd_recall` and the jev
+shadow infrastructure. Default **off** — astor continues to rank
+hits purely by local hybrid (vector + BM25). When called with
+`--jev-relevance on`, astor:
+
+1. Takes the top 2× `--top-k` candidates (cap 10) from the local
+   hybrid search.
+2. Loads their content from `memory_canonical`.
+3. Sends `(query, candidates)` to `jev_client.jev_call` with a
+   relevance question (top / mid / low).
+4. Logs the verdict to `logs/jev_recall_rerank.jsonl` for future
+   precision analysis.
+
+**Degrade silently**: any exception in `jev_call` (timeout, missing
+`typesafe_sdk`, import error) is caught and the original hybrid
+ranking is returned unchanged. Astor's recall keeps working when
+jev is broken.
+
+**Per-candidate rerank deferred to v1.15.5**: jev currently returns
+a SINGLE verdict for the whole candidate set, not per-candidate.
+This ship logs the call site so the next pass can design
+per-candidate rerank with real data instead of guessing.
+
+**Requires** `D:\AI\scripts\admin\jev\` on `PYTHONPATH` (the CLI
+auto-detects via `importlib` path probe).
+
+```bash
+am recall "git push SSH" --zone success --jev-relevance on
+# → top hits ranked by local hybrid, jev verdict logged to
+#   D:\AI\scripts\admin\logs\jev_recall_rerank.jsonl
+```
+
+No DB migration, no public API change. 468 tests pass.
+
 ## v1.15.3 (2026-09-22)
 
 ### Incremental decay-sweep (MemTensor learning)

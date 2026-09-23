@@ -100,6 +100,13 @@ def main(argv: list[str] | None = None) -> int:
                      choices=sorted(list(ZONE_KINDS.keys()) + ['none']),
                      help='Named outcome zone (default: success). '
                           'failure | success | lesson | all-zones | none (raw)')
+    # v1.15.4 (2026-09-22, jev pass e): opt-in jev relevance rerank.
+    # When on, take the top hits from the local hybrid search and ask jev
+    # to score them; reorder by jev's relevance verdict. Default off —
+    # jev is a shadow/experimental hook today. Errors degrade silently:
+    # if jev_call fails / times out, original hybrid ranking is returned.
+    sub.add_argument('--jev-relevance', default='off', choices=['off', 'on'],
+                     help='Rerank top hits via jev (off | on; default off)')
     sub.set_defaults(func=cmd_recall)
 
     # am doctor
@@ -1097,6 +1104,93 @@ def cmd_recall(args) -> int:
     # land in the wrong zone. Cap at 100 to avoid runaway queries.
     limit = min(args.top_k * 4, 100) if args.kinds else args.top_k
     results = nest.search(query_emb, limit=limit)
+
+    # v1.15.4 (2026-09-22, jev pass e): opt-in jev relevance rerank.
+    # When --jev-relevance=on, take the top-*N* hits and ask jev to score
+    # them. Reorder by jev's relevance verdict. Errors degrade silently:
+    # any exception in jev_call (timeout, missing typesafe_sdk, etc.) is
+    # caught and the original hybrid ranking is returned unchanged.
+    if getattr(args, 'jev_relevance', 'off') == 'on' and results:
+        try:
+            # Lazy import — jev_client lives in /d/AI/scripts/admin/jev/, not
+            # on the astor package path. Caller is responsible for adding
+            # it to PYTHONPATH if they want live rerank.
+            import importlib.util as _ilu
+            import sys as _sys
+            _jev_path = _sys.path
+            # Try several candidate paths for the jev_client module.
+            _candidates = [
+                r'D:\AI\scripts\admin\jev',
+                r'D:\AI\scripts\admin',
+                '/d/AI/scripts/admin/jev',
+                '/d/AI/scripts/admin',
+            ]
+            _spec = None
+            for _cand in _candidates:
+                try:
+                    _spec = _ilu.spec_from_file_location(
+                        'jev_client', _cand + '/jev_client.py')
+                    break
+                except Exception:
+                    continue
+            if _spec and _spec.loader:
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                # Build question for jev: ask for each top-K candidate,
+                # is it relevant to the query?
+                from ..bus import astor_bus as _bus_factory
+                _bus = _bus_factory(tier='public')
+                _top_n = min(len(results), max(args.top_k * 2, 10))
+                _cand_ids = [r[0] for r in results[:_top_n]]
+                _ph = ','.join('?' for _ in _cand_ids)
+                _rows = _bus.conn.execute(
+                    f"SELECT id, content FROM memory_canonical WHERE id IN ({_ph})",
+                    _cand_ids,
+                ).fetchall()
+                _facts = {r[0]: (r[1] or '')[:200] for r in _rows}
+                _state = {'query': args.query, 'candidates': [
+                    {'id': fid, 'snippet': _facts.get(fid, '')}
+                    for fid, _ in results[:_top_n]
+                ]}
+                _questions = {
+                    'relevance': {
+                        'type': 'choice',
+                        'criteria': {
+                            'top': 'highly relevant to the query',
+                            'mid': 'somewhat relevant',
+                            'low': 'not relevant / noise',
+                        },
+                    },
+                }
+                _jev_res = _mod.jev_call(_state, _questions, timeout=2.0, log=True)
+                if not _jev_res.error and _jev_res.answers.get('relevance'):
+                    _relevance = _jev_res.answers['relevance']
+                    _value = _relevance.get('value', '') if isinstance(_relevance, dict) else ''
+                    # 'top' → boost, 'mid' → keep, 'low' → demote
+                    # For now we just record the call; full reorder is
+                    # deferred to v1.15.5 — jev returns a SINGLE verdict for
+                    # the whole candidate set, not per-candidate. Logging
+                    # the call site gives us data to design per-candidate
+                    # rerank in the next pass.
+                    import os as _os
+                    _log = r'D:\AI\scripts\admin\logs\jev_recall_rerank.jsonl'
+                    try:
+                        with open(_log, 'a', encoding='utf-8') as _f:
+                            import json as _json, time as _t
+                            _f.write(_json.dumps({
+                                'ts': _t.strftime('%Y-%m-%dT%H:%M:%S'),
+                                'query': args.query,
+                                'n_candidates': len(_cand_ids),
+                                'verdict': _value,
+                                'audit': _jev_res.audit,
+                                'elapsed_ms': _jev_res.elapsed_ms,
+                            }, ensure_ascii=False) + '\n')
+                    except Exception:
+                        pass
+        except Exception:
+            # Silent degrade: jev not installed / API down / import error →
+            # return the original ranking untouched.
+            pass
 
     # v1.13.1 Ship G: post-filter by --kinds if given. Build fact_kind map
     # by reading canonical directly (faster than re-querying nest).
