@@ -1,3 +1,38 @@
+## v1.15.8 (2026-09-22)
+
+### RRSI pass c: edit-budget alias + roadmap spec
+
+The smallest ship that completes the easy half of the RRSI paper
+mapping:
+
+NEW `am decay-sweep run --max-sweep-size N` flag — an alias for
+`--limit N`, named after the RRSI paper's "edit budget per round"
+concept. Same SQL, same audit, same behavior; just lets future
+cron scripts match the paper's vocabulary. Verified end-to-end:
+`--max-sweep-size 5` caps eligible to 5 (legacy `--limit 500`
+returns 310 at max_imp=1.0 max_access=5).
+
+NEW `docs/rrsi-roadmap.md` — full spec of which of the 7 RRSI
+constraints are shipped vs deferred:
+
+| # | Constraint | Status |
+|---|---|---|
+| 1 | Edit budget per round | Shipped (v1.15.8) |
+| 2 | Edit ledger rationale | Deferred — needs caller UX change |
+| 3 | Stagnation break | Deferred — no sweep history baseline |
+| 4 | Leakage audit | Shipped (v1.15.6) |
+| 5 | Noise floor | Shipped (v1.15.7) |
+| 6 | Cost rule | Deferred — no token-budget tracking |
+| 7 | Pruning | Deferred — no harness-component taxonomy |
+
+Ship decision per R12481 (entity_lex pass deferred for lack of
+real data) + R11887 (n<20 statistically unreliable): the remaining
+4 constraints need paired eval+token tracking or operator-side
+tooling not yet built. Re-evaluate after 1 week of post-ship data
+on the three shipped passes.
+
+468 tests pass. No DB migration. No public API change.
+
 ## v1.15.7 (2026-09-22)
 
 ### Decay-sweep noise-floor gate (RRSI pass b)
