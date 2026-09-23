@@ -263,13 +263,21 @@ def main(argv: list[str] | None = None) -> int:
                          help='Actually tombstone; default is dry-run report only')
     decay_run_p.add_argument('--reason', default='decay_sweep_v1.14.73',
                          help='Reason string for audit log (default decay_sweep_v1.14.73)')
-    # v1.15.3 (2026-09-22, MemTensor learning): incremental sweep.
+    # v1.15.3 (2026-09-22, Ship a): incremental sweep.
     # Only consider facts with canonical id > --since-canonical-id, so a
     # bus-event hook or wrapper can run decay on the new rows only and
     # skip the full-table scan. Saves the 24h cron from wasting work when
     # only a handful of new facts have been written since last sweep.
     decay_run_p.add_argument('--since-canonical-id', type=int, default=0,
                          help='Only consider facts with id > this (default 0 = full sweep)')
+    # v1.15.7 (2026-09-22, RRSI pass b): noise-floor gate from the RRSI
+    # paper's "noise floor" constraint — a small drop / gain isn't
+    # meaningful; only sweep facts nobody has recalled in the last
+    # N days. Default 30 days: a fact untouched for a month is
+    # probably noise; recall even once protects it from decay.
+    # 0 = legacy (off): only importance + access_count gate.
+    decay_run_p.add_argument('--require-no-recall-days', type=int, default=30,
+                         help='Tombstone only if last_confirmed_at older than N days (default 30; 0 = off)')
     decay_run_p.set_defaults(func=cmd_decay_sweep_run)
     decay_stats_p = decay_sub.add_parser('stats', help='Show decay-eligible counts only (no sweep)')
     decay_stats_p.add_argument('--tier', default='public', choices=['public', 'source', 'private', 'repo'])
@@ -277,8 +285,12 @@ def main(argv: list[str] | None = None) -> int:
     decay_stats_p.add_argument('--max-importance', type=float, default=0.5)
     decay_stats_p.add_argument('--idle-days', type=int, default=30)
     decay_stats_p.add_argument('--low-access-count', type=int, default=0)
+    # v1.15.7 (RRSI pass b): mirror the noise-floor gate on `stats` so the
+    # count matches what `run` would actually sweep.
     decay_stats_p.add_argument('--since-canonical-id', type=int, default=0,
-                              help='Only consider facts with id > this (default 0 = full sweep)')
+    help='Only consider facts with id > this (default 0 = full sweep)')
+    decay_stats_p.add_argument('--require-no-recall-days', type=int, default=30,
+    help='Count only if last_confirmed_at older than N days (default 30; 0 = off)')
     decay_stats_p.set_defaults(func=cmd_decay_sweep_stats)
 
     mcp_serve.add_argument('--transport', default='stdio', choices=['stdio'],
@@ -3448,9 +3460,14 @@ def cmd_decay_sweep_run(args) -> int:
     limit = int(args.limit)
     execute = bool(getattr(args, "execute", False))
     reason = getattr(args, "reason", "decay_sweep_v1.14.73") or "decay_sweep_v1.14.73"
-    # v1.15.3 (2026-09-22, MemTensor learning): incremental sweep via
-    # --since-canonical-id. Default 0 = full sweep (legacy behavior).
+        # v1.15.3 (2026-09-22, MemTensor learning): incremental sweep via
+        # --since-canonical-id. Default 0 = full sweep (legacy behavior).
     since_id = int(getattr(args, "since_canonical_id", 0) or 0)
+    # v1.15.7 (2026-09-22, RRSI pass b): noise-floor gate.
+    # --require-no-recall-days N: also require last_confirmed_at to be
+    # older than now - N days (NULL counts as never-confirmed, eligible).
+    # 0 = off (legacy: only importance + access_count gate).
+    require_no_recall_days = int(getattr(args, "require_no_recall_days", 0) or 0)
 
     bus = astor_bus(tier=tier, user_id=user_id)
     # v1.14.73: idle-days is no longer used in query (last_confirmed_at reset on every read).
@@ -3462,6 +3479,17 @@ def cmd_decay_sweep_run(args) -> int:
     # Decay now keys on importance + access_count alone (low-importance AND low-read).
     # v1.15.3: add `AND id > ?` for incremental sweep (MemTensor learning:
     # event-driven maintenance over full-table scan).
+    # v1.15.7 (RRSI pass b): noise-floor — if --require-no-recall-days > 0,
+    # also require last_confirmed_at to be NULL (never-confirmed) OR older
+    # than now - N days. This is the RRSI "noise floor" gate: a fact
+    # touched at least once in the window is too useful to be noise.
+    cutoff_sql = ""
+    cutoff_params: list = []
+    if require_no_recall_days > 0:
+        from datetime import timedelta as _td
+        cutoff_iso = (datetime.now(timezone.utc) - _td(days=require_no_recall_days)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        cutoff_sql = "  AND (last_confirmed_at IS NULL OR last_confirmed_at < ?) "
+        cutoff_params = [cutoff_iso]
     sql = (
         "SELECT id, content, importance, access_count, last_confirmed_at, "
         "       tombstoned, user_id, kind "
@@ -3469,10 +3497,12 @@ def cmd_decay_sweep_run(args) -> int:
         "WHERE tombstoned = 0 "
         "  AND id > ? "
         "  AND importance <= ? "
-        "  AND access_count <= ? "
+        "  AND access_count <= ?"
+        + cutoff_sql +
         "LIMIT ?"
     )
-    rows = list(bus.conn.execute(sql, (since_id, max_imp, max_access, limit)))
+    rows = list(bus.conn.execute(
+        sql, tuple([since_id, max_imp, max_access] + cutoff_params + [limit])))
     eligible = [{"id": r[0], "content": (r[1] or "")[:120],
                  "importance": r[2], "access_count": r[3],
                  "last_confirmed_at": r[4], "kind": r[7]} for r in rows]
@@ -3532,6 +3562,9 @@ def cmd_decay_sweep_stats(args) -> int:
     max_access = int(args.low_access_count)
     # v1.15.3 (MemTensor learning): incremental counter, mirrors run flag.
     since_id = int(getattr(args, "since_canonical_id", 0) or 0)
+    # v1.15.7 (RRSI pass b): mirror noise-floor on stats so the count
+    # matches what `run` would actually sweep.
+    require_no_recall_days = int(getattr(args, "require_no_recall_days", 0) or 0)
 
     bus = astor_bus(tier=tier, user_id=user_id)
     # v1.14.73: idle-days is no longer used in query (last_confirmed_at reset on every read).
@@ -3540,10 +3573,18 @@ def cmd_decay_sweep_stats(args) -> int:
 
     # v1.14.73 update: same criteria as cmd_decay_sweep_run (idle criterion removed).
     # v1.15.3: add `AND id > ?` for incremental counter.
+    # v1.15.7 (RRSI pass b): add noise-floor cut if --require-no-recall-days > 0.
+    cutoff_sql = ""
+    cutoff_params: list = []
+    if require_no_recall_days > 0:
+        cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=require_no_recall_days)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        cutoff_sql = " AND (last_confirmed_at IS NULL OR last_confirmed_at < ?)"
+        cutoff_params = [cutoff_iso]
     eligible_count = list(bus.conn.execute(
         "SELECT COUNT(*) FROM memory_canonical "
-        "WHERE tombstoned = 0 AND id > ? AND importance <= ? AND access_count <= ?",
-        (since_id, max_imp, max_access),
+        "WHERE tombstoned = 0 AND id > ? AND importance <= ? AND access_count <= ?"
+        + cutoff_sql,
+        tuple([since_id, max_imp, max_access] + cutoff_params),
     ))[0][0]
 
     # Reference: total in tier
