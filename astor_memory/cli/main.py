@@ -3518,7 +3518,7 @@ def cmd_decay_sweep_run(args) -> int:
         cutoff_params = [cutoff_iso]
     sql = (
         "SELECT id, content, importance, access_count, last_confirmed_at, "
-        "       tombstoned, user_id, kind "
+        "       tombstoned, user_id, kind, namespace "
         "FROM memory_canonical "
         "WHERE tombstoned = 0 "
         "  AND id > ? "
@@ -3531,7 +3531,8 @@ def cmd_decay_sweep_run(args) -> int:
         sql, tuple([since_id, max_imp, max_access] + cutoff_params + [limit])))
     eligible = [{"id": r[0], "content": (r[1] or "")[:120],
                  "importance": r[2], "access_count": r[3],
-                 "last_confirmed_at": r[4], "kind": r[7]} for r in rows]
+                 "last_confirmed_at": r[4], "kind": r[7],
+                 "namespace": r[8], "user_id": r[6]} for r in rows]
 
     print(f"   tier={tier} user_id={user_id or '(default)'}  max_importance={max_imp}  max_access={max_access}")
     print(f"   eligible for soft-tombstone: {len(eligible)}")
@@ -3565,13 +3566,16 @@ def cmd_decay_sweep_run(args) -> int:
             user_id=user_id,
             target=f"fact_id={f['id']}",
             reason=reason,
+            # v1.15.12 (2026-09-22): include kind / namespace / user_id in
+            # audit metadata so `am decay-sweep stagnation` (v1.15.11) has
+            # real dimensions to analyze. Without these, the stagnation
+            # detector only saw "none" for every dimension.
             metadata={"importance": f["importance"], "access_count": f["access_count"],
                       "last_confirmed_at": f["last_confirmed_at"],
+                      "kind": f.get("kind"), "namespace": f.get("namespace"),
+                      "user_id": f.get("user_id"),
                       "eligible_for_decay": True},
-        )
-        soft_tombstoned += 1
-    bus.conn.commit()
-    print(f"[OK] Soft-tombstoned {soft_tombstoned} facts (tier={tier}, user_id={user_id or 'default'}).")
+            )
     print(f"   Reversible via: am restore --tier {tier} --user-id {user_id or ''} --ids ... ")
     return 0
 
@@ -3690,9 +3694,9 @@ def cmd_decay_sweep_stagnation(args) -> int:
         # "<caller> incremental sweep since_id=N". Caller is the run id.
         prefix = (reason or "").split(" ", 1)[0] or "unknown"
         sweep_groups.setdefault(prefix, []).append({
-            "ts": ts, "target": target, "kind": meta.get("kind"),
-            "namespace": meta.get("namespace"), "user_id": meta.get("user_id"),
-            "reason": reason, "metadata": meta,
+              "ts": ts, "target": target, "kind": meta.get("kind"),
+              "namespace": meta.get("namespace"), "user_id": meta.get("user_id"),
+              "reason": reason, "metadata": meta,
         })
 
     # Stagnation = at least --thresh of the last --window runs share
@@ -3704,10 +3708,10 @@ def cmd_decay_sweep_stagnation(args) -> int:
         cnt_ns = Counter(e["namespace"] for e in entries if e.get("namespace"))
         cnt_uid = Counter(e["user_id"] for e in entries if e.get("user_id"))
         per_run_dim[prefix] = {
-            "kind": cnt_kind.most_common(1)[0] if cnt_kind else ("none", 0),
-            "namespace": cnt_ns.most_common(1)[0] if cnt_ns else ("none", 0),
-            "user_id": cnt_uid.most_common(1)[0] if cnt_uid else ("none", 0),
-            "n_entries": len(entries),
+              "kind": cnt_kind.most_common(1)[0] if cnt_kind else ("none", 0),
+              "namespace": cnt_ns.most_common(1)[0] if cnt_ns else ("none", 0),
+              "user_id": cnt_uid.most_common(1)[0] if cnt_uid else ("none", 0),
+              "n_entries": len(entries),
         }
         if cnt_kind:
             dominant_dims["kind"][cnt_kind.most_common(1)[0][0]] += 1
