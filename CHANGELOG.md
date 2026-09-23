@@ -1,3 +1,13 @@
+## v1.15.11 (2026-09-22)
+
+### Decay-sweep stagnation detector (RRSI pass c deferred #3)
+
+NEW subcommand `am decay-sweep stagnation --tier public --window 5 --thresh 4`. Scans the last `--window` decay-sweep audit-log entries and flags when `--thresh` of the most recent sweeps share the same dominant dimension (kind / namespace / user_id). Read-only — does NOT auto-change sweep behavior. Operator decides whether to widen the sweep kind or namespace before the next run.
+
+RRSI pass c deferred #3 (stagnation break) shipped in observe-only form. Full auto-break is deferred — needs sweep history baseline + component taxonomy. End-to-end verified on runtime: 1 sweep run produces "no stagnation, dominant dimensions are well-distributed".
+
+No DB migration, no public API change. 468 tests pass.
+
 ## v1.15.8 (2026-09-22)
 
 ### RRSI pass c: edit-budget alias + roadmap spec

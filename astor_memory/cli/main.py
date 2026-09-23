@@ -297,6 +297,22 @@ def main(argv: list[str] | None = None) -> int:
     decay_stats_p.add_argument('--require-no-recall-days', type=int, default=30,
     help='Count only if last_confirmed_at older than N days (default 30; 0 = off)')
     decay_stats_p.set_defaults(func=cmd_decay_sweep_stats)
+    # v1.15.11 (2026-09-22, RRSI pass c deferred #3): stagnation detector.
+    # Reads audit log for recent decay-sweep runs; flags if last N
+    # sweeps all tombstoned facts in the same kind / namespace / user_id
+    # (i.e. "stuck in a corner"). Read-only — does not change sweep
+    # behavior. Use this to decide whether to widen the sweep kind or
+    # namespace before the next run.
+    decay_stag_p = decay_sub.add_parser(
+        'stagnation', help='Detect stagnation in recent decay sweeps (read-only)')
+    decay_stag_p.add_argument('--tier', default='public',
+    choices=['public', 'source', 'private', 'repo'])
+    decay_stag_p.add_argument('--user-id', default=None)
+    decay_stag_p.add_argument('--window', type=int, default=5,
+    help='How many recent sweep runs to inspect (default 5)')
+    decay_stag_p.add_argument('--thresh', type=int, default=4,
+    help='Flag stagnation if N of last --window sweeps share the same dimension (default 4)')
+    decay_stag_p.set_defaults(func=cmd_decay_sweep_stagnation)
 
     mcp_serve.add_argument('--transport', default='stdio', choices=['stdio'],
                        help='MCP transport (only stdio supported in v1.1)')
@@ -3614,5 +3630,113 @@ def cmd_decay_sweep_stats(args) -> int:
 
 
 
+
+
+def cmd_decay_sweep_stagnation(args) -> int:
+    """v1.15.11 (2026-09-22, RRSI pass c deferred #3): read-only stagnation
+    detector. Scans the last --window decay-sweep audit-log entries for
+    the same (tier, kind, namespace, user_id) signature. If --thresh of
+    the most recent entries share the same dimension, print a warning
+    with the dominant dimension so the operator can widen the next
+    sweep manually. Does NOT auto-change anything — pure observation.
+    """
+    import json
+    import sqlite3
+    import os
+    from collections import Counter
+    from pathlib import Path
+
+    tier = args.tier
+    user_id = getattr(args, "user_id", None) or None
+    window = int(getattr(args, "window", 5))
+    thresh = int(getattr(args, "thresh", 4))
+
+    astor_dir = os.environ.get("ASTOR_DIR") or str(Path.home() / ".astor")
+    audit_db = Path(astor_dir) / "audit" / "astor_audit.db"
+    if not audit_db.exists():
+        print(f"[stagnation] audit db not found: {audit_db}")
+        return 2
+
+    try:
+        conn = sqlite3.connect(str(audit_db))
+    except sqlite3.Error as e:
+        print(f"[stagnation] sqlite error: {e}")
+        return 2
+
+    # Pull last `window` decay-sweep audit rows for this tier/user_id.
+    # Schema (v1.14.32+): audit(id, ts, actor, tier, action, user_id, target, reason, metadata_json).
+    sql = (
+        "SELECT ts, target, reason, metadata FROM audit "
+        "WHERE action = 'decay_sweep' AND tier = ? "
+        "ORDER BY id DESC LIMIT ?"
+    )
+    params: list = [tier, window]
+    if user_id:
+        sql += " AND user_id = ?"
+        params.append(user_id)
+    rows = list(conn.execute(sql, params))
+
+    # Each row represents ONE swept fact in a run. Group by sweep-run
+    # via reason prefix (we tag `--reason` with the wrapper name + since_id).
+    # Simpler grouping: each row's `reason` shares the same prefix within
+    # a single sweep call.
+    sweep_groups: dict[str, list[dict]] = {}
+    for ts, target, reason, mj in rows:
+        try:
+            meta = json.loads(mj or "{}")
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+        # Reason prefix (before first space) — wrapper auto-fills:
+        # "<caller> incremental sweep since_id=N". Caller is the run id.
+        prefix = (reason or "").split(" ", 1)[0] or "unknown"
+        sweep_groups.setdefault(prefix, []).append({
+            "ts": ts, "target": target, "kind": meta.get("kind"),
+            "namespace": meta.get("namespace"), "user_id": meta.get("user_id"),
+            "reason": reason, "metadata": meta,
+        })
+
+    # Stagnation = at least --thresh of the last --window runs share
+    # the same dominant kind/namespace/user_id.
+    dominant_dims: dict[str, Counter] = {"kind": Counter(), "namespace": Counter(), "user_id": Counter()}
+    per_run_dim: dict[str, dict] = {}
+    for prefix, entries in sweep_groups.items():
+        cnt_kind = Counter(e["kind"] for e in entries if e.get("kind"))
+        cnt_ns = Counter(e["namespace"] for e in entries if e.get("namespace"))
+        cnt_uid = Counter(e["user_id"] for e in entries if e.get("user_id"))
+        per_run_dim[prefix] = {
+            "kind": cnt_kind.most_common(1)[0] if cnt_kind else ("none", 0),
+            "namespace": cnt_ns.most_common(1)[0] if cnt_ns else ("none", 0),
+            "user_id": cnt_uid.most_common(1)[0] if cnt_uid else ("none", 0),
+            "n_entries": len(entries),
+        }
+        if cnt_kind:
+            dominant_dims["kind"][cnt_kind.most_common(1)[0][0]] += 1
+        if cnt_ns:
+            dominant_dims["namespace"][cnt_ns.most_common(1)[0][0]] += 1
+        if cnt_uid:
+            dominant_dims["user_id"][cnt_uid.most_common(1)[0][0]] += 1
+
+    n_runs = len(sweep_groups)
+    if n_runs == 0:
+        print(f"[stagnation] no decay-sweep audit rows in window={window} for tier={tier}")
+        return 0
+
+    print(f"[stagnation] window={window} thresh={thresh} tier={tier} "
+          f"user_id={user_id or '(default)'} -> {n_runs} sweep runs")
+    stagnation_flagged: list[str] = []
+    for dim, counter in dominant_dims.items():
+        if not counter:
+            continue
+        top_value, top_count = counter.most_common(1)[0]
+        if top_count >= thresh:
+            stagnation_flagged.append(dim)
+            print(f"  [STAGNATION] {dim}={top_value} in {top_count}/{n_runs} runs")
+    if not stagnation_flagged:
+        print(f"  [OK] no stagnation: dominant dimensions are well-distributed")
+    print(f"  per-run dominant: {json.dumps(per_run_dim, ensure_ascii=False)}")
+    conn.close()
+    return 0 if not stagnation_flagged else 1
+
+
 if __name__ == '__main__':
-        sys.exit(main())
+    sys.exit(main())
