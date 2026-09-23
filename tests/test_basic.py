@@ -567,15 +567,26 @@ def test_rest_read_returns_entities_field(tmp_path, monkeypatch):
     tickers (NVDA in _FINANCIAL_PATTERNS) to private. The test now
     queries admin's own private tier via /v1/read with tier='private'
     and explicit user_id so admin can read its own facts.
+
+    v1.15.1 (2026-09-22): ship-time audit. The v1.14.45 test had a
+    latent tier mismatch — write fired with `tier='public'` but read
+    used `tier='private', user_id='admin'` against a fresh tmp
+    ASTOR_DIR (no seeded_users fixture) where admin's private db does
+    not exist, so read always returned 0 results. The earlier
+    leaky-bucket rate limit (5/sec) masked the real failure with
+    `cross_user_forbidden` for the second write. Now that v1.15.1
+    bumped the bucket to 30/s, the real bug surfaced. Fix: write at
+    the same tier the test reads from (admin's own private).
     """
     from astor_memory.server import create_app
 
     monkeypatch.setenv('ASTOR_DIR', str(tmp_path / 'astor'))
     app = create_app()
     client = app.test_client()
+    # Write to admin's own private tier (matches the read tier below).
     client.post('/v1/write',
                 json={'text': 'Alice uses NVDA at 2026-09-15 for ML training method',
-                      'user': 'admin', 'tier': 'public'})
+                      'user': 'admin', 'tier': 'private', 'user_id': 'admin'})
     # Read on private tier (where the fact landed). Admin can read own
     # private by including user_id=admin.
     r = client.post('/v1/read', json={
@@ -969,12 +980,17 @@ def test_admin_bypasses_rate_limit(tmp_path, monkeypatch):
             ok += 1
     assert ok == 25, 'admin bypass failed: only ' + str(ok) + '/25 succeeded'
 
-    # Switch to non-admin: rate limit should STILL kick in (regression check)
+# Switch to non-admin: rate limit should STILL kick in (regression check).
+    # v1.15.1 (2026-09-22): bumped per-actor rate limit cap from 5/sec to
+    # 30/sec to stop normal write fan-out from spuriously tripping the bucket
+    # (one /v1/write fires 5+ astor_check_write calls — see ship-time audit
+    # notes). This test fires 50 back-to-back writes for alice to verify the
+    # limit still trips non-admin actors under spam.
     _acl.astor_init_acl(actor='user:alice', role='user',
                          tier='private', user_id='alice',
                          subscription_plan='free')
     alice_fail = 0
-    for i in range(25):
+    for i in range(50):
         text = 'LESSON Ship J alice rate-limit test #' + str(i)
         r = client.post('/v1/write', json={
             'text': text,
@@ -982,4 +998,4 @@ def test_admin_bypasses_rate_limit(tmp_path, monkeypatch):
         })
         if r.status_code != 200:
             alice_fail += 1
-    assert alice_fail > 0, 'non-admin bypass leaked: alice 25/25 OK'
+    assert alice_fail > 0, 'non-admin bypass leaked: alice ' + str(50 - alice_fail) + '/50 OK'

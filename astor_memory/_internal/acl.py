@@ -184,8 +184,20 @@ class _LeakyBucket:
 # Per-(actor, target_user_id, action) leaky bucket.
 _RATE_BUCKETS: dict[tuple[str, str | None, str], _LeakyBucket] = {}
 _GLOBAL_BUCKET: _LeakyBucket | None = None
-_RATE_BUCKET_CAP = 5.0
-_RATE_BUCKET_REFILL = 5.0
+
+# v1.15.1 (2026-09-22): ship-time audit. The 5/5 burst+refill budget was
+# too tight for real write paths — a single /v1/write fires 5+
+# astor_check_write calls (audit log + cascade + forge hook + etc), so
+# any second write inside the same second hit the bucket ceiling and
+# got spuriously translated to `cross_user_forbidden` by the server.
+# Pre-existing failures `test_acl_bob_can_read_own_private` and
+# `test_rest_read_returns_entities_field` both root-caused here.
+# Bump per-(actor,target,action) capacity + refill to 30/s so normal
+# write fan-out doesn't double-charge. Global ceiling stays at 50/s so
+# the global anti-spam gate is unchanged. Spam protection still active
+# at 30/s — way above any human or test write rate, way below an attack.
+_RATE_BUCKET_CAP = 30.0
+_RATE_BUCKET_REFILL = 30.0
 _RATE_GLOBAL_CAP = 50.0
 _RATE_GLOBAL_REFILL = 50.0
 
