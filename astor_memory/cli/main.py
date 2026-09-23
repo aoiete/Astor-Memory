@@ -259,6 +259,11 @@ def main(argv: list[str] | None = None) -> int:
     decay_run_p.add_argument('--low-access-count', type=int, default=0,
                          help='Optional: require access_count <= N to qualify (default 0)')
     decay_run_p.add_argument('--limit', type=int, default=500, help='Max facts to process (default 500)')
+    # v1.15.8 (2026-09-22, RRSI pass c): edit-budget alias. Identical to
+    # --limit, but named for the RRSI paper's "edit budget per round"
+    # concept. Documented in docs/rrsi-roadmap.md.
+    decay_run_p.add_argument('--max-sweep-size', type=int, default=None,
+                         help="RRSI edit-budget alias for --limit (default: same as --limit)")
     decay_run_p.add_argument('--execute', action='store_true',
                          help='Actually tombstone; default is dry-run report only')
     decay_run_p.add_argument('--reason', default='decay_sweep_v1.14.73',
@@ -3458,10 +3463,15 @@ def cmd_decay_sweep_run(args) -> int:
     idle_days = int(args.idle_days)
     max_access = int(args.low_access_count)
     limit = int(args.limit)
+    # v1.15.8 (RRSI pass c): --max-sweep-size is an alias for --limit.
+    # If the caller passed --max-sweep-size explicitly, prefer it.
+    max_sweep = int(getattr(args, "max_sweep_size", None) or 0)
+    if max_sweep > 0:
+        limit = min(limit, max_sweep)
     execute = bool(getattr(args, "execute", False))
     reason = getattr(args, "reason", "decay_sweep_v1.14.73") or "decay_sweep_v1.14.73"
-        # v1.15.3 (2026-09-22, MemTensor learning): incremental sweep via
-        # --since-canonical-id. Default 0 = full sweep (legacy behavior).
+    # v1.15.3 (2026-09-22, MemTensor learning): incremental sweep via
+    # --since-canonical-id. Default 0 = full sweep (legacy behavior).
     since_id = int(getattr(args, "since_canonical_id", 0) or 0)
     # v1.15.7 (2026-09-22, RRSI pass b): noise-floor gate.
     # --require-no-recall-days N: also require last_confirmed_at to be
