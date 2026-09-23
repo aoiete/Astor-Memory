@@ -1,3 +1,32 @@
+## v1.15.6 (2026-09-22)
+
+### Eval harness audit (RRSI pass a)
+
+Inspired by the [RRSI paper](https://arxiv.org/abs/2609.24972) (Google
+Cloud AI Research + UNC + Stanford). One of the seven RRSI
+constraints is **leakage audit** — verify the eval harness hasn't
+been tampered with so a hit_rate jump could be just "we secretly
+added the answers to the test set". Without an audit trail, the
+trend tool can't tell real progress from leakage.
+
+`tests/eval_runner.py` now appends three new fields to every run
+summary (the JSONL in `astor/metrics/eval_history.jsonl` and the
+per-run `_summary.json`):
+
+- `astor_version` — from `__init__.py`. If the version changed
+  between runs, that's a candidate explanation for a score delta.
+- `git_commit` — HEAD hash of the source tree at run time.
+- `eval_set_hash` — SHA-256 prefix of `tests/eval_set.jsonl`. If the
+  hash changed, the test set was edited and any hit_rate jump is
+  tainted.
+
+Baseline run on v1.15.5: hit_rate@10=0.963, mrr=0.885, n=108
+queries. 468 tests pass.
+
+No DB migration, no public API change. Trend tools (e.g.
+`tests/eval_trend.py`) can now surface "score jumped but
+eval_set_hash unchanged → suspect" automatically.
+
 ## v1.15.5 (2026-09-22)
 
 ### README polish + `recall-auto` smoke gate

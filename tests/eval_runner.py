@@ -46,6 +46,38 @@ def load_eval_set() -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+def _git_commit_hash() -> str | None:
+    """Best-effort: read HEAD commit hash. None if not a git repo."""
+    try:
+        import subprocess
+        r = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(ROOT), capture_output=True, text=True, timeout=5,
+                )
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def _astor_version() -> str:
+    """Read astor-memory version from the package __init__.py."""
+    try:
+        sys.path.insert(0, str(ROOT))
+        from astor_memory import __version__ as v  # type: ignore
+        return v
+    except Exception:
+        return "unknown"
+
+
+def _eval_set_hash() -> str:
+    """SHA-256 of eval_set.jsonl (so trend tools can detect tampering)."""
+    import hashlib
+    h = hashlib.sha256()
+    with open(EVAL_SET, "rb") as f:
+        h.update(f.read())
+    return h.hexdigest()[:16]
+
+
 def recall(query: str, tier: str, user: str, top_k: int, **kwargs) -> tuple[list[dict], float]:
     body = {"query": query, "tier": tier, "user": user, "top_k": top_k, **kwargs}
     import time as _t
@@ -152,16 +184,23 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
                else max(latencies, default=0))
 
     summary = {
-        "variant": variant,
-        "kwargs": kwargs,
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "n_queries": n,
-        "hit_rate_at_k": round(hit_rate, 4),
-        "mrr": round(mrr, 4),
-        "avg_latency_ms": round(avg_lat, 2),
-        "p50_latency_ms": round(p50_lat, 2),
-        "p95_latency_ms": round(p95_lat, 2),
-        "by_category": {},
+    "variant": variant,
+    "kwargs": kwargs,
+    "ts": datetime.now(timezone.utc).isoformat(),
+    # v1.15.6 (2026-09-22, RRSI pass a): audit fields. Records what
+    # code + data produced this run so trend tools can detect when a
+    # hit_rate jump is just from tampering with the eval set instead
+    # of real recall improvement.
+    "astor_version": _astor_version(),
+    "git_commit": _git_commit_hash(),
+    "eval_set_hash": _eval_set_hash(),
+    "n_queries": n,
+    "hit_rate_at_k": round(hit_rate, 4),
+    "mrr": round(mrr, 4),
+    "avg_latency_ms": round(avg_lat, 2),
+    "p50_latency_ms": round(p50_lat, 2),
+    "p95_latency_ms": round(p95_lat, 2),
+    "by_category": {},
     }
     by_cat: dict[str, list[float]] = {}
     for d in detail:
