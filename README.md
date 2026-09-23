@@ -145,6 +145,79 @@ am recall --kinds failure_pattern "上次 patch tool 走不通"
 am recall --kinds success_pattern "verify 模式怎么配"
 ```
 
+#### Zone shortcuts (v1.15.1)
+
+For agents that think in outcome zones rather than raw kind lists, the
+`--zone` flag is a one-word shortcut for `--kinds`:
+
+| Zone       | What it covers                                                 | When to recall                                                                 |
+|------------|-------------------------------------------------------------------|---------------------------------------------------------------------------------|
+| `failure`  | `failure_pattern` — things that didn't work, don't repeat them    | I hit a wall, want to see if this approach was tried before                    |
+| `success`  | `success_pattern` — verified approaches, recipes that ship        | I want a proven recipe for this problem                                        |
+| `lesson`   | `postmortem,lesson` — root-cause + fix triplets, severity ≥ 0.90 | After a critical bug — what to do next time, what NOT to do                    |
+| `all-zones`| `user_preference,failure_pattern,success_pattern,postmortem,lesson` | Cross-zone sweep (rare; default zone filters usually beat this)              |
+
+```bash
+am recall --zone failure "上次 patch tool 走不通"
+am recall --zone success "verify 模式怎么配"
+am recall --zone lesson  "OpenD Watchdog 服务挂了 怎么搞"
+am recall --zone all-zones "zone 类召回怎么用"
+```
+
+`--kinds` always wins when both are passed (escape hatch for advanced
+callers who need a raw kind list). Agent-loop recommendation: **when you
+hit a wall, `am recall --zone failure "<keywords>"` first — if that
+returns nothing, escalate to `--zone lesson` for postmortem entries.**
+
+### Recall discipline for agents (v1.15.1)
+
+The `--zone` flag is one half of a recommended agent loop. The other
+half is **when to recall at all** — recall is a backend tool, not a
+default preamble. The discipline below applies to any agent that calls
+astor, regardless of task domain:
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ Default: do NOT pre-warm recall. Run the task on LLM reasoning.│
+│                                                              │
+│   ↓ hit a wall (error / timeout / wrong result / 反爬)        │
+│                                                              │
+│ am recall --zone failure "<task-domain keywords>"             │
+│   ↓ empty                                                    │
+│ am recall --zone lesson  "<task-domain keywords>"             │
+│   ↓ empty                                                    │
+│ am recall --zone success "<task-domain keywords>"             │
+│   ↓ empty                                                    │
+│ THEN: fall back to web_search / re-derive from first principles│
+└──────────────────────────────────────────────────────────────┘
+```
+
+Three rules worth internalizing:
+
+1. **Default off.** If the task goes smoothly, do not recall. Recall
+   is for failure recovery, not for warming up context.
+2. **One recall per failure.** Do not loop on `--zone failure` with
+   the same query — if it returns empty, escalate the zone (failure
+   → lesson → success), not the keywords.
+3. **Zone over keyword.** `--zone failure` is a signal-density
+   shortcut that beats raw `--kinds failure_pattern` only because
+   it carries semantic intent ("I am here because I failed"). The
+   `--kinds` form is an escape hatch, not the default.
+
+Concrete examples (any task domain works — only the keywords change):
+
+| Task                                  | Trigger signal       | Recall call                                              |
+|---------------------------------------|----------------------|----------------------------------------------------------|
+| Fetch a WeChat article                | 反爬 / captcha / 抓不到 | `am recall --zone failure "微信公众号 抓"`                |
+| Place a moomoo order                 | EOrder / timeout     | `am recall --zone failure "opend place_order"`           |
+| Schedule a cron                      | 不触发 / 静默失败    | `am recall --zone failure "hermes cron 不触发"`           |
+| Patch Python source                  | IndentationError     | `am recall --zone failure "patch tool 缩进漂移"`          |
+| Pull stock quote                     | 接口错 / 空数据      | `am recall --zone failure "akshare 接口错"`              |
+
+The shell is generic; only the keyword list is task-specific. That is
+the point — `--zone failure "X"` is a one-line mental model an agent
+can carry into any new domain without learning a new skill.
+
 This is the bridge between the LLM and the human operator's mental
 model — without it, every fact lands as `kind=fact` and the 3-zone
 taxonomy never gets populated (Ship F, v1.13.1, was dead code until
