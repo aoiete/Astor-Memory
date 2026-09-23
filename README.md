@@ -705,10 +705,53 @@ provenance, versioning, restore): see [`docs/api.md`](./docs/api.md).
 |---|---|
 | `am init` | Initialize `~/.astor/` (or `$ASTOR_DIR`) with 3-tier default config |
 | `am write "<text>"` | Append a fact to `bus`; `forge` extracts in background |
-| `am recall "<query>"` | Search `nest`; return ranked hits with citations |
+| `am recall "<query>"` | Search `nest`; return ranked hits with citations (default `--zone success`) |
+| `am recall-auto "<error>"` | Paste an error or pipe via stdin; auto-walks failure → lesson → success zones |
 | `am doctor` | Health check: bus/forge/nest status, event count, latency |
 | `am config <key>=<value>` | Set runtime config (provider, dedup window, etc.) |
 | `am compact` | Run lifecycle: decay + merge + promote |
+
+### Recall zones (v1.15.x)
+
+`am recall` filters by outcome zone so the most relevant facts surface
+first. Pass `--zone` to switch:
+
+| `--zone` | Filters to kinds |
+|---|---|
+| `success` (default) | `success_pattern` — proven recipes |
+| `failure` | `failure_pattern` — failed approaches, don't repeat them |
+| `lesson` | `postmortem,lesson` — root-cause + fix triplets |
+| `all-zones` | `user_preference,failure_pattern,success_pattern,postmortem,lesson` |
+| `none` | raw fact rows (escape hatch) |
+
+For error-driven debugging, `am recall-auto "<error message>"` walks
+the zones automatically — failure first, then lesson, then success —
+and prints the top-3 hits from the first non-empty zone. Returns
+`rc=0` on hit, `rc=2` on miss.
+
+### Decay sweep (v1.15.3)
+
+`am decay-sweep run --since-canonical-id <N>` only sweeps facts with
+`memory_canonical.id > N`, making it cheap to run after every cron
+tick. Pair with `scripts/astor_decay_event_trigger.py` for an
+event-driven trigger that no-ops when no new facts have been written.
+
+### Optional: jev relevance rerank (v1.15.4, opt-in)
+
+`am recall --jev-relevance on` enables an external rerank via the
+[jev](https://d.ai/jev) shadow infrastructure. **Default off.** When
+on, the CLI calls `jev_client.jev_call` with the top candidate
+snippets and logs the verdict for precision analysis. **Requires**:
+
+- `D:\AI\scripts\admin\jev\` (or equivalent) on `PYTHONPATH`
+- `typesafe-sdk` Python package installed
+- `TYPESAFE_API_KEY` env var set
+- Running `jev` server reachable
+
+If any of the above is missing, the flag is a silent no-op — astor
+returns the original hybrid ranking unchanged. **Installs of
+`astor-memory` without the jev shim see no behavior change**; the
+flag exists only for operators running the jev shadow stack.
 
 ### Multi-user bot management (`am bot ...`)
 | Command | Purpose |
