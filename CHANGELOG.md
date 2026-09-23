@@ -1,3 +1,33 @@
+## v1.15.12 (2026-09-22)
+
+### Decay-sweep metadata now carries kind / namespace / user_id
+
+Follow-up to v1.15.11 (stagnation detector). Without this, the detector
+saw "none" for every dimension because `cmd_decay_sweep_run`'s
+SELECT and audit metadata dict didn't include those fields.
+
+**Change**: SQL SELECT in `cmd_decay_sweep_run` now returns
+`kind`, `namespace`, `user_id` alongside the existing columns. The
+audit metadata dict (`actor=cli:decay-sweep`, `action=decay_sweep`)
+now carries those three. Verified end-to-end on runtime:
+
+```texttext
+sweep writes audit row:
+  metadata={"importance": 0.5, "kind": "fact", "namespace": "admin",
+            "user_id": "admin", "eligible_for_decay": true}
+
+`am decay-sweep stagnation --tier public --window 10` reports:
+  per-run dominant: {"kind": ["fact", 4], "namespace": ["admin", 2],
+                      "user_id": ["admin", 2], "n_entries": 4}
+```
+
+Before this ship, the stagnation output was `"none"` for every
+dimension. Now it surfaces the actual dominant kind/namespace/user_id
+so a future auto-break can act on real signal.
+
+No DB migration, no public API change. 468 tests pass.
+
+## v1.15.11 (2026-09-22)
 ## v1.15.11 (2026-09-22)
 
 ### Decay-sweep stagnation detector (RRSI pass c deferred #3)
