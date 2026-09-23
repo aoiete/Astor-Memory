@@ -1,3 +1,36 @@
+## v1.15.7 (2026-09-22)
+
+### Decay-sweep noise-floor gate (RRSI pass b)
+
+Inspired by the [RRSI paper](https://arxiv.org/abs/2609.24972) "noise
+floor" constraint — a small score delta isn't meaningful; a fact
+touched at least once in the window is too useful to be noise.
+
+NEW `--require-no-recall-days N` flag on both `am decay-sweep run`
+and `am decay-sweep stats` (default 30; `0` = legacy off). The flag
+adds one more WHERE clause: `last_confirmed_at IS NULL OR
+last_confirmed_at < cutoff` (cutoff = now - N days). A fact that
+was recalled in the window is **protected from decay** even if it
+has low importance + low access count — because it's clearly not
+noise, it's signal.
+
+Verified end-to-end on the runtime public bus (3942 facts, 566
+active, 3376 tombstoned):
+
+```text
+am decay-sweep stats --tier public --max-importance 1.0 --low-access-count 5
+  --require-no-recall-days 0   → 310 eligible (legacy behavior)
+  --require-no-recall-days 1   → 288 eligible (1d window protects 22)
+  --require-no-recall-days 30  → 0 eligible   (30d window protects all 310)
+```
+
+The 30-day window matches astor's `daily_brief` cron cadence — a
+fact that gets pulled by the daily summary at least every 30 days is
+in active rotation and shouldn't be eligible for sweep.
+
+No DB migration, no public API change (legacy `0` default keeps
+current behavior). 468 tests pass.
+
 ## v1.15.6 (2026-09-22)
 
 ### Eval harness audit (RRSI pass a)
