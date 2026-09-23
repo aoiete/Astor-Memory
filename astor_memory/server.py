@@ -1409,6 +1409,23 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if query_timestamp and not isinstance(query_timestamp, str):
             query_timestamp = None
         query_anchor = (query_timestamp or '')[:10] or None
+        # v1.15.x (2026-09-22, Lossless-memory lesson): auto-parse natural
+        # time phrases out of the query text (昨天/上周二/last week/3天前…)
+        # when the caller didn't pass explicit since_ts/until_ts. Time is
+        # the primary axis: restrict range FIRST, rank within it. Fallback
+        # honesty: if the auto-derived scope leaves < min(3, top_k) results,
+        # the filter is rolled back and time_fell_back=True is reported.
+        # Disable per-request with time_parse=false.
+        _time_auto = None
+        _time_fell_back = False
+        if not since_ts and not until_ts and body.get('time_parse', True):
+            try:
+                from .nest.time_phrase import parse_time_range as _ptr
+                _time_auto = _ptr(query)
+            except Exception:
+                _time_auto = None
+            if _time_auto:
+                since_ts, until_ts = _time_auto[0], _time_auto[1]
         # v1.15.0 (2026-09-15 Ship A): RippleMem evidence-gap hint. Optional.
         # Caller can pass missing_hint="user timezone" to expand the query;
         # entity_filter=["<user>"] to post-filter; since_ts/until_ts to clamp
@@ -1579,6 +1596,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
             except Exception:
                 pass
 
+        # v1.15.x (2026-09-22): per-result hit-source provenance map.
+        # Populated in each retrieval branch; surfaced as 'hit_source' on
+        # every result so callers/eval can see which path found each fact.
+        _hit_src = {}
         if not use_hybrid:
             # Pure vector path (legacy) — collect from all variants
             _all_v = []
@@ -1591,6 +1612,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 if int(_fid) not in _seen or _s > _seen[int(_fid)]:
                     _seen[int(_fid)] = _s
             results = sorted(_seen.items(), key=lambda x: x[1], reverse=True)[:top_k]
+            _hit_src = {int(f): 'vector' for f, _ in results}
         else:
             from .nest.lex_index import (
                 astor_lex as _astor_lex,
@@ -1684,6 +1706,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 query_anchor=query_anchor,
             )
             results = merged[:top_k]
+            # hit-source provenance: bm25-only / vector-only / both.
+            _vec_id_set = {int(f) for f, _ in vector_hits}
+            for _fid, _s in merged:
+                _fid = int(_fid)
+                _b = _fid in _bm25_seen
+                _v = _fid in _vec_id_set
+                _hit_src[_fid] = ('bm25+vector' if (_b and _v)
+                                  else ('bm25' if _b else 'vector'))
             _skip_stage = False  # v1.10.9: LLM rerank may override stage_recall
             # v1.10.9 (2026-08-27): LLM rerank. Set ASTOR_RERANK=1 to enable.
             # 2026-08-27: lowered trigger from top_k>=5 to top_k>=3 so small per-conv
@@ -1928,6 +1958,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # pure-cosine ('cosine') or hybrid ('hybrid'). Hermes
                 # adapter uses this for sorting/debug.
                 'score_kind': 'hybrid' if use_hybrid else 'cosine',
+                'hit_source': _hit_src.get(int(row[0]),
+                                           'hybrid' if use_hybrid else 'cosine'),
                 # v1.2.0: include keywords + context in response so callers
                 # (e.g. hermes_adapter) can render fact titles / explain
                 # recall. Empty defaults for pre-v1.2 facts.
@@ -1973,12 +2005,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
                                for e in _ef_low)]
         if time_range:
             _ts_lo, _ts_hi = time_range
+            _pre_tr_snapshot = enriched  # for auto-scope rollback below
             def _in_tr(r):
                 _ed = r.get('event_date') or ''
                 if not _ed:
                     return True  # no date = keep (don't punish legacy facts)
                 return _ts_lo <= _ed[:10] <= _ts_hi
             enriched = [r for r in enriched if _in_tr(r)]
+            # Lossless-memory honesty rule: a wrong/over-narrow auto time
+            # scope must not silently nuke recall. Roll back and say so.
+            if _time_auto and len(enriched) < min(3, top_k):
+                enriched = _pre_tr_snapshot
+                time_range = None
+                _time_fell_back = True
         # v1.14.74 (2026-09-18) Hindsight taxonomy post-filter: mc_filter is a list of
         # memory_class values to allow (4-tier scheme — world_fact / experience /
         # observation / mental_model). None / empty = no filter (backward-compat).
@@ -2066,6 +2105,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             'user_id': _row[7],
                             'similarity': round(min(max(s for _, s in _tok_scores) / 10.0, 1.0), 4),
                             'score_kind': 'grep_verify',
+                            'hit_source': 'grep_verify',
                             'keywords': _safe_json_loads(_row[8]) if len(_row) > 8 else [],
                             'context': (_row[9] if len(_row) > 9 and _row[9] else '')[:500],
                             'event_date': _row[10] if len(_row) > 10 else None,
@@ -2108,6 +2148,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             'event_date': _row[4],
                             'similarity': 0.0,
                             'score_kind': 'session_neighbor',
+                            'hit_source': 'session_neighbor',
                             'neighbor_of': int(_r['fact_id']),
                         })
                 # Neighbors go AFTER all primary results
@@ -2495,6 +2536,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'missed_tiers': [],
             # v1.14.65 P8: whether time_boost fired (recent-fact boost).
             'time_boost_applied': _time_boost_applied,
+            # v1.15.x: auto time-scope from query text (Lossless-memory
+            # lesson). time_scoped echoes the parsed range + matched phrase;
+            # time_fell_back=True means the auto scope was too narrow and
+            # was rolled back (honest fallback, never silent).
+            'time_scoped': ({'since': _time_auto[0], 'until': _time_auto[1],
+                             'phrase': _time_auto[2]} if _time_auto else None),
+            'time_fell_back': _time_fell_back,
             # v1.14.70 S1 + v1.14.71: whether topic_boost fired (peer
             # topic_index boost). Echo back the topic set used.
             'topic_boost_applied': _topic_boost_applied,

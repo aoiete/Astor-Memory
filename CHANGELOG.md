@@ -1,3 +1,38 @@
+## v1.15.0 (2026-09-22)
+
+### Time-scoped recall + hit-source provenance
+
+Inspired by aru-labs/lossless-memory (Show HN): time is the primary axis —
+restrict the search range first, rank within it.
+
+**Auto time-phrase parsing** (`nest/time_phrase.py`, new): `/v1/read` now
+parses natural time phrases out of the query text when the caller didn't
+pass explicit `since_ts`/`until_ts`:
+
+- Chinese: 今天/昨天/昨晚/前天/明天, 本周/上周/下周 (±weekday, e.g. 上周二),
+  本月/上月, N天前, 最近N天, N周前, N个月前
+- English: today/yesterday/last night/tomorrow, this/last week, this/last
+  month, last Tuesday…, N days/weeks/months ago, past N days
+- ISO dates anywhere in the text (2026-09-15)
+
+Bare weekdays resolve to the most recent such day. Future ranges (明天/下周)
+are valid — `event_date` can be a planned date. Disable per request with
+`time_parse=false`.
+
+**Honest fallback**: if the auto-derived scope leaves fewer than
+`min(3, top_k)` results, the filter is rolled back and the response reports
+`time_fell_back=true`. Response gains `time_scoped: {since, until, phrase}`
+(null when no phrase matched).
+
+**Hit-source provenance**: every result now carries `hit_source` —
+`bm25` / `vector` / `bm25+vector` for hybrid hits, `grep_verify` for
+exact-match backstop hits, `session_neighbor` for session-expanded rows.
+Evals and callers can now see which retrieval path found each fact.
+
+**Tests**: 6 new test groups in `tests/test_time_phrase.py` (fixed `now`,
+deterministic). Full suite: 466 passed, 2 pre-existing failures unchanged
+(`test_acl_bob_can_read_own_private`, `test_rest_read_returns_entities_field`).
+
 ## v1.14.71 (2026-09-17)
 
 ### S1 multi-topic extension
