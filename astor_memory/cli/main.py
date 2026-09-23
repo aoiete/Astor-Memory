@@ -266,8 +266,8 @@ def main(argv: list[str] | None = None) -> int:
                          help="RRSI edit-budget alias for --limit (default: same as --limit)")
     decay_run_p.add_argument('--execute', action='store_true',
                          help='Actually tombstone; default is dry-run report only')
-    decay_run_p.add_argument('--reason', default='decay_sweep_v1.14.73',
-                         help='Reason string for audit log (default decay_sweep_v1.14.73)')
+    decay_run_p.add_argument('--reason', required=True,
+                             help='Why this sweep — written to audit log (RRSI pass: ledger rationale)')
     # v1.15.3 (2026-09-22, Ship a): incremental sweep.
     # Only consider facts with canonical id > --since-canonical-id, so a
     # bus-event hook or wrapper can run decay on the new rows only and
