@@ -100,7 +100,18 @@ def _query_max_canonical_id(tier: str, user_id: str | None) -> int:
 def _run_am_decay_sweep(tier: str, user_id: str | None, since_id: int,
                          max_importance: float, low_access_count: int,
                          execute: bool) -> tuple[int, str]:
-    """Invoke `am decay-sweep run` and return (rc, stdout)."""
+    """Invoke `am decay-sweep run` and return (rc, stdout).
+
+    v1.15.9 (RRSI pass: ledger rationale): --reason is now required on
+    `am decay-sweep run`. The wrapper auto-fills it with a structured
+    string so cron / event-driven callers don't need to be updated.
+    """
+    # Reason is per-call: derived from the wrapper's source (cron vs
+    # event-trigger) so audit log can later distinguish machine sweeps
+    # from human sweeps. Override at the call site if you have a better
+    # description.
+    caller = os.environ.get("ASTOR_DECAY_CALLER", "astor_decay_event_trigger")
+    reason = f"{caller} incremental sweep since_id={since_id}"
     cmd = [
         sys.executable, "-m", "astor_memory.cli.main",
         "decay-sweep", "run",
@@ -109,6 +120,7 @@ def _run_am_decay_sweep(tier: str, user_id: str | None, since_id: int,
         "--max-importance", str(max_importance),
         "--low-access-count", str(low_access_count),
         "--limit", "5000",  # higher limit because incremental sweep range is smaller
+        "--reason", reason,
     ]
     if user_id:
         cmd += ["--user-id", user_id]
