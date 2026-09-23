@@ -687,11 +687,13 @@ def test_e2e_integration(tmp_path, monkeypatch):
     # 2. CLI write (multi-fact extraction)
     assert cli_main(['write', 'I prefer dark roast coffee and tea', '--user', 'admin']) == 0
 
-    # 3. CLI recall (vector similarity search)
+    # 3. CLI recall (vector similarity search). v1.15.2 changed the
+    # default --zone to 'success' (cmd_recall filter optimization);
+    # this test exercises the raw recall path so opt out explicitly.
     import io, contextlib
     captured = io.StringIO()
     with contextlib.redirect_stdout(captured):
-        cli_main(['recall', 'coffee preference', '--user', 'admin', '--top-k', '3'])
+        cli_main(['recall', 'coffee preference', '--user', 'admin', '--top-k', '3', '--zone', 'none'])
     output = captured.getvalue()
     assert 'fact_id=' in output
     assert 'similarity=' in output

@@ -24,6 +24,17 @@ import numpy as np
 from .. import __version__
 from ..config import load_config, get_default_astor_dir
 
+# v1.15.2 (2026-09-22, Ship a): module-level zone map. Used by both
+# cmd_recall (zone -> kinds filter) and cmd_recall_auto (zone walker).
+# Defined here, NOT inside build_parser, so the lookup survives across
+# function calls without a closure capture.
+ZONE_KINDS = {
+    'failure':   'failure_pattern',
+    'success':   'success_pattern',
+    'lesson':    'postmortem,lesson',
+    'all-zones': 'user_preference,failure_pattern,success_pattern,postmortem,lesson',
+}
+
 
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point."""
@@ -82,14 +93,13 @@ def main(argv: list[str] | None = None) -> int:
     # success (I want a proven recipe), lesson (postmortem — what to do
     # next time). Mutually exclusive with --kinds; explicit --kinds wins
     # if both are passed (escape hatch for advanced callers).
-    ZONE_KINDS = {
-        'failure':   'failure_pattern',
-        'success':   'success_pattern',
-        'lesson':    'postmortem,lesson',
-        'all-zones': 'user_preference,failure_pattern,success_pattern,postmortem,lesson',
-    }
-    sub.add_argument('--zone', default=None, choices=sorted(ZONE_KINDS.keys()),
-             help='Named outcome zone (shortcut for --kinds): failure | success|lesson | all-zones')
+    # v1.15.2 (2026-09-22, Ship a): promote ZONE_KINDS to module-level
+    # constant so cmd_recall and cmd_recall_auto can both reference it
+    # without going through a closure on the parser-builder function.
+    sub.add_argument('--zone', default='success',
+                     choices=sorted(list(ZONE_KINDS.keys()) + ['none']),
+                     help='Named outcome zone (default: success). '
+                          'failure | success | lesson | all-zones | none (raw)')
     sub.set_defaults(func=cmd_recall)
 
     # am doctor
@@ -357,6 +367,17 @@ def main(argv: list[str] | None = None) -> int:
     hist_p.add_argument('--reverse', action='store_true',
                         help='Show oldest first (default newest first)')
     hist_p.set_defaults(func=cmd_recall_history)
+
+    # v1.15.2 (2026-09-22, Ship b): am recall-auto — paste an error or
+    # tool output and let the CLI auto-classify the right recall zone.
+    # Walks failure -> lesson -> success zones with the most informative
+    # tokens from the input. First non-empty zone wins.
+    auto_p = subparsers.add_parser(
+        'recall-auto',
+        help='Auto-classify an error / tool-output string into the right recall zone',
+    )
+    auto_p.add_argument('text', help='Error message or tool output (use "-" for stdin)')
+    auto_p.set_defaults(func=cmd_recall_auto)
 
     # am peer ... (v1.14.67 Phase 1: peer_id + keypair + status)
     # Full peer network ships Phase 2-5 (friend list, topic routing,
@@ -1078,9 +1099,11 @@ def cmd_recall(args) -> int:
     kinds_filter = None
     # v1.15.1 (2026-09-22, Ship a): --zone shortcut. --kinds always wins
     # when both are passed (escape hatch); --zone wins when --kinds absent.
+    # v1.15.2 (2026-09-22, Ship a): --zone default = 'success'; --zone=none
+    # disables zone filtering (raw fact rows).
     if args.kinds:
         kinds_filter = set(k.strip() for k in args.kinds.split(',') if k.strip())
-    elif getattr(args, 'zone', None):
+    elif getattr(args, 'zone', None) and args.zone != 'none':
         kinds_filter = set(k.strip() for k in ZONE_KINDS[args.zone].split(',') if k.strip())
     if kinds_filter and results:
         bus = astor_bus(tier='public')
@@ -1112,6 +1135,100 @@ def cmd_recall(args) -> int:
     for i, (fact_id, sim) in enumerate(results):
         print(f'  [{i+1}] fact_id={fact_id} similarity={sim:.3f}')
     return 0
+
+
+def cmd_recall_auto(args) -> int:
+    """Auto-classify an error / tool-output string into the right recall zone.
+
+    v1.15.2 (2026-09-22, Ship b). Idea: instead of forcing the agent to
+    guess which zone a problem maps to, paste the error message and let
+    this command walk failure -> lesson -> success zones with the most
+    informative tokens. First non-empty zone wins and is printed with a
+    short hint of the top result.
+
+    Usage:
+        am recall-auto "<error message or tool output>"
+        cat err.log | am recall-auto -
+
+    Returns rc=0 on any zone hit, rc=2 on no hit (caller decides fallback).
+    """
+    import re
+    import sys as _sys
+
+    raw = args.text
+    if raw == '-':
+        raw = _sys.stdin.read()
+    if not raw or not raw.strip():
+        print('[recall-auto] empty input — pass an error string or pipe via stdin', file=_sys.stderr)
+        return 2
+
+    # v1.15.2 (2026-09-22, Ship b): token extractor — keep alphanumeric
+    # runs of length >= 2, drop file paths, hex addresses, digits-only
+    # tokens, and Python-style module refs. Goal is keywords that map to
+    # semantic recall, not literal substring match.
+    text = re.sub(r'[A-Za-z]:\\\S+|\S*[/\\]\S+\.\w{1,5}', ' ', raw)
+    text = re.sub(r'0x[0-9a-fA-F]+', ' ', text)
+    tokens = re.findall(r'[A-Za-z_][A-Za-z0-9_]{1,}', text)
+    # Drop pure-numeric / pure-underscore noise and common stopwords.
+    noise = {'the', 'and', 'for', 'with', 'from', 'this', 'that', 'have',
+             'into', 'your', 'file', 'line', 'value', 'error', 'errors'}
+    seen = set()
+    keywords = []
+    for t in tokens:
+        if t.lower() in noise:
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        keywords.append(t)
+        if len(keywords) >= 12:
+            break
+    if not keywords:
+        print('[recall-auto] no usable keywords extracted from input', file=_sys.stderr)
+        return 2
+    query = ' '.join(keywords)
+
+    # Walk failure -> lesson -> success. All-zones last as a catch-all.
+    # Use top_k=3 per zone so we get a focused list to surface.
+    zone_order = ['failure', 'lesson', 'success', 'all-zones']
+    from .. import astor_nest as _astor_nest_fn
+    from ..nest.embeddings import astor_get_embedding_model as _embed_fn
+    nest = _astor_nest_fn()
+    try:
+        model = _embed_fn()
+        emb = list(model.embed([query]))[0]
+    except Exception as e:
+        print(f'[recall-auto] embed failed: {e}', file=_sys.stderr)
+        return 2
+
+    for z in zone_order:
+        kinds_set = set(ZONE_KINDS[z].split(','))
+        # 4x oversample then filter to zone (matches cmd_recall pattern)
+        raw_hits = nest.search(emb, limit=12)
+        if not raw_hits:
+            continue
+        from ..bus import astor_bus as _astor_bus_fn
+        bus = _astor_bus_fn(tier='public')
+        ids = [r[0] for r in raw_hits]
+        ph = ','.join('?' for _ in ids)
+        kind_map = {}
+        try:
+            for row in bus.conn.cursor().execute(
+                f'SELECT id, kind FROM memory_canonical WHERE id IN ({ph})', ids
+            ).fetchall():
+                kind_map[row[0]] = row[1]
+        except Exception:
+            pass
+        in_zone = [(fid, sim) for fid, sim in raw_hits if kind_map.get(fid) in kinds_set]
+        if in_zone:
+            print(f'[recall-auto] zone={z} keywords="{query}"')
+            print(f'[recall-auto] top {min(3, len(in_zone))} hits:')
+            for fid, sim in in_zone[:3]:
+                print(f'  fact_id={fid} similarity={sim:.3f}')
+            return 0
+
+    print(f'[recall-auto] no hits across failure/lesson/success for keywords="{query}"')
+    return 2
 
 
 def cmd_doctor(args) -> int:

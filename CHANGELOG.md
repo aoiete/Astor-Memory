@@ -1,3 +1,53 @@
+## v1.15.2 (2026-09-22)
+
+### Default zone + recall-auto
+
+The "recall before reasoning" discipline shipped in v1.15.1 worked in
+practice but required the caller to remember `--zone failure` /
+`--zone success` flags. This ship makes the right behavior the default
+and adds a CLI that auto-classifies an error message into the right zone.
+
+**Default zone flipped to `success`** (`cmd_recall`):
+
+Most agent queries that pass through a recall are looking for a proven
+recipe ("how do I do X"). Raw fact rows are usually noise compared to
+`success_pattern` entries that capture the exact answer. So:
+
+```bash
+am recall "how to set up GitHub SSH key"   # → success_pattern only (default)
+am recall --zone failure "git push fail"   # explicit failure
+am recall --zone lesson "openD root cause" # explicit postmortem
+am recall --zone all-zones "X"             # full cross-zone sweep
+am recall --zone none "X"                  # raw fact rows (escape hatch)
+```
+
+**NEW CLI: `am recall-auto`** (`--help`):
+
+Walks `failure` → `lesson` → `success` → `all-zones` with the most
+informative tokens from the input. Regex extracts alphanumeric runs
+≥2 chars, drops file paths, hex addresses, common stopwords
+(`the`, `and`, `error`, etc.), and dedupes. First non-empty zone
+wins and prints the top-3 hits. Accepts the error via argv or stdin
+(`-`) so a log file can be piped in:
+
+```bash
+am recall-auto "git@github.com: Permission denied (publickey). fatal: ..."
+cat err.log | am recall-auto -
+```
+
+Returns rc=0 on any zone hit, rc=2 on no hit (caller decides fallback).
+
+**Housekeeping**:
+
+- `ZONE_KINDS` promoted from argparse-local closure to module-level
+  constant in `astor_memory/cli/main.py` so `cmd_recall_auto` can
+  reuse it without a closure capture.
+- `test_e2e_integration` updated to pass `--zone none` since the test
+  exercises the raw recall path and was asserting on the no-zone-
+  filter default behavior.
+
+468 tests pass 3+ rounds stable. No DB migration, no public API change.
+
 ## v1.15.1 (2026-09-22)
 
 ### Zone shortcuts for outcome-prioritized recall
