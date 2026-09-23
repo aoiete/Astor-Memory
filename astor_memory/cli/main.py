@@ -256,6 +256,13 @@ def main(argv: list[str] | None = None) -> int:
                          help='Actually tombstone; default is dry-run report only')
     decay_run_p.add_argument('--reason', default='decay_sweep_v1.14.73',
                          help='Reason string for audit log (default decay_sweep_v1.14.73)')
+    # v1.15.3 (2026-09-22, MemTensor learning): incremental sweep.
+    # Only consider facts with canonical id > --since-canonical-id, so a
+    # bus-event hook or wrapper can run decay on the new rows only and
+    # skip the full-table scan. Saves the 24h cron from wasting work when
+    # only a handful of new facts have been written since last sweep.
+    decay_run_p.add_argument('--since-canonical-id', type=int, default=0,
+                         help='Only consider facts with id > this (default 0 = full sweep)')
     decay_run_p.set_defaults(func=cmd_decay_sweep_run)
     decay_stats_p = decay_sub.add_parser('stats', help='Show decay-eligible counts only (no sweep)')
     decay_stats_p.add_argument('--tier', default='public', choices=['public', 'source', 'private', 'repo'])
@@ -263,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     decay_stats_p.add_argument('--max-importance', type=float, default=0.5)
     decay_stats_p.add_argument('--idle-days', type=int, default=30)
     decay_stats_p.add_argument('--low-access-count', type=int, default=0)
+    decay_stats_p.add_argument('--since-canonical-id', type=int, default=0,
+                              help='Only consider facts with id > this (default 0 = full sweep)')
     decay_stats_p.set_defaults(func=cmd_decay_sweep_stats)
 
     mcp_serve.add_argument('--transport', default='stdio', choices=['stdio'],
@@ -3345,6 +3354,9 @@ def cmd_decay_sweep_run(args) -> int:
     limit = int(args.limit)
     execute = bool(getattr(args, "execute", False))
     reason = getattr(args, "reason", "decay_sweep_v1.14.73") or "decay_sweep_v1.14.73"
+    # v1.15.3 (2026-09-22, MemTensor learning): incremental sweep via
+    # --since-canonical-id. Default 0 = full sweep (legacy behavior).
+    since_id = int(getattr(args, "since_canonical_id", 0) or 0)
 
     bus = astor_bus(tier=tier, user_id=user_id)
     # v1.14.73: idle-days is no longer used in query (last_confirmed_at reset on every read).
@@ -3354,16 +3366,19 @@ def cmd_decay_sweep_run(args) -> int:
     # v1.14.73 update: drop last_confirmed_at from decay criteria. last_confirmed_at
     # is reset on every read (fact 12055), so it can't serve as an "idle" proxy.
     # Decay now keys on importance + access_count alone (low-importance AND low-read).
+    # v1.15.3: add `AND id > ?` for incremental sweep (MemTensor learning:
+    # event-driven maintenance over full-table scan).
     sql = (
         "SELECT id, content, importance, access_count, last_confirmed_at, "
         "       tombstoned, user_id, kind "
         "FROM memory_canonical "
         "WHERE tombstoned = 0 "
+        "  AND id > ? "
         "  AND importance <= ? "
         "  AND access_count <= ? "
         "LIMIT ?"
     )
-    rows = list(bus.conn.execute(sql, (max_imp, max_access, limit)))
+    rows = list(bus.conn.execute(sql, (since_id, max_imp, max_access, limit)))
     eligible = [{"id": r[0], "content": (r[1] or "")[:120],
                  "importance": r[2], "access_count": r[3],
                  "last_confirmed_at": r[4], "kind": r[7]} for r in rows]
@@ -3421,6 +3436,8 @@ def cmd_decay_sweep_stats(args) -> int:
     max_imp = float(args.max_importance)
     idle_days = int(args.idle_days)
     max_access = int(args.low_access_count)
+    # v1.15.3 (MemTensor learning): incremental counter, mirrors run flag.
+    since_id = int(getattr(args, "since_canonical_id", 0) or 0)
 
     bus = astor_bus(tier=tier, user_id=user_id)
     # v1.14.73: idle-days is no longer used in query (last_confirmed_at reset on every read).
@@ -3428,10 +3445,11 @@ def cmd_decay_sweep_stats(args) -> int:
     # cutoff = (datetime.now(timezone.utc) - timedelta(days=idle_days)).isoformat()  # disabled
 
     # v1.14.73 update: same criteria as cmd_decay_sweep_run (idle criterion removed).
+    # v1.15.3: add `AND id > ?` for incremental counter.
     eligible_count = list(bus.conn.execute(
         "SELECT COUNT(*) FROM memory_canonical "
-        "WHERE tombstoned = 0 AND importance <= ? AND access_count <= ?",
-        (max_imp, max_access),
+        "WHERE tombstoned = 0 AND id > ? AND importance <= ? AND access_count <= ?",
+        (since_id, max_imp, max_access),
     ))[0][0]
 
     # Reference: total in tier

@@ -1,3 +1,59 @@
+## v1.15.3 (2026-09-22)
+
+### Incremental decay-sweep (MemTensor learning)
+
+WeChat article [MemTensor / Metis — "记忆基础模型"](https://mp.weixin.qq.com/s/tPYR8Ro-pmFIkt6vyZ-3rg)
+introduced two ideas worth porting to astor:
+
+1. **Online memory maintenance is gradient-free** — only one
+   forward pass per update, no expensive retraining.
+2. **Native memory state is a function of recent updates, not the
+   full history** — scanning the whole table every cron tick is
+   wasteful when only a handful of new facts have been written.
+
+Applied to astor's decay lifecycle, which until now did a full-table
+scan every 24h regardless of whether anything was new.
+
+**New CLI flag: `--since-canonical-id <N>`**
+
+Added to both `am decay-sweep run` and `am decay-sweep stats`.
+Limits the scan to facts with `memory_canonical.id > N`. Default 0
+preserves legacy full-sweep behavior, so existing cron jobs are
+unaffected.
+
+```bash
+am decay-sweep run --since-canonical-id 6292 --tier public --max-importance 0.5
+am decay-sweep stats --since-canonical-id 6292 --tier public
+```
+
+**New wrapper: `scripts/astor_decay_event_trigger.py`**
+
+Event-driven decay trigger for cron / bus-event-hook use. Reads
+`MAX(id)` from the bus db, compares to the cursor in
+`<ASTOR_DIR>/astor/metrics/decay_last_sweep.json`, and either invokes
+the incremental sweep or short-circuits with "nothing new" (no
+am call, ~50ms vs ~1-2s for a full sweep on empty/quiet periods).
+
+State file is per-tier (different tiers have independent id
+sequences). Tier change resets cursor to 0. Cursor tracks
+"what we've scanned", not "what we tombstoned" — a future tighter
+`--max-importance` can revisit rows without losing position.
+
+```bash
+# drop-in for the existing decay cron; safe to call every minute
+python scripts/astor_decay_event_trigger.py --tier public
+```
+
+**Why only the decay path**: the same idea would apply to
+`bus_reflect.py` (reflect only new events) and `auto-link backfill`
+(skip facts already linked), but those ships would touch forge +
+nest internals beyond v1.15.3's scope. Open follow-ups for
+v1.15.4+.
+
+468 tests pass 3+ rounds stable. No DB migration, no public API
+change. `decay_last_sweep.json` is a NEW per-runtime file created
+on first run.
+
 ## v1.15.2 (2026-09-22)
 
 ### Default zone + recall-auto
