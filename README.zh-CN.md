@@ -133,6 +133,73 @@ am recall --kinds failure_pattern "上次 patch tool 走不通"
 am recall --kinds success_pattern "verify 模式怎么配"
 ```
 
+#### 区快捷方式(v1.15.1)
+
+对按"结果区"思考的 agent,`--zone` 是一词替代 `--kinds` 的快捷方式:
+
+| 区         | 覆盖内容                                                      | 何时召回                                                              |
+|------------|-----------------------------------------------------------------|------------------------------------------------------------------------|
+| `failure`  | `failure_pattern` — 失败过的路径,别重蹈覆辙                    | 碰壁了,看这招之前是否试过                                             |
+| `success`  | `success_pattern` — 验证过的做法,能 ship 的配方                  | 我要一个能用的做法                                                     |
+| `lesson`   | `postmortem,lesson` — 根因 + 修复三元组,严重度 ≥ 0.90            | 重大 bug 后 — 下次怎么做、不怎么做                                     |
+| `all-zones`| `user_preference,failure_pattern,success_pattern,postmortem,lesson` | 跨区扫(很少用;默认 zone filter 通常更准)                            |
+
+```bash
+am recall --zone failure "上次 patch tool 走不通"
+am recall --zone success "verify 模式怎么配"
+am recall --zone lesson  "OpenD Watchdog 服务挂了 怎么搞"
+am recall --zone all-zones "zone 类召回怎么用"
+```
+
+`--kinds` 与 `--zone` 同时传时,`--kinds` 优先(给高级 caller 的逃生口)。
+Agent 循环建议: **碰壁 → 先 `am recall --zone failure "<关键词>"` —
+没结果再升级到 `--zone lesson` 看 postmortem。**
+
+### Agent 的 recall 心法(v1.15.1)
+
+`--zone` 是推荐 agent 循环的一半。另一半是**到底何时才 recall** —
+recall 是后端工具,不是默认前言。下面这套纪律适用于任何调用 astor
+的 agent,任务无关:
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ 默认:不要预热 recall。先靠 LLM 推理跑任务。                    │
+│                                                              │
+│   ↓ 碰壁(错误 / timeout / 结果不对 / 反爬)                    │
+│                                                              │
+│ am recall --zone failure "<任务域关键词>"                      │
+│   ↓ 空                                                        │
+│ am recall --zone lesson  "<任务域关键词>"                      │
+│   ↓ 空                                                        │
+│ am recall --zone success "<任务域关键词>"                      │
+│   ↓ 空                                                        │
+│ 才:回退到 web_search / 重新从第一原理推导                       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+三个值得内化的规则:
+
+1. **默认关闭。** 任务跑得顺,不要 recall。recall 是失败恢复,不是
+   给 context 暖场。
+2. **一次失败一次 recall。** 不要用同一 query 循环 `--zone failure` —
+   空了就升级 zone(failure → lesson → success),而不是换关键词。
+3. **zone 优于关键词。** `--zone failure` 比 `--kinds failure_pattern`
+   信号密度更高,因为它带语义意图("我是失败才来的").` `--kinds`
+   是逃生口,不是默认。
+
+具体示例(任何任务域都行 — 只换关键词):
+
+| 任务                            | 触发信号              | Recall 调用                                              |
+|--------------------------------|-----------------------|----------------------------------------------------------|
+| 抓微信公众号文章                | 反爬 / captcha / 抓不到 | `am recall --zone failure "微信公众号 抓"`                |
+| moomoo 下单                    | EOrder / timeout      | `am recall --zone failure "opend place_order"`           |
+| 配置 cron                      | 不触发 / 静默失败     | `am recall --zone failure "hermes cron 不触发"`           |
+| patch Python 源码              | IndentationError      | `am recall --zone failure "patch tool 缩进漂移"`          |
+| 拉股票行情                     | 接口错 / 空数据       | `am recall --zone failure "akshare 接口错"`              |
+
+框架通用,关键词按任务域变。`--zone failure "X"` 是一句话心智模型,
+agent 搬进新域不用学新 skill。
+
 这是 LLM 和人类心智模型之间的桥 — 没接通的话,每条事实都是 `kind=fact`,
 3 区分类形同虚设 (Ship F v1.13.1 是死代码,直到 v1.14.21 capture_intent
 hook 接通,v1.14.36 调成 `success_pattern` 而非 `user_preference`)。

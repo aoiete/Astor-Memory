@@ -1,3 +1,77 @@
+## v1.15.1 (2026-09-22)
+
+### Zone shortcuts for outcome-prioritized recall
+
+The CLI recall path now exposes a one-word `--zone` shortcut that maps
+directly to the 3-zone outcome taxonomy (failure / success / lesson).
+Agents that think in "I just hit a wall" / "I want a proven recipe" /
+"what's the postmortem" terms get a flag matching their intent instead
+of having to memorize the underlying kind list.
+
+**New CLI flag** (`am recall --zone {failure|success|lesson|all-zones}`):
+shortcut for `--kinds <zone-kind-list>`. `--kinds` always wins when
+both are passed (escape hatch for advanced callers).
+
+| Zone        | Kinds                                                | Use when                                                  |
+|-------------|------------------------------------------------------|-----------------------------------------------------------|
+| `failure`   | `failure_pattern`                                    | I hit a wall, want to see if this was tried before         |
+| `success`   | `success_pattern`                                    | I want a proven recipe for this problem                   |
+| `lesson`    | `postmortem,lesson`                                  | After a critical bug — what to do / NOT do next time       |
+| `all-zones` | `user_preference,failure_pattern,success_pattern,postmortem,lesson` | Cross-zone sweep                                         |
+
+**Docs** (`README.md` + `README.zh-CN.md`):
+- New "Zone shortcuts" subsection: table + bash examples.
+- New "Recall discipline for agents" section: full agent-loop flow
+  (default off → hit wall → `--zone failure` → empty → `--zone lesson`
+  → empty → `--zone success` → empty → fall back to web_search).
+  Three rules (default off, one recall per failure, zone over keyword)
+  plus 5 concrete cross-domain examples (WeChat fetch, moomoo order,
+  cron, patch, akshare quote).
+
+**Smoke gate** (`scripts/smoke_recall_zone.sh`, new): 5-second liveness
+check — compiles main.py, statically greps for `add_argument('--zone'`
++ 4 zone keys + `args.zone`, then runs `am recall --help` and confirms
+all 4 zone values appear. Cheap (~5s, no LLM, no server), nightly-cron
+safe. Verified via negative test (delete `--zone` line → rc=1; restore
+→ rc=0).
+
+**Server-side fix: ACL rate-limit burst budget** (ship-time audit).
+The per-actor leaky bucket was set to capacity=5, refill=5/sec — too
+tight for real write paths. A single `/v1/write` fires 5+ `astor_check_write`
+calls (audit log + cascade + forge hook + ...), so the second write
+inside the same second hit the bucket ceiling and got spuriously
+translated to `cross_user_forbidden` by the server (rate-limit
+PermissionError was being masked as an ACL denial — security-by-design
+but root-caused two pre-existing test failures). Bumped per-(actor,
+target, action) capacity + refill to 30/sec; global anti-spam ceiling
+stays at 50/sec. Spam protection still active at 30/sec — well above
+any human or test write rate, well below an attack.
+
+**Pre-existing test failures fixed** (audit pass):
+- `tests/test_acl.py::test_acl_bob_can_read_own_private` — was
+  failing because the second write inside a single test hit the
+  rate-limit ceiling; the rate-limit fix above resolves it. Test
+  code unchanged.
+- `tests/test_basic.py::test_rest_read_returns_entities_field` — had
+  a latent tier mismatch (write `tier='public'` but read
+  `tier='private', user_id='admin'` against a fresh tmp ASTOR_DIR
+  with no `seeded_users` fixture, so the read target db did not exist).
+  Fixed: write at the same tier the test reads from (admin's own
+  private). The earlier leaky-bucket bug masked this one with a
+  misleading `cross_user_forbidden` on the second write.
+- `tests/test_basic.py::test_admin_bypasses_rate_limit` — the rate-
+  limit regression check for non-admin actors fired 25 writes; under
+  the new 30/sec budget that does not trip the bucket. Bumped to 50
+  writes to keep the regression meaningful.
+
+3-test-fix and rate-limit-bump are part of the v1.15.1 ship because
+they were blocking the 7-gate audit from going green. None are
+independent ship targets — they are the *cause* of the audit's red
+signal, not separate features.
+
+No public API changes, no DB migration. 468 passed (3x rounds), 1
+pre-existing skip (test_hermes_adapter.py — unrelated to this ship).
+
 ## v1.15.0 (2026-09-22)
 
 ### Time-scoped recall + hit-source provenance

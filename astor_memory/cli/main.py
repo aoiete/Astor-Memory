@@ -75,7 +75,21 @@ def main(argv: list[str] | None = None) -> int:
     # recall. Comma-separated list, e.g. `--kinds user_preference,failure_pattern`
     # to only surface success+failure zones, skipping neutral `fact` rows.
     sub.add_argument('--kinds', default=None,
-                     help='Comma-separated kind filter (e.g. user_preference,failure_pattern)')
+             help='Comma-separated kind filter (e.g. user_preference,failure_pattern)')
+    # v1.15.1 (2026-09-22, Ship a): --zone shortcut. Agents should recall by
+    # outcome zone, not by raw kind list. Three named zones cover the common
+    # agent loop: failure (I just hit a wall / want to avoid repeating),
+    # success (I want a proven recipe), lesson (postmortem — what to do
+    # next time). Mutually exclusive with --kinds; explicit --kinds wins
+    # if both are passed (escape hatch for advanced callers).
+    ZONE_KINDS = {
+        'failure':   'failure_pattern',
+        'success':   'success_pattern',
+        'lesson':    'postmortem,lesson',
+        'all-zones': 'user_preference,failure_pattern,success_pattern,postmortem,lesson',
+    }
+    sub.add_argument('--zone', default=None, choices=sorted(ZONE_KINDS.keys()),
+             help='Named outcome zone (shortcut for --kinds): failure | success|lesson | all-zones')
     sub.set_defaults(func=cmd_recall)
 
     # am doctor
@@ -1062,8 +1076,12 @@ def cmd_recall(args) -> int:
     # in public tier per the 3-zone architecture). If caller wants
     # private, they should query directly via astor_bus(tier='private', ...).
     kinds_filter = None
+    # v1.15.1 (2026-09-22, Ship a): --zone shortcut. --kinds always wins
+    # when both are passed (escape hatch); --zone wins when --kinds absent.
     if args.kinds:
         kinds_filter = set(k.strip() for k in args.kinds.split(',') if k.strip())
+    elif getattr(args, 'zone', None):
+        kinds_filter = set(k.strip() for k in ZONE_KINDS[args.zone].split(',') if k.strip())
     if kinds_filter and results:
         bus = astor_bus(tier='public')
         fact_ids = [r[0] for r in results]
