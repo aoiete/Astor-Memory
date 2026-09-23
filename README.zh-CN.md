@@ -351,6 +351,10 @@ am write "bob 的偏好..."   --tier private --user-id bob
 | `am platform bind <bot> <chat> <user>` | 把一个 chat 绑定到用户 |
 | `am platform verify` | 检查 6 条 bot-binding 不变量 |
 | `am version` | 打印 astor + python + 平台版本 |
+| `am recall-auto "<error>"` | 粘贴错误或通过 stdin 管道,自动在 failure → lesson → success 三个 zone 里走一遍 |
+| `am recall --zone failure/success/lesson/all-zones/none` | 按结果 zone 过滤召回 (默认 `success`) |
+| `am decay-sweep run --since-canonical-id <N>` | 只扫 id > N 的新事实 (增量 sweep) |
+| `am recall --jev-relevance on` | 可选:通过 jev 重新排序 top hits(默认 off,需单独装 jev shim) |
 
 完整列表 + 每个子命令的细节:[`docs/api.md`](docs/api.md)。
 

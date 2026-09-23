@@ -1,3 +1,31 @@
+## v1.15.5 (2026-09-22)
+
+### README polish + `recall-auto` smoke gate
+
+Three new CLI subsections in README.md + 4 new rows in README.zh-CN.md
+CLI table:
+
+- **Recall zones** — table mapping `--zone {failure | success |
+  lesson | all-zones | none}` to the kinds each filters. Default is
+  `success` (proven recipes). `--zone none` is the escape hatch for
+  raw fact rows.
+- **Decay sweep** — `--since-canonical-id <N>` documentation plus
+  the `scripts/astor_decay_event_trigger.py` companion wrapper for
+  event-driven incremental decay.
+- **Optional: jev relevance rerank** — `--jev-relevance on` flag
+  clearly labeled opt-in. Requires `D:\AI\scripts\admin\jev\`,
+  `typesafe-sdk`, `TYPESAFE_API_KEY`, and a running jev server.
+  **Installs of `astor-memory` without the jev shim see no behavior
+  change** — the flag exists only for operators running the jev
+  shadow stack.
+
+NEW `scripts/smoke_recall_auto.sh` — 5-second liveness gate for
+`am recall-auto` (compile + argparse help verification + top-level
+subcommand listing). Symmetric to the existing `smoke_recall_zone.sh`
+shipped in v1.15.1.
+
+No DB migration. No public API change.
+
 ## v1.15.4 (2026-09-22)
 
 ### Jev recall rerank (opt-in)
