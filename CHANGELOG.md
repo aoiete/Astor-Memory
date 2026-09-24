@@ -1,3 +1,58 @@
+## v1.15.14 (2026-09-23)
+
+### success_pattern facts now land in memory_canonical (recall works)
+
+Admin pushback: "成功区域不recall？" — `/v1/read` returned 0
+success_pattern hits even though v1.15.13 wrote them via
+`astor_capture_intent`. Root cause: the helper called
+`bus.append_event()` directly, which only wrote the raw event log
+(Layer 0 Raw) but never promoted to `memory_canonical` (Layer 1).
+The promotion step (forge extract → candidate → promote → nest
+embed → lex index) is what makes a fact recallable; raw events
+sit outside every read path.
+
+**Fix**: `astor_capture_intent` now routes through the HTTP
+`/v1/write` endpoint instead of `bus.append_event()`. The endpoint
+runs the full pipeline:
+
+1. `forge.astor_extract_facts` — applies outcome→kind mapping
+   (`success → success_pattern`, `failure → failure_pattern`,
+   `lesson → lesson`)
+2. `bus.insert_candidate` → `bus.promote_candidate` —
+   promotes to `memory_canonical`
+3. `nest` indexes the embedding for vector recall
+4. `lex_index` tokenizes for BM25 recall
+
+Same single-call bridge for callers; no extra plumbing. On HTTP
+error, the helper returns `observed=False` with `skipped_reason`
+starting with `v1_write_http_<code>:` so callers can diagnose
+(403 = ACL/quality gate, 409 = cross_channel_inconsistency,
+500 = server).
+
+**Verified end-to-end**:
+
+```text
+Before v1.15.14:
+  public/memory/astor_bus_public.db success_pattern count = 0
+  /v1/read kinds=success_pattern  → 0 results
+
+After v1.15.14:
+  astor_capture_intent(actor='hermes.astor_auto_observe',
+                       text='driftcheck 5-gate PASS',
+                       tier='public',
+                       metadata={'outcome': 'success'})
+  → observed=True, kind=success_pattern, fact_ids=[6363], event_id=6085
+  /v1/read kinds=success_pattern query='driftcheck verifier pattern'
+  → 2 hits, top sim=1.080 (fact_id=6363)
+```
+
+`fact_ids=[...]` is now populated (was always `[]` in v1.15.13
+because no canonical write happened). `event_id` is populated too
+because `/v1/write` returns the actual event log id.
+
+Stats: 427 pass / 8 fail (8 pre-existing sandbox nacl/cryptography
+gaps, unrelated). Public-tier routing verified, recall verified.
+
 ## v1.15.13 (2026-09-23)
 
 ### astor_capture_intent helper + hermes_adapter dead-import fix
