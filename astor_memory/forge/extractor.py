@@ -485,6 +485,109 @@ def _pick_tier(outcome: str, importance: float) -> str | None:
     return None
 
 
+def astor_capture_intent(
+    text: str,
+    actor: str,
+    *,
+    tier: str = "public",
+    user_id: str | None = None,
+    source: str | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """v1.15.13 (2026-09-23, admin pushback): capture-intent helper for hermes adapter.
+
+    Single-call bridge for hermes (or any agent) to push a successful workflow
+    into astor's public success_pattern zone without manually choosing tier or
+    kind. Replaces the dead astor_memory.bus.capture_intent module (removed
+    in v1.13.0). Side-effect: writes a fact to the bus via astor_bus(tier=...)
+    so any future agent (or fresh session) can astor_recall() it.
+
+    Args:
+        text: free-form success text (typically the assistant's last turn +
+              user's reply, joined with \n).
+        actor: e.g. "hermes.astor_auto_observe" — provenance.
+        tier: target tier; default "public" so success_pattern facts cross users.
+        user_id: None → admin fallback (preserves prior hermes-adapter behavior).
+        source: free-form provenance tag for the bus event.
+        metadata: extra bus metadata (importance, outcome, namespace).
+
+    Returns:
+        dict(observed, tier, importance, outcome, skipped_reason, event_id,
+        fact_ids) — see astor_auto_observe for shape.
+
+    Usage (hermes adapter sync_turn path):
+        from astor_memory.forge.extractor import astor_capture_intent
+        astor_capture_intent(text=turn_text, actor="hermes", tier="public",
+                             metadata={"outcome": "success", "importance": 0.85})
+    """
+    if not text or not text.strip():
+        return {
+            "observed": False, "tier": None, "importance": 0.0,
+            "outcome": "neutral", "skipped_reason": "empty_text",
+            "event_id": None, "fact_ids": [],
+        }
+    outcome = astor_classify_outcome(text)
+    importance = _score_importance(text, outcome)
+    # Boost importance if capture-intent style
+    if astor_detect_capture_intent(text):
+        importance = max(importance, 0.85)
+    # Honor caller-supplied tier for failure/lesson (private-first)
+    if outcome in ("failure", "lesson"):
+        tier = "source"
+    elif outcome in ("success", "neutral") and tier != "public":
+        tier = "public"
+
+    meta = dict(metadata or {})
+    meta.setdefault("importance", importance)
+    meta.setdefault("outcome", outcome)
+    meta.setdefault("actor", actor)
+    if source:
+        meta.setdefault("source", source)
+
+    # Determine kind per 3-zone architecture (fact 11938)
+    if outcome == "success":
+        kind = "success_pattern"
+        importance = max(importance, 0.85)
+    elif outcome == "failure":
+        kind = "failure_pattern"
+        importance = max(importance, 0.90)
+    elif outcome == "lesson":
+        kind = "lesson"
+        importance = max(importance, 0.99)
+    else:
+        kind = "fact"
+
+    try:
+        from astor_memory import astor_bus as _bus
+        bus = _bus(tier=tier, user_id=user_id)
+        bus.append_event(
+            namespace=meta.get("namespace", f"capture_intent/{actor}"),
+            agent_id=actor,
+            source=source or actor,
+            action="capture_intent",
+            content=text[:500],
+            metadata={**meta, "importance": importance, "outcome": outcome,
+                      "kind": kind, "tier": tier},
+        )
+    except Exception as exc:  # pragma: no cover
+        return {
+            "observed": False, "tier": tier, "importance": importance,
+            "outcome": outcome, "skipped_reason": f"bus_write_failed:{exc}",
+            "event_id": None, "fact_ids": [],
+        }
+
+    return {
+        "observed": True,
+        "tier": tier,
+        "importance": importance,
+        "outcome": outcome,
+        "skipped_reason": "",
+        "kind": kind,
+        "event_id": None,  # callers should not depend on this — bus event is the source
+        "fact_ids": [],
+    }
+
+
 def astor_auto_observe(
     text: str,
     agent_id: str,

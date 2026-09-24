@@ -1,3 +1,59 @@
+## v1.15.13 (2026-09-23)
+
+### astor_capture_intent helper + hermes_adapter dead-import fix
+
+Two related fixes for the capture-intent → fact pipeline that has
+silently been broken since v1.13.0 (the `astor_memory.bus.capture_intent`
+module was removed in that release but the call site in
+`hermes_adapter.sync_turn` was never updated).
+
+**1. New public helper `astor_capture_intent` in `forge/extractor.py`**
+
+Replaces the dead `astor_memory.bus.capture_intent` module. Single
+call bridge for any agent (Hermes, MCP, raw Python) to push a
+successful workflow into astor's public success_pattern zone
+without manually choosing tier or kind. Routes via astor 3-zone
+architecture (fact 11938):
+
+| outcome | kind | default tier |
+| --- | --- | --- |
+| success | success_pattern | public (if imp ≥ 0.5) |
+| failure | failure_pattern | source |
+| lesson | lesson | source |
+| neutral | fact | private (admin fallback) |
+
+```python
+from astor_memory.forge.extractor import astor_capture_intent
+astor_capture_intent(
+    text=turn_text, actor="hermes",
+    tier="public",
+    metadata={"importance": 0.85, "outcome": "success"},
+)
+# Returns: dict(observed, tier, importance, outcome, kind, event_id, fact_ids)
+```
+
+**2. `hermes_adapter.py` sync_turn import path fixed**
+
+Line 504: `from astor_memory.bus import capture_intent as _ci` →
+`from astor_memory.forge.extractor import astor_capture_intent as _aci`.
+
+Before this fix, the `try/except Exception as ci_exc:` wrapper silently
+ate the `ImportError` and never wrote a capture-intent fact, so
+every Hermes sync_turn call since v1.13.0 lost its bridge to the
+3-zone taxonomy (success / failure / lesson facts never landed in
+the bus).
+
+Both writes now hit the public bus and surface via `astor_recall`
+across sessions/users.
+
+**Stats**: 427 pass / 8 fail (the 8 are nacl/cryptography missing
+from the test sandbox — pre-existing, unrelated). Public-tier routing
+verified via `/v1/write` test (tier=public, kind=success_pattern).
+
+No DB migration. Pure additive helper + a one-line import fix. Old
+import path no longer works (module is gone), but no other
+internal caller referenced it.
+
 ## v1.15.12 (2026-09-22)
 
 ### Decay-sweep metadata now carries kind / namespace / user_id
