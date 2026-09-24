@@ -557,34 +557,67 @@ def astor_capture_intent(
     else:
         kind = "fact"
 
+    # v1.15.14 (2026-09-23, admin pushback): success_pattern not recalled —
+    # root cause was that bus.append_event() only wrote the raw event log
+    # (Layer 0 Raw) but never promoted to memory_canonical (Layer 1),
+    # so /v1/read queries returned 0 success_pattern hits. Route through
+    # the HTTP /v1/write endpoint instead — that path runs forge extraction
+    # (which applies the outcome→kind mapping: success → success_pattern),
+    # inserts a candidate, promotes to memory_canonical, indexes via
+    # nest embeddings, and writes the lex token index — same flow as any
+    # other canonical fact. Single-call, no extra plumbing for callers.
     try:
-        from astor_memory import astor_bus as _bus
-        bus = _bus(tier=tier, user_id=user_id)
-        bus.append_event(
-            namespace=meta.get("namespace", f"capture_intent/{actor}"),
-            agent_id=actor,
-            source=source or actor,
-            action="capture_intent",
-            content=text[:500],
-            metadata={**meta, "importance": importance, "outcome": outcome,
-                      "kind": kind, "tier": tier},
+        import json as _json
+        import urllib.request as _ur
+        import urllib.error as _ue
+
+        base = __import__("os").environ.get(
+            "ASTOR_BASE_URL", "http://127.0.0.1:7803"
         )
+        body = {
+            "text": text[:500],
+            "tier": tier,
+            "user_id": user_id,
+            "mode": "regex",
+            "metadata": {
+                **meta,
+                "importance": importance,
+                "outcome": outcome,
+                "kind": kind,
+            },
+            "tags": ["capture_intent", actor],
+        }
+        req = _ur.Request(
+            base + "/v1/write",
+            data=_json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        response = _json.loads(_ur.urlopen(req, timeout=15).read().decode("utf-8"))
+        fact_ids = response.get("fact_ids") or []
+        event_id = response.get("event_id")
+    except _ue.HTTPError as exc:
+        return {
+            "observed": False, "tier": tier, "importance": importance,
+            "outcome": outcome,
+            "skipped_reason": f"v1_write_http_{exc.code}:{exc.reason}",
+            "event_id": None, "fact_ids": [],
+        }
     except Exception as exc:  # pragma: no cover
         return {
             "observed": False, "tier": tier, "importance": importance,
-            "outcome": outcome, "skipped_reason": f"bus_write_failed:{exc}",
+            "outcome": outcome, "skipped_reason": f"v1_write_failed:{exc}",
             "event_id": None, "fact_ids": [],
         }
 
     return {
-        "observed": True,
+        "observed": bool(fact_ids),
         "tier": tier,
         "importance": importance,
         "outcome": outcome,
         "skipped_reason": "",
         "kind": kind,
-        "event_id": None,  # callers should not depend on this — bus event is the source
-        "fact_ids": [],
+        "event_id": event_id,
+        "fact_ids": fact_ids,
     }
 
 
