@@ -499,10 +499,14 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                     },
                 )
                 # Insert candidate for fact extraction pipeline. Use the
-                # forge capture_intent entry point so cascade promote runs.
+                # forge extractor astor_capture_intent hook (the legacy
+                # astor_memory.bus.capture_intent module was removed in
+                # v1.13.0 — calling it here was silently except'd by the
+                # try/except below, so success events never reached the
+                # fact pipeline).
                 try:
-                    from astor_memory.bus import capture_intent as _ci
-                    _ci(
+                    from astor_memory.forge.extractor import astor_capture_intent as _aci
+                    _aci(
                         text=text,
                         actor="astor_memory_adapter",
                         tier=tier,
