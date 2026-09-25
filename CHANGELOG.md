@@ -1,3 +1,59 @@
+## v1.15.16 (2026-09-25) — S18 + S19 + S20 dashboard auto-refresh + version visibility
+
+Admin noticed dashboard `hero.last_event_ts` lagged reality by hours
+despite new bus events flowing. Three compounding bugs.
+
+### S18 (server.py): cache invalidation
+
+Root cause: S15 (v1.15.10) added a 5-minute TTL in-process cache to
+`/v1/dashboard` so HTML polling didn't re-run 16 user-db aggregates
+per refresh. Cache only expired by TTL or server restart — no
+write-trigger invalidation.
+
+**Fix**: two-pronged invalidation.
+
+1. TTL 300s → **30s**. Bounded staleness even without writes.
+2. `/v1/write` success path now does
+   `_DASHBOARD_CACHE["ts"] = 0.0` after a successful write, so the next
+   `/v1/dashboard` call rebuilds the payload immediately. Best-effort:
+   wrapped in `try/except` so cache-invalidate failure never breaks writes.
+
+### S19 (dashboard_data.py): cross-tier aggregation
+
+Root cause: `_per_user_breakdown` only scanned `users/<u>/memory/astor_bus_*.db`,
+missing public + source tier writes entirely. `/v1/write` defaults to
+`tier="public"`, so the majority of writes were invisible to the
+dashboard hero/growth counters.
+
+**Fix**:
+- `build_dashboard_payload` unions `MAX(events.ts)` from public + source
+  buses into `last_event_ts` (in addition to per-user scan).
+- `_growth_30d` now aggregates promoted counts across admin + public +
+  source tier buses (was admin-only).
+
+### S20 (UI + version alignment): version visibility
+
+After S18+S19, ship data flowed but operator couldn't tell when the
+ship was actually live — `pyproject.toml` had been lagging
+`__init__.py` (1.15.12 vs 1.15.15) and the dashboard HTML subtitle
+read "v1.14.37 — last 10 per bucket" from a hardcoded 9/16 comment,
+which looked like a stale version badge.
+
+**Fix**:
+- `pyproject.toml` version aligned to **1.15.16**.
+- `astor_memory/__init__.py` `__version__` updated to **1.15.16** with
+  S18+S19 changelog line.
+- Dashboard `<header>` adds a `<span id="version-badge">` that JS pulls
+  from `/v1/health.version` on every render — so ship bumps are
+  visible immediately (no HTML hardcoding).
+- Removed stale "v1.14.37 —" subtitle from Recent Capture panel.
+- Added `.version-badge` CSS to match header-meta style.
+
+Verified: 30/30 dashboard tests pass. Server reports
+`/v1/health.version=1.15.16`, `astor_dir=D:\AI\Astor-Memory-Runtime`.
+`hero.last_event_ts` now reflects public bus writes within 30s, and
+`growth_30d` shows cross-tier total.
+
 ## v1.15.14 (2026-09-23)
 
 ### success_pattern facts now land in memory_canonical (recall works)

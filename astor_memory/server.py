@@ -19,12 +19,13 @@ from __future__ import annotations
 import sqlite3
 import json
 
-# S15 (2026-09-10): dashboard cache — keeps aggregated payload for 5min so
+# S15 (2026-09-10): dashboard cache — keeps aggregated payload so
 # the HTML page polling /v1/dashboard doesn't re-run 16 user-db aggregates
-# on every refresh. Cache key: astor_dir. Invalidation: TTL only (5min);
-# staleness of ~5min is acceptable for a memory-health overview.
+# on every refresh. Cache key: astor_dir. Invalidation: 30s TTL
+# (S18 2026-09-25, tightened from 5min) + write-trigger invalidate in
+# /v1/write so hero.last_event_ts / growth_30d refresh instantly after writes.
 _DASHBOARD_CACHE: dict = {"payload": None, "ts": 0.0, "astor_dir": None}
-_DASHBOARD_TTL_SEC = 300
+_DASHBOARD_TTL_SEC = 30  # 2026-09-25 S18: tighter TTL so dashboard reflects writes promptly; /v1/write also invalidates on success for instant refresh.
 
 
 # S14 (2026-09-08): auto-load OPENAI_API_KEY from hermes .env file if not in env.
@@ -1456,6 +1457,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 )
             except Exception:
                 pass  # audit failure must not break writes
+
+        # 2026-09-25 S18: invalidate dashboard cache on every successful write
+        # so hero.last_event_ts / growth_30d / per_user refresh instantly
+        # instead of waiting for the 30s TTL. Best-effort: never breaks write.
+        try:
+            _DASHBOARD_CACHE["ts"] = 0.0
+        except Exception:
+            pass
 
         return jsonify({
             'event_id': event_id,
