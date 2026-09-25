@@ -65,6 +65,20 @@ body {
 .cache-badge.miss { background: var(--warn); color: white; }
 .cache-badge.error { background: var(--danger); color: white; }
 
+/* S20 (2026-09-25): server version badge — pulls from /v1/health, */
+/* shows operator when ship bumps are live. */
+.version-badge {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
 .last-event { font-variant-numeric: tabular-nums; }
 
 .btn-refresh {

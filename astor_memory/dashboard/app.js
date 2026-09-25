@@ -37,11 +37,30 @@
       }
       const d = await r.json();
       render(d);
+      // S20 (2026-09-25): show server version in header so operator sees ship
+      // bumps immediately. /v1/health is fast + has version field (no cache layer).
+      fetchHealth().catch(() => {});
       return d;
     } catch (e) {
       console.error('dashboard fetch failed:', e);
       setError(e.message);
       return null;
+    }
+  }
+
+  // S20: best-effort version pull. Failure → leave badge as "v…".
+  async function fetchHealth() {
+    try {
+      const r = await fetch('/v1/health');
+      if (!r.ok) return;
+      const h = await r.json();
+      const el = document.getElementById('version-badge');
+      if (el && h.version) {
+        el.textContent = 'v' + h.version;
+        el.title = 'astor-memory v' + h.version + ' (' + (h.status || 'unknown') + ')';
+      }
+    } catch (e) {
+      // silent
     }
   }
 
