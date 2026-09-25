@@ -349,6 +349,140 @@ def _resolve_agent_context(body: dict) -> dict[str, str | None]:
             'session_id': body.get('session_id')}
 
 
+# ---------------------------------------------------------------------------
+# MemCon-style recall controller (rule-based v1.0.0)
+# ---------------------------------------------------------------------------
+# Inspired by arxiv 2607.13591 "Memory as a Controlled Process" (UCLA+UW+NW):
+# instead of a fixed top_k for every recall, decide per-call:
+#   1. should_recall(query, ctx) — skip if obvious / cached / no-op
+#   2. action_top_k(query, ctx)  — choose top_k based on state (lib size, intent)
+# Rule-based v1 — collect usage data first; UCB/Q-table upgrade in v2 once
+# we have enough feedback samples.
+#
+# All decisions are recorded in /tmp/recall_controller_log.jsonl for offline
+# analysis (action chosen, top_k picked, latency saved). No behavior change
+# if logs cannot be written.
+
+import json as _rc_json
+import re as _rc_re
+import time as _rc_time
+import os as _rc_os
+from threading import Lock as _rc_Lock
+
+_RC_LOG_PATH = _rc_os.environ.get(
+    'ASTOR_RECALL_LOG',
+    _rc_os.path.join(_rc_os.environ.get('TEMP', '/tmp'), 'astor_recall_controller.jsonl'),
+)
+_RC_LOCK = _rc_Lock()
+
+
+def _rc_log(event: dict) -> None:
+    """Best-effort append to controller log. Never raises."""
+    try:
+        event = {'ts': _rc_time.time(), **event}
+        with _RC_LOCK:
+            with open(_RC_LOG_PATH, 'a', encoding='utf-8') as f:
+                f.write(_rc_json.dumps(event, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
+
+
+def _rc_query_features(query: str) -> dict:
+    """Extract cheap features from the query string for decision making."""
+    if not query:
+        return {'len': 0, 'tokens': 0, 'has_chinese': False, 'has_question': False,
+                'has_code': False, 'has_url': False, 'has_proper_noun': False}
+    has_chinese = bool(_rc_re.search(r'[\u4e00-\u9fff]', query))
+    has_question = '?' in query or '？' in query
+    has_code = '```' in query or 'def ' in query or 'class ' in query or 'function ' in query
+    has_url = bool(_rc_re.search(r'https?://', query))
+    # crude proper-noun detection: 2+ capital letters not at start of sentence
+    proper_nouns = _rc_re.findall(r'(?<![.!?\n])\b[A-Z][a-zA-Z]{2,}\b', query)
+    return {
+        'len': len(query),
+        'tokens': len(query.split()),
+        'has_chinese': has_chinese,
+        'has_question': has_question,
+        'has_code': has_code,
+        'has_url': has_url,
+        'has_proper_noun': len(proper_nouns) > 0,
+    }
+
+
+def _rc_should_recall(query: str, body: dict) -> tuple[bool, str]:
+    """MemCon action 'NoOp' decision. Returns (should_recall, reason).
+
+    Heuristics v1 (rule-based):
+    - empty / whitespace only → skip
+    - very short query (< 4 chars) → skip (just acknowledging / single word)
+    - pure greeting / acknowledgment → skip
+    - user explicitly opted out via body['skip_recall']=True
+    """
+    if body.get('skip_recall'):
+        return False, 'caller_opt_out'
+    if not query or not query.strip():
+        return False, 'empty_query'
+    q = query.strip()
+    if len(q) < 4:
+        return False, 'too_short'
+    # common greetings/acknowledgments
+    _GREETINGS = {'hi', 'hey', 'hello', 'ok', 'okay', 'yes', 'no', 'thanks', 'thank you',
+                  'thx', 'ty', '哈哈', '好的', '好', '嗯', '是', '不是', '再见', 'bye',
+                  '你好', '嗨', '谢', '收到', 'ok.', 'got it', 'cool', 'nice'}
+    if q.lower() in _GREETINGS:
+        return False, 'greeting'
+    return True, 'ok'
+
+
+def _rc_choose_top_k(query: str, body: dict, default_top_k: int, lib_size: int) -> int:
+    """MemCon action 'retrieve' with adaptive top_k.
+
+    Heuristics v1:
+    - explicit top_k from caller wins (don't override)
+    - question queries with proper nouns → need more context (default + 5)
+    - long queries (>120 chars) → likely complex task, more results (default + 5)
+    - very long (>300 chars) → drop slightly to avoid noise (default - 2, min 3)
+    - code queries → fewer, focused (default - 2, min 3)
+    - short chinese query (< 20 chars) → many small facts, default is fine
+    - lib_size > 5000 → +2 to dilute noise
+    - lib_size < 50 → keep default (small lib already focused)
+    """
+    # honor explicit top_k — but "auto" / None mean "let controller decide"
+    if body.get('top_k') is not None and body['top_k'] != 'auto':
+        try:
+            explicit = int(body['top_k'])
+            if explicit > 0:
+                return explicit
+        except (TypeError, ValueError):
+            pass
+
+    f = _rc_query_features(query)
+    base = default_top_k
+
+    if f['has_code']:
+        return max(3, base - 2)
+    if f['len'] > 300:
+        return max(3, base - 2)
+    if f['len'] > 120:
+        return base + 5
+    if f['has_proper_noun'] and f['has_question']:
+        return base + 5
+    if lib_size > 5000:
+        return base + 2
+    return base
+
+
+def _rc_re_retrieve(query: str, body: dict, prev_top_score: float) -> bool:
+    """MemCon action 'Re-Retrieve' decision.
+
+    If first retrieve gave weak signal (top_score < 0.3), retry with a
+    broader top_k. v1 just flips a flag; v2 can do query expansion.
+    """
+    if prev_top_score < 0.3 and len(query.split()) >= 3:
+        return True
+    return False
+
+
 def _resolve_namespace(
     agent_ctx: dict[str, str | None],
     *,
@@ -1359,15 +1493,47 @@ def create_app(astor_dir: str | None = None) -> Flask:
         query = body.get('query')
         if not query:
             return jsonify({'error': 'query required', 'detail': 'POST /v1/read requires JSON body with "query" field (string)'}), 400
+        # v1.x.x MemCon-style recall controller (rule-based). Decides whether
+        # to skip, what top_k to use. Honors explicit top_k from caller.
+        _rc_should, _rc_reason = _rc_should_recall(query, body)
+        _rc_t0 = _rc_time.time()
+        if not _rc_should:
+            _rc_log({'action': 'noop', 'reason': _rc_reason, 'query_len': len(query),
+                     'tier': body.get('tier', 'public'), 'user': body.get('user') or body.get('user_id')})
+            return jsonify({
+                'results': [], 'count': 0,
+                'recall_controller': {'action': 'noop', 'reason': _rc_reason,
+                                       'elapsed_ms': int((_rc_time.time() - _rc_t0) * 1000)},
+            })
         # 2026-08-27: tolerate "auto" / None / malformed top_k — fallback to 5
         # instead of 500. Client side passes "auto" from --query-adaptive flag.
         raw_top_k = body.get('top_k', 5)
         try:
-            top_k = int(raw_top_k)
-            if top_k <= 0:
-                top_k = 5
+            explicit_top_k = int(raw_top_k)
+            if explicit_top_k <= 0:
+                explicit_top_k = 5
         except (TypeError, ValueError):
-            top_k = 5
+            explicit_top_k = 5
+        top_k = explicit_top_k
+        # MemCon controller: when caller passes "auto" or omits top_k, decide
+        # based on query features + lib size. Honor explicit numbers.
+        _lib_size = 0
+        if body.get('query_adaptive', True) and (body.get('top_k') is None or body.get('top_k') == 'auto'):
+            try:
+                _tier = body.get('tier', 'public')
+                _uid = body.get('user_id') or body.get('user') if _tier in ('repo', 'private') else None
+                _bus_for_count = astor_bus(tier=_tier, user_id=_uid)
+                _lib_size = _bus_for_count.conn.execute(
+                    "SELECT COUNT(*) FROM facts WHERE archived = 0"
+                ).fetchone()[0]
+            except Exception:
+                _lib_size = 0
+            top_k = _rc_choose_top_k(query, body, default_top_k=5, lib_size=_lib_size)
+        _rc_log({'action': 'retrieve', 'top_k': top_k, 'lib_size': _lib_size,
+                 'explicit': body.get('top_k') is not None and body.get('top_k') != 'auto',
+                 'tier': body.get('tier', 'public'),
+                 'user': body.get('user') or body.get('user_id'),
+                 'elapsed_ms': int((_rc_time.time() - _rc_t0) * 1000)})
         # v1.14.74.5 (2026-09-18): Hindsight-style token_budget — overrides top_k after retrieval.
         _raw_budget = body.get('token_budget', None)
         try:
@@ -2688,15 +2854,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 )
             else:
                 bus.conn.execute("DELETE FROM memory_canonical WHERE id = ?", (cfid,))
-                # also delete from nest embeddings and forge if present
-                try:
-                    nest_obj = astor_nest(tier=tier, user_id=user_id)
-                    nest_obj.conn.execute(
-                        "DELETE FROM embeddings WHERE fact_id = ?", (cfid,)
-                    )
-                    nest_obj.conn.commit()
-                except Exception:
-                    pass
+            # v1.15.15 (2026-09-25): tombstone_only previously left nest
+            # embeddings behind, so vector recall kept surfacing tombstoned
+            # facts (verified live: fact 12576 returned after forget with
+            # tombstone_only=True). Embeddings are regenerable from content
+            # — always delete them on forget, regardless of tombstone_only.
+            try:
+                nest_obj = astor_nest(tier=tier, user_id=user_id)
+                nest_obj.conn.execute(
+                    "DELETE FROM embeddings WHERE fact_id = ?", (cfid,)
+                )
+                nest_obj.conn.commit()
+            except Exception:
+                pass
             bus.conn.commit()
         except Exception as e:
             bus.conn.rollback()
@@ -3646,7 +3816,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
             import subprocess as _sp
             import time as _t
             _t.sleep(0.2)
-            cmd = [sys.executable, '-m', 'astor_memory.server'] + sys.argv[1:]
+            # Pin the canonical Python interpreter so reload doesn't drift
+            # to whatever sys.executable was used at first launch. The
+            # hardcoded path matches what start_server.bat / NSSM use
+            # so reload never silently swaps to a different venv.
+            py_exe = r'D:\AI\PY-311\Scripts\pythonw.exe'
+            if not _os.path.exists(py_exe):
+                py_exe = sys.executable  # fallback if PY-311 not present
+            cmd = [py_exe, '-m', 'astor_memory.server'] + sys.argv[1:]
             try:
                 # NOTE: do NOT pass close_fds=True here. pythonw.exe keeps
                 # references to sys.stdout/sys.stderr; closing those fds
@@ -4078,6 +4255,10 @@ def main():
 
 
 if __name__ == '__main__':
+    import sys as _dbg_sys
+    print(f'[DEBUG fork-trace] __main__ entered, sys.executable={_dbg_sys.executable!r}', flush=True)
+    print(f'[DEBUG fork-trace] sys.argv={_dbg_sys.argv!r}', flush=True)
+    print(f'[DEBUG fork-trace] PYTHONHOME={_dbg_sys.prefix!r}', flush=True)
     main()
 
 
