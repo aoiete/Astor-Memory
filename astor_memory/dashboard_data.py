@@ -338,20 +338,32 @@ def _eval_trend(metrics_dir: Path) -> dict:
 
 
 def _growth_30d(astor_dir: Path) -> dict[str, int]:
-    """Admin daily promoted count for the past 30 days."""
-    admin_db = astor_dir / "users/admin/memory/astor_bus_admin.db"
-    if not admin_db.exists():
-        return {}
-    try:
-        co = sqlite3.connect(str(admin_db))
-        cu = co.cursor()
-        rows = cu.execute(
-            "SELECT substr(promoted_at,1,10) d, COUNT(*) FROM memory_canonical GROUP BY d ORDER BY d"
-        ).fetchall()
-        co.close()
-        return {d: c for d, c in rows}
-    except Exception:
-        return {}
+    """Cross-tier daily promoted count for the past 30 days.
+
+    S19 (2026-09-25): union promoted counts from admin + public + source buses
+    so growth_30d reflects writes across all tiers, not just admin's private
+    bus. Previously only users/admin/memory/astor_bus_admin.db was scanned,
+    which undercounted public/source tier writes (where /v1/write defaults).
+    """
+    counts: Counter = Counter()
+    for tier_db in (
+        astor_dir / "users/admin/memory/astor_bus_admin.db",
+        astor_dir / "public/memory/astor_bus_public.db",
+        astor_dir / "public/memory/astor_bus_source.db",
+    ):
+        if not tier_db.exists():
+            continue
+        try:
+            with sqlite3.connect(str(tier_db)) as _co:
+                _rows = _co.execute(
+                    "SELECT substr(promoted_at,1,10) d, COUNT(*) "
+                    "FROM memory_canonical GROUP BY d"
+                ).fetchall()
+                for d, c in _rows:
+                    counts[d] += c
+        except Exception:
+            continue
+    return dict(sorted(counts.items()))
 
 
 def _top_keywords_and_recent(astor_dir: Path) -> tuple[list[tuple[str, int]], list[dict]]:
@@ -861,6 +873,23 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
     per_user, last_event_ts, users_total, facts_total, active_total, tomb_total, high_imp_total = (
         _per_user_breakdown(astor)
     )
+    # S19 (2026-09-25): union MAX(events.ts) from public + source tier buses
+    # so dashboard hero.last_event_ts reflects writes from any tier. Previously
+    # _per_user_breakdown only scanned users/<u>/memory/astor_bus_*.db, missing
+    # public + source writes entirely (which is where /v1/write defaults).
+    # Verified: 9/25 12:21:43 UTC public bus had write but dashboard showed 07:30.
+    for tier_db in (
+        astor / "public/memory/astor_bus_public.db",
+        astor / "public/memory/astor_bus_source.db",
+    ):
+        if tier_db.exists():
+            try:
+                with sqlite3.connect(str(tier_db)) as _co:
+                    _tier_max = _co.execute("SELECT MAX(ts) FROM events").fetchone()[0]
+                    if _tier_max and (not last_event_ts or _tier_max > last_event_ts):
+                        last_event_ts = _tier_max
+            except Exception:
+                pass
     eval_trend = _eval_trend(metrics_dir)
     growth = _growth_30d(astor)
     keywords, recent = _top_keywords_and_recent(astor)
