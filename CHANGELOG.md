@@ -1,3 +1,37 @@
+## v1.15.17 (2026-09-25) — S21 auto-meta-recall
+
+Admin pointed out (multiple times): "astor 装的意义不就是自动触发吗?". Existing
+recall was passive — caller had to explicitly ask "X success_pattern" or
+"X failure_pattern" to get the relevant lessons. Without that query, astor
+just dumped random facts and the caller re-derives the same mistakes.
+
+**Fix**: `astor_recall "<any query>"` now auto-injects the top 2 success_pattern +
+2 failure_pattern facts matching the query keywords, prepended to results.
+Caller sees them as `meta_source: "auto-meta-recall-v1.15.17"` entries with
+`hit_source: "meta-recall"`. No external helper needed — anyone who installs
+astor gets this behavior by default.
+
+Key design:
+- Pure SQL LIKE on content (no nest embed, <100ms latency)
+- Tier-aware: private queries user + public + source; public queries public + source
+- Top-2 each by importance DESC, dedup by fact_id
+- Best-effort: any error → enriched stays as-is, meta_recall.triggered=False
+- Per-request counter `_META_RECALL_STATS` exposed via /v1/audit/health so
+  dashboard / ops can verify the gate is firing (triggered/returned_total/errors)
+
+Also fixed during ship: previous patch attempt landed inject code in
+`_search_one()` (a per-scope helper) instead of `/v1/read`'s final return.
+`_search_one` doesn't have `body` in scope → silent except → meta_recall
+never fired. Discovered via Flask test_client failing to show the field,
+then `grep` cross-referenced to find the wrong function. Lesson: when adding
+cross-cutting logic to a Flask route, anchor to the route's `return jsonify({`
+literal, not to "before any return" — patch tools (and human eyes) confuse
+helper functions for the route itself.
+
+Verified live: query "ship success verified" returns first result id=12736
+kind=success_pattern meta_source=auto-meta-recall-v1.15.17. 18 dashboard
+tests pass.
+
 ## v1.15.16 (2026-09-25) — S18 + S19 + S20 dashboard auto-refresh + version visibility
 
 Admin noticed dashboard `hero.last_event_ts` lagged reality by hours
