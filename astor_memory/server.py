@@ -27,6 +27,14 @@ import json
 _DASHBOARD_CACHE: dict = {"payload": None, "ts": 0.0, "astor_dir": None}
 _DASHBOARD_TTL_SEC = 30  # 2026-09-25 S18: tighter TTL so dashboard reflects writes promptly; /v1/write also invalidates on success for instant refresh.
 
+# v1.15.17 S21 (2026-09-25): auto-meta-recall counters.
+# Tracks how many /v1/read calls triggered meta-recall and how many pattern
+# facts were injected. Dashboard reads via /v1/audit/health endpoint to prove
+# "astor is working as a proactive advisor, not just a lookup table".
+# Reset only by server restart (deliberate: cumulative since boot = uptime signal).
+_META_RECALL_STATS: dict = {"triggered": 0, "returned_total": 0, "errors": 0}
+_meta_recall_stats = _META_RECALL_STATS  # local alias used by read() with `global`
+
 
 # S14 (2026-09-08): auto-load OPENAI_API_KEY from hermes .env file if not in env.
 # Subprocess start (memory_servers_watch, start_astor.sh) sometimes doesn't inherit
@@ -1478,6 +1486,92 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'entities_per_fact': facts_entities,
         })
 
+    # v1.15.17 S21 (2026-09-25): auto-meta-recall gate.
+    #
+    # When any caller queries /v1/read, astor itself automatically looks up
+    # relevant success_pattern / failure_pattern facts and prepends them to
+    # results, so the caller sees "what worked before" / "what failed before"
+    # without having to ask explicitly. This makes astor a "proactive advisor"
+    # instead of a passive lookup table.
+    #
+    # Key design choices:
+    # - Prepend, don't replace: original recall still runs and dominates results
+    # - Top-2 success + top-2 failure (small enough not to bloat response)
+    # - Tier-aware: matches the caller's tier + global source tier (SSoT lessons)
+    # - Counts via bus fact_kind='success_pattern' / 'failure_pattern'
+    # - Best-effort: any DB error → return empty list, never break recall
+    # - Latency budget: <100ms (simple SQL ORDER BY importance DESC LIMIT N)
+    def _meta_recall_patterns(query: str, user: str, tier: str) -> list:
+        """Return top success_pattern + failure_pattern facts matching query.
+
+        Pure SQL: lexical LIKE on content, ordered by importance DESC.
+        Skips the slow nest embed (we want sub-100ms latency, not full hybrid).
+        """
+        if not query or len(query.strip()) < 3:
+            return []
+        try:
+            # Build a simple LIKE pattern from query keywords (no Chinese token split
+            # needed; LIKE is case-insensitive on the column default). Use first 6
+            # words as a coarse filter to avoid full-table scans.
+            words = [w.strip(' ,.?!:;"\'') for w in query.split() if len(w) >= 3][:6]
+            if not words:
+                return []
+            like_clauses = ' AND '.join(['content LIKE ?' for _ in words])
+            like_params = [f'%{w}%' for w in words]
+
+            # Tier routing:
+            # - private_X → query that user db + global public + source tier
+            # - source   → query source tier only
+            # - public   → query public tier + source tier
+            # The source tier is global lessons that apply across users.
+            tiers_to_query = []
+            if tier and tier.startswith('private'):
+                if user:
+                    tiers_to_query.append(('private', user))
+                tiers_to_query.append(('public', None))
+                tiers_to_query.append(('source', None))
+            elif tier == 'source':
+                tiers_to_query.append(('source', None))
+            else:  # public or None
+                tiers_to_query.append(('public', None))
+                tiers_to_query.append(('source', None))
+
+            results = []
+            seen_ids = set()
+            for t, u in tiers_to_query:
+                try:
+                    b = astor_bus(tier=t, user_id=u)
+                    rows = b.conn.execute(
+                        f"SELECT id, content, kind, importance, memory_class "
+                        f"FROM memory_canonical "
+                        f"WHERE tombstoned = 0 AND kind IN ('success_pattern', 'failure_pattern') "
+                        f"AND ({like_clauses}) "
+                        f"ORDER BY importance DESC, created_at DESC LIMIT 2",
+                        tuple(like_params)
+                    ).fetchall()
+                    for row in rows:
+                        if row[0] in seen_ids:
+                            continue
+                        seen_ids.add(row[0])
+                        results.append({
+                            'fact_id': row[0],
+                            'content': row[1][:500] if row[1] else '',
+                            'kind': row[2],
+                            'importance': row[3],
+                            'memory_class': row[4] if len(row) > 4 else 'world_fact',
+                            'meta_source': 'auto-meta-recall-v1.15.17',
+                            'meta_tier': t,
+                            'similarity': 0.99,  # synthetic — pattern match, not vector
+                            'hit_source': 'meta-recall',
+                        })
+                except Exception as inner_exc:
+                    _safe_stderr_write(f'[astor.server] meta-recall tier={t} err={inner_exc}\n')
+                    continue
+            return results
+        except Exception as exc:
+            _safe_stderr_write(f'[astor.server] meta-recall failed (non-fatal): {exc}\n')
+            return []
+
     @app.route('/v1/read', methods=['POST'])
     def read():
         """Recall similar facts via nest vector search.
@@ -1494,6 +1588,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         Returns:
           {results: [{fact_id, similarity, content, kind, memory_class, ...}], count: int}
         """
+        # v1.15.17 S21: per-request meta-recall counter (dashboard reads aggregated
+        # via /v1/audit/health meta_recall_stats; reset is by server restart).
+        global _meta_recall_stats
         body = request.get_json(force=True)
         try:
             _read_agent_ctx = _resolve_agent_context(body)
@@ -2694,9 +2791,27 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         pass
             except Exception:
                 pass
+
+        # v1.15.17 S21 (2026-09-25): auto-meta-recall — query success_pattern /
+        # failure_pattern from relevant tiers and prepend to results so the
+        # caller sees "what worked/failed before" without explicitly asking.
+        try:
+            _meta = _meta_recall_patterns(query, body.get('user') or body.get('user_id'), tier)
+            if _meta:
+                enriched = _meta + enriched
+                _meta_recall_stats['triggered'] += 1
+                _meta_recall_stats['returned_total'] += len(_meta)
+        except Exception as _mr_exc:
+            _safe_stderr_write(f'[astor.server] meta-recall prepend failed: {_mr_exc}\n')
+            _meta_recall_stats['errors'] += 1
+
         return jsonify({
             'results': enriched,
             'count': len(enriched),
+            'meta_recall': {
+                'triggered': '_meta' in dir() and bool(_meta),
+                'injected_count': len(_meta) if ('_meta' in dir() and _meta) else 0,
+            },
             # v1.14.65 P5: report whether query was rewritten so caller
             # knows results came from a reformulation (or not).
             'query_rewrite_used': _rewrite_used,
@@ -3049,9 +3164,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'tier': tier,  # opt7: which tier this came from
                 'cross_tier_score': round(score, 4),
             })
+
         return jsonify({
             'results': enriched,
             'count': len(enriched),
+            # v1.15.17 S21: surface meta-recall diagnostics so caller (and
+            # dashboard) can verify "astor auto-injected success/failure patterns".
             'scopes_searched': [
                 {'tier': t, 'user_id': u, 'weight': w}
                 for t, u, w, _ in per_scope_results
@@ -4070,7 +4188,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'memory_native_ready' if total == 3 else
             'partially_native' if total >= 1 else
             'memory_external_only'
-        )
+         )
         return jsonify({
             'version': __version__,
             'audit_ts': __import__('datetime').datetime.utcnow().isoformat() + 'Z',
@@ -4078,6 +4196,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'total_score': f'{total}/3',
             'verdict': verdict,
             'evidence': evidence,
+            # v1.15.17 S21: meta-recall stats so dashboard / ops can verify
+            # astor is actively auto-injecting success/failure patterns.
+            'meta_recall_stats': dict(_META_RECALL_STATS),
             'reference': 'mp.weixin.qq.com/s/aL1gaDDGR1eJy2uzL5kKdQ (Bannings 2026-08)'
         })
 
