@@ -4298,6 +4298,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
         print(f'   Peer identity: {_peer_id["peer_id"]}')
     except Exception as _peer_init_exc:
         print(f'   Peer identity: init deferred ({_peer_init_exc})')
+    # v1.15.22: rebuild per-peer rate-limit buckets from the 24h audit
+    # window so a restart doesn't lose the in-memory state. Best-effort.
+    try:
+        from ._internal.peer_rate_limit import (
+            rebuild_from_audit as _prl_init_rebuild,
+        )
+        _rebuilt = _prl_init_rebuild(astor_dir=astor_dir)
+        if _rebuilt:
+            print(f'   Per-peer rate limit: rebuilt {_rebuilt} entries from audit')
+    except Exception as _prl_exc:
+        print(f'   Per-peer rate limit: rebuild skipped ({_prl_exc})')
 
     # v1.14.72 (2026-09-17) — Phase 3: /v1/peer/recv
     # Endpoint for receiving signed peer messages. Wire format:
@@ -4495,6 +4506,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'search_not_allowed',
                             'detail': 'friend has not opted in '
                                       '(am peer allow-search <requestor_peer_id>)'}), 403
+        # v1.15.22 Ship E: per-peer rate limit (R12593 lock — PPS path is
+        # its own budget, separate from per-actor limits). Enforce BEFORE
+        # doing any expensive search work so a runaway peer doesn't trigger
+        # embedding model loads.
+        from ._internal.peer_rate_limit import (
+            check_and_consume as _prl_check,
+            DEFAULT_LIMIT_PER_24H as _PRL_DEFAULT,
+        )
+        _allowed, _rl_count, _rl_retry = _prl_check(req.requestor_peer_id)
+        if not _allowed:
+            return jsonify({
+                'error': 'peer_rate_limit_exceeded',
+                'detail': (f'this peer has exceeded the '
+                           f'{_PRL_DEFAULT} req/24h PPS budget'),
+                'count_in_window': _rl_count,
+                'retry_after_seconds': _rl_retry,
+            }), 429, {
+                'Retry-After': str(_rl_retry),
+            }
 
         # Clamp limit (already validated 1..20 at construction, but be safe).
         limit = min(int(req.limit), MAX_RESULTS_PER_PEER)
@@ -4759,6 +4789,44 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'per_peer': per_peer,
             'local_error': _local_error,
         })
+
+    # ------------------------------------------------------------------
+    # v1.15.22 (2026-09-28) — Ship E: per-peer rate-limit admin surface.
+    # R12593: PPS path is its own budget, separate from per-actor limit.
+    # ------------------------------------------------------------------
+    @app.route('/v1/peer/rate-limit', methods=['GET'])
+    def peer_rate_limit_status():
+        from ._internal.peer_rate_limit import (
+            snapshot as _prl_snap, status_summary as _prl_sum, all_snapshots,
+        )
+        if request.args.get('all') in ('1', 'true', 'True'):
+            return jsonify({
+                'summary': _prl_sum(),
+                'peers': all_snapshots(),
+            })
+        pid = request.args.get('peer_id', '').strip()
+        if not pid:
+            return jsonify({'error': 'peer_id_required',
+                            'hint': 'pass ?peer_id=astor:<32-hex> or ?all=true'}), 400
+        return jsonify(_prl_snap(pid))
+
+    @app.route('/v1/peer/rate-limit/reset', methods=['POST'])
+    def peer_rate_limit_reset():
+        from ._internal.peer_rate_limit import reset as _prl_reset
+        body = request.get_json(force=True) or {}
+        pid = (body.get('peer_id') or '').strip()
+        if not pid:
+            return jsonify({'error': 'peer_id_required'}), 400
+        n = _prl_reset(pid)
+        return jsonify({'ok': True, 'peer_id': pid, 'cleared_count': n})
+
+    @app.route('/v1/peer/rate-limit/rebuild', methods=['POST'])
+    def peer_rate_limit_rebuild():
+        from ._internal.peer_rate_limit import (
+            rebuild_from_audit as _prl_rebuild,
+        )
+        n = _prl_rebuild()
+        return jsonify({'ok': True, 'rebuilt_count': n})
 
     # ------------------------------------------------------------------
     # v1.15.19 (2026-09-28) — PPS Phase 4 follow-up: Peer CRUD + search REST.
