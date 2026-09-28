@@ -4576,6 +4576,191 @@ def create_app(astor_dir: str | None = None) -> Flask:
         return jsonify(resp.to_dict())
 
     # ------------------------------------------------------------------
+    # v1.15.21 (2026-09-28) — Ship D: PPS-augmented recall.
+    # GET /v1/peer/recall?q=&topic=&limit=&tier=&user=
+    # Runs the local /v1/read-equivalent search first; if results are empty,
+    # transparently fans out to all eligible friends (trust>=50, endpoint,
+    # allow_search=True) and returns the combined results. Local results
+    # come first, peer results tagged with `peer_source` for provenance.
+    #
+    # This is the EXPLICIT peer-fanout endpoint per R12593-b:
+    #   - Agent default (/v1/read) does NOT auto-fire peer (no surprise).
+    #   - Peer fanout is opt-in via this endpoint or via /v1/read body flag.
+    # Per-actor rate limit doesn't apply here (PPS path is its own budget).
+    # ------------------------------------------------------------------
+    @app.route('/v1/peer/recall', methods=['GET'])
+    def peer_recall():
+        from ._internal.peer_search import (
+            build_search_request, select_search_targets,
+            dispatch_search_to_peers,
+        )
+        from ._internal.peer_identity import init_identity
+        from ._internal.peer_relationships import list_peers
+        import urllib.parse as _up_pr
+
+        q = request.args.get('q', '').strip()
+        if not q:
+            return jsonify({'error': 'q_required'}), 400
+        topic = request.args.get('topic') or None
+        try:
+            limit = int(request.args.get('limit', 5))
+        except ValueError:
+            limit = 5
+        limit = max(1, min(limit, 20))
+        tier = request.args.get('tier') or 'public'
+        user_id = request.args.get('user') or request.args.get('user_id') or None
+
+        # ---------- 1. Local recall (mirror /v1/read logic) ----------
+        # We don't refactor /v1/read into a helper here — instead we run the
+        # same primitives inline so peer_recall is testable in isolation.
+        local_results = []
+        try:
+            from .nest.embeddings import astor_get_embedding_model
+            from .nest.lex_index import astor_lex as _local_lex, hybrid_merge as _local_merge
+            model = astor_get_embedding_model()
+            try:
+                nest = astor_nest(tier=tier, user_id=user_id)
+                bus = astor_bus(tier=tier, user_id=user_id)
+            except Exception:
+                nest = astor_nest(tier='public', user_id=None)
+                bus = astor_bus(tier='public', user_id=None)
+                tier = 'public'
+            query_emb = list(model.embed([q]))[0]
+            lex = _local_lex(tier=tier, user_id=user_id)
+            vec_hits = nest.search(query_emb, limit=limit * 2)
+            bm25_hits = lex.bm25_search(q, limit=limit * 2)
+            merged = _local_merge(
+                bm25_hits, vec_hits,
+                bm25_weight=0.6, vec_weight=0.4, limit=limit,
+            )
+            for fid, sim in merged:
+                row = bus.conn.execute(
+                    "SELECT id, content, kind, tags, created_at, tombstoned "
+                    "FROM memory_canonical WHERE id = ?",
+                    (fid,),
+                ).fetchone()
+                if row is None or int(row[5] or 0) != 0:
+                    continue
+                try:
+                    import json as _j_lcl
+                    tags = list(_j_lcl.loads(row[3])) if row[3] else []
+                except Exception:
+                    tags = []
+                local_results.append({
+                    'fact_id': int(row[0]),
+                    'content': str(row[1] or ''),
+                    'kind': str(row[2] or 'fact'),
+                    'tags': tags,
+                    'created_at': str(row[4] or ''),
+                    'relevance': round(min(max(float(sim), 0.0), 1.0), 4),
+                    'source': 'local',
+                    'peer_id': None,
+                })
+        except Exception as e:
+            # local recall failure must not block peer fanout
+            local_results = []
+            _local_error = str(e)
+        else:
+            _local_error = None
+
+        # ---------- 2. If local non-empty, skip peer fanout ----------
+        if local_results:
+            return jsonify({
+                'mode': 'local_only',
+                'local_count': len(local_results),
+                'peer_count': 0,
+                'results': local_results[:limit],
+                'peer_results': [],
+                'local_error': _local_error,
+            })
+
+        # ---------- 3. Local empty → fan out to eligible friends ----------
+        try:
+            me = init_identity()
+        except Exception as e:
+            return jsonify({
+                'mode': 'local_only',
+                'local_count': 0,
+                'peer_count': 0,
+                'results': [],
+                'peer_results': [],
+                'error': 'no_local_identity',
+                'detail': str(e),
+            }), 503
+        peers = list_peers()
+        targets = select_search_targets(peers)
+        if not targets:
+            return jsonify({
+                'mode': 'local_only',
+                'local_count': 0,
+                'peer_count': 0,
+                'results': [],
+                'peer_results': [],
+                'hint': 'no eligible friends (trust>=50 + endpoint + allow_search)',
+                'local_error': _local_error,
+            })
+        try:
+            req = build_search_request(
+                query=q, requestor_peer_id=me['peer_id'],
+                requestor_pubkey=me['public_key'],
+                requestor_private_key=me['private_key'],
+                topic=topic, limit=limit,
+            )
+            responses = dispatch_search_to_peers(req, targets)
+        except Exception as e:
+            return jsonify({
+                'mode': 'peer_only',
+                'local_count': 0,
+                'peer_count': 0,
+                'results': [],
+                'peer_results': [],
+                'error': 'peer_dispatch_failed',
+                'detail': str(e),
+            }), 500
+
+        peer_results = []
+        per_peer = []
+        for tgt, resp in zip(targets, responses):
+            per_peer.append({
+                'peer_id': tgt['peer_id'],
+                'alias': tgt.get('alias') or '',
+                'error': resp.error,
+                'count': len(resp.results),
+                'truncated': resp.truncated,
+            })
+            for r in resp.results:
+                d = r.to_dict()
+                d['source'] = 'peer'
+                # Caller-facing 'peer_id' = who said it (matches local layout
+                # where local_results['peer_id']=None + source='local').
+                d['peer_id'] = r.source_peer_id
+                peer_results.append(d)
+        peer_results.sort(key=lambda x: x.get('relevance', 0), reverse=True)
+        peer_results = peer_results[:limit]
+
+        try:
+            from ._internal.audit_logger import astor_audit as _ppra
+            _ppra(
+                actor=f'server:{me["peer_id"]}',
+                tier='public',
+                action='peer_recall',
+                user_id=user_id,
+                detail=f'q={q!r} local=0 peer={len(peer_results)}',
+            )
+        except Exception:
+            pass
+
+        return jsonify({
+            'mode': 'peer_fanout',
+            'local_count': 0,
+            'peer_count': len(peer_results),
+            'results': peer_results,
+            'peer_results': peer_results,
+            'per_peer': per_peer,
+            'local_error': _local_error,
+        })
+
+    # ------------------------------------------------------------------
     # v1.15.19 (2026-09-28) — PPS Phase 4 follow-up: Peer CRUD + search REST.
     # The CLI is in cli/main.py; this route set mirrors those operations
     # so the dashboard panel (Ship C) can drive everything from JS.
