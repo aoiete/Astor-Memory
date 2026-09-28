@@ -125,6 +125,11 @@ Recall similar facts via hybrid vector + BM25 search.
 | `hybrid` | no | `true` | Use both vector (60%) + BM25 (40%); set `false` for pure vector |
 | `bm25_weight` | no | 0.4 | Override hybrid weight |
 | `vec_weight` | no | 0.6 | Override hybrid weight |
+| `mmr_lambda` | no | 0.7 | v1.15.33 (Ship M): MMR diversity/diversity trade-off. Clamped [0.0, 1.0]. 1.0 = pure relevance (no MMR); 0.5 = balanced. Override via `ASTOR_MMR_LAMBDA` env. Set `ASTOR_MMR=0` to disable MMR entirely. |
+| `hyde` | no | `false` | v1.15.34 (Ship O): Enable HyDE (hypothetical document embeddings) for short queries (<8 tokens). Accepts `true`/`false`. Override via `ASTOR_HYDE=1` env. Requires `OPENAI_API_KEY` or `OPENROUTER_API_KEY` for the LLM call. |
+| `missing_hint` | no | — | v1.15.0 (Ship A): Extra evidence-gap hint to expand query for BM25/vector. E.g. `"user timezone"` if the answer should mention timezone but query is short. |
+| `entity_filter` | no | — | v1.15.0 (Ship A): Restrict hits to facts containing any of these entity names. |
+| `peer_fanout` | no | `false` | v1.15.24 (Ship H): PPS auto-trigger. `true` → fan out to eligible peers when local empty. |
 
 **Response 200**
 
@@ -168,6 +173,25 @@ score = bm25_weight * bm25_normalized
 `keyword_boost` defaults to 0.15. The boost is bounded (Jaccard in [0,1]).
 When neither fact has keywords, behavior is byte-identical to legacy
 hybrid (the boost contributes 0).
+
+**v1.15.31 (Ship K) — multi-language expansion**: `synonym_expander`
+now supports CJK + mixed-script queries. 28-entry Chinese synonym dict
+(健身↔锻炼, 八字↔四柱, RAG↔知识库, etc.) + CJK bi-gram fallback.
+Self-substitution guard prevents trivial variants. Gated by
+`ASTOR_EXPANSION=1` (default on); ASTOR_LLM_EXPAND=1 for LLM fallback.
+
+**v1.15.32 (Ship L) — MMR diversity rerank**: After `hybrid_merge`,
+greedy MMR selection (Carbonell-Goldstein) evicts near-duplicate
+phrasings from top-k. Token-Jaccard diversity, λ=0.7 default. Eval:
+lifestyle mrr 0.556 → 0.646. Gated by `ASTOR_MMR=1` (default on).
+
+**v1.15.34 (Ship O) — HyDE for short queries**: When `hyde=true` AND
+query < 8 tokens, generate hypothetical answer via LLM, embed it,
+merge hits into `vector_hits` at weight 0.5. Cached via `lru_cache(512)`.
+Silent no-op without `OPENAI_API_KEY` / `OPENROUTER_API_KEY`.
+
+For full design rationale + eval deltas, see
+[`docs/recall-improvements.md`](recall-improvements.md).
 
 ---
 
