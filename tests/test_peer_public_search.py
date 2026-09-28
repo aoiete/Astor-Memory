@@ -119,6 +119,13 @@ class _Tmp:
         except Exception:
             pass
         close_all_connections()
+        # v1.15.25 Ship I: close audit_logger singleton to release file handle
+        # before tmpdir cleanup (Windows file locking).
+        try:
+            from astor_memory._internal.audit_logger import _reset_audit_conn
+            _reset_audit_conn()
+        except Exception:
+            pass
         self._tmp.cleanup()
 
 

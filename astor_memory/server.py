@@ -4880,6 +4880,39 @@ def create_app(astor_dir: str | None = None) -> Flask:
         })
 
     # ------------------------------------------------------------------
+    # v1.15.26 (2026-09-28) — Ship J: per-peer health aggregator.
+    # Aggregates relationship + audit + rate-limit signals into a single
+    # status dict. Used by ops to answer "is peer X alive?" without
+    # pinging the peer's endpoint (synchronous pings would block on
+    # slow peers; we use signals instead).
+    # ------------------------------------------------------------------
+    @app.route('/v1/peer/health', methods=['GET'])
+    def peer_health_endpoint():
+        from ._internal.peer_health import (
+            peer_health as _ph_one, all_peer_health as _ph_all,
+        )
+        if request.args.get('all') in ('1', 'true', 'True'):
+            rows = _ph_all()
+            # Group by health for quick overview
+            by_health = {}
+            for r in rows:
+                by_health.setdefault(r.get('health', 'unknown'), []).append(
+                    r.get('peer_id')
+                )
+            return jsonify({
+                'count': len(rows),
+                'peers': rows,
+                'by_health': by_health,
+            })
+        pid = request.args.get('peer_id', '').strip()
+        if not pid:
+            return jsonify({
+                'error': 'peer_id_required',
+                'hint': 'pass ?peer_id=astor:<32-hex> or ?all=true',
+            }), 400
+        return jsonify(_ph_one(pid))
+
+    # ------------------------------------------------------------------
     # v1.15.19 (2026-09-28) — PPS Phase 4 follow-up: Peer CRUD + search REST.
     # The CLI is in cli/main.py; this route set mirrors those operations
     # so the dashboard panel (Ship C) can drive everything from JS.

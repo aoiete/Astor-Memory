@@ -507,6 +507,14 @@ def main(argv: list[str] | None = None) -> int:
     peer_audit.add_argument('--limit', type=int, default=50, help='Max rows (default 50, max 200)')
     peer_audit.set_defaults(func=cmd_peer_audit)
 
+    peer_health = peer_sub.add_parser('health',
+        help='Show health status for a peer (Ship J)')
+    peer_health.add_argument('peer_id', nargs='?', default=None,
+                              help='Peer ID (omit with --all)')
+    peer_health.add_argument('--all', action='store_true',
+                              help='Show health for all known peers')
+    peer_health.set_defaults(func=cmd_peer_health)
+
     peer_blacklist = peer_sub.add_parser('blacklist',
         help='Blacklist a peer (trust=0)')
     peer_blacklist.add_argument('peer_id', help='Peer ID to blacklist')
@@ -3675,6 +3683,68 @@ def cmd_peer_audit(args) -> int:
         print(f'  [{r["ts"]}] action={r["action"]:<16} '
               f'tier={r["tier"]:<8} target={r.get("target") or "-"!s:<24} '
               f'reason={r.get("reason") or "-"!s}{md_str}')
+    return 0
+
+
+
+def cmd_peer_health(args) -> int:
+    """v1.15.26 (2026-09-28) Ship J: per-peer health status.
+
+    Shows aggregated health signals (relationship, audit last-seen,
+    rate limit, error count, health classification) for one peer or
+    all known peers. Useful for ops dashboards / cron sanity checks.
+    """
+    from .._internal.peer_health import (
+        peer_health as _ph_one, all_peer_health as _ph_all,
+    )
+    if args.all:
+        rows = _ph_all()
+        if not rows:
+            print('(no known peers)')
+            return 0
+        # Sort by health: healthy first, then degraded, then unreachable, then unknown
+        order = {'healthy': 0, 'degraded': 1, 'unreachable': 2, 'unknown': 3}
+        rows.sort(key=lambda r: (order.get(r.get('health', 'unknown'), 9),
+                                  r.get('alias') or r.get('peer_id', '')))
+        print(f'[OK] {len(rows)} peer(s):')
+        for r in rows:
+            pid = r.get('peer_id', '?')
+            alias = r.get('alias') or '-'
+            health = r.get('health', 'unknown')
+            trust = r.get('trust', 0)
+            online = '🟢' if r.get('online') else '⚪'
+            rl = r.get('rate_limit') or {}
+            rl_count = rl.get('count', 0)
+            rl_cap = rl.get('cap', 0)
+            last_seen = r.get('last_seen_iso') or 'never'
+            last_action = r.get('last_action') or '-'
+            print(f'  {online} {pid:<42} {health:<12} trust={trust:<3} '
+                  f'rl={rl_count}/{rl_cap} last={last_seen[:19]} '
+                  f'last_action={last_action}')
+        return 0
+    h = _ph_one(args.peer_id)
+    if not h.get('found'):
+        print(f'[WARN] peer not found: {args.peer_id}', file=sys.stderr)
+        return 1
+    print(f'peer_id   = {h.get("peer_id")}')
+    print(f'alias     = {h.get("alias") or "(none)"}')
+    print(f'kind      = {h.get("kind")}')
+    print(f'trust     = {h.get("trust")} (default 30, max 100)')
+    print(f'endpoint  = {h.get("endpoint") or "(not set)"}')
+    print(f'has_pubkey= {h.get("has_pubkey")}')
+    print(f'allow_search = {h.get("allow_search")}')
+    rl = h.get('rate_limit') or {}
+    if rl:
+        print(f'rate_limit = {rl.get("count")}/{rl.get("cap")} '
+              f'(oldest={rl.get("oldest_iso") or "?"}, '
+              f'retry_after={rl.get("retry_after_seconds", 0)}s)')
+    else:
+        print('rate_limit = (no data)')
+    print(f'last_seen = {h.get("last_seen_iso") or "never"}')
+    print(f'last_action = {h.get("last_action") or "-"}')
+    print(f'error_count = {h.get("error_count")}')
+    print(f'online    = {h.get("online")}')
+    print(f'health    = {h.get("health")}')
     return 0
 
 
