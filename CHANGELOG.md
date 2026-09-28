@@ -1,3 +1,42 @@
+## v1.15.29 (2026-09-28) — Ship M: full peer-config YAML backup
+
+**New: full peer-config backup (v1.1 bundle).** A richer version of the
+v1.0 social_graph export. The new bundle includes:
+
+  - All peer kinds (friend, blacklist, whitelist, pending, quarantine)
+  - topic_index per peer (topic, weight, fact_count, last_seen_at)
+  - audit summary (last_seen_iso, last_action, total_actions)
+  - rate-limit snapshots
+
+Public keys are **stripped** from export (sensitive material; re-add
+via `am peer add --pubkey` after import). Rate-limit snapshots are
+read-only info; the actual bucket state is rebuilt from audit log
+via `/v1/peer/rate-limit/rebuild`.
+
+**New CLI**:
+- `am peer export-config [--out FILE]` — writes v1.1 bundle
+- `am peer import-config FILE [--strategy skip|overwrite|add_only]`
+- Strategies: skip (default, safe), overwrite (replace trust+alias+metadata),
+  add_only (only NEW peers)
+- v1.0 bundles are still supported (fallback path for backward compat)
+
+**Bug fix (v1.15.29):** the v1.0 import path used a broken existence
+check (`section == "friends" and kind == "friend"` — always True for
+friend entries), causing friends to always be skipped. Now uses
+actual `get_peer()` lookup.
+
+**Test coverage**: 13 new tests (6 export, 6 import, 1 CLI). Total:
+547/547 non-flaky pass.
+
+**Files changed (4):**
+- `astor_memory/_internal/peer_config_io.py` (new, 9270 bytes)
+- `astor_memory/cli/main.py` (+2050 bytes: cmd_peer_export_config,
+  cmd_peer_import_config, subparsers)
+- `tests/test_peer_config_io.py` (new, 11250 bytes)
+- `astor_memory/__init__.py` (version bump)
+- `pyproject.toml` (version bump)
+- `CHANGELOG.md` (entry)
+
 ## v1.15.28 (2026-09-28) — Ship L: PPS peer quarantine (auto-isolate)
 
 **New: peer quarantine.** A new `kind='quarantine'` value that excludes

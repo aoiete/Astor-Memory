@@ -539,6 +539,18 @@ def main(argv: list[str] | None = None) -> int:
     peer_export.add_argument('--out', help='Output path (default: peer_social_<ts>.yaml in ASTOR_DIR)')
     peer_export.set_defaults(func=cmd_peer_export)
 
+    peer_export_config = peer_sub.add_parser('export-config',
+        help='Full peer-config export (Ship M) - v1.1 bundle with topics + quarantine + rate limits')
+    peer_export_config.add_argument('--out', help='Output path (default: peer_config_<ts>.yaml in ASTOR_DIR)')
+    peer_export_config.set_defaults(func=cmd_peer_export_config)
+
+    peer_import_config = peer_sub.add_parser('import-config',
+        help='Full peer-config import (Ship M) - v1.0 or v1.1 bundle')
+    peer_import_config.add_argument('path', help='Path to YAML bundle')
+    peer_import_config.add_argument('--strategy', choices=['skip', 'overwrite', 'add_only'],
+                                       default='skip', help='How to handle existing peers (default: skip)')
+    peer_import_config.set_defaults(func=cmd_peer_import_config)
+
     peer_import = peer_sub.add_parser('import',
         help='Import social_graph from YAML bundle')
     peer_import.add_argument('path', help='Path to YAML bundle')
@@ -3825,6 +3837,73 @@ def cmd_peer_quarantine(args) -> int:
     print(f'   reason={meta.get("quarantine_reason") or "(none)"}')
     print(f'   quarantined_at={meta.get("quarantined_at")}')
     print(f'   original_trust preserved: {meta.get("original_trust")}')
+    return 0
+
+
+
+def cmd_peer_export_config(args) -> int:
+    """v1.15.29 (2026-09-28) Ship M: full peer-config export (v1.1 bundle).
+
+    Includes all peer kinds (friend, blacklist, whitelist, pending,
+    quarantine), topic_index per peer, and rate-limit snapshots.
+    Public keys are stripped (re-add via `am peer add` after import).
+    """
+    from .._internal.peer_config_io import export_full_config
+    import datetime as _dt
+    import yaml as _yaml
+    bundle = export_full_config()
+    out_path = args.out
+    if not out_path:
+        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        astor_dir = os.environ.get("ASTOR_DIR", "")
+        out_path = (
+            os.path.join(astor_dir, f"peer_config_{ts}.yaml")
+            if astor_dir else f"peer_config_{ts}.yaml"
+        )
+    with open(out_path, "w", encoding="utf-8") as f:
+        _yaml.safe_dump(bundle, f, allow_unicode=True, sort_keys=False)
+    s = bundle.get("summary") or {}
+    s = bundle.get("summary") or {}
+    tp = s.get("total_peers", 0)
+    fc = s.get("friend_count", 0)
+    bc = s.get("blacklist_count", 0)
+    qc = s.get("quarantine_count", 0)
+    tc = s.get("topics_count", 0)
+    print("[OK] exported " + str(tp) + " peer(s) to " + out_path)
+    print("   friends=" + str(fc) + " blacklist=" + str(bc) + " quarantine=" + str(qc) + " topics=" + str(tc))
+    return 0
+
+
+def cmd_peer_import_config(args) -> int:
+    """v1.15.29 Ship M: import a peer-config bundle (v1.0 or v1.1).
+
+    Strategies:
+      --strategy skip:        leave existing peers as-is (default; safest)
+      --strategy overwrite:   replace trust/alias/metadata/kind
+      --strategy add_only:    only add NEW peers
+    """
+    from .._internal.peer_config_io import import_full_config
+    import yaml as _yaml
+    with open(args.path, "r", encoding="utf-8") as f:
+        bundle = _yaml.safe_load(f)
+    if not bundle or not isinstance(bundle, dict):
+        print("[ERR] not a valid YAML bundle", file=sys.stderr)
+        return 1
+    result = import_full_config(bundle, strategy=args.strategy)
+    if "error" in result:
+        print(f"[ERR] {result['error']}", file=sys.stderr)
+        return 1
+    v = result.get("version") or bundle.get("version")
+    print("[OK] imported bundle version " + str(v))
+    print("[OK] imported bundle version " + str(v))
+    a = result.get("added", 0)
+    s = result.get("skipped", 0)
+    o = result.get("overwritten", 0)
+    print("   added=" + str(a) + " skipped=" + str(s) + " overwritten=" + str(o))
+    if result.get("topics_restored"):
+        print("   topics_restored=" + str(result["topics_restored"]))
+    if result.get("quarantined_restored"):
+        print("   quarantined_restored=" + str(result["quarantined_restored"]))
     return 0
 
 
