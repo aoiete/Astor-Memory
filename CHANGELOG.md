@@ -82,7 +82,7 @@ No embedding cost, no LLM cost.
 壬水身强`, `今日日柱` fanned out to a single recall route. Operator's
 domain (RAG / 八字 / poker / trading) is heavily CJK.
 
-**Fix**: 30-entry Chinese synonym dict + CJK bi-gram fallback for
+**Fix**: 28-entry Chinese synonym dict + CJK bi-gram fallback for
 synonym-barren short queries + optional LLM fallback (gated by
 `ASTOR_LLM_EXPAND` env). Self-substitution guard prevents trivial
 variants (`RAG 知识库` → `RAG RAG ...`).
