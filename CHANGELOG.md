@@ -1,3 +1,100 @@
+## v1.15.34 (2026-09-28) — Ship O: HyDE for short abstract queries
+
+**Addresses the query-statement embedding gap.** Short queries
+(<8 tokens) like `健身`, `今日日柱`, `用户当前时区` live in a different
+embedding region than the target facts. HyDE flips the script: ask
+the LLM "what would the answer look like?", embed THAT, search.
+Hypothetical answer lives in the same region as actual stored facts.
+
+**New module** `astor_memory/nest/hyde.py`:
+- `hypothetical_answer(query)` — LLM call (cheap model
+- `minimax/minimax-m2 default), cached via lru_cache(512)
+- `merge_hyde_hits(primary, hyde, weight)` — max-score dedup merge
+- `OS env `ASTOR_HYDE=1` enables; default OFF (operator opt-in)
+- Query length ≥8 tokens → silent empty (HyDE adds nothing there)
+- LLM call fails → silent empty (never a regression)
+- `OPENAI_API_KEY` / `OPENROUTER_API_KEY` reused from llm_rerank pattern
+
+**Test coverage**: 22 new tests in `tests/test_hyde.py` (short-query
+detection, gate logic, merge dedup + max-score, cache behavior, weight
+semantics, failure paths).
+
+**Files changed (4)**:
+- `astor_memory/nest/hyde.py` (new, 142 lines)
+- `astor_memory/server.py` (+17 lines: HyDE wire after primary vector_hits)
+- `tests/test_hyde.py` (new, 159 lines)
+- `astor_memory/__init__.py` (version bump)
+
+---
+
+## v1.15.33 (2026-09-28) — Ship M: MMR lambda knob + sweep harness
+
+**Adds per-call MMR λ tuning.** Ship L hardcoded λ=0.7; Carbonell-
+Goldstein paper says λ∈[0.5, 0.9] are all reasonable. Ship M adds
+the body field `mmr_lambda` (clamped [0.0, 1.0]) and env var
+`ASTOR_MMR_LAMBDA`. 1.0 = pure relevance (no MMR).
+
+**Eval sweep finding**: λ∈[0.5, 0.9] is statistically indistinguishable
+on the 110-query eval set. **Default 0.7 retained**. MMR-on vs MMR-off
+gap (lifestyle mrr 0.65 vs 0.56, +0.09) is the real win; λ fine-tuning
+is secondary.
+
+**4 new eval_runner variants** for sweeps: `mmr_lambda_05/07/09/off`.
+
+**Files changed (3)**:
+- `astor_memory/server.py` (+35 lines: body field + env + clamp)
+- `tests/eval_runner.py` (+11 lines: 4 new variants + choices)
+- `astor_memory/__init__.py` (version bump)
+
+---
+
+## v1.15.32 (2026-09-28) — Ship L: MMR diversity rerank
+
+**Fixes rank-collapse on near-duplicate phrasings.** Lifestyle eval
+baseline showed 8 queries matching at ranks 1-7 instead of rank 1.
+Root cause: hybrid_merge sorted by score desc; top-scoring facts were
+near-duplicates ("用户喜欢德州" / "用户偏好德州" / "用户常玩德州") of
+each other. Canonical answer got bumped to 4-7.
+
+**Fix**: Carbonell-Goldstein MMR after `hybrid_merge`. Greedy selection
+trades λ× score for (1-λ)× max-Jaccard-to-selected. Token Jaccard on
+fact content (each CJK char = own token, matches lex_index._tokenize).
+No embedding cost, no LLM cost.
+
+**Eval delta (110-query cold-cache)**:
+- overall mrr: 0.898 → 0.909 (+0.011)
+- lifestyle mrr: 0.556 → 0.646 (+0.090)
+- lifestyle hit: 0.80 → 0.90 (+0.10)
+- fortune mrr: 0.814 → 0.833 (+0.019)
+- misses: 5 → 4 (Q60 workout 周训练 now hits)
+
+**Files changed (3)**:
+- `astor_memory/nest/mmr_reranker.py` (new, 138 lines)
+- `astor_memory/server.py` (+20 lines: wired after hybrid_merge)
+- `tests/test_mmr_reranker.py` (new, 132 lines, 24 tests)
+
+---
+
+## v1.15.31 (2026-09-28) — Ship K: Multi-language query expansion
+
+**Fixes English-only synonym expander.** `synonym_expander.py`
+(v1.10.9) was English-only; CJK short queries like `健身`, `八字
+壬水身强`, `今日日柱` fanned out to a single recall route. Operator's
+domain (RAG / 八字 / poker / trading) is heavily CJK.
+
+**Fix**: 30-entry Chinese synonym dict + CJK bi-gram fallback for
+synonym-barren short queries + optional LLM fallback (gated by
+`ASTOR_LLM_EXPAND` env). Self-substitution guard prevents trivial
+variants (`RAG 知识库` → `RAG RAG ...`).
+
+**Files changed (3)**:
+- `astor_memory/nest/synonym_expander.py` (+237 lines: CN trigger
+  groups, bi-gram split, mixed-script dispatch, LLM gate)
+- `tests/test_synonym_expander_chinese.py` (new, 145 lines, 30 tests)
+- `astor_memory/__init__.py` (version bump)
+
+---
+
 ## v1.15.30 (2026-09-28) — Ship N: PPS rekey apply/reject flow
 
 **Completes the receiver-side rekey flow.** Before Ship N, a peer
@@ -2209,6 +2306,8 @@ Result: **199 passed / 1 xfailed / 0 fail** (up from 155/195 / 44 fail before th
 - No database migrations required
 - Callers relying on silent-pass behavior for pathological inputs will now fail loudly (intentional)
 # Changelog
+
+
 
 All notable changes to Astor-Memory will be documented in this file.
 

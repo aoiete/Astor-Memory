@@ -1915,7 +1915,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # hypothetical answer via cheap LLM, embed it, and merge into
             # vector_hits. HyDE hits weighted 0.5× so they boost but don't
             # override primary cosine. Gated off by default (operator opt).
-            if os.environ.get('ASTOR_HYDE', '0') == '1':
+            # v1.15.34 (Ship O): HyDE gate. `hyde` body field overrides
+            # ASTOR_HYDE env. Accepts 'on'|'1'|True to enable, anything
+            # else falls back to ASTOR_HYDE env (default off).
+            _hyde_body = body.get('hyde')
+            if _hyde_body is None:
+                _hyde_on = os.environ.get('ASTOR_HYDE', '0') == '1'
+            else:
+                _hyde_on = str(_hyde_body).lower() in ('1', 'on', 'true', 'yes')
+            if _hyde_on:
                 try:
                     from .nest.hyde import hypothetical_answer as _hyde_ans, merge_hyde_hits as _hyde_merge
                     _hyde_text = _hyde_ans(query)
@@ -2007,33 +2015,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 temporal_boost_strength=0.4,
                 query_anchor=query_anchor,
             )
-            # v1.15.32 (2026-09-28, Ship L): MMR diversity rerank.
+            # v1.15.32 (2026-09-28, Ship L) + v1.15.33 (Ship M): MMR rerank.
             # Without MMR, near-duplicate phrasings crowd out the canonical
-            # answer at top-k. Apply when ASTOR_MMR is on (default) and we
-            # have enough candidates to actually pick from.
-            results = merged[:top_k]
-            if os.environ.get("ASTOR_MMR", "1") != "0" and len(merged) > top_k:
-                try:
-                    from .nest.mmr_reranker import mmr_rerank as _mmr_fn
-                    _mmr_pool = merged[:max(top_k * 2, top_k + 4)]
-                    _mmr_fids = [int(f) for f, _ in _mmr_pool]
-                    _placeholders = ",".join("?" * len(_mmr_fids))
-                    _content_rows = bus.conn.execute(
-                        f"SELECT id, content FROM memory_canonical "
-                        f"WHERE id IN ({_placeholders})",
-                        _mmr_fids,
-                    ).fetchall()
-                    _content_map = {int(r[0]): r[1] or "" for r in _content_rows}
-                    results = _mmr_fn(_mmr_pool, _content_map, query, top_k=top_k)
-                except Exception as _mmr_exc:
-                    _safe_stderr_write("[MMR] failed (continuing with hybrid order): " + repr(_mmr_exc) + "\n")
-                    # v1.15.32 (2026-09-28, Ship L): MMR diversity rerank.
-            # Without MMR, near-duplicate phrasings crowd out the canonical
-            # answer at top-k. Apply when ASTOR_MMR is on (default) and we
-            # have enough candidates to actually pick from.
-            # v1.15.33 (2026-09-28, Ship M): MMR lambda knob. Body field
-            # `mmr_lambda` overrides ASTOR_MMR_LAMBDA env, which overrides
-            # mmr_rerank.DEFAULT_LAMBDA. Clamped to [0.0, 1.0].
+            # answer at top-k. Ship M added body['mmr_lambda'] knob with
+            # ASTOR_MMR_LAMBDA env override and clamp [0.0, 1.0]. 1.0 = no MMR.
             results = merged[:top_k]
             _mmr_lambda = body.get("mmr_lambda")
             if _mmr_lambda is None:
