@@ -42,20 +42,26 @@ AUDIT_DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    actor TEXT NOT NULL,                  -- 'first_admin' | 'admin:<id>' | 'user:<id>' | 'system' | 'unknown'
+    actor TEXT NOT NULL,                  -- 'first_admin' | 'admin:<id>' | 'user:<id>' | 'system' | 'unknown' | 'server:<peer_id>'
     tier TEXT NOT NULL
         CHECK(tier IN ('public', 'source', 'private')),
     user_id TEXT,                          -- target user_id (the data being touched), may differ from actor
-    action TEXT NOT NULL,                 -- 'read' | 'write' | 'delete' | 'compact' | 'migrate' | 'admin_op' | 'recall' | 'init'
+    action TEXT NOT NULL,                 -- 'read' | 'write' | 'delete' | 'compact' | 'migrate' | 'admin_op' | 'recall' | 'init' | 'peer_*'
     target TEXT,                           -- free-form: 'memory_canonical/id=42' | 'astor_bus_alice.db/embeddings' etc.
     reason TEXT,                           -- required for first_admin admin_op; optional otherwise
-    metadata TEXT NOT NULL DEFAULT '{}'   -- JSON blob for op-specific extras
+    metadata TEXT NOT NULL DEFAULT '{}',  -- JSON blob for op-specific extras
+    -- v1.15.25 (2026-09-28) Ship I: peer_id denormalized column for fast
+    -- per-peer audit feed. When actor starts with 'server:', the peer_id is
+    -- the actor suffix (e.g. actor='server:astor:abc...', peer_id='astor:abc...').
+    peer_id TEXT                           -- optional, set when action affects a specific peer
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit(actor, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_target_user ON audit(user_id, ts DESC) WHERE user_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_audit_tier_ts ON audit(tier, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_admin_op ON audit(action, reason) WHERE action = 'admin_op';
+CREATE INDEX IF NOT EXISTS idx_audit_peer_id ON audit(peer_id, ts DESC) WHERE peer_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_audit_action_ts ON audit(action, ts DESC);
 """
 
 _lock = threading.Lock()
@@ -89,6 +95,9 @@ def _get_audit_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
+    # v1.15.25 Ship I: detect old schema (no peer_id column, has CHECK on action)
+    # and migrate in-place by rebuilding the table.
+    _migrate_audit_schema_v1525(conn)
     conn.executescript(AUDIT_DB_SCHEMA)
     conn.commit()
     try:
@@ -108,6 +117,7 @@ def astor_audit(
     target: str | None = None,
     reason: str | None = None,
     metadata: dict | None = None,
+    peer_id: str | None = None,  # v1.15.25 Ship I: optional explicit peer_id
 ) -> None:
     """
     Write one audit row. Safe to call from any thread.
@@ -135,9 +145,10 @@ def astor_audit(
         conn = _get_audit_conn()
         conn.execute(
             """INSERT INTO audit
-               (actor, tier, user_id, action, target, reason, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (actor, tier, user_id, action, target, reason, md_json),
+               (actor, tier, user_id, action, target, reason, metadata, peer_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (actor, tier, user_id, action, target, reason, md_json,
+             peer_id or astor_set_peer_id(actor)),
         )
 
 
@@ -233,3 +244,147 @@ __all__ = [
     "astor_audit", "astor_audit_context",
     "astor_query_audit", "astor_close_audit",
 ]
+
+
+def _migrate_audit_schema_v1525(conn: sqlite3.Connection) -> None:
+    """v1.15.25 (2026-09-28) Ship I: rebuild audit table without CHECK on
+    action, with new peer_id column.
+
+    Idempotent. Only fires when the existing table is missing peer_id. Preserves
+    all existing rows. SQLite cannot ALTER CONSTRAINTS or ADD CONSTRAINTS, so
+    the table is rebuilt via the standard 12-step pattern: rename, create new,
+    copy, drop old, rename new. The new table gets the v1.15.25 schema (which
+    is the AUDIT_DB_SCHEMA constant).
+    """
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='audit'"
+    )
+    if cur.fetchone() is None:
+        return  # first run, no audit table yet — let schema create it
+    cur = conn.execute("PRAGMA table_info(audit)")
+    cols = {row[1] for row in cur.fetchall()}
+    if "peer_id" in cols:
+        return  # already migrated
+    # Old schema detected. Rebuild.
+    # We use a hard-coded OLD schema in case the AUDIT_DB_SCHEMA constant
+    # is later updated and we're migrating an even older database.
+    # v1.15.25 Ship I: rebuild via standard SQLite 12-step pattern.
+    # Note: audit_logger uses isolation_level=None (autocommit), so each
+    # statement is its own transaction. The DDL rename + CREATE + COPY +
+    # DROP are atomic individually; if any step fails, the old table is
+    # still intact and a future _get_audit_conn() call will retry.
+    try:
+        conn.execute("ALTER TABLE audit RENAME TO audit__v1_14_old")
+        conn.executescript(AUDIT_DB_SCHEMA)
+        # Copy all rows from old to new (peer_id stays NULL for legacy rows)
+        conn.execute("""
+            INSERT INTO audit (id, ts, actor, tier, user_id, action, target, reason, metadata)
+            SELECT id, ts, actor, tier, user_id, action, target, reason, metadata
+            FROM audit__v1_14_old
+        """)
+        conn.execute("DROP TABLE audit__v1_14_old")
+    except Exception:
+        # If anything failed, try to restore the original table so the
+        # server can still start. Re-rename back if our new table exists.
+        try:
+            if conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='audit__v1_14_old'"
+            ).fetchone() is not None and conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='audit'"
+            ).fetchone() is not None:
+                # We have both — the new audit (probably empty) is suspect.
+                # Drop the new and rename old back.
+                conn.execute("DROP TABLE audit")
+                conn.execute("ALTER TABLE audit__v1_14_old RENAME TO audit")
+        except Exception:
+            pass
+        raise
+
+
+def astor_query_peer_audit(
+    peer_id: str,
+    *,
+    action: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
+    """v1.15.25 (2026-09-28) Ship I: per-peer audit feed.
+
+    Returns up to `limit` most recent audit rows where peer_id matches,
+    optionally filtered by action prefix (e.g. action='peer_recall' or
+    action='peer_*') and a time window.
+
+    Args:
+        peer_id: exact peer_id to filter (e.g. 'astor:abc123...').
+        action: optional action filter (exact match or LIKE 'peer_%').
+        since: optional ISO timestamp (e.g. '2026-09-28T00:00:00Z').
+        until: optional ISO timestamp upper bound.
+        limit: max rows to return, capped at 200.
+
+    Returns: list of dicts with keys id, ts, actor, tier, action, target,
+    reason, metadata (parsed JSON), peer_id. Ordered by ts DESC.
+    """
+    _limit_in = int(limit) if limit is not None else 50
+    limit = max(1, min(_limit_in, 200))
+    clauses = ["peer_id = ?"]
+    args: list = [peer_id]
+    if action:
+        if "%" in action or "_" in action:
+            clauses.append("action LIKE ?")
+            args.append(action)
+        else:
+            clauses.append("action = ?")
+            args.append(action)
+    if since:
+        clauses.append("ts >= ?")
+        args.append(since)
+    if until:
+        clauses.append("ts <= ?")
+        args.append(until)
+    where = " AND ".join(clauses)
+    sql = (
+        f"SELECT id, ts, actor, tier, user_id, action, target, reason, metadata, peer_id "
+        f"FROM audit WHERE {where} ORDER BY ts DESC LIMIT ?"
+    )
+    args.append(limit)
+    conn = _get_audit_conn()
+    rows = conn.execute(sql, args).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        try:
+            md = json.loads(r[8]) if r[8] else {}
+        except Exception:
+            md = {"_raw": r[8]}
+        out.append({
+            "id": int(r[0]),
+            "ts": str(r[1] or ""),
+            "actor": str(r[2] or ""),
+            "tier": str(r[3] or ""),
+            "user_id": r[4],
+            "action": str(r[5] or ""),
+            "target": r[6],
+            "reason": r[7],
+            "metadata": md,
+            "peer_id": r[9],
+        })
+    return out
+
+
+def astor_set_peer_id(actor: str) -> str:
+    """v1.15.25 Ship I: derive peer_id from actor string.
+
+    Convention: actor='server:<peer_id>' → returns '<peer_id>'.
+    Other actor formats → returns None.
+    """
+    if not actor:
+        return None
+    if actor.startswith("server:"):
+        rest = actor[len("server:"):]
+        # If the rest looks like a peer_id (starts with 'astor:' and is 38 chars),
+        # return it; otherwise return None.
+        if rest.startswith("astor:") and len(rest) == 38:
+            return rest
+    return None
