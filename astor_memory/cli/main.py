@@ -3027,15 +3027,86 @@ def cmd_peer_blacklist(args) -> int:
 
 
 def cmd_peer_allow_search(args) -> int:
-    """v1.14.73 stub: peer allow-search (under construction)."""
-    print("[WARN] am peer allow-search is not yet implemented (v1.14.73 stub)")
-    return 1
+    """v1.14.73 (2026-09-27) Phase 4 PPS: mark a friend as allowing MY searches.
+
+    This is the RECEIVER-side opt-in: running `am peer allow-search <peer_id>`
+    sets metadata.allow_search=True on that peer, which is what the friend
+    needs before they can include me in their demand-driven search.
+    """
+    from .._internal.peer_relationships import set_allow_search, get_peer
+    row = get_peer(args.peer_id)
+    if not row:
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        print('      add it first: am peer add <peer_id> ...', file=sys.stderr)
+        return 1
+    ok = set_allow_search(args.peer_id, True)
+    if not ok:
+        print(f'[ERR] failed to set allow-search for {args.peer_id}', file=sys.stderr)
+        return 1
+    print(f'[OK] allow-search=True for {args.peer_id}')
+    print('     they can now search your PUBLIC tier (max 20 facts per query)')
+    return 0
 
 
 def cmd_peer_search(args) -> int:
-    """v1.14.73 stub: peer remote search (under construction)."""
-    print("[WARN] am peer search is not yet implemented (v1.14.73 stub)")
-    return 1
+    """v1.14.73 (2026-09-27) Phase 4 PPS: demand-driven search across friends.
+
+    Read-only: results are displayed, nothing written to local DB.
+    Manual adopt (future ship) will write chosen results into source tier.
+    """
+    from .._internal.peer_identity import init_identity
+    from .._internal.peer_relationships import list_peers
+    from .._internal.peer_search import (
+        build_search_request, select_search_targets,
+        dispatch_search_to_peers,
+    )
+    me = init_identity()
+    peers = list_peers()
+    targets = select_search_targets(peers)
+    if not targets:
+        print('[INFO] no eligible search targets.')
+        print('       eligibility: trust>=50, has endpoint, '
+              'not blacklisted, allow_search=True (on THEIR side)')
+        eligible_near = [
+            p for p in peers
+            if (p.get('trust') or 0) >= 50 and p.get('endpoint')
+               and (p.get('kind') or 'friend') != 'blacklist'
+        ]
+        if eligible_near:
+            print('       close-but-not-opted-in peers:')
+            for p in eligible_near:
+                print(f"         {p['peer_id']}  alias={p.get('alias')!r}  "
+                      f"trust={p.get('trust')}")
+        return 0
+    request = build_search_request(
+        query=args.query,
+        requestor_peer_id=me['peer_id'],
+        requestor_pubkey=me['public_key'],
+        requestor_private_key=me['private_key'],
+        topic=args.topic,
+        limit=args.limit,
+    )
+    responses = dispatch_search_to_peers(request, targets)
+    total = 0
+    for f, resp in zip(targets, responses):
+        alias = f.get('alias') or ''
+        header = f"{f['peer_id']}" + (f" ({alias})" if alias else "")
+        if resp.error:
+            print(f'\n[{header}] ERROR: {resp.error}')
+            continue
+        print(f'\n[{header}] {len(resp.results)} result(s)'
+              + (' (truncated)' if resp.truncated else ''))
+        for r in resp.results:
+            total += 1
+            tags = ','.join(r.tags) if r.tags else '-'
+            print(f'  #{r.fact_id} [{r.kind}] sim={r.relevance:.3f} '
+                  f'tags={tags}')
+            print(f'      {r.content[:200]}')
+            print(f'      created={r.created_at} '
+                  f'trust={r.source_trust}')
+    print(f'\n[OK] {total} result(s) across {len(targets)} peer(s). '
+          f'No local DB writes (read-only).')
+    return 0
 
 
 def cmd_peer_export(args) -> int:
@@ -3446,12 +3517,18 @@ def cmd_peer_send_topic(args) -> int:
         return 1
 
 def cmd_peer_unallow_search(args) -> int:
-    """v1.14.73 stub: pre-existing function not yet implemented. Add stub so the
-    module can import and the decay-sweep ship (and other CLI work) doesn't
-    get blocked by this NameError. The proper implementation should land in
-    a follow-up ship — for now, return a clear [WARN]."""
-    print(f"[WARN] am peer unallow search not yet implemented (v1.14.73 stub)")
-    return 1
+    """v1.14.73 (2026-09-27) Phase 4 PPS: revoke a friend's search opt-in."""
+    from .._internal.peer_relationships import set_allow_search, get_peer
+    row = get_peer(args.peer_id)
+    if not row:
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        return 1
+    ok = set_allow_search(args.peer_id, False)
+    if not ok:
+        print(f'[ERR] failed to revoke allow-search for {args.peer_id}', file=sys.stderr)
+        return 1
+    print(f'[OK] allow-search=False for {args.peer_id}')
+    return 0
 
 
 def cmd_decay_sweep_run(args) -> int:

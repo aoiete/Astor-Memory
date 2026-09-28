@@ -4353,6 +4353,178 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'detail': str(e),
             }), 500
 
+    # ------------------------------------------------------------------
+    # v1.14.73 (2026-09-27) — Phase 4 PPS: demand-driven peer public search.
+    # Friends who opted in (metadata.allow_search=True) can search this
+    # install's PUBLIC tier. No push, no pull, read-only on their side.
+    # See astor_memory/_internal/peer_search.py for the request/response
+    # schema + attack model (all preventive: construct-time validation,
+    # opt-in default-off, trust>=50, timestamp freshness, sig check).
+    # ------------------------------------------------------------------
+    @app.route('/v1/peer/public_search', methods=['GET'])
+    def peer_public_search():
+        import base64 as _b64_pps
+        from ._internal.peer_search import (
+            PeerSearchRequest, PeerSearchResponse, PeerSearchResult,
+            MAX_RESULTS_PER_PEER,
+        )
+        from ._internal.peer_identity import verify as _peer_verify
+        from ._internal.peer_relationships import get_peer as _pp_get_peer
+
+        raw = request.args.get('req', '')
+        if not raw:
+            return jsonify({'error': 'missing_req',
+                            'detail': 'query param req=<urlsafe_b64 json> required'}), 400
+        try:
+            payload = _b64_pps.urlsafe_b64decode(raw.encode('ascii'))
+            d = json.loads(payload)
+        except Exception as e:
+            return jsonify({'error': 'bad_req_encoding', 'detail': str(e)}), 400
+
+        # Construct-time validation — raises on malformed/stale input.
+        try:
+            req = PeerSearchRequest(
+                requestor_peer_id=d['requestor_peer_id'],
+                requestor_pubkey=d['requestor_pubkey'],
+                query=d['query'],
+                topic=d.get('topic') or None,
+                limit=int(d.get('limit', 10)),
+                timestamp=d['timestamp'],
+                signature=d['signature'],
+            )
+        except KeyError as e:
+            return jsonify({'error': 'missing_field', 'field': str(e)}), 400
+        except ValueError as e:
+            return jsonify({'error': 'invalid_request', 'detail': str(e)}), 400
+        except Exception as e:
+            return jsonify({'error': 'invalid_request', 'detail': str(e)}), 400
+
+        # Self-search guard: a peer searching itself via this endpoint is a
+        # topology error, not an attack — reject cleanly.
+        try:
+            from ._internal.peer_identity import get_identity as _pp_get_identity
+            _me = _pp_get_identity()
+            if _me and req.requestor_peer_id == _me.get('peer_id'):
+                return jsonify({'error': 'self_search_not_allowed'}), 400
+        except Exception:
+            pass
+
+        # Signature verification (never raise to caller; hostile sig = 403).
+        if not req.verify_signature():
+            try:
+                from ._internal.audit_logger import astor_audit as _pp_audit
+                _pp_audit(
+                    actor=f'peer:{req.requestor_peer_id}',
+                    tier='public',
+                    action='peer_search_sig_reject',
+                    user_id=None,
+                    detail='ed25519 verification failed',
+                )
+            except Exception:
+                pass
+            return jsonify({'error': 'bad_signature'}), 403
+
+        # Receiver-side opt-in chain: known peer, not blacklisted,
+        # trust >= 50, allow_search=True.
+        peer_row = _pp_get_peer(req.requestor_peer_id)
+        if not peer_row:
+            return jsonify({'error': 'unknown_peer',
+                            'detail': 'friend must add you first (am peer add)'}), 403
+        if (peer_row.get('kind') or 'friend') == 'blacklist':
+            return jsonify({'error': 'peer_blacklisted'}), 403
+        if int(peer_row.get('trust') or 0) < 50:
+            return jsonify({'error': 'trust_below_threshold',
+                            'detail': 'trust must be >= 50'}), 403
+        _meta = peer_row.get('metadata') or {}
+        if isinstance(_meta, str):
+            try:
+                _meta = json.loads(_meta)
+            except Exception:
+                _meta = {}
+        if not isinstance(_meta, dict) or not _meta.get('allow_search'):
+            return jsonify({'error': 'search_not_allowed',
+                            'detail': 'friend has not opted in '
+                                      '(am peer allow-search <requestor_peer_id>)'}), 403
+
+        # Clamp limit (already validated 1..20 at construction, but be safe).
+        limit = min(int(req.limit), MAX_RESULTS_PER_PEER)
+
+        # Search PUBLIC tier only. tombstoned facts are excluded.
+        # Vector + BM25 merge, keep top `limit` by combined score.
+        tier = 'public'
+        try:
+            nest = astor_nest(tier=tier, user_id=None)
+            bus = astor_bus(tier=tier, user_id=None)
+            from .nest.embeddings import astor_get_embedding_model
+            model = astor_get_embedding_model()
+            query_emb = list(model.embed([req.query]))[0]
+
+            from .nest.lex_index import astor_lex as _pp_lex, hybrid_merge as _pp_merge
+            lex = _pp_lex(tier=tier, user_id=None)
+            vector_hits = nest.search(query_emb, limit=limit * 2)
+            bm25_hits = lex.bm25_search(req.query, limit=limit * 2)
+            merged = _pp_merge(
+                bm25_hits, vector_hits,
+                bm25_weight=0.6, vec_weight=0.4,
+                limit=limit,
+            )
+        except Exception as e:
+            return jsonify({'error': 'search_backend_failed', 'detail': str(e)}), 500
+
+        # Enrich from bus, drop tombstoned, cap bytes defensively.
+        me_row = _me or {}
+        my_peer_id = me_row.get('peer_id', 'astor:unknown')
+        results = []
+        truncated = False
+        for fact_id, sim in merged:
+            if len(results) >= limit:
+                truncated = True
+                break
+            row = bus.conn.execute(
+                "SELECT id, content, kind, tags, created_at, tombstoned "
+                "FROM memory_canonical WHERE id = ?",
+                (fact_id,),
+            ).fetchone()
+            if row is None or int(row[5] or 0) != 0:
+                continue
+            try:
+                import json as _j_pps
+                tags = tuple(_j_pps.loads(row[3])) if row[3] else ()
+            except Exception:
+                tags = ()
+            try:
+                results.append(PeerSearchResult(
+                    source_peer_id=my_peer_id,
+                    source_trust=100,
+                    fact_id=int(row[0]),
+                    content=str(row[1] or '')[:2048],
+                    kind=str(row[2] or 'fact'),
+                    tags=tags,
+                    created_at=str(row[4] or ''),
+                    relevance=round(min(max(float(sim), 0.0), 1.0), 4),
+                ))
+            except (ValueError, TypeError):
+                continue
+
+        try:
+            from ._internal.audit_logger import astor_audit as _pp_audit2
+            _pp_audit2(
+                actor=f'peer:{req.requestor_peer_id}',
+                tier='public',
+                action='peer_search',
+                user_id=None,
+                detail=f'query={req.query!r} results={len(results)}',
+            )
+        except Exception:
+            pass
+
+        resp = PeerSearchResponse(
+            requestor_peer_id=req.requestor_peer_id,
+            results=tuple(results),
+            truncated=truncated,
+        )
+        return jsonify(resp.to_dict())
+
     return app
 
 
