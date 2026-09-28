@@ -1,3 +1,49 @@
+## v1.15.28 (2026-09-28) — Ship L: PPS peer quarantine (auto-isolate)
+
+**New: peer quarantine.** A new `kind='quarantine'` value that excludes
+the peer from PPS fanout (and from all other kinds-based selection),
+sets `trust=0`, but **preserves the peer record** (NOT deleted). The
+original trust is stashed in `metadata.original_trust` for possible
+restoration. Quarantine is reversible via `--unquarantine`.
+
+**Use case**: a peer returning malformed responses, suspicious traffic,
+or hitting the error counter threshold should be auto-isolated without
+losing the relationship metadata, endpoint URL, or pubkey.
+
+**New helpers** in `peer_relationships.py`:
+- `quarantine_peer(peer_id, *, reason)` — sets kind=quarantine, trust=0
+- `unquarantine_peer(peer_id, *, restore_trust=True)` — restores kind=friend
+- `list_quarantined_peers()` — list currently quarantined peers
+
+**Wired into**:
+- `select_search_targets` — excludes both `blacklist` AND `quarantine`
+- `peer_health._classify` — new status `quarantined` (visible in
+  /v1/peer/health)
+
+**New REST endpoints**:
+- `POST /v1/peer/quarantine` (body: peer_id, reason)
+- `POST /v1/peer/unquarantine` (body: peer_id, restore_trust)
+- `GET /v1/peer/quarantine/list`
+
+**New CLI**:
+- `am peer quarantine <pid> [--reason X]`
+- `am peer quarantine <pid> --unquarantine [--no-restore]`
+- `am peer quarantine --list`
+
+**Test coverage**: 17 new tests (9 helper, 1 select_search_targets, 1
+health, 5 endpoint, 1 CLI). Total: 534/534 non-flaky pass.
+
+**Files changed (6):**
+- `astor_memory/_internal/peer_relationships.py` (+2200 bytes: kind
+  validation + quarantine/unquarantine/list helpers)
+- `astor_memory/_internal/peer_search.py` (+30 bytes: select_search_targets
+  excludes quarantine)
+- `astor_memory/_internal/peer_health.py` (+150 bytes: _classify supports
+  quarantined status)
+- `astor_memory/server.py` (+2480 bytes: 3 new endpoints)
+- `astor_memory/cli/main.py` (+1800 bytes: cmd_peer_quarantine + subparser)
+- `tests/test_peer_quarantine.py` (new, 12260 bytes)
+
 ## v1.15.27 (2026-09-28) — Ship K: PPS topic-aware dispatch
 
 **Topic filter** added to PPS fanout. When the caller specifies a topic,

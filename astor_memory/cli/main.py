@@ -515,6 +515,19 @@ def main(argv: list[str] | None = None) -> int:
                               help='Show health for all known peers')
     peer_health.set_defaults(func=cmd_peer_health)
 
+    peer_quarantine = peer_sub.add_parser('quarantine',
+        help='Quarantine a peer (Ship L) -- exclude from fanout, set trust=0')
+    peer_quarantine.add_argument('peer_id', nargs='?', default=None,
+                                   help='Peer ID to quarantine (omit with --list)')
+    peer_quarantine.add_argument('--reason', help='Why this peer is being quarantined')
+    peer_quarantine.add_argument('--unquarantine', action='store_true',
+                                   help='Restore peer (set kind=friend)')
+    peer_quarantine.add_argument('--no-restore', action='store_true',
+                                   help='On unquarantine: keep trust at 0 (do not restore original)')
+    peer_quarantine.add_argument('--list', action='store_true',
+                                   help='List currently quarantined peers')
+    peer_quarantine.set_defaults(func=cmd_peer_quarantine)
+
     peer_blacklist = peer_sub.add_parser('blacklist',
         help='Blacklist a peer (trust=0)')
     peer_blacklist.add_argument('peer_id', help='Peer ID to blacklist')
@@ -3754,6 +3767,64 @@ def cmd_peer_health(args) -> int:
     print(f'error_count = {h.get("error_count")}')
     print(f'online    = {h.get("online")}')
     print(f'health    = {h.get("health")}')
+    return 0
+
+
+
+def cmd_peer_quarantine(args) -> int:
+    """v1.15.28 (2026-09-28) Ship L: quarantine a peer (auto-isolate).
+
+    Quarantine excludes the peer from fanout + sets trust=0. The peer
+    record is preserved (NOT deleted) so it can be unquarantined later.
+    Use --list to show currently quarantined peers. Use --unquarantine
+    to restore. Use --reason to record why (visible in metadata + audit).
+    """
+    from .._internal.peer_relationships import (
+        quarantine_peer, unquarantine_peer, list_quarantined_peers,
+        list_peers, get_peer,
+    )
+    if args.list:
+        rows = list_quarantined_peers()
+        if not rows:
+            print('(no quarantined peers)')
+            return 0
+        print(f'[OK] {len(rows)} quarantined peer(s):')
+        for r in rows:
+            meta = r.get("metadata") or {}
+            reason = meta.get("quarantine_reason") or "(no reason recorded)"
+            at = meta.get("quarantined_at") or "?"
+            print(f'  {r["peer_id"]} alias={r.get("alias") or "-"} '
+                  f'trust={int(r.get("trust") or 0)} '
+                  f'at={at[:19]} reason={reason!r}')
+        return 0
+    if args.unquarantine:
+        if not args.peer_id:
+            print('[ERR] --unquarantine requires peer_id', file=sys.stderr)
+            return 1
+        result = unquarantine_peer(args.peer_id, restore_trust=not args.no_restore)
+        if not result:
+            print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+            return 1
+        print(f'[OK] unquarantined: {args.peer_id} '
+              f'kind={result["kind"]} trust={int(result["trust"])}')
+        return 0
+    # Default: quarantine
+    if not args.peer_id:
+        print('[ERR] peer_id required (or use --list)', file=sys.stderr)
+        return 1
+    existing = get_peer(args.peer_id)
+    if not existing:
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        return 1
+    result = quarantine_peer(args.peer_id, reason=args.reason or "")
+    if not result:
+        print(f'[ERR] quarantine failed: {args.peer_id}', file=sys.stderr)
+        return 1
+    meta = result.get("metadata") or {}
+    print(f'[OK] quarantined: {args.peer_id}')
+    print(f'   reason={meta.get("quarantine_reason") or "(none)"}')
+    print(f'   quarantined_at={meta.get("quarantined_at")}')
+    print(f'   original_trust preserved: {meta.get("original_trust")}')
     return 0
 
 
