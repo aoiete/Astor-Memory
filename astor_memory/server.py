@@ -1058,6 +1058,40 @@ def create_app(astor_dir: str | None = None) -> Flask:
         user = body.get('user', 'admin')
         mode = body.get('mode', 'auto')
         tier = body.get('tier', 'public')
+        # v1.15.35 (Ship P0): Memory Defense — Hindsight-style PII scanner.
+        # Gated by ASTOR_PII_SCAN_ON_WRITE=1 (default off). Two policies:
+        # - 'redact' (default): replace PII with [BLOCKED:TYPE] tag, preserve write
+        # - 'block' : reject write if any block-severity match is found
+        # Audit log entry written to bus.audit_log with fingerprints only
+        # (never the raw secret). Operator opted in per env gate.
+        if body.get('pii_scan') is True or body.get('pii_scan') is False:
+            # Explicit body override beats env
+            _md_on = bool(body.get('pii_scan'))
+        else:
+            from .nest.memory_defense import is_enabled as _md_is_enabled
+            _md_on = _md_is_enabled()
+        if _md_on:
+            from .nest.memory_defense import scan_policy as _md_scan, audit_log_record as _md_audit
+            _md_policy = body.get('pii_policy')
+            if not _md_policy:
+                from .nest.memory_defense import get_policy as _md_get_policy
+                _md_policy = _md_get_policy()
+            _processed_text, _md_matches = _md_scan(text, policy=_md_policy)
+            if _md_matches and _md_policy == 'block' and any(m.severity == 'block' for m in _md_matches):
+                _names = sorted({m.name for m in _md_matches if m.severity == 'block'})
+                return jsonify({
+                    'error': 'pii_blocked',
+                    'detail': f"Memory Defense (block policy) rejected write: {len(_md_matches)} PII match(es) including {_names[:3]}",
+                    'matches': [{'name': m.name, 'severity': m.severity} for m in _md_matches if m.severity == 'block'],
+                }), 400
+            if _md_matches:
+                # Log to audit (fire-and-forget; never blocks the write)
+                try:
+                    _audit_entry = _md_audit(None, user, tier, _md_matches, _md_policy)
+                    _safe_stderr_write('[MEMORY_DEFENSE] ' + repr(_audit_entry) + chr(10))
+                except Exception as _md_audit_exc:
+                    _safe_stderr_write('[MEMORY_DEFENSE] audit log failed: ' + repr(_md_audit_exc) + chr(10))
+                text = _processed_text  # use redacted content for the actual write
         # v1.14.63 (R-class fix): validate tier early. Acceptable values
         # are public / source / private_<user> / repo. The string 'auto'
         # is reserved for the astor_auto_observe tool flow (not HTTP
