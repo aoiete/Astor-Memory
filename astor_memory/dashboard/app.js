@@ -549,3 +549,205 @@
     document.getElementById('recall-results').innerHTML = html;
   }
 })();
+
+// =====================================================================
+// v1.15.19 Ship C: Peer Friends panel (PPS Phase 4 dashboard)
+// CRUD against /v1/peer/* endpoints. Trust editable inline; allow-search
+// toggle is a one-click switch; blacklist = drop-down + reason prompt.
+// =====================================================================
+async function fetchPeers() {
+  try {
+    const r = await fetch('/v1/peer/list');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    renderPeerPanel(d.peers || []);
+    return d;
+  } catch (e) {
+    document.getElementById('peer-panel-body').innerHTML =
+      '<div class="recall-error">fetch peers failed: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderPeerPanel(peers) {
+  const body = document.getElementById('peer-panel-body');
+  if (peers.length === 0) {
+    body.innerHTML = '<div class="recall-hint">No peers yet. Add one above to start building your PPS network.</div>';
+    return;
+  }
+  // split kinds visually
+  const byKind = (k) => peers.filter(p => (p.kind || 'friend') === k);
+  const friendPeers = byKind('friend');
+  const blacklistPeers = byKind('blacklist');
+  const otherPeers = peers.filter(p => !['friend','blacklist'].includes(p.kind));
+  let html = '';
+  if (friendPeers.length > 0) {
+    html += '<div class="peer-section-label">Friends</div>';
+    html += renderPeerRows(friendPeers);
+  }
+  if (otherPeers.length > 0) {
+    html += '<div class="peer-section-label">Other</div>';
+    html += renderPeerRows(otherPeers);
+  }
+  if (blacklistPeers.length > 0) {
+    html += '<div class="peer-section-label peer-blacklist">Blacklisted</div>';
+    html += renderPeerRows(blacklistPeers);
+  }
+  body.innerHTML = html;
+  // bind row actions
+  body.querySelectorAll('[data-action]').forEach(btn => {
+    btn.addEventListener('click', onPeerAction);
+  });
+  body.querySelectorAll('input.peer-trust-input').forEach(inp => {
+    inp.addEventListener('change', onPeerTrustEdit);
+  });
+}
+
+function renderPeerRows(rows) {
+  let html = '<table class="peer-table"><thead><tr>'
+    + '<th>peer_id</th><th>alias</th><th>trust</th>'
+    + '<th>endpoint</th><th>pubkey</th><th>allow</th>'
+    + '<th>updated</th><th>actions</th>'
+    + '</tr></thead><tbody>';
+  rows.forEach(p => {
+    const pid = encodeURIComponent(p.peer_id);
+    const alias = p.alias || '';
+    const trust = p.trust != null ? p.trust : '?';
+    const endpoint = p.endpoint || '<span class="recall-hint">— none —</span>';
+    const hasPub = p.has_pubkey
+      ? '<span class="rc-tag rc-kind">✓</span>'
+      : '<span class="recall-hint">—</span>';
+    const allowCls = p.allow_search ? 'peer-allow-on' : 'peer-allow-off';
+    const allowTxt = p.allow_search ? 'ON' : 'off';
+    const updated = p.updated_at ? p.updated_at.slice(0, 10) : '—';
+    html += '<tr>'
+      + '<td class="peer-pid" title="' + escapeHtml(p.peer_id) + '">'
+      + escapeHtml(p.peer_id.length > 22 ? p.peer_id.slice(0,22) + '…' : p.peer_id)
+      + '</td>'
+      + '<td class="peer-alias">' + escapeHtml(alias) + '</td>'
+      + '<td class="peer-trust">'
+      + '<input type="number" class="peer-trust-input" min="0" max="100" '
+      + 'value="' + trust + '" data-pid="' + escapeHtml(p.peer_id) + '" />'
+      + '</td>'
+      + '<td class="peer-endpoint">' + (typeof endpoint === 'string' ? escapeHtml(endpoint) : endpoint) + '</td>'
+      + '<td class="peer-pub">' + hasPub + '</td>'
+      + '<td><button class="peer-allow-toggle ' + allowCls
+      + '" data-pid="' + escapeHtml(p.peer_id) + '" data-action="toggle-allow">'
+      + allowTxt + '</button></td>'
+      + '<td class="recall-hint">' + escapeHtml(updated) + '</td>'
+      + '<td>'
+      + (p.kind === 'blacklist'
+        ? '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="unblacklist" class="btn-refresh">unblock</button>'
+        : '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="blacklist" class="btn-refresh">block</button>')
+      + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="delete" class="btn-refresh">×</button>'
+      + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  return html;
+}
+
+async function onPeerAction(ev) {
+  const btn = ev.currentTarget;
+  const pid = btn.dataset.pid;
+  const action = btn.dataset.action;
+  if (!pid || !action) return;
+  if (action === 'delete') {
+    if (!confirm('Delete peer ' + pid + '?')) return;
+  } else if (action === 'blacklist') {
+    const reason = prompt('Optional reason for blocking:', '');
+    if (reason === null) return;
+    btn.disabled = true;
+    const r = await fetch('/v1/peer/' + encodeURIComponent(pid) + '/blacklist', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reason: reason || null})
+    });
+    btn.disabled = false;
+    if (!r.ok) { alert('block failed: HTTP ' + r.status); return; }
+  } else if (action === 'unblacklist') {
+    btn.disabled = true;
+    const r = await fetch('/v1/peer/' + encodeURIComponent(pid) + '/unblacklist', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: '{}'
+    });
+    btn.disabled = false;
+    if (!r.ok) { alert('unblock failed: HTTP ' + r.status); return; }
+  } else if (action === 'delete') {
+    btn.disabled = true;
+    const r = await fetch('/v1/peer/' + encodeURIComponent(pid), {method: 'DELETE'});
+    btn.disabled = false;
+    if (!r.ok) { alert('delete failed: HTTP ' + r.status); return; }
+  } else if (action === 'toggle-allow') {
+    const next = btn.textContent.trim() !== 'ON';
+    btn.disabled = true;
+    const r = await fetch('/v1/peer/' + encodeURIComponent(pid) + '/allow-search', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({allow: next})
+    });
+    btn.disabled = false;
+    if (!r.ok) { alert('toggle failed: HTTP ' + r.status); return; }
+  }
+  await fetchPeers();
+}
+
+async function onPeerTrustEdit(ev) {
+  const inp = ev.currentTarget;
+  const pid = inp.dataset.pid;
+  const newVal = parseInt(inp.value, 10);
+  if (isNaN(newVal) || newVal < 0 || newVal > 100) {
+    alert('trust must be 0-100');
+    inp.focus();
+    return;
+  }
+  const r = await fetch('/v1/peer/' + encodeURIComponent(pid) + '/trust', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({trust: newVal})
+  });
+  if (!r.ok) {
+    alert('trust update failed: HTTP ' + r.status);
+    inp.focus();
+  } else {
+    inp.classList.add('peer-trust-saved');
+    setTimeout(() => inp.classList.remove('peer-trust-saved'), 1200);
+  }
+}
+
+async function onPeerAdd() {
+  const pid = document.getElementById('peer-add-pid').value.trim();
+  const alias = document.getElementById('peer-add-alias').value.trim();
+  const trustRaw = document.getElementById('peer-add-trust').value;
+  const trust = parseInt(trustRaw, 10);
+  if (!/^astor:[0-9a-f]{32}$/i.test(pid)) {
+    alert('peer_id must be astor:<32-hex chars>');
+    return;
+  }
+  if (isNaN(trust) || trust < 0 || trust > 100) {
+    alert('trust must be 0-100');
+    return;
+  }
+  const body = {peer_id: pid, trust: trust};
+  if (alias) body.alias = alias;
+  const r = await fetch('/v1/peer/add', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    alert('add failed: HTTP ' + r.status + ' ' + t.slice(0, 160));
+    return;
+  }
+  document.getElementById('peer-add-pid').value = '';
+  document.getElementById('peer-add-alias').value = '';
+  document.getElementById('peer-add-trust').value = '30';
+  await fetchPeers();
+}
+
+document.getElementById('peer-add-btn').addEventListener('click', onPeerAdd);
+document.getElementById('peer-refresh-btn').addEventListener('click', fetchPeers);
+// Auto-fetch on dashboard load (in addition to the 60s loop)
+fetchPeers().catch(() => {});
+setInterval(() => fetchPeers().catch(() => {}), REFRESH_MS);

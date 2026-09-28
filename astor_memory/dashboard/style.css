@@ -671,3 +671,48 @@ body {
   .rc-tabs { flex-wrap: wrap; }
   .rc-tab { font-size: 11px; padding: 4px 8px; }
 }
+
+
+/* v1.15.19 Ship C: Peer panel */
+.peer-panel { margin-top: 16px; }
+.peer-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  justify-content: space-between; margin-bottom: 12px; }
+.peer-header h2 { margin: 0; }
+.peer-header .subtitle { color: var(--text-dim); font-size: 0.85em; font-weight: normal; }
+.peer-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.peer-actions input { padding: 4px 8px; font-size: 0.85em;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px; }
+.peer-actions input#peer-add-pid { width: 280px; font-family: monospace; font-size: 0.8em; }
+.peer-actions input#peer-add-alias { width: 120px; }
+.peer-actions input#peer-add-trust { width: 80px; }
+.peer-actions button { padding: 4px 10px; font-size: 0.85em; }
+.peer-body { overflow-x: auto; }
+.peer-section-label { font-size: 0.8em; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.05em; margin: 12px 0 6px;
+  padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.peer-section-label.peer-blacklist { color: var(--danger); }
+.peer-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+.peer-table th { text-align: left; padding: 6px 8px;
+  border-bottom: 1px solid var(--border); color: var(--text-dim);
+  font-weight: 600; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.03em; }
+.peer-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.peer-pid { font-family: monospace; color: var(--accent); }
+.peer-alias { color: var(--text); }
+.peer-endpoint { font-family: monospace; font-size: 0.8em; color: var(--text-dim); }
+.peer-trust-input { width: 60px; padding: 2px 4px; font-size: 0.85em;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 3px; text-align: right; }
+.peer-trust-input.peer-trust-saved {
+  background: var(--good); color: white; border-color: var(--good);
+}
+.peer-allow-toggle { padding: 2px 8px; font-size: 0.8em;
+  border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
+  background: var(--bg); color: var(--text); }
+.peer-allow-toggle.peer-allow-on {
+  background: var(--good); color: white; border-color: var(--good);
+}
+.peer-allow-toggle.peer-allow-off {
+  background: var(--bg); color: var(--text-dim);
+}
+.peer-table .btn-refresh { padding: 2px 6px; font-size: 0.85em; margin-right: 2px; }
