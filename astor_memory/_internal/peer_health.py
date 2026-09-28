@@ -27,8 +27,15 @@ from .audit_logger import astor_query_peer_audit
 from .peer_rate_limit import snapshot as _rl_snapshot
 
 
-def _classify(online: bool, has_endpoint: bool, trust: int, allow_search: bool) -> str:
-    """Map health signals to a human-readable status."""
+def _classify(online: bool, has_endpoint: bool, trust: int,
+                allow_search: bool, kind: str = "friend") -> str:
+    """Map health signals to a human-readable status.
+
+    v1.15.28 Ship L: quarantined peers get a dedicated status so ops
+    dashboards can show "this peer is intentionally isolated".
+    """
+    if kind == "quarantine":
+        return "quarantined"
     if not has_endpoint:
         return "unknown"  # not configured yet
     if not online:
@@ -84,10 +91,11 @@ def peer_health(peer_id: str) -> dict:
     allow_search = bool(meta.get("allow_search"))
     has_pubkey = bool(p.get("public_key"))
     online = has_endpoint and has_pubkey  # don't actually ping (avoids blocking on slow peers)
+    kind = p.get("kind") or "friend"
     return {
         "peer_id": peer_id,
         "alias": p.get("alias") or None,
-        "kind": p.get("kind") or "friend",
+        "kind": kind,
         "trust": trust,
         "endpoint": p.get("endpoint") or None,
         "has_pubkey": has_pubkey,
@@ -98,7 +106,7 @@ def peer_health(peer_id: str) -> dict:
         "error_count": err_count,
         "online": online,
         "found": True,
-        "health": _classify(online, has_endpoint, trust, allow_search),
+        "health": _classify(online, has_endpoint, trust, allow_search, kind),
     }
 
 

@@ -4930,6 +4930,83 @@ def create_app(astor_dir: str | None = None) -> Flask:
         return jsonify(_ph_one(pid))
 
     # ------------------------------------------------------------------
+    # v1.15.28 (2026-09-28) — Ship L: peer quarantine (auto-isolate).
+    # Quarantine excludes a peer from fanout + sets trust=0, but
+    # preserves the peer record + original trust in metadata for
+    # potential unquarantine restoration. Use case: a peer with many
+    # errors (malformed responses, hostile behavior) is isolated
+    # without losing the relationship data.
+    # ------------------------------------------------------------------
+    @app.route('/v1/peer/quarantine', methods=['POST'])
+    def peer_quarantine():
+        from ._internal.peer_relationships import (
+            quarantine_peer, get_peer,
+        )
+        body = request.get_json(force=True) or {}
+        pid = (body.get('peer_id') or '').strip()
+        reason = (body.get('reason') or '').strip()
+        if not pid:
+            return jsonify({
+                'error': 'peer_id_required',
+                'hint': 'body: {peer_id: "astor:<32-hex>", reason: "..."}',
+            }), 400
+        existing = get_peer(pid)
+        if not existing:
+            return jsonify({
+                'error': 'peer_not_found',
+                'peer_id': pid,
+            }), 404
+        result = quarantine_peer(pid, reason=reason)
+        return jsonify({
+            'ok': True,
+            'peer_id': pid,
+            'kind': result.get('kind') if result else None,
+            'trust': int(result.get('trust', 0)) if result else 0,
+            'quarantine_reason': reason,
+            'hint': 'use /v1/peer/unquarantine to restore',
+        })
+
+    @app.route('/v1/peer/unquarantine', methods=['POST'])
+    def peer_unquarantine():
+        from ._internal.peer_relationships import unquarantine_peer
+        body = request.get_json(force=True) or {}
+        pid = (body.get('peer_id') or '').strip()
+        restore = bool(body.get('restore_trust', True))
+        if not pid:
+            return jsonify({
+                'error': 'peer_id_required',
+                'hint': 'body: {peer_id: "astor:<32-hex>", restore_trust: bool}',
+            }), 400
+        result = unquarantine_peer(pid, restore_trust=restore)
+        if not result:
+            return jsonify({'error': 'peer_not_found', 'peer_id': pid}), 404
+        return jsonify({
+            'ok': True,
+            'peer_id': pid,
+            'kind': result.get('kind'),
+            'trust': int(result.get('trust', 0)),
+            'restored': restore,
+        })
+
+    @app.route('/v1/peer/quarantine/list', methods=['GET'])
+    def peer_quarantine_list():
+        from ._internal.peer_relationships import list_quarantined_peers
+        rows = list_quarantined_peers()
+        # Apply basic key sanitization (drop public_key blob)
+        out = []
+        for r in rows:
+            out.append({
+                'peer_id': r.get('peer_id'),
+                'alias': r.get('alias'),
+                'kind': r.get('kind'),
+                'trust': int(r.get('trust', 0)),
+                'endpoint': r.get('endpoint'),
+                'metadata': r.get('metadata') or {},
+                'updated_at': r.get('updated_at'),
+            })
+        return jsonify({'count': len(out), 'peers': out})
+
+    # ------------------------------------------------------------------
     # v1.15.19 (2026-09-28) — PPS Phase 4 follow-up: Peer CRUD + search REST.
     # The CLI is in cli/main.py; this route set mirrors those operations
     # so the dashboard panel (Ship C) can drive everything from JS.
