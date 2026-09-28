@@ -33,7 +33,8 @@ import json
 import os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+import datetime as _dt
+from datetime import timezone
 from pathlib import Path
 
 _RELATIONSHIPS_LOCK = threading.Lock()
@@ -132,7 +133,7 @@ def close_all_connections() -> None:
 
 
 def _now_iso() -> str:
-    return (datetime.now(timezone.utc)
+    return (_dt.datetime.now(_dt.timezone.utc)
             .isoformat(timespec="seconds")
             .replace("+00:00", "Z"))
 
@@ -286,6 +287,152 @@ def update_trust(peer_id: str, trust: int, astor_dir: str | None = None) -> dict
         """, (trust, _now_iso(), peer_id))
         con.commit()
     return get_peer(peer_id, astor_dir=astor_dir)
+
+
+# ---------------------------------------------------------------------------
+# v1.15.23 (2026-09-28) — Ship F: trust auto-update helpers.
+# bump_trust(peer_id, delta): add delta to a peer's trust, clamp 0..100.
+#   No-op if peer doesn't exist (caller can decide to log a warning).
+#   Returns the new trust value, or None if peer unknown.
+# record_peer_error(peer_id): increment consecutive_error_count on
+#   metadata. Auto-resets to 0 when the peer delivers a successful response
+#   (callers call clear_peer_errors). Returns new count.
+# should_decay_trust(peer): check if updated_at is > 30 days old and
+#   trust is above 30. Used by `am peer trust decay` admin sweep.
+# decay_peer_trust(peer_id, *, days=30, default_trust=30, astor_dir=None):
+#   run one peer through the decay check + apply. Returns new trust.
+# ---------------------------------------------------------------------------
+DEFAULT_TRUST = 30
+DECAY_DAYS = 30
+
+
+def bump_trust(peer_id: str, delta: int,
+               *, astor_dir: str | None = None) -> int | None:
+    """Add delta (can be negative) to peer's trust, clamp 0..100.
+
+    Ship F: adoption path calls this with delta=+1 per successful adopt.
+    Anti-hostile: delta is bounded and only fires on EXPLICIT operator
+    action (an adopt is an explicit, audited POST), not on auto-paths.
+    Returns the new trust, or None if peer doesn't exist.
+    """
+    row = get_peer(peer_id, astor_dir=astor_dir)
+    if not row:
+        return None
+    cur = int(row.get("trust") or 0)
+    new = max(0, min(100, cur + int(delta)))
+    if new == cur:
+        return new
+    update_trust(peer_id, new, astor_dir=astor_dir)
+    return new
+
+
+def _error_count_path(meta) -> int:
+    """Read the consecutive error count from metadata, defaulting to 0."""
+    if isinstance(meta, str):
+        try:
+            import json as _json
+            meta = _json.loads(meta)
+        except Exception:
+            return 0
+    if not isinstance(meta, dict):
+        return 0
+    v = meta.get("consecutive_error_count", 0)
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _write_error_count(peer_id: str, new_count: int,
+                        *, astor_dir: str | None = None) -> None:
+    """Set the consecutive error count into metadata. Resets other keys."""
+    import json as _json
+    con = _get_conn(astor_dir)
+    with _RELATIONSHIPS_LOCK:
+        row = con.execute(
+            "SELECT metadata FROM peer_relationships WHERE peer_id = ?",
+            (peer_id,),
+        ).fetchone()
+        if row is None:
+            return
+        meta = {}
+        if row["metadata"]:
+            try:
+                meta = _json.loads(row["metadata"])
+                if not isinstance(meta, dict):
+                    meta = {}
+            except Exception:
+                meta = {}
+        meta["consecutive_error_count"] = max(0, int(new_count))
+        con.execute(
+            "UPDATE peer_relationships "
+            "SET metadata = ?, updated_at = ? WHERE peer_id = ?",
+            (_json.dumps(meta, ensure_ascii=False), _now_iso(), peer_id),
+        )
+        con.commit()
+
+
+def record_peer_error(peer_id: str,
+                      *, astor_dir: str | None = None) -> int | None:
+    """Increment consecutive error count. Returns new count, or None if
+    peer unknown. Anti-hostile: the counter rolls over at 100, not
+    infinity, so a single bad burst cannot push trust arbitrarily low.
+    """
+    row = get_peer(peer_id, astor_dir=astor_dir)
+    if not row:
+        return None
+    cur = _error_count_path(row.get("metadata") or {})
+    new = min(100, cur + 1)
+    _write_error_count(peer_id, new, astor_dir=astor_dir)
+    return new
+
+
+def clear_peer_errors(peer_id: str,
+                     *, astor_dir: str | None = None) -> int | None:
+    """Reset the consecutive error counter to 0. Returns the cleared value
+    (0), or None if peer unknown. Call this on a successful PPS request.
+    """
+    row = get_peer(peer_id, astor_dir=astor_dir)
+    if not row:
+        return None
+    cur = _error_count_path(row.get("metadata") or {})
+    if cur != 0:
+        _write_error_count(peer_id, 0, astor_dir=astor_dir)
+    return 0
+
+
+def should_decay_trust(peer: dict, *, days: int = DECAY_DAYS) -> bool:
+    """True if peer's updated_at is older than `days` and trust > 30."""
+    trust = int(peer.get("trust") or 0)
+    if trust <= DEFAULT_TRUST:
+        return False
+    updated = peer.get("updated_at") or ""
+    if not updated:
+        return False
+    try:
+        ts = _dt.datetime.fromisoformat(updated.replace("Z", "+00:00"))
+    except Exception:
+        return False
+    age_days = (_dt.datetime.now(_dt.timezone.utc) - ts).total_seconds() / 86400.0
+    return age_days >= days
+
+
+def decay_peer_trust(peer_id: str, *,
+                     days: int = DECAY_DAYS,
+                     default_trust: int = DEFAULT_TRUST,
+                     astor_dir: str | None = None) -> int | None:
+    """If peer is stale (>days since updated_at) AND trust > default_trust,
+    decay by 5 (clamped at default_trust). Returns new trust, or None
+    if peer doesn't exist.
+    """
+    row = get_peer(peer_id, astor_dir=astor_dir)
+    if not row:
+        return None
+    if not should_decay_trust(row, days=days):
+        return int(row.get("trust") or 0)
+    new = max(default_trust, int(row["trust"]) - 5)
+    update_trust(peer_id, new, astor_dir=astor_dir)
+    return new
 
 
 def record_rekey(

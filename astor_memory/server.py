@@ -5126,12 +5126,24 @@ def create_app(astor_dir: str | None = None) -> Flask:
             except Exception as e:
                 skipped += 1
                 continue
+        # v1.15.23 Ship F: auto-bump source peer trust on successful
+        # adoption. Anti-hostile: only fires on EXPLICIT operator
+        # action (adopt is a POST with caller-supplied content), not
+        # on auto-paths. Bound: +1 per adopt, clamps 0..100.
+        _bumped = None
+        if written:
+            try:
+                from ._internal.peer_relationships import bump_trust
+                _bumped = bump_trust(src_peer, 1)
+            except Exception:
+                _bumped = None
         return jsonify({'ok': True, 'tier': target_tier,
                         'source_peer_id': src_peer,
                         'adopted_at': adopted_at,
                         'written': written,
                         'count': len(written),
-                        'skipped': skipped})
+                        'skipped': skipped,
+                        'peer_trust_after_adopt': _bumped})
 
     return app
 
