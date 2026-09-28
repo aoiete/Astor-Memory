@@ -1,3 +1,41 @@
+## v1.15.26 (2026-09-28) — Ship J: per-peer health aggregator
+
+**New endpoint** `GET /v1/peer/health?peer_id=<pid>` (or `?all=true`):
+aggregates relationship + audit + rate-limit signals into a single
+status dict. No synchronous pings to peer endpoints (would block on
+slow peers); uses cached signals instead. Health classification:
+`healthy` / `degraded` / `unreachable` / `unknown`.
+
+**Status fields per peer:**
+- `peer_id`, `alias`, `kind` (friend/blacklist/whitelist/pending)
+- `trust` (0-100), `endpoint`, `has_pubkey`, `allow_search`
+- `rate_limit`: {count, cap, oldest_iso, retry_after_seconds}
+- `last_seen_iso` + `last_action` (from audit log, Ship I)
+- `error_count` (consecutive error count for trust-decay decisions)
+- `online` (heuristic: has endpoint AND has pubkey)
+- `health`: 'healthy' | 'degraded' | 'unreachable' | 'unknown'
+
+`?all=true` returns the full list grouped by health for ops dashboards.
+
+**New helpers** in `astor_memory/_internal/peer_health.py`:
+- `peer_health(peer_id)` — single peer status
+- `all_peer_health()` — wrapper for all known peers
+
+**CLI**: `am peer health <pid>` (single peer) or `am peer health --all`
+(grouped by health, sorted healthy → degraded → unreachable → unknown).
+
+**Test coverage**: 14 new tests (8 helper, 4 endpoint, 2 CLI). Total:
+509/509 non-flaky pass. Fixed `tests/test_peer_public_search.py`
+tearDown_tmp to close audit_logger singleton (Windows file-locking
+issue, same as the fix in test_peer_rest.py during Ship I).
+
+**Files changed (5):**
+- `astor_memory/_internal/peer_health.py` (new, 4921 bytes)
+- `astor_memory/server.py` (+1324 bytes: /v1/peer/health endpoint)
+- `astor_memory/cli/main.py` (+2123 bytes: cmd_peer_health + subparser)
+- `tests/test_peer_health.py` (new, 8922 bytes)
+- `tests/test_peer_public_search.py` (+343 bytes: tearDown_tmp fix)
+
 ## v1.15.25 (2026-09-28) — Ship I: per-peer audit feed + schema fix
 
 **Fixed real bug:** PPS audit logging was silently broken because the
