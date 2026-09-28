@@ -22,11 +22,10 @@ Why this matters:
   - LoCoMo queries are short and abstract — same problem applies
     in English but the synonym dict already covers that ground.
 """
-from __future__ import annotations
 
 import os
 import re
-from typing import Iterable
+
 
 # ---------------------------------------------------------------------------
 # English synonym groups (unchanged from v1.10.9)
