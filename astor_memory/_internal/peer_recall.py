@@ -20,6 +20,7 @@ def dispatch_peer_fanout(
     query: str,
     limit: int = 5,
     topic: Optional[str] = None,
+    topic_min_weight: float = 0.5,
     actor_peer_id: Optional[str] = None,
 ) -> dict:
     """Sign a PPS request and dispatch to all eligible friends.
@@ -30,6 +31,10 @@ def dispatch_peer_fanout(
         peer_count: int — total before cap
         local_error: str | None — none, this is fan-out only
         mode: 'peer_fanout' (constant)
+
+    v1.15.27 Ship K: optional `topic` + `topic_min_weight` filters.
+    When topic is set, only friends with weight >= topic_min_weight
+    in topic_index for that topic are eligible. Default min_weight=0.5.
 
     Anti-hostile: only fires when caller (the request handler) decides
     to invoke this helper. Default /v1/read does NOT call it.
@@ -50,12 +55,18 @@ def dispatch_peer_fanout(
             actor_peer_id = None
 
     peers = list_peers()
-    targets = select_search_targets(peers)
+    targets = select_search_targets(
+        peers, topic=topic, topic_min_weight=topic_min_weight,
+    )
     if not targets:
         return {"peer_results": [], "per_peer": [],
                 "peer_count": 0, "local_error": None,
                 "mode": "peer_fanout",
-                "hint": "no eligible friends (trust>=50 + endpoint + allow_search)"}
+                "hint": (
+                "no eligible friends (trust>=50 + endpoint + allow_search"
+                + (f" + topic={topic!r}" if topic else "")
+                + ")"
+            )}
 
     if not actor_peer_id:
         return {"peer_results": [], "per_peer": [],

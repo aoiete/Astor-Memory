@@ -1,3 +1,35 @@
+## v1.15.27 (2026-09-28) — Ship K: PPS topic-aware dispatch
+
+**Topic filter** added to PPS fanout. When the caller specifies a topic,
+only friends with weight >= `topic_min_weight` (default 0.5) for that
+topic in `topic_index` are eligible for the search. Reduces fan-out
+cost and improves result quality when callers know the topic.
+
+**Wired into**:
+- `select_search_targets(friends, *, topic, topic_min_weight, astor_dir)`
+  — the new filter runs in the eligibility check; friends without the
+  topic (or below min_weight) are skipped
+- `dispatch_peer_fanout(..., topic, topic_min_weight)` — passes through
+- `GET /v1/peer/recall?q=...&topic=X&topic_min_weight=0.5` — new query params
+- `POST /v1/read` body fields: `topic`, `topic_min_weight` (used when
+  `peer_fanout=true`)
+- Hermes `astor_recall` tool: forwards `topic` + `topic_min_weight` to body
+- CLI: `am peer search <query> --topic X --topic-min-weight 0.5`
+
+**Hint message** also mentions the active topic filter when no targets
+qualify, so operators can debug "why didn't my search reach anyone?".
+
+**Test coverage**: 8 new tests (6 helper, 1 dispatch integration, 1
+endpoint). Total: 517/517 non-flaky pass.
+
+**Files changed (5):**
+- `astor_memory/_internal/peer_search.py` (+686 bytes: select_search_targets signature + topic filter)
+- `astor_memory/_internal/peer_recall.py` (+264 bytes: dispatch_peer_fanout signature + topic filter)
+- `astor_memory/server.py` (+783 bytes: /v1/peer/recall + /v1/read body flags)
+- `astor_memory/cli/main.py` (+1015 bytes: cmd_peer_search + subparser flag)
+- `astor_memory/hermes_adapter.py` (+1426 bytes: tool schema + body forwarding)
+- `tests/test_peer_topic_routing.py` (new, 9281 bytes)
+
 ## v1.15.26 (2026-09-28) — Ship J: per-peer health aggregator
 
 **New endpoint** `GET /v1/peer/health?peer_id=<pid>` (or `?all=true`):
