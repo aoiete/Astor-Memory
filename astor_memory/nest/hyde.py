@@ -43,7 +43,12 @@ from functools import lru_cache
 # ---------------------------------------------------------------------------
 # Config (env-driven so operators can A/B without code change)
 # ---------------------------------------------------------------------------
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+# Match llm_rerank.py: also accept OPENAI_API_KEY as the upstream token
+# (single key reused across providers via the OpenRouter-compat layer).
+OPENROUTER_API_KEY = (
+    os.environ.get("OPENAI_API_KEY", "")
+    or os.environ.get("OPENROUTER_API_KEY", "")
+)
 HYDE_MODEL = os.environ.get("ASTOR_HYDE_MODEL", "minimax/minimax-m2")
 HYDE_TIMEOUT = float(os.environ.get("ASTOR_HYDE_TIMEOUT", "8"))
 HYDE_MAX_TOKENS = int(os.environ.get("ASTOR_HYDE_MAX_TOKENS", "120"))

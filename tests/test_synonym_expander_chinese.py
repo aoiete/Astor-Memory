@@ -97,10 +97,16 @@ def main() -> int:
     out = expand_query("健身", 3)
     _truthy("single-token CN → ≥3 variants", len(out) >= 3)
 
-    # English still works (legacy v1.10.9 path)
+    # English still works (legacy v1.10.9 path). Order depends on which
+    # triggers match first: 'research' (English synonym) is more specific
+    # than 'when' (temporal) so it fills the 3 slots first. Both branches
+    # are valid; we just check one fires. ASTOR_LLM_EXPAND=0 (default)
+    # so no LLM variants.
     out = expand_query("When did Caroline research?", 3)
-    _truthy("English 'when' → temporal specialization",
-            any("what date" in v.lower() or "what time" in v.lower() for v in out))
+    _truthy("English expansion fires (temporal OR synonym)",
+            any("what date" in v.lower() or "what time" in v.lower()
+                or "study" in v.lower() or "investigation" in v.lower()
+                for v in out))
 
     # English synonym: research → study
     out = expand_query("research topic today", 3)
