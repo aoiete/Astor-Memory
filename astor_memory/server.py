@@ -4642,7 +4642,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 tier='public',
                 action='peer_search',
                 user_id=None,
-                detail=f'query={req.query!r} results={len(results)}',
+                peer_id=req.requestor_peer_id,
+                metadata={'query': req.query[:256], 'result_count': len(results)},
             )
         except Exception:
             pass
@@ -4779,7 +4780,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 tier='public',
                 action='peer_recall',
                 user_id=user_id,
-                detail=f'q={q!r} local=0 peer={len(peer_results)}',
+                peer_id=_me_id if (_me_id and _me_id != 'unknown' and _me_id.startswith('astor:')) else None,
+                metadata={'query': q[:256], 'local_count': 0, 'peer_count': len(peer_results)},
             )
         except Exception:
             pass
@@ -4845,6 +4847,37 @@ def create_app(astor_dir: str | None = None) -> Flask:
         )
         n = _prl_rebuild()
         return jsonify({'ok': True, 'rebuilt_count': n})
+
+    # ------------------------------------------------------------------
+    # v1.15.25 (2026-09-28) — Ship I: per-peer audit feed.
+    # Returns chronological list of audit rows for one peer_id. Powers ops
+    # monitoring ("what did peer X do?"), trust-decay forensics, and
+    # rate-limit action audit. R12593: peer path stays its own budget.
+    # ------------------------------------------------------------------
+    @app.route('/v1/peer/audit', methods=['GET'])
+    def peer_audit_feed():
+        from ._internal.audit_logger import astor_query_peer_audit
+        pid = request.args.get('peer_id', '').strip()
+        if not pid:
+            return jsonify({
+                'error': 'peer_id_required',
+                'hint': 'pass ?peer_id=astor:<32-hex>',
+            }), 400
+        action = request.args.get('action') or None
+        since = request.args.get('since') or None
+        until = request.args.get('until') or None
+        try:
+            limit = int(request.args.get('limit', 50))
+        except ValueError:
+            limit = 50
+        rows = astor_query_peer_audit(
+            pid, action=action, since=since, until=until, limit=limit,
+        )
+        return jsonify({
+            'peer_id': pid,
+            'count': len(rows),
+            'results': rows,
+        })
 
     # ------------------------------------------------------------------
     # v1.15.19 (2026-09-28) — PPS Phase 4 follow-up: Peer CRUD + search REST.
@@ -5155,6 +5188,23 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _bumped = bump_trust(src_peer, 1)
             except Exception:
                 _bumped = None
+        # v1.15.25 Ship I: audit peer adopt.
+        try:
+            from ._internal.audit_logger import astor_audit as _pa_audit
+            _pa_audit(
+                actor=f'peer:{src_peer}',
+                tier=target_tier,
+                action='peer_adopt',
+                user_id='admin',
+                peer_id=src_peer,
+                metadata={
+                    'written_count': len(written),
+                    'skipped_count': skipped,
+                    'trust_after': _bumped,
+                },
+            )
+        except Exception:
+            pass
         return jsonify({'ok': True, 'tier': target_tier,
                         'source_peer_id': src_peer,
                         'adopted_at': adopted_at,

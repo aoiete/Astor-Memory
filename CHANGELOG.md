@@ -1,3 +1,46 @@
+## v1.15.25 (2026-09-28) — Ship I: per-peer audit feed + schema fix
+
+**Fixed real bug:** PPS audit logging was silently broken because the
+audit table had a `CHECK(action IN (...))` constraint that didn't include
+`peer_recall` / `peer_search` / `peer_adopt`. Calls were throwing
+`IntegrityError`, which the surrounding `except Exception: pass` blocks
+silently swallowed. The PPS audit feed was effectively dead since
+Ship D.
+
+**Schema migration** (`_migrate_audit_schema_v1525`): detected old-schema
+audit tables and rebuilds them with the v1.15.25 schema (no CHECK on
+action, new `peer_id` column for fast per-peer filtering, two new
+indexes: `idx_audit_peer_id` and `idx_audit_action_ts`). Idempotent;
+fires on first `_get_audit_conn()` call after the version bump. All
+existing rows preserved with `peer_id = NULL`.
+
+**New endpoint** `GET /v1/peer/audit?peer_id=<pid>&action=<x>&since=<ts>&until=<ts>&limit=<n>`:
+returns up to 200 most-recent audit rows for a peer. Action filter
+supports exact match or LIKE patterns (`peer_recall`, `peer_%`).
+
+**New helpers** in `audit_logger.py`:
+- `astor_query_peer_audit(peer_id, action, since, until, limit)` — query
+- `astor_set_peer_id(actor)` — extract peer_id from `actor='server:<pid>'` convention
+- `astor_audit(peer_id=...)` — explicit peer_id on the call
+
+**CLI**: `am peer audit <peer_id> [--action] [--since] [--until] [--limit]`
+
+**Fixed (transitively)**:
+- `/v1/peer/public_search` and `/v1/peer/recall` audit calls used
+  invalid `detail=` kwarg (not a real parameter) — they were throwing
+  `TypeError` instead of writing audit rows. Now use `metadata=...`
+  per the actual signature, and pass `peer_id=...` for the index.
+
+**Test coverage**: 20 new tests (3 schema, 3 peer_id extraction, 7 query,
+6 endpoint, 1 CLI). Total: 495/495 non-flaky pass.
+
+**Files changed (5):**
+- `astor_memory/_internal/audit_logger.py` (+5334 bytes: schema + migration + helpers)
+- `astor_memory/server.py` (+2663 bytes: /v1/peer/audit + fix broken audit calls)
+- `astor_memory/cli/main.py` (+1410 bytes: cmd_peer_audit + subparser)
+- `tests/test_peer_audit.py` (new, 13914 bytes)
+- `tests/test_peer_rest.py` (+430 bytes: tearDown_tmp now closes audit_logger)
+
 ## v1.15.24 (2026-09-28) — Ship H: PPS auto-trigger on body flag
 
 **`/v1/read` now accepts an optional `peer_fanout` body flag.** When set to

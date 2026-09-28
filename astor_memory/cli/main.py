@@ -498,6 +498,15 @@ def main(argv: list[str] | None = None) -> int:
     peer_trust.add_argument('score', type=int, help='New trust score (0-100)')
     peer_trust.set_defaults(func=cmd_peer_trust)
 
+    peer_audit = peer_sub.add_parser('audit',
+        help='Show audit log feed for a peer (Ship I)')
+    peer_audit.add_argument('peer_id', help='Peer ID (astor:<32-hex>)')
+    peer_audit.add_argument('--action', help='Filter by action (exact or LIKE pattern, e.g. peer_recall or peer_%)')
+    peer_audit.add_argument('--since', help='ISO timestamp lower bound (e.g. 2026-09-28T00:00:00Z)')
+    peer_audit.add_argument('--until', help='ISO timestamp upper bound')
+    peer_audit.add_argument('--limit', type=int, default=50, help='Max rows (default 50, max 200)')
+    peer_audit.set_defaults(func=cmd_peer_audit)
+
     peer_blacklist = peer_sub.add_parser('blacklist',
         help='Blacklist a peer (trust=0)')
     peer_blacklist.add_argument('peer_id', help='Peer ID to blacklist')
@@ -3637,6 +3646,36 @@ def cmd_peer_trust_show(args) -> int:
                       f'trust={max(DEFAULT_TRUST, int(p["trust"]) - 5)})')
         except Exception:
             pass
+
+
+
+def cmd_peer_audit(args) -> int:
+    """v1.15.25 (2026-09-28) Ship I: per-peer audit feed.
+
+    Shows recent audit log entries for a peer_id. Useful for ops:
+    - "what did peer X do in the last 24h?"
+    - "did the rate limit fire on peer Y?"
+    - "show me all adopt events for trust forensics"
+    """
+    from .._internal.audit_logger import astor_query_peer_audit
+    rows = astor_query_peer_audit(
+        args.peer_id,
+        action=args.action or None,
+        since=args.since or None,
+        until=args.until or None,
+        limit=int(args.limit or 50),
+    )
+    if not rows:
+        print(f'(no audit rows for peer {args.peer_id} matching filters)')
+        return 0
+    print(f'[OK] {len(rows)} audit row(s) for {args.peer_id}:')
+    for r in rows:
+        md = r.get("metadata") or {}
+        md_str = f' meta={json.dumps(md, ensure_ascii=False)[:80]}' if md else ''
+        print(f'  [{r["ts"]}] action={r["action"]:<16} '
+              f'tier={r["tier"]:<8} target={r.get("target") or "-"!s:<24} '
+              f'reason={r.get("reason") or "-"!s}{md_str}')
+    return 0
 
 
 def cmd_peer_unallow_search(args) -> int:
