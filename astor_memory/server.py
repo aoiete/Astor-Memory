@@ -1910,6 +1910,23 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # BM25 hits, boosting pure-keyword matches without flooding
             # the candidate pool that feeds temporal_boost.
             vector_hits = nest.search(query_emb, limit=oversample)
+            # v1.15.34 (2026-09-28, Ship O): HyDE for short abstract queries.
+            # When query is short (<8 tokens) AND ASTOR_HYDE=1, generate a
+            # hypothetical answer via cheap LLM, embed it, and merge into
+            # vector_hits. HyDE hits weighted 0.5× so they boost but don't
+            # override primary cosine. Gated off by default (operator opt).
+            if os.environ.get('ASTOR_HYDE', '0') == '1':
+                try:
+                    from .nest.hyde import hypothetical_answer as _hyde_ans, merge_hyde_hits as _hyde_merge
+                    _hyde_text = _hyde_ans(query)
+                    if _hyde_text:
+                        _hyde_emb = list(model.embed([_hyde_text]))[0]
+                        _hyde_hits = nest.search(_hyde_emb, limit=oversample)
+                        vector_hits = _hyde_merge(vector_hits, _hyde_hits, weight=0.5)
+                        import sys as _sys_hyde
+                        _sys_hyde.stderr.write(f"[HYDE] merged hits: +{len(_hyde_hits)} for query='{query[:40]}'\n")
+                except Exception as _hyde_exc:
+                    pass  # HyDE failures are non-fatal; primary path stays.
             # v1.14.5: also search legacy bge-base-en-v1.5 during the
             # e5-large reembed transition. Once reembed finishes and all
             # S2 (2026-09-08): dual-model merge auto-disabled — public tier 100% + source tier 100% e5-large coverage; bge-baseen-v1.5 cleaned. Override via ASTOR_DUAL_MODEL=1 to re-enable.
