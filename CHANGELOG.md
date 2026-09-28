@@ -1,3 +1,26 @@
+## v1.15.21 (2026-09-28) — Ship D: PPS-augmented recall
+
+New `GET /v1/peer/recall?q=&topic=&limit=&tier=&user=` endpoint runs local
+recall first; if empty, fans out to all eligible friends (trust>=50 +
+endpoint + allow_search). Per R12593-b decision: agent default
+`/v1/read` does NOT auto-fire peer; this explicit endpoint is the only
+fan-out path. Response carries `mode: local_only|peer_fanout`,
+`per_peer[]` per-friend status, and each result is tagged with
+`source: local|peer` + `peer_id` for provenance.
+
+Tests: `tests/test_peer_recall.py` 3/3 pass. Full suite 505 passed;
+pre-existing 10 failures identical at HEAD.
+
+## v1.15.20 (2026-09-28) — bugfix
+
+`/v1/peer/search` crashed with HTTP 500 AttributeError:
+`'PeerSearchResult' object has no attribute 'to_dict'` (called on the
+per-result class which doesn't have that method; only the enclosing
+`PeerSearchResponse` does). Fix: (a) added `to_dict()` to
+`PeerSearchResult` so any future caller gets a per-result dict, (b) the
+REST endpoint serializes results inline for defense in depth. Caught by
+the live E2E test run. Regression test pins both.
+
 ## v1.15.19 (2026-09-28) — Peer Public CRUD REST + Dashboard panel
 
 Mirror the PPS peer operations to REST so the dashboard can drive them
