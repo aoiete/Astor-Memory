@@ -4525,6 +4525,298 @@ def create_app(astor_dir: str | None = None) -> Flask:
         )
         return jsonify(resp.to_dict())
 
+    # ------------------------------------------------------------------
+    # v1.15.19 (2026-09-28) — PPS Phase 4 follow-up: Peer CRUD + search REST.
+    # The CLI is in cli/main.py; this route set mirrors those operations
+    # so the dashboard panel (Ship C) can drive everything from JS.
+    # All endpoints run as the server's admin identity.
+    # ------------------------------------------------------------------
+
+    @app.route('/v1/peer/list', methods=['GET'])
+    def peer_list():
+        """List all peers with metadata, trust, allow-search flag.
+
+        Query params:
+          kind: filter by kind ('friend'|'blacklist'|'whitelist'|'pending')
+          min_trust: filter by min trust (0-100)
+        Returns: {peers: [{peer_id, alias, kind, trust, endpoint, has_pubkey, allow_search, added_at, updated_at, metadata_keys}]}
+        """
+        from ._internal.peer_relationships import list_peers as _pl
+        kind = request.args.get('kind')
+        min_trust = request.args.get('min_trust')
+        mt = int(min_trust) if (min_trust and min_trust.isdigit()) else None
+        rows = _pl(kind=kind, min_trust=mt)
+        out = []
+        for r in rows:
+            meta = r.get('metadata') or {}
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+            out.append({
+                'peer_id': r.get('peer_id'),
+                'alias': r.get('alias') or '',
+                'kind': r.get('kind') or 'friend',
+                'trust': int(r.get('trust') or 0),
+                'endpoint': r.get('endpoint') or '',
+                'has_pubkey': bool(r.get('public_key')),
+                'allow_search': bool(meta.get('allow_search', False)),
+                'added_at': r.get('added_at') or '',
+                'updated_at': r.get('updated_at') or '',
+                'metadata_keys': sorted(meta.keys()) if isinstance(meta, dict) else [],
+            })
+        return jsonify({'peers': out, 'count': len(out)})
+
+    @app.route('/v1/peer/add', methods=['POST'])
+    def peer_add():
+        """Add or update a friend.
+
+        Body JSON: {peer_id (required), alias?, trust?, pubkey?, endpoint?, kind?}
+        Returns: {ok: bool, peer_id, kind, trust}
+        """
+        from ._internal.peer_relationships import add_peer as _ap
+        body = request.get_json(force=True) or {}
+        pid = body.get('peer_id') or ''
+        if not pid.startswith('astor:') or len(pid) != len('astor:') + 32:
+            return jsonify({'error': 'invalid_peer_id',
+                            'detail': 'must be astor:<32-hex>'}), 400
+        trust = int(body.get('trust', 30))
+        if not 0 <= trust <= 100:
+            return jsonify({'error': 'trust_out_of_range'}), 400
+        kind = body.get('kind', 'friend')
+        pubkey = body.get('pubkey') or None
+        endpoint = body.get('endpoint') or None
+        try:
+            row = _ap(
+                pid, kind=kind, trust=trust, alias=body.get('alias'),
+                public_key=pubkey, endpoint=endpoint,
+            )
+        except Exception as e:
+            return jsonify({'error': 'add_failed', 'detail': str(e)}), 400
+        return jsonify({'ok': True, 'peer_id': pid, 'kind': row.get('kind'),
+                        'trust': int(row.get('trust') or 0)})
+
+    @app.route('/v1/peer/<peer_id>/trust', methods=['POST'])
+    def peer_trust(peer_id):
+        """Update trust score for a peer. Body: {trust: 0-100}."""
+        from ._internal.peer_relationships import (
+            update_trust as _ut, get_peer as _gp,
+        )
+        body = request.get_json(force=True) or {}
+        try:
+            trust = int(body.get('trust'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'invalid_trust'}), 400
+        if not 0 <= trust <= 100:
+            return jsonify({'error': 'trust_out_of_range'}), 400
+        if not _gp(peer_id):
+            return jsonify({'error': 'unknown_peer'}), 404
+        row = _ut(peer_id, trust)
+        return jsonify({'ok': True, 'peer_id': peer_id, 'trust': trust,
+                        'kind': (row or {}).get('kind')})
+
+    @app.route('/v1/peer/<peer_id>/allow-search', methods=['POST'])
+    def peer_allow_search(peer_id):
+        """Set or revoke the allow-search opt-in flag. Body: {allow: bool}."""
+        from ._internal.peer_relationships import (
+            set_allow_search as _sas, get_peer as _gp,
+        )
+        body = request.get_json(force=True) or {}
+        allow = bool(body.get('allow', True))
+        if not _gp(peer_id):
+            return jsonify({'error': 'unknown_peer'}), 404
+        ok = _sas(peer_id, allow)
+        return jsonify({'ok': ok, 'peer_id': peer_id, 'allow_search': allow})
+
+    @app.route('/v1/peer/<peer_id>/blacklist', methods=['POST'])
+    def peer_blacklist(peer_id):
+        """Mark a peer as blacklisted. Body: {reason?: str}."""
+        from ._internal.peer_relationships import add_peer as _ap
+        body = request.get_json(force=True) or {}
+        reason = (body.get('reason') or '').strip() or None
+        meta = {'blacklist_reason': reason} if reason else None
+        _ap(peer_id, kind='blacklist', trust=0, metadata=meta)
+        return jsonify({'ok': True, 'peer_id': peer_id,
+                        'kind': 'blacklist', 'reason': reason})
+
+    @app.route('/v1/peer/<peer_id>/unblacklist', methods=['POST'])
+    def peer_unblacklist(peer_id):
+        """Restore a blacklisted peer to friend status with default trust=30."""
+        from ._internal.peer_relationships import add_peer as _ap
+        _ap(peer_id, kind='friend', trust=30)
+        return jsonify({'ok': True, 'peer_id': peer_id, 'kind': 'friend'})
+
+    @app.route('/v1/peer/<peer_id>', methods=['DELETE'])
+    def peer_delete(peer_id):
+        """Remove the peer relationship entirely."""
+        from ._internal.peer_relationships import remove_peer as _rp
+        ok = _rp(peer_id)
+        return jsonify({'ok': ok, 'peer_id': peer_id})
+
+    @app.route('/v1/peer/search', methods=['GET'])
+    def peer_search_local():
+        """Server-as-client PPS search across local trust>=50 friends.
+
+        Query params: q (required), topic (optional), limit (1..20 default 10).
+        Reads my identity, builds + signs a request, dispatches, returns the
+        merged JSON (results from all eligible friends + per-peer status).
+        Runs as admin (server actor).
+        """
+        from ._internal.peer_search import (
+            build_search_request, select_search_targets,
+            dispatch_search_to_peers,
+        )
+        from ._internal.peer_identity import init_identity
+        from ._internal.peer_relationships import list_peers
+        q = request.args.get('q', '').strip()
+        if not q:
+            return jsonify({'error': 'q_required'}), 400
+        topic = request.args.get('topic') or None
+        try:
+            limit = int(request.args.get('limit', 10))
+        except ValueError:
+            limit = 10
+        limit = max(1, min(limit, 20))
+        try:
+            me = init_identity()
+        except Exception as e:
+            return jsonify({'error': 'no_local_identity',
+                            'detail': str(e)}), 503
+        peers = list_peers()
+        targets = select_search_targets(peers)
+        if not targets:
+            return jsonify({'results': [], 'count': 0,
+                            'targets': 0,
+                            'hint': 'no eligible friends (trust>=50 + endpoint + allow_search)'})
+        req = build_search_request(
+            query=q, requestor_peer_id=me['peer_id'],
+            requestor_pubkey=me['public_key'],
+            requestor_private_key=me['private_key'],
+            topic=topic, limit=limit,
+        )
+        responses = dispatch_search_to_peers(req, targets)
+        merged = []
+        per_peer = []
+        for tgt, resp in zip(targets, responses):
+            per_peer.append({
+                'peer_id': tgt['peer_id'],
+                'alias': tgt.get('alias') or '',
+                'error': resp.error,
+                'count': len(resp.results),
+                'truncated': resp.truncated,
+            })
+            merged.extend(resp.results)
+        # rank by relevance desc, top 20
+        merged.sort(key=lambda r: r.relevance, reverse=True)
+        return jsonify({
+            'results': [r.to_dict() for r in merged[:20]],
+            'count': len(merged),
+            'targets': len(targets),
+            'per_peer': per_peer,
+        })
+
+    @app.route('/v1/peer/adopt', methods=['POST'])
+    def peer_adopt():
+        """Manually adopt (write) peer results into local source/public tier.
+
+        Body JSON: {source_peer_id: str, tier?: 'source'|'public', facts: [
+          {fact_id?: int, content: str (required), kind?: str, tags?: [str], importance?: float},
+          ...
+        ]}
+        Uses the canonical event → candidate → promote pipeline so embeddings
+        are computed automatically. Each adopted fact ends up tagged with
+        metadata.adopted_via='peer:search' + original_fact_id + source_peer_id
+        for traceability.
+        """
+        from .bus.store import astor_bus
+        from datetime import datetime as _dt_adopt, timezone as _tz_adopt
+        body = request.get_json(force=True) or {}
+        src_peer = (body.get('source_peer_id') or '').strip()
+        facts = body.get('facts') or []
+        target_tier = body.get('tier') or 'source'
+        if not src_peer:
+            return jsonify({'error': 'source_peer_id_required'}), 400
+        if not isinstance(facts, list) or not facts:
+            return jsonify({'error': 'facts_required',
+                            'detail': 'pass facts: [{content:..., kind?, ...}, ...]'}), 400
+        if target_tier not in ('source', 'public'):
+            return jsonify({'error': 'invalid_tier',
+                            'detail': 'tier must be "source" or "public"'}), 400
+        # Bind ACL with admin identity before bus write (the before_request
+        # hook skipped us because we don't put 'tier' in the body).
+        try:
+            from ._internal.acl import astor_init_acl
+            astor_init_acl(actor='peer:adopt', role='admin',
+                           tier=target_tier, user_id='admin',
+                           subscription_plan=None)
+        except Exception:
+            pass
+        bus = astor_bus(tier=target_tier, user_id='admin')
+        adopted_at = _dt_adopt.now(_tz_adopt.utc).isoformat(
+            timespec='seconds').replace('+00:00', 'Z')
+        written = []
+        skipped = 0
+        for f in facts[:20]:
+            content = (f.get('content') or '').strip()
+            if not content or len(content) < 8:
+                skipped += 1
+                continue
+            kind = f.get('kind') or 'fact'
+            tags_list = list(f.get('tags') or [])
+            importance = float(f.get('importance', 0.5))
+            original_fid = int(f.get('fact_id') or 0)
+            try:
+                event_id = bus.append_event(
+                    namespace='adopted', agent_id='peer',
+                    source='peer_adopt', action='adopt',
+                    content=content,
+                    metadata={
+                        'source_peer_id': src_peer,
+                        'adopted_at': adopted_at,
+                        'original_fact_id': original_fid,
+                    },
+                )
+                candidate_id = bus.insert_candidate(
+                    event_id=event_id,
+                    namespace='peer_adopted',
+                    content=content,
+                    kind=kind, importance=importance,
+                    tags=tags_list + ['peer_adopted', f'peer:{src_peer}'],
+                    metadata={
+                        'adopted_via': 'peer:search',
+                        'adopted_at': adopted_at,
+                        'source_peer_id': src_peer,
+                        'original_fact_id': original_fid,
+                        'source_kind': kind,
+                    },
+                )
+                # promote → inserts canonical + computes embedding
+                new_id = bus.promote_candidate(
+                    candidate_id=candidate_id,
+                    promoted_by='peer:adopt',
+                    user_id='admin',
+                    tier=target_tier,
+                    scope_type='long_term',
+                    verdict='settled',
+                    provenance_kind='peer_search',
+                    provenance_agent=f'peer:{src_peer}',
+                )
+                written.append({
+                    'new_fact_id': int(new_id),
+                    'original_fact_id': original_fid,
+                    'content_preview': content[:80],
+                })
+            except Exception as e:
+                skipped += 1
+                continue
+        return jsonify({'ok': True, 'tier': target_tier,
+                        'source_peer_id': src_peer,
+                        'adopted_at': adopted_at,
+                        'written': written,
+                        'count': len(written),
+                        'skipped': skipped})
+
     return app
 
 
