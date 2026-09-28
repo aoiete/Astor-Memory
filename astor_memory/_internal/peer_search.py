@@ -228,6 +228,19 @@ class PeerSearchResult:
                 f"relevance must be 0.0-1.0; got {self.relevance}"
             )
 
+    def to_dict(self) -> dict:
+        """JSON-serializable form for embedding in responses."""
+        return {
+            'source_peer_id': self.source_peer_id,
+            'source_trust': self.source_trust,
+            'fact_id': self.fact_id,
+            'content': self.content,
+            'kind': self.kind,
+            'tags': list(self.tags),
+            'created_at': self.created_at,
+            'relevance': self.relevance,
+        }
+
 
 @dataclass(frozen=True)
 class PeerSearchResponse:

@@ -1341,6 +1341,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # writes can be filtered from manual am writes.
                 provenance_kind=body.get('provenance_kind') or _infer_provenance_kind(_write_session_id),
                 provenance_agent=body.get('provenance_agent') or None,  # P1-fix 2026-08-15: enable content-hash dedup
+                # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking.
+                # Caller may pass evidence_quote / source_ref / source_hash as
+                # top-level body fields. All three are optional; defaults are
+                # '' (legacy behavior — facts without source provenance).
+                evidence_quote=str(body.get('evidence_quote') or '')[:1024],
+                source_ref=str(body.get('source_ref') or '')[:512],
+                source_hash=str(body.get('source_hash') or '')[:64],
             )
             fact_ids.append(canon_id)
             # v1.14.23 Ship E (2026-09-15): read entities_json from DB so
@@ -1437,6 +1444,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         c_id, promoted_by='rest.write.mirror',
                         user_id=user, tier='source', scope_type=scope,
                         stable_id=src_stable_id,
+                        # v1.14.74+ Ship A2-Akasha: mirror evidence-grounded
+                        # source linking. Defaults to '' when caller did not
+                        # populate evidence on the primary write.
+                        evidence_quote=str(body.get('evidence_quote') or '')[:1024],
+                        source_ref=str(body.get('source_ref') or '')[:512],
+                        source_hash=str(body.get('source_hash') or '')[:64],
                     )
                     mirrored_fact_ids.append(m_id)
             except Exception as mirror_exc:
@@ -2205,7 +2218,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         for fact_id, sim in results:
             row = bus.conn.execute(
                 "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
-                "event_date, event_date_precision, origin_session_id, metadata, entities_json, created_at, memory_class "
+                "event_date, event_date_precision, origin_session_id, metadata, entities_json, created_at, memory_class, "
+                # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking
+                "evidence_quote, source_ref, source_hash "
                 "FROM memory_canonical WHERE id = ?",
                 (fact_id,),
             ).fetchone()
@@ -2260,7 +2275,42 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'created_at': ((row[15] if len(row) > 15 else '') or '')[:19],
                 # v1.14.74 (2026-09-18) Hindsight 4-tier classification
                 'memory_class': (row[16] if len(row) > 16 and row[16] else 'world_fact'),
+                # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking.
+                # Exposed to callers so the agent can require every
+                # fact in its recall context to carry an evidence
+                # quote (mitigates R134 fabrication).
+                'evidence_quote': (row[17] if len(row) > 17 and row[17] else '')[:1024],
+                'source_ref': (row[18] if len(row) > 18 and row[18] else '')[:512],
+                'source_hash': (row[19] if len(row) > 19 and row[19] else '')[:64],
+                # v1.14.74+ Ship C-Akasha: stale flag = hash mismatches
+                # against expected_source_hashes[srouce_ref] from caller.
+                # None / false / 'unchanged' / unset refresh_hash =
+                # legacy checks not requested. Default value when
+                # no expected hash supplied: stays None.
+                'stale': None,
             })
+        # v1.14.74+ Ship C-Akasha: stale detection via expected_source_hashes.
+        # Caller may submit expected_source_hashes = {source_ref: expected_hash}
+        # to surface facts whose source content has changed since write.
+        # Compare each enriched fact's source_hash vs expected[source_ref].
+        # Pure advisory: mark stale=True when mismatch. Empty / missing
+        # expected hashes = no check (legacy behavior preserved).
+        _expected_hashes = body.get('expected_source_hashes') or {}
+        if isinstance(_expected_hashes, dict) and _expected_hashes:
+            for _fact in enriched:
+                _ref = _fact.get('source_ref') or ''
+                _cur = _fact.get('source_hash') or ''
+                if not _ref or not _cur:
+                    continue
+                _exp = _expected_hashes.get(_ref)
+                if _exp and _exp != _cur:
+                    _fact['stale'] = True
+                    _fact['stale_reason'] = (
+                        f'source_hash mismatch: expected={_exp!r} '
+                        f'current={_cur!r}'
+                    )
+                else:
+                    _fact['stale'] = False
         # v1.15.0 Ship A: entity_filter + time_range post-filter.
         # entity_filter = list of strings; fact must contain ANY of them in
         # content or keywords (case-insensitive substring match — works for
@@ -4709,8 +4759,21 @@ def create_app(astor_dir: str | None = None) -> Flask:
             merged.extend(resp.results)
         # rank by relevance desc, top 20
         merged.sort(key=lambda r: r.relevance, reverse=True)
+        # Convert each PeerSearchResult to dict inline (PeerSearchResult has
+        # no to_dict — only PeerSearchResponse does). Bugfix v1.15.20.
+        def _res_to_dict(r):
+            return {
+                'source_peer_id': r.source_peer_id,
+                'source_trust': r.source_trust,
+                'fact_id': r.fact_id,
+                'content': r.content,
+                'kind': r.kind,
+                'tags': list(r.tags),
+                'created_at': r.created_at,
+                'relevance': r.relevance,
+            }
         return jsonify({
-            'results': [r.to_dict() for r in merged[:20]],
+            'results': [_res_to_dict(r) for r in merged[:20]],
             'count': len(merged),
             'targets': len(targets),
             'per_peer': per_peer,
