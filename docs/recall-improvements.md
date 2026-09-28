@@ -26,7 +26,7 @@ anchors. The operator's domain (RAG / 八字 / poker / trading) is heavily
 CJK, so the English-only expander was effectively dead weight on
 Chinese traffic.
 
-**Fix:** Add a 30-entry Chinese synonym dict, CJK bi-gram fallback for
+**Fix:** Add a 28-entry Chinese synonym dict, CJK bi-gram fallback for
 synonym-barren short queries, optional LLM fallback gated by
 `ASTOR_LLM_EXPAND` env var. Self-substitution guard (`syn != trigger`,
 `syn not in query`) prevents trivial variants like `RAG 知识库 →
