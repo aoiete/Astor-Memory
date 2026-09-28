@@ -3579,6 +3579,66 @@ def cmd_peer_rl_rebuild(args) -> int:
     return 0
 
 
+def cmd_peer_trust_bump(args) -> int:
+    """v1.15.23 Ship F: add delta to a peer's trust (clamp 0..100)."""
+    from .._internal.peer_relationships import bump_trust
+    new = bump_trust(args.peer_id, args.delta)
+    if new is None:
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        return 1
+    print(f'[OK] trust={new} for {args.peer_id} (delta={args.delta:+d})')
+    return 0
+
+
+def cmd_peer_trust_decay(args) -> int:
+    """v1.15.23 Ship F: decay stale peers (>30 days since updated_at, trust>30)
+    by 5. Admin sweep; safe to run anytime."""
+    from .._internal.peer_relationships import (
+        list_peers, decay_peer_trust, DEFAULT_TRUST, DECAY_DAYS,
+    )
+    peers = list_peers(kind='friend')
+    decayed = 0
+    for p in peers:
+        new = decay_peer_trust(p['peer_id'])
+        if new is not None and new != int(p.get('trust') or 0):
+            print(f'  {p["peer_id"]}: {p["trust"]} -> {new}')
+            decayed += 1
+    print(f'[OK] decayed {decayed} peer(s) (default_trust={DEFAULT_TRUST}, '
+          f'decay_days={DECAY_DAYS})')
+    return 0
+
+
+def cmd_peer_trust_show(args) -> int:
+    """v1.15.23 Ship F: show a peer's trust, error counter, last update."""
+    from .._internal.peer_relationships import (
+        get_peer, _error_count_path, DEFAULT_TRUST, DECAY_DAYS,
+    )
+    import datetime as _dt
+    p = get_peer(args.peer_id)
+    if not p:
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        return 1
+    meta = p.get('metadata') or {}
+    err_count = _error_count_path(meta)
+    print(f'peer_id={args.peer_id}')
+    print(f'  trust={p["trust"]} (default={DEFAULT_TRUST}, max=100)')
+    print(f'  consecutive_error_count={err_count}')
+    print(f'  updated_at={p.get("updated_at") or "?"}')
+    print(f'  decay_threshold_days={DECAY_DAYS}')
+    # Days since updated_at
+    if p.get('updated_at'):
+        try:
+            ts = _dt.datetime.fromisoformat(
+                p['updated_at'].replace('Z', '+00:00'))
+            age = (_dt.datetime.now(_dt.timezone.utc) - ts).total_seconds() / 86400.0
+            print(f'  age_days={age:.1f}')
+            if age >= DECAY_DAYS and int(p['trust']) > DEFAULT_TRUST:
+                print(f'  -> eligible for decay (next sweep would set '
+                      f'trust={max(DEFAULT_TRUST, int(p["trust"]) - 5)})')
+        except Exception:
+            pass
+
+
 def cmd_peer_unallow_search(args) -> int:
     """v1.14.73 (2026-09-27) Phase 4 PPS: revoke a friend's search opt-in."""
     from .._internal.peer_relationships import set_allow_search, get_peer
