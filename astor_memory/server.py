@@ -1990,7 +1990,27 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 temporal_boost_strength=0.4,
                 query_anchor=query_anchor,
             )
+            # v1.15.32 (2026-09-28, Ship L): MMR diversity rerank.
+            # Without MMR, near-duplicate phrasings crowd out the canonical
+            # answer at top-k. Apply when ASTOR_MMR is on (default) and we
+            # have enough candidates to actually pick from.
             results = merged[:top_k]
+            if os.environ.get("ASTOR_MMR", "1") != "0" and len(merged) > top_k:
+                try:
+                    from .nest.mmr_reranker import mmr_rerank as _mmr_fn
+                    _mmr_pool = merged[:max(top_k * 2, top_k + 4)]
+                    _mmr_fids = [int(f) for f, _ in _mmr_pool]
+                    _placeholders = ",".join("?" * len(_mmr_fids))
+                    _content_rows = bus.conn.execute(
+                        f"SELECT id, content FROM memory_canonical "
+                        f"WHERE id IN ({_placeholders})",
+                        _mmr_fids,
+                    ).fetchall()
+                    _content_map = {int(r[0]): r[1] or "" for r in _content_rows}
+                    results = _mmr_fn(_mmr_pool, _content_map, query, top_k=top_k)
+                except Exception as _mmr_exc:
+                    _safe_stderr_write("[MMR] failed (continuing with hybrid order): " + repr(_mmr_exc) + "\n")
+                    results = merged[:top_k]
             # hit-source provenance: bm25-only / vector-only / both.
             _vec_id_set = {int(f) for f, _ in vector_hits}
             for _fid, _s in merged:
