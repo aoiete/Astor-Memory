@@ -1,3 +1,50 @@
+## v1.15.19 (2026-09-28) — Peer Public CRUD REST + Dashboard panel
+
+Mirror the PPS peer operations to REST so the dashboard can drive them
+from JS without shelling to `am peer`. New endpoints:
+
+  GET    /v1/peer/list?kind=&min_trust=
+  POST   /v1/peer/add          {peer_id, alias?, trust?, pubkey?, endpoint?, kind?}
+  POST   /v1/peer/<pid>/trust  {trust: 0-100}
+  POST   /v1/peer/<pid>/allow-search  {allow: bool}
+  POST   /v1/peer/<pid>/blacklist     {reason?}
+  POST   /v1/peer/<pid>/unblacklist   {}
+  DELETE /v1/peer/<pid>
+  GET    /v1/peer/search?q=&topic=&limit=
+  POST   /v1/peer/adopt        {source_peer_id, tier, facts:[{content,...}]}
+
+Manual adopt uses the canonical event → candidate → promote pipeline so
+embeddings are computed automatically (matches `/v1/write` semantics).
+Adopted facts trace back via metadata.adopted_via='peer:search',
+source_peer_id, original_fact_id, source_kind.
+
+Dashboard panel: a new "Peer Friends" card with grouped lists (friends /
+blacklisted / other), inline trust editing with success flash, one-click
+allow-search toggle, block / unblock / × delete buttons, add-row at top.
+60s auto-poll matches the rest of the dashboard.
+
+Tests: 17 REST round-trip tests. Full suite 500 passed (10 pre-existing
+failures identical at HEAD — verified via temp worktree).
+
+## v1.15.18 (2026-09-28) — PPS Phase 4: demand-driven peer public search
+
+Wire format: `GET /v1/peer/public_search?req=<urlsafe_b64 json>` — friends who
+opted in can search this install's PUBLIC tier. Request is signed (ed25519
+over peer_id + query + topic + limit + ts), validated at construction.
+Response: top-N hybrid (BM25 + vector) results with source provenance.
+
+Receiving chain: known peer → not blacklisted → trust >= 50 →
+metadata.allow_search=True. Default OFF. NO push path, NO continuous pull,
+read-only on the caller's side. Local adopt to local DB is manual.
+
+CLI: `am peer allow-search <peer_id>` / `unallow-search` / `search <q>`.
+Tests: 24 tests validate request construction, target filtering, all 6
+endpoint gates (unknown peer, blacklist, trust<50, not opted-in, bad
+signature, missing field).
+
+E2E verified live across 2 servers: A signs request, B verifies + admits
++ returns hybrid hits; A surfaces them read-only with sources.
+
 ## v1.15.17 (2026-09-25) — S21 auto-meta-recall
 
 Admin pointed out (multiple times): "astor 装的意义不就是自动触发吗?". Existing
