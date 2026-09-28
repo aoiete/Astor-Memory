@@ -2842,6 +2842,45 @@ def create_app(astor_dir: str | None = None) -> Flask:
             except Exception:
                 pass
 
+        # v1.15.24 Ship H: PPS auto-trigger on body flag.
+        # If the caller sets body.peer_fanout=true AND local recall returned
+        # nothing, dispatch to all eligible friends (trust>=50, endpoint,
+        # allow_search=True). The result is exposed as separate fields on
+        # the response (peer_results, peer_per_peer) so the caller can see
+        # provenance explicitly. Default: no fanout. Anti-hostile: requires
+        # explicit caller opt-in via body flag; per-peer rate limit (R12593
+        # lock) still applies.
+        _peer_dispatched = False
+        _peer_results = []
+        _peer_per_peer = []
+        _peer_local_error = None
+        if body.get("peer_fanout") is True and not enriched:
+            try:
+                from ._internal.peer_recall import dispatch_peer_fanout
+                _fanout = dispatch_peer_fanout(
+                    query=query, limit=top_k, topic=None,
+                    actor_peer_id=None,
+                )
+                _peer_results = _fanout.get("peer_results", [])
+                _peer_per_peer = _fanout.get("per_peer", [])
+                _peer_local_error = _fanout.get("local_error")
+                _peer_dispatched = True
+                _meta_recall_stats['peer_fanout_triggered'] = (
+                    _meta_recall_stats.get('peer_fanout_triggered', 0) + 1
+                )
+                _meta_recall_stats['peer_fanout_returned_total'] = (
+                    _meta_recall_stats.get('peer_fanout_returned_total', 0)
+                    + len(_peer_results)
+                )
+            except Exception as _pf_exc:
+                _safe_stderr_write(
+                    f'[astor.server] peer_fanout dispatch failed: '
+                    f'{type(_pf_exc).__name__}: {_pf_exc}\n'
+                )
+                _peer_local_error = (
+                    f"peer_dispatch_failed: {type(_pf_exc).__name__}"
+                )
+
         # v1.15.17 S21 (2026-09-25): auto-meta-recall — query success_pattern /
         # failure_pattern from relevant tiers and prepend to results so the
         # caller sees "what worked/failed before" without explicitly asking.
@@ -2862,6 +2901,16 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'triggered': '_meta' in dir() and bool(_meta),
                 'injected_count': len(_meta) if ('_meta' in dir() and _meta) else 0,
             },
+            # v1.15.24 Ship H: PPS auto-trigger response surface.
+            # peer_dispatched=True when body.peer_fanout=true triggered a fanout.
+            # peer_results is the per-friend hit list (with source='peer' + peer_id).
+            # peer_per_peer surfaces per-friend status (incl. errors). Empty when
+            # no fanout was triggered.
+            'peer_dispatched': _peer_dispatched,
+            'peer_count': len(_peer_results),
+            'peer_results': _peer_results,
+            'peer_per_peer': _peer_per_peer,
+            'peer_local_error': _peer_local_error,
             # v1.14.65 P5: report whether query was rewritten so caller
             # knows results came from a reformulation (or not).
             'query_rewrite_used': _rewrite_used,
@@ -4705,73 +4754,28 @@ def create_app(astor_dir: str | None = None) -> Flask:
             })
 
         # ---------- 3. Local empty → fan out to eligible friends ----------
-        try:
-            me = init_identity()
-        except Exception as e:
-            return jsonify({
-                'mode': 'local_only',
-                'local_count': 0,
-                'peer_count': 0,
-                'results': [],
-                'peer_results': [],
-                'error': 'no_local_identity',
-                'detail': str(e),
-            }), 503
-        peers = list_peers()
-        targets = select_search_targets(peers)
-        if not targets:
-            return jsonify({
-                'mode': 'local_only',
-                'local_count': 0,
-                'peer_count': 0,
-                'results': [],
-                'peer_results': [],
-                'hint': 'no eligible friends (trust>=50 + endpoint + allow_search)',
-                'local_error': _local_error,
-            })
-        try:
-            req = build_search_request(
-                query=q, requestor_peer_id=me['peer_id'],
-                requestor_pubkey=me['public_key'],
-                requestor_private_key=me['private_key'],
-                topic=topic, limit=limit,
-            )
-            responses = dispatch_search_to_peers(req, targets)
-        except Exception as e:
-            return jsonify({
-                'mode': 'peer_only',
-                'local_count': 0,
-                'peer_count': 0,
-                'results': [],
-                'peer_results': [],
-                'error': 'peer_dispatch_failed',
-                'detail': str(e),
-            }), 500
-
-        peer_results = []
-        per_peer = []
-        for tgt, resp in zip(targets, responses):
-            per_peer.append({
-                'peer_id': tgt['peer_id'],
-                'alias': tgt.get('alias') or '',
-                'error': resp.error,
-                'count': len(resp.results),
-                'truncated': resp.truncated,
-            })
-            for r in resp.results:
-                d = r.to_dict()
-                d['source'] = 'peer'
-                # Caller-facing 'peer_id' = who said it (matches local layout
-                # where local_results['peer_id']=None + source='local').
-                d['peer_id'] = r.source_peer_id
-                peer_results.append(d)
-        peer_results.sort(key=lambda x: x.get('relevance', 0), reverse=True)
-        peer_results = peer_results[:limit]
+        # v1.15.24 Ship H: extracted to peer_recall.dispatch_peer_fanout()
+        # for reuse by /v1/read's body.peer_fanout flag. Single source of
+        # truth: both paths now use the same dispatch logic.
+        from ._internal.peer_recall import dispatch_peer_fanout
+        _fanout = dispatch_peer_fanout(
+            query=q, limit=limit, topic=topic, actor_peer_id=None,
+        )
+        peer_results = _fanout["peer_results"]
+        per_peer = _fanout["per_peer"]
+        if _fanout.get("local_error") is not None:
+            _local_error = _fanout["local_error"]
+        _fanout_hint = _fanout.get("hint")
 
         try:
             from ._internal.audit_logger import astor_audit as _ppra
+            from ._internal.peer_identity import init_identity
+            try:
+                _me_id = init_identity().get("peer_id", "unknown")
+            except Exception:
+                _me_id = "unknown"
             _ppra(
-                actor=f'server:{me["peer_id"]}',
+                actor=f'server:{_me_id}',
                 tier='public',
                 action='peer_recall',
                 user_id=user_id,
@@ -4779,6 +4783,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
             )
         except Exception:
             pass
+
+        # If dispatch returned no eligible friends, surface as local_only
+        # with a hint explaining why. Same response shape as step 2.
+        if not peer_results and not per_peer and _fanout_hint:
+            return jsonify({
+                'mode': 'local_only',
+                'local_count': 0,
+                'peer_count': 0,
+                'results': [],
+                'peer_results': [],
+                'per_peer': [],
+                'local_error': _local_error,
+                'hint': _fanout_hint,
+            })
 
         return jsonify({
             'mode': 'peer_fanout',
