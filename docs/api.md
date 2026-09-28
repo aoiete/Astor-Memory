@@ -971,3 +971,34 @@ This document is updated alongside the code. If you find a mismatch:
 
 The endpoint list above maps 1:1 to `@app.route(...)` decorators in
 `server.py:152-1108` as of 2026-08-16.
+
+
+## PPS — Peer Public Search (v1.15.18+)
+
+PPS is a separate, opt-in protocol layered on top of the standard
+`/v1/read` + `/v1/write` API. See [`docs/peer-network.md`](peer-network.md)
+for the full threat model + design rationale. Endpoints:
+
+| Method | Path | Description |
+|---|---|---|
+| GET    | `/v1/peer/public_search?req=<base64>` | Signed PPS search; returns hybrid BM25+vector results from public tier (max 20). |
+| GET    | `/v1/peer/list` | Friends + blacklisted + other kinds (with allow_search flag). |
+| POST   | `/v1/peer/add` | Add or update a friend (peer_id, trust, endpoint, pubkey, alias). |
+| POST   | `/v1/peer/<peer_id>/trust` | Update trust score (0-100, clamps). |
+| POST   | `/v1/peer/<peer_id>/allow-search` | Opt in / out: allow my friends to search my public tier. |
+| POST   | `/v1/peer/<peer_id>/blacklist` | Blacklist a peer (kind=blacklist, trust=0). |
+| POST   | `/v1/peer/<peer_id>/unblacklist` | Restore blacklisted peer to friend status. |
+| DELETE | `/v1/peer/<peer_id>` | Remove the relationship entirely. |
+| GET    | `/v1/peer/search?q=&topic=&limit=` | Server-as-client PPS search across my friends' public tiers. |
+| GET    | `/v1/peer/recall?q=&tier=&user=` | Run local recall first; if empty, fan out to eligible friends. |
+| POST   | `/v1/peer/adopt` | Manually copy peer results into local source/public tier (inline content). |
+| GET    | `/v1/peer/rate-limit?peer_id=&all=` | Per-peer PPS rate limit status. |
+| POST   | `/v1/peer/rate-limit/reset` | Admin escape: clear one peer's bucket. |
+| POST   | `/v1/peer/rate-limit/rebuild` | Re-derive buckets from last-24h audit log. |
+
+All PPS endpoints require admin identity (the server runs them
+under `actor='admin:admin'`). Per-peer rate limit (1000 req/24h
+default) is enforced on `/v1/peer/public_search`; admin endpoints
+are not rate-limited. The `/v1/peer/public_search` endpoint
+requires an ed25519 signature in the request body — see
+`docs/peer-network.md` for the wire format.
