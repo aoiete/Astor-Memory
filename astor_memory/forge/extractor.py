@@ -82,6 +82,13 @@ class AstorFact:
     # 'topic'. Distinct from keywords (semantic retrieval boost) and
     # context (human-readable). Future Ship C entity_lex 3rd path uses this.
     entities: list[dict] | None = None  # [{"type": "person", "value": "sunday"}]
+    # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking.
+    # Optional. Regex extractor leaves them '' (no source available).
+    # LLM extractor may populate evidence_quote / source_ref from a
+    # wiki page or document the text was extracted from.
+    evidence_quote: str = ''  # literal source substring
+    source_ref: str = ''       # opaque origin pointer ('wiki:slug' etc.)
+    source_hash: str = ''      # SHA-256 hex of source content
 
 
 def extract_entities(text: str, fact_id: int = 0) -> list[dict]:
