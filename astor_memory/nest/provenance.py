@@ -76,7 +76,9 @@ def _read_fact(
             'event_id', 'namespace', 'user_id', 'promoted_at',
             'tombstoned',
             'parent_fact_ids', 'provenance_kind', 'provenance_agent',
-            'provenance_depth', 'provenance_at')
+            'provenance_depth', 'provenance_at',
+            # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking
+            'evidence_quote', 'source_ref', 'source_hash')
     rec = dict(zip(keys, row))
     # Parse JSON columns
     try:
