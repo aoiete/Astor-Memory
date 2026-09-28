@@ -316,7 +316,7 @@ The detailed design lives in [ADR 0008](docs/adr/0008-peer-public-network.md) (s
 - **Sync model**: pull-based manifest diff on the **public** tier only. Private / source / repo tiers never cross the boundary. Conflict policy: last-write-wins by `last_confirmed_at`, ties keep both + dedup at read time by `stable_id`.
 - **Companion**: demand-driven PPS (Peer Public Search) for on-demand cross-peer search — signed ed25519 request, trust ≥ 50 gate, friend opt-in, 7-day timestamp freshness, 1MB / 3s per-peer caps. Read-only; manual adopt to persist.
 - **Schedule**:
-  - **F1** (current): git-track `peer_relationships.py` + `peer_search.py`, add `/v1/peer/*` REST endpoints + `am peer` CLI.
+  - **F1** (✅ shipped v1.15.18-23): `peer_relationships.py` + `peer_search.py` + `peer_rate_limit.py`, full `/v1/peer/*` REST surface, `am peer` CLI (friends / search / adopt / allow-search / rate-limit / trust), dashboard panel, threat model + recipes in [`docs/peer-network.md`](docs/peer-network.md).
   - **F2**: background sync daemon (manifest pull every 5 min per peer).
   - **F3**: gossip overlay, vector clocks, broadcast-back for trust ≥ 90.
   - **F4** = GA: multi-region replication, CRDT merges.
