@@ -373,7 +373,7 @@ def select_search_targets(
                  or (f.get('metadata') or {}).get('allow_search'))
         if trust < MIN_TRUST_FOR_SEARCH:
             continue
-        if kind == 'blacklist':
+        if kind in ('blacklist', 'quarantine'):
             continue
         if not endpoint:
             continue
