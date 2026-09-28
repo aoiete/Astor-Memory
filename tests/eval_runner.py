@@ -142,6 +142,10 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
         "mmr_lambda_07": {"hybrid": True, "rerank": "on", "mmr_lambda": 0.7},            # production default
         "mmr_lambda_09": {"hybrid": True, "rerank": "on", "mmr_lambda": 0.9},            # relevance-leaning
         "mmr_off":       {"hybrid": True, "rerank": "on", "mmr_lambda": 1.0},           # MMR off (no diversity)
+        # Ship O (2026-09-28): HyDE on/off. Same hybrid path; hyde=True
+        # turns on the LLM-hypothetical-answer path for short queries.
+        "hyde_on":       {"hybrid": True, "rerank": "on", "hyde": True},                  # Ship O on
+        "hyde_off":      {"hybrid": True, "rerank": "on", "hyde": False},                 # Ship O explicit off
     }
     kwargs = variants.get(variant, {})
 
@@ -258,7 +262,7 @@ def print_summary(run: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--variant", default="baseline",
-                    choices=["baseline", "baseline_bm25_6", "baseline_bm25_4", "vector_only", "rerank_off", "mmr_lambda_05", "mmr_lambda_07", "mmr_lambda_09", "mmr_off"])
+                    choices=["baseline", "baseline_bm25_6", "baseline_bm25_4", "vector_only", "rerank_off", "mmr_lambda_05", "mmr_lambda_07", "mmr_lambda_09", "mmr_off", "hyde_on", "hyde_off"])
     ap.add_argument("--all", action="store_true", help="Run all variants")
     ap.add_argument("--set", default=str(EVAL_SET), help="Path to eval set jsonl")
     args = ap.parse_args()
@@ -271,7 +275,7 @@ def main() -> int:
     print(f"Loaded {len(eval_set)} queries from {eval_set_path}")
     print(f"Server: {SERVER}\n")
 
-    variants = ["baseline", "vector_only", "rerank_off", "mmr_lambda_05", "mmr_lambda_07", "mmr_lambda_09", "mmr_off"] if args.all else [args.variant]
+    variants = ["baseline", "vector_only", "rerank_off", "mmr_lambda_05", "mmr_lambda_07", "mmr_lambda_09", "mmr_off", "hyde_on", "hyde_off"] if args.all else [args.variant]
     runs = []
     for v in variants:
         run = run_variant(v, eval_set)

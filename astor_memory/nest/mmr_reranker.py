@@ -22,11 +22,9 @@ References:
   Carbonell & Goldstein (1998), "The Use of MMR, Diversity-Based Reranking
   for Reordering Documents and Producing Summaries".
 """
-from __future__ import annotations
 
-import os
 import re
-from typing import Iterable, Sequence
+from typing import Sequence
 
 # Default lambda — high enough to keep relevance the dominant signal.
 DEFAULT_LAMBDA = 0.7
