@@ -2855,10 +2855,21 @@ def create_app(astor_dir: str | None = None) -> Flask:
         _peer_per_peer = []
         _peer_local_error = None
         if body.get("peer_fanout") is True and not enriched:
+            # v1.15.27 Ship K: body.topic + body.topic_min_weight filters
+            # for topic-aware PPS fanout.
+            _pf_topic = body.get("topic") or None
+            try:
+                _pf_topic_min_weight = float(
+                    body.get("topic_min_weight", 0.5)
+                )
+            except (ValueError, TypeError):
+                _pf_topic_min_weight = 0.5
+            _pf_topic_min_weight = max(0.0, min(_pf_topic_min_weight, 10.0))
             try:
                 from ._internal.peer_recall import dispatch_peer_fanout
                 _fanout = dispatch_peer_fanout(
-                    query=query, limit=top_k, topic=None,
+                    query=query, limit=top_k, topic=_pf_topic,
+                    topic_min_weight=_pf_topic_min_weight,
                     actor_peer_id=None,
                 )
                 _peer_results = _fanout.get("peer_results", [])
@@ -4683,6 +4694,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'q_required'}), 400
         topic = request.args.get('topic') or None
         try:
+            topic_min_weight = float(request.args.get('topic_min_weight', 0.5))
+        except ValueError:
+            topic_min_weight = 0.5
+        topic_min_weight = max(0.0, min(topic_min_weight, 10.0))
+        try:
             limit = int(request.args.get('limit', 5))
         except ValueError:
             limit = 5
@@ -4760,7 +4776,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # truth: both paths now use the same dispatch logic.
         from ._internal.peer_recall import dispatch_peer_fanout
         _fanout = dispatch_peer_fanout(
-            query=q, limit=limit, topic=topic, actor_peer_id=None,
+            query=q, limit=limit, topic=topic,
+            topic_min_weight=topic_min_weight, actor_peer_id=None,
         )
         peer_results = _fanout["peer_results"]
         per_peer = _fanout["per_peer"]

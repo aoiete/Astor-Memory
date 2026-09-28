@@ -200,6 +200,27 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                             ),
                             "default": False,
                         },
+                        # v1.15.27 Ship K: topic filter for PPS fanout.
+                        "topic": {
+                            "type": "string",
+                            "description": (
+                                "Topic name to filter peer fanout. Only peers "
+                                "with weight >= topic_min_weight for this topic "
+                                "in topic_index are eligible. Ignored unless "
+                                "peer_fanout=true."
+                            ),
+                        },
+                        "topic_min_weight": {
+                            "type": "number",
+                            "description": (
+                                "Minimum topic weight to qualify a peer for fanout "
+                                "(default 0.5, range 0..10). Ignored unless "
+                                "peer_fanout=true and topic is set."
+                            ),
+                            "default": 0.5,
+                            "minimum": 0.0,
+                            "maximum": 10.0,
+                        },
                     },
                     "required": ["query"],
                 },
@@ -563,6 +584,9 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
             # to eligible friends. R12593 lock: peer path is its own
             # budget, separate from per-actor limits.
             "peer_fanout": bool(args.get("peer_fanout", False)),
+            # v1.15.27 Ship K: topic filter for PPS fanout. Optional.
+            "topic": args.get("topic") or None,
+            "topic_min_weight": float(args.get("topic_min_weight", 0.5)),
         }
         if endpoint.endswith("/multi"):
             body["user_id"] = user_id
