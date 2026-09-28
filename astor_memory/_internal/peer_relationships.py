@@ -587,3 +587,79 @@ def remove_topic(
         con.commit()
     return cur.rowcount > 0
 
+
+
+# ---------------------------------------------------------------------------
+# v1.14.73 (2026-09-27) — Phase 4 PPS: allow-search opt-in flag.
+# Stored in metadata.allow_search (JSON column), NOT a new schema column —
+# keeps peer_relationships table schema stable. Default is OFF (opt-in):
+# a friend must explicitly run `am peer allow-search <my_peer_id>` before
+# I can include them in demand-driven search targets.
+# ---------------------------------------------------------------------------
+
+_ALLOW_SEARCH_KEY = "allow_search"
+
+
+def _read_allow_search_flag(
+    peer_id: str,
+    astor_dir: str | None = None,
+) -> bool:
+    """Read the metadata.allow_search flag for a peer. Missing peer or
+    missing key = False (default off)."""
+    row = get_peer(peer_id, astor_dir=astor_dir)
+    if not row:
+        return False
+    meta = row.get("metadata") or {}
+    if isinstance(meta, str):
+        try:
+            import json as _json
+            meta = _json.loads(meta)
+        except Exception:
+            meta = {}
+    return bool(meta.get(_ALLOW_SEARCH_KEY, False))
+
+
+def set_allow_search(
+    peer_id: str,
+    allowed: bool,
+    astor_dir: str | None = None,
+) -> bool:
+    """Set or revoke the allow_search opt-in for a peer.
+
+    Args:
+        peer_id: friend's peer ID (astor:<32-hex>)
+        allowed: True = allow their searches against me; False = revoke
+        astor_dir: optional ASTOR_DIR override
+
+    Returns:
+        True if the peer exists and the flag was written, False otherwise
+        (unknown peer → False, caller prints an error).
+
+    Note: this is the RECEIVER-side flag (friend sets it to allow ME to
+    search THEM). It writes into the peer's metadata dict, preserving
+    any other keys that were already there.
+    """
+    import json as _json
+    con = _get_conn(astor_dir)
+    with _RELATIONSHIPS_LOCK:
+        row = con.execute(
+            "SELECT metadata FROM peer_relationships WHERE peer_id = ?",
+            (peer_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            meta = _json.loads(row["metadata"]) if row["metadata"] else {}
+        except Exception:
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta[_ALLOW_SEARCH_KEY] = bool(allowed)
+        now = _now_iso()
+        con.execute(
+            "UPDATE peer_relationships "
+            "SET metadata = ?, updated_at = ? WHERE peer_id = ?",
+            (_json.dumps(meta, ensure_ascii=False), now, peer_id),
+        )
+        con.commit()
+    return True
