@@ -155,7 +155,7 @@ def add_peer(
         raise ValueError(f"peer_id must start with 'astor:'; got {peer_id!r}")
     if not 0 <= trust <= 100:
         raise ValueError(f"trust must be 0-100; got {trust}")
-    if kind not in ("friend", "blacklist", "whitelist", "pending"):
+    if kind not in ("friend", "blacklist", "whitelist", "pending", "quarantine"):
         raise ValueError(f"invalid kind: {kind}")
 
     now = _now_iso()
@@ -386,6 +386,69 @@ def record_peer_error(peer_id: str,
     _write_error_count(peer_id, new, astor_dir=astor_dir)
     return new
 
+
+
+def quarantine_peer(peer_id: str, *, reason: str = "", astor_dir: str | None = None) -> dict | None:
+    """v1.15.28 (2026-09-28) Ship L: quarantine a peer (auto-isolated).
+
+    Sets kind='quarantine' (excluded from fanout) and trust=0. Idempotent
+    — calling on an already-quarantined peer just updates the reason. The
+    original trust score is preserved in metadata.original_trust for
+    potential unquarantine restoration.
+    """
+    existing = get_peer(peer_id, astor_dir=astor_dir)
+    if not existing:
+        return None
+    original_trust = int(existing.get("trust") or 0)
+    meta = dict(existing.get("metadata") or {})
+    if reason:
+        meta["quarantine_reason"] = reason
+    if "original_trust" not in meta:
+        meta["original_trust"] = original_trust
+    meta["quarantined_at"] = _now_iso()
+    con = _get_conn(astor_dir)
+    con.execute(
+        "UPDATE peer_relationships SET kind = ?, trust = ?, "
+        "metadata = ?, updated_at = ? WHERE peer_id = ?",
+        ("quarantine", 0, json.dumps(meta), _now_iso(), peer_id),
+    )
+    con.commit()
+    return get_peer(peer_id, astor_dir=astor_dir)
+
+
+def unquarantine_peer(peer_id: str, *, restore_trust: bool = True,
+                       astor_dir: str | None = None) -> dict | None:
+    """v1.15.28 Ship L: remove quarantine from a peer.
+
+    Sets kind back to 'friend'. If restore_trust=True and metadata has
+    original_trust, restores that value. Otherwise keeps current trust
+    (which is 0 if previously quarantined).
+    """
+    existing = get_peer(peer_id, astor_dir=astor_dir)
+    if not existing:
+        return None
+    if existing.get("kind") != "quarantine":
+        return existing  # no-op
+    meta = dict(existing.get("metadata") or {})
+    meta.pop("quarantine_reason", None)
+    meta.pop("quarantined_at", None)
+    new_trust = int(existing.get("trust") or 0)
+    if restore_trust and "original_trust" in meta:
+        new_trust = int(meta["original_trust"])
+        meta.pop("original_trust", None)
+    con = _get_conn(astor_dir)
+    con.execute(
+        "UPDATE peer_relationships SET kind = ?, trust = ?, "
+        "metadata = ?, updated_at = ? WHERE peer_id = ?",
+        ("friend", new_trust, json.dumps(meta), _now_iso(), peer_id),
+    )
+    con.commit()
+    return get_peer(peer_id, astor_dir=astor_dir)
+
+
+def list_quarantined_peers(astor_dir: str | None = None) -> list[dict]:
+    """v1.15.28 Ship L: list all quarantined peers."""
+    return list_peers(kind="quarantine", astor_dir=astor_dir)
 
 def clear_peer_errors(peer_id: str,
                      *, astor_dir: str | None = None) -> int | None:
