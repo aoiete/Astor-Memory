@@ -30,7 +30,6 @@ Return shape:
   - Returns merged (fid, score) list. Original query hits are kept; HyDE
     hits are weighted 0.5× and merged by max score per fact_id.
 """
-from __future__ import annotations
 
 import json
 import os

@@ -110,6 +110,58 @@ def main() -> int:
     out = mmr_rerank(cands, {1: "a", 2: "b"}, "q", top_k=2)
     _eq("score preserved", [x[1] for x in out], [0.9, 0.8])
 
+    # Edge cases (added in audit round 2)
+    # lambda=0.0 — pure diversity. First pick still argmax score
+    # (Carbonell-Goldstein spec); subsequent picks minimize similarity.
+    out_l0 = mmr_rerank(
+        [(1, 0.9), (2, 0.8), (3, 0.7)],
+        {1: "用户喜欢德州扑克", 2: "用户偏好德州扑克", 3: "八字 五行 起卦"},
+        "q", top_k=3, lambda_=0.0,
+    )
+    _eq("lambda=0.0 first pick = argmax score", out_l0[0][0], 1)
+    # All 3 picked (top_k == len(candidates))
+
+    # Negative scores — works because we use raw score not abs
+    out_neg = mmr_rerank(
+        [(1, -0.5), (2, -0.9), (3, -0.1)],
+        {1: "a", 2: "b", 3: "c"},
+        "q", top_k=2, lambda_=0.7,
+    )
+    _eq("negative scores: highest (-0.1) wins", out_neg[0][0], 3)
+
+    # Zero scores — deterministic tie-break by original index
+    out_zero = mmr_rerank(
+        [(1, 0.0), (2, 0.0), (3, 0.0)],
+        {1: "a", 2: "b", 3: "c"},
+        "q", top_k=2, lambda_=0.5,
+    )
+    _eq("zero scores: tie-break by index", [x[0] for x in out_zero], [1, 2])
+
+    # Single candidate, top_k > 1
+    out_one = mmr_rerank([(42, 0.5)], {42: "x"}, "q", top_k=5)
+    _eq("single candidate + top_k=5", out_one, [(42, 0.5)])
+
+    # Punctuation-only content — token set empty, treated as diverse
+    out_punct = mmr_rerank(
+        [(1, 0.5), (2, 0.5)],
+        {1: "...", 2: "hello"},
+        "q", top_k=2,
+    )
+    _eq("punctuation-only content handled", [x[0] for x in out_punct], [1, 2])
+
+    # Very long content — no crash
+    big = "测试 " * 1000
+    out_big = mmr_rerank([(1, 0.5), (2, 0.5)], {1: big, 2: "short"}, "q", top_k=2)
+    _truthy("very long content doesn't crash", len(out_big) == 2)
+
+    # Emoji in content — Unicode handling
+    out_emoji = mmr_rerank(
+        [(1, 0.5), (2, 0.5)],
+        {1: "扑克 🎴", 2: "麻将 🀄"},
+        "q", top_k=2,
+    )
+    _truthy("emoji content handled", len(out_emoji) == 2)
+
     # Chinese: pure CN content diversity
     cands = [(1, 0.9), (2, 0.85), (3, 0.7)]  # already score-desc
     contents = {1: "八字 壬水 身强", 2: "八字 壬水 身强", 3: "六爻 起卦 排盘"}
