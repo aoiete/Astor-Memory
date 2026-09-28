@@ -632,7 +632,9 @@ def main(argv: list[str] | None = None) -> int:
     peer_search = peer_sub.add_parser('search',
         help='Demand-driven search across friends (read-only, no DB write)')
     peer_search.add_argument('query', help='Search query')
-    peer_search.add_argument('--topic', help='Optional topic filter')
+    peer_search.add_argument('--topic', help='Optional topic filter (Ship K)')
+    peer_search.add_argument('--topic-min-weight', type=float, default=0.5,
+        help='Min weight for --topic filter (default 0.5, range 0..10)')
     peer_search.add_argument('--limit', type=int, default=10,
         help='Max results per peer (default 10, max 20)')
     peer_search.set_defaults(func=cmd_peer_search)
@@ -3096,9 +3098,16 @@ def cmd_peer_search(args) -> int:
     )
     me = init_identity()
     peers = list_peers()
-    targets = select_search_targets(peers)
+    # v1.15.27 Ship K: --topic / --topic-min-weight filter
+    topic = getattr(args, 'topic', None) or None
+    topic_min_weight = float(getattr(args, 'topic_min_weight', 0.5) or 0.5)
+    targets = select_search_targets(
+        peers, topic=topic, topic_min_weight=topic_min_weight,
+    )
     if not targets:
         print('[INFO] no eligible search targets.')
+        if topic:
+            print(f'       topic filter: {topic!r} (min_weight={topic_min_weight})')
         print('       eligibility: trust>=50, has endpoint, '
               'not blacklisted, allow_search=True (on THEIR side)')
         eligible_near = [

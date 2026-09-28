@@ -319,7 +319,13 @@ def build_search_request(
     )
 
 
-def select_search_targets(friends: list[dict]) -> list[dict]:
+def select_search_targets(
+    friends: list[dict],
+    *,
+    topic: str | None = None,
+    topic_min_weight: float = 0.5,
+    astor_dir: str | None = None,
+) -> list[dict]:
     """Filter friend list to those eligible as search targets.
 
     Eligibility (preventive, all at construction time):
@@ -335,8 +341,29 @@ def select_search_targets(friends: list[dict]) -> list[dict]:
     targets = []
     for f in friends:
         trust = f.get('trust', 0)
-        kind = f.get('kind', 'friend')
+        kind = f.get('kind') or 'friend'
         endpoint = f.get('endpoint') or ''
+
+        # v1.15.27 Ship K: topic filter — if `topic` is given (kwarg), only
+        # friends with weight >= topic_min_weight for that topic in
+        # topic_index are eligible. Reduces fan-out cost + improves
+        # relevance when caller knows the topic.
+        if topic:
+            try:
+                from .peer_relationships import list_topics_for_peer
+                topics = list_topics_for_peer(
+                    f['peer_id'], min_weight=topic_min_weight,
+                    astor_dir=astor_dir,
+                )
+                topic_weights = {
+                    t['topic']: t['weight'] for t in topics
+                }
+                if topic_weights.get(topic, 0.0) < topic_min_weight:
+                    continue
+            except Exception:
+                # If topic_index lookup fails, skip (safer than fanning
+                # out to a peer that may not have the topic).
+                continue
         # Opt-in enforcement is SERVER-side (friend's /v1/peer/public_search
         # returns 403 'search_not_allowed' unless THEIR local row for the
         # requestor has metadata.allow_search=True). Local A-side flag is
