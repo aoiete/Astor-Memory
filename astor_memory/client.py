@@ -60,6 +60,13 @@ class Fact:
     promoted_at: str | None = None
     tags: list[str] = field(default_factory=list)
     parent_fact_ids: list[int] = field(default_factory=list)
+    # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking.
+    # evidence_quote = literal substring from the source.
+    # source_ref = opaque origin pointer (e.g. 'wiki:slug', 'session:<id>').
+    # source_hash = SHA-256 hex of source content at write time.
+    evidence_quote: str = ''
+    source_ref: str = ''
+    source_hash: str = ''
 
     @classmethod
     def from_api(cls, d: dict[str, Any]) -> "Fact":
@@ -75,6 +82,9 @@ class Fact:
             promoted_at=d.get("promoted_at"),
             tags=d.get("tags") or [],
             parent_fact_ids=d.get("parent_fact_ids") or [],
+            evidence_quote=d.get("evidence_quote") or '',
+            source_ref=d.get("source_ref") or '',
+            source_hash=d.get("source_hash") or '',
         )
 
 
@@ -259,6 +269,10 @@ class AstorClient:
         tags: Iterable[str] | None = None,
         metadata: dict[str, Any] | None = None,
         tier: Literal["public", "source", "private"] | None = None,
+        # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking.
+        evidence_quote: str = '',
+        source_ref: str = '',
+        source_hash: str = '',
     ) -> int:
         """POST /v1/write — add new fact.
 
@@ -281,6 +295,15 @@ class AstorClient:
             body["tags"] = list(tags)
         if metadata:
             body["metadata"] = metadata
+        # v1.14.74+ Ship A2-Akasha: thread evidence-grounded source linking
+        # fields through to /v1/write so the server stores them on
+        # memory_canonical.evidence_quote / source_ref / source_hash.
+        if evidence_quote:
+            body["evidence_quote"] = evidence_quote[:1024]
+        if source_ref:
+            body["source_ref"] = source_ref[:512]
+        if source_hash:
+            body["source_hash"] = source_hash[:64]
         d = self._request("POST", "/v1/write", json_body=body, extra_headers=extra_headers)
         # Server returns `fact_ids: [int]` (plural array, list of assigned ids).
         # Older server revisions returned `fact_id` / `id`; preserve compat.
