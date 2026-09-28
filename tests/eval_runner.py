@@ -135,6 +135,13 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
         "baseline_bm25_4": {"hybrid": True, "rerank": "on", "bm25_weight": 0.4},         # S16: low-bm25 control
         "vector_only": {"hybrid": False, "rerank": "off"},                              # rerank + hybrid both off
         "rerank_off":  {"hybrid": True,  "rerank": "off"},                              # hybrid on, rerank off
+        # Ship M (2026-09-28): MMR lambda ablation. Same hybrid path, only
+        # the diversity/relevance trade-off varies. Tests which lambda is
+        # best per category so we can lock the default per-environment.
+        "mmr_lambda_05": {"hybrid": True, "rerank": "on", "mmr_lambda": 0.5},            # diversity-leaning
+        "mmr_lambda_07": {"hybrid": True, "rerank": "on", "mmr_lambda": 0.7},            # production default
+        "mmr_lambda_09": {"hybrid": True, "rerank": "on", "mmr_lambda": 0.9},            # relevance-leaning
+        "mmr_off":       {"hybrid": True, "rerank": "on", "mmr_lambda": 1.0},           # MMR off (no diversity)
     }
     kwargs = variants.get(variant, {})
 
@@ -251,7 +258,7 @@ def print_summary(run: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--variant", default="baseline",
-                    choices=["baseline", "baseline_bm25_6", "baseline_bm25_4", "vector_only", "rerank_off"])
+                    choices=["baseline", "baseline_bm25_6", "baseline_bm25_4", "vector_only", "rerank_off", "mmr_lambda_05", "mmr_lambda_07", "mmr_lambda_09", "mmr_off"])
     ap.add_argument("--all", action="store_true", help="Run all variants")
     ap.add_argument("--set", default=str(EVAL_SET), help="Path to eval set jsonl")
     args = ap.parse_args()
@@ -264,7 +271,7 @@ def main() -> int:
     print(f"Loaded {len(eval_set)} queries from {eval_set_path}")
     print(f"Server: {SERVER}\n")
 
-    variants = ["baseline", "vector_only", "rerank_off"] if args.all else [args.variant]
+    variants = ["baseline", "vector_only", "rerank_off", "mmr_lambda_05", "mmr_lambda_07", "mmr_lambda_09", "mmr_off"] if args.all else [args.variant]
     runs = []
     for v in variants:
         run = run_variant(v, eval_set)
