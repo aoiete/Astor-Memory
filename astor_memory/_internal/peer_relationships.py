@@ -65,7 +65,10 @@ CREATE TABLE IF NOT EXISTS rekey_log (
     applied_at   TEXT NOT NULL,
     sender_pubkey TEXT NOT NULL,
     status       TEXT NOT NULL DEFAULT 'pending',
-    note         TEXT
+    note         TEXT,
+    -- v1.15.30 Ship N: stores the raw rekey message JSON so manual_pending
+    -- rekeys can be applied later without the original sender re-sending.
+    message      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_rekey_log_new ON rekey_log(new_peer_id);
@@ -117,6 +120,8 @@ def _get_conn(astor_dir: str | None = None) -> sqlite3.Connection:
         with _RELATIONSHIPS_LOCK:
             conn.executescript(_SCHEMA_SQL)
             conn.commit()
+        # v1.15.30 Ship N: add 'message' column to rekey_log (idempotent)
+        _migrate_rekey_log_v1530(conn)
         _RELATIONSHIPS_CONN[key] = conn
     return _RELATIONSHIPS_CONN[key]
 
@@ -506,9 +511,14 @@ def record_rekey(
     *,
     status: str = "pending",
     note: str | None = None,
+    message: str | None = None,
     astor_dir: str | None = None,
 ) -> int:
-    """Record a rekey event in the log. Returns the rekey_log id."""
+    """Record a rekey event in the log. Returns the rekey_log id.
+
+    v1.15.30 Ship N: `message` param stores the raw rekey message JSON
+    so it can be applied later via apply_rekey_by_id.
+    """
     if status not in ("pending", "auto_accepted", "manual_pending", "rejected"):
         raise ValueError(f"invalid status: {status!r}")
     con = _get_conn(astor_dir)
@@ -516,11 +526,11 @@ def record_rekey(
         cur = con.execute("""
             INSERT INTO rekey_log
             (old_peer_id, new_peer_id, signature, applied_at, sender_pubkey,
-             status, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+             status, note, message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             old_peer_id, new_peer_id, signature, _now_iso(),
-            sender_pubkey, status, note,
+            sender_pubkey, status, note, message,
         ))
         con.commit()
     return cur.lastrowid or 0
@@ -873,3 +883,140 @@ def set_allow_search(
         )
         con.commit()
     return True
+
+
+def _migrate_rekey_log_v1530(conn: sqlite3.Connection) -> None:
+    """v1.15.30 (2026-09-28) Ship N: add `message` column to rekey_log.
+
+    Idempotent. Only fires when the existing table is missing `message`.
+    Preserves all existing rows. The `message` column stores the raw
+    rekey message JSON so manual_pending rekeys can be applied later
+    (without needing the original sender to re-send).
+    """
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='rekey_log'"
+    )
+    if cur.fetchone() is None:
+        return  # first run, no table yet
+    cur = conn.execute("PRAGMA table_info(rekey_log)")
+    cols = {row[1] for row in cur.fetchall()}
+    if "message" in cols:
+        return  # already migrated
+    try:
+        conn.execute("ALTER TABLE rekey_log RENAME TO rekey_log__v1_14_old")
+        # Inline the new schema (matches AUDIT_DB_SCHEMA pattern in audit_logger)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS rekey_log (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                old_peer_id  TEXT NOT NULL,
+                new_peer_id  TEXT NOT NULL,
+                signature    TEXT NOT NULL,
+                applied_at   TEXT NOT NULL,
+                sender_pubkey TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'pending',
+                note         TEXT,
+                message      TEXT
+            );
+        """)
+        # Copy all rows from old to new (message stays NULL for legacy rows)
+        conn.execute("""
+            INSERT INTO rekey_log (id, old_peer_id, new_peer_id, signature,
+                applied_at, sender_pubkey, status, note)
+            SELECT id, old_peer_id, new_peer_id, signature,
+                applied_at, sender_pubkey, status, note
+            FROM rekey_log__v1_14_old
+        """)
+        conn.execute("DROP TABLE rekey_log__v1_14_old")
+    except Exception:
+        try:
+            if conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='rekey_log__v1_14_old'"
+            ).fetchone() is not None and conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='rekey_log'"
+            ).fetchone() is not None:
+                conn.execute("DROP TABLE rekey_log")
+                conn.execute("ALTER TABLE rekey_log__v1_14_old RENAME TO rekey_log")
+        except Exception:
+            pass
+        raise
+
+
+def apply_rekey_by_id(
+    rekey_id: int,
+    *,
+    astor_dir: str | None = None,
+) -> dict | None:
+    """v1.15.30 Ship N: apply a previously-recorded rekey by id.
+
+    The rekey must have status='manual_pending' AND a stored message.
+    Returns the apply result dict, or None if the rekey doesn't
+    qualify. Updates the rekey_log row's status to 'manual_accepted'.
+    """
+    from .peer_identity import verify_rekey_message
+    con = _get_conn(astor_dir)
+    row = con.execute(
+        "SELECT * FROM rekey_log WHERE id = ?", (rekey_id,),
+    ).fetchone()
+    if not row:
+        return None
+    d = _row_to_dict(row)
+    if d.get("status") not in ("manual_pending", "auto_accepted"):
+        return None  # already applied or rejected
+    if d.get("status") == "auto_accepted":
+        # Already applied; idempotent return
+        return {"ok": True, "already_applied": True, "rekey_id": rekey_id}
+    msg_json = d.get("message")
+    if not msg_json:
+        return {"error": "no_message_stored", "rekey_id": rekey_id,
+                "hint": "old rekey records don't have the message; ask sender to re-send"}
+    try:
+        msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
+    except Exception as e:
+        return {"error": f"invalid_message_json: {e}", "rekey_id": rekey_id}
+    if not verify_rekey_message(msg):
+        return {"error": "signature_invalid", "rekey_id": rekey_id}
+    # Apply
+    try:
+        result = apply_rekey(rekey_id, astor_dir=astor_dir)
+    except Exception as e:
+        return {"error": f"apply_failed: {e}", "rekey_id": rekey_id}
+    # Update status
+    try:
+        now = _now_iso()
+        con.execute(
+            "UPDATE rekey_log SET status = ?, applied_at = ?, "
+            "note = COALESCE(note, '') || ? WHERE id = ?",
+            ("manual_accepted", now, " | manual_accepted via apply_rekey_by_id", rekey_id),
+        )
+        con.commit()
+    except Exception:
+        pass
+    return {"ok": True, "rekey_id": rekey_id, "result": result}
+
+
+def reject_rekey_by_id(
+    rekey_id: int,
+    *,
+    reason: str = "",
+    astor_dir: str | None = None,
+) -> dict | None:
+    """v1.15.30 Ship N: reject a pending rekey by id."""
+    con = _get_conn(astor_dir)
+    row = con.execute(
+        "SELECT status FROM rekey_log WHERE id = ?", (rekey_id,),
+    ).fetchone()
+    if not row:
+        return None
+    status = row[0]
+    if status not in ("manual_pending", "auto_accepted"):
+        return None
+    if status == "auto_accepted":
+        return {"error": "already_accepted", "rekey_id": rekey_id}
+    update_rekey_status(
+        rekey_id, "rejected",
+        note=(reason or "manually rejected via CLI"),
+        astor_dir=astor_dir,
+    )
+    return {"ok": True, "rekey_id": rekey_id, "rejected": True, "reason": reason}

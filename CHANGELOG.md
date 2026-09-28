@@ -1,3 +1,43 @@
+## v1.15.30 (2026-09-28) — Ship N: PPS rekey apply/reject flow
+
+**Completes the receiver-side rekey flow.** Before Ship N, a peer
+sending you a rekey message would land in `manual_pending` state but
+the message itself was NOT stored — there was no way to accept it
+later (the original sender had to re-send). Ship N fixes this by:
+
+  - Adding `message TEXT` column to `rekey_log` (migration preserves 
+    all existing rows; older rows have `message=NULL`)
+  - `/v1/peer/recv` now stores the raw rekey message JSON in this column
+  - New `apply_rekey_by_id(rekey_id)` helper — verifies stored signature,
+    applies the rekey, marks status `manual_accepted`
+  - New `reject_rekey_by_id(rekey_id, reason)` helper
+
+**New endpoints**:
+- `POST /v1/peer/rekey/<id>/accept` — accept a pending rekey
+- `POST /v1/peer/rekey/<id>/reject` — reject (body: `{reason: "..."}`)
+- `GET  /v1/peer/rekey/pending` — list all manual_pending rekeys
+
+**New CLI**:
+- `am peer rekey-pending` — list pending (with stored-message indicator)
+- `am peer rekey-accept <id>` — accept by id
+- `am peer rekey-reject <id> --reason "..."` — reject by id
+
+**Anti-hostile**: apply_rekey_by_id calls `verify_rekey_message()`
+which re-validates the signature; an attacker who can write to the
+rekey_log can't bypass this — they need a valid signed message to
+get the rekey applied.
+
+**Test coverage**: 16 new tests (2 migration, 5 apply/reject helper,
+2 record_rekey, 4 endpoint, 2 CLI). Total: 563/563 non-flaky pass.
+
+**Files changed (3):**
+- `astor_memory/_internal/peer_relationships.py` (+3000 bytes:
+  rekey_log schema migration, apply_rekey_by_id, reject_rekey_by_id)
+- `astor_memory/server.py` (+1500 bytes: 3 new endpoints, /v1/peer/recv
+  now stores message)
+- `astor_memory/cli/main.py` (+2000 bytes: 3 new subcommands)
+- `tests/test_rekey_apply_reject.py` (new, 12270 bytes)
+
 ## v1.15.29 (2026-09-28) — Ship M: full peer-config YAML backup
 
 **New: full peer-config backup (v1.1 bundle).** A richer version of the

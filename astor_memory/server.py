@@ -4420,6 +4420,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     action = 'manual_pending'
                 else:
                     action = 'auto_accept'
+                # v1.15.30 Ship N: store the rekey message JSON in
+                # rekey_log.message so the receiver can apply it later
+                # via `am peer rekey-accept <id>` without needing the
+                # sender to re-send.
                 rid = record_rekey(
                     msg['old_peer_id'], msg['new_peer_id'],
                     msg['signature'], msg['signer_pubkey'],
@@ -4427,6 +4431,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             else 'manual_pending' if action == 'manual_pending'
                             else 'rejected'),
                     note=f'received via /v1/peer/recv at {now}',
+                    message=__import__('json').dumps(msg),
                 )
                 return jsonify({
                     'received': True,
@@ -4473,8 +4478,45 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'error': 'recv_failed',
                 'detail': str(e),
             }), 500
-
+# ------------------------------------------------------------------
+    # v1.15.30 (2026-09-28) - Ship N: rekey apply/reject by id.
+    # Completes the receiver-side flow: /v1/peer/recv now stores the
+    # rekey message; these endpoints + CLI apply or reject it.
     # ------------------------------------------------------------------
+    @app.route('/v1/peer/rekey/<int:rid>/accept', methods=['POST'])
+    def peer_rekey_accept_endpoint(rid):
+        from ._internal.peer_relationships import apply_rekey_by_id
+        result = apply_rekey_by_id(rid)
+        if result is None:
+            return jsonify({'error': 'rekey_not_found',
+                            'rekey_id': rid}), 404
+        if 'error' in result:
+            return jsonify(result), 400
+        return jsonify(result)
+
+    @app.route('/v1/peer/rekey/<int:rid>/reject', methods=['POST'])
+    def peer_rekey_reject_endpoint(rid):
+        from ._internal.peer_relationships import reject_rekey_by_id
+        body = request.get_json(force=True) or {}
+        reason = body.get('reason', '')
+        result = reject_rekey_by_id(rid, reason=reason)
+        if result is None:
+            return jsonify({'error': 'rekey_not_found_or_not_pending',
+                            'rekey_id': rid}), 404
+        if 'error' in result:
+            return jsonify(result), 400
+        return jsonify(result)
+
+    @app.route('/v1/peer/rekey/pending', methods=['GET'])
+    def peer_rekey_pending_list():
+        from ._internal.peer_relationships import get_rekey_log
+        rows = get_rekey_log(status='manual_pending')
+        return jsonify({
+            'count': len(rows),
+            'results': rows,
+        })
+
+# ------------------------------------------------------------------
     # v1.14.73 (2026-09-27) — Phase 4 PPS: demand-driven peer public search.
     # Friends who opted in (metadata.allow_search=True) can search this
     # install's PUBLIC tier. No push, no pull, read-only on their side.

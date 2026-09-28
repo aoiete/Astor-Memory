@@ -579,6 +579,21 @@ def main(argv: list[str] | None = None) -> int:
         help='Filter by status')
     peer_rekey_log.set_defaults(func=cmd_peer_rekey_log)
 
+    peer_rekey_accept = peer_sub.add_parser('rekey-accept',
+        help='Accept a pending rekey by id (Ship N)')
+    peer_rekey_accept.add_argument('rekey_id', help='Rekey id (from `am peer rekey-log`)')
+    peer_rekey_accept.set_defaults(func=cmd_peer_rekey_accept)
+
+    peer_rekey_reject = peer_sub.add_parser('rekey-reject',
+        help='Reject a pending rekey by id (Ship N)')
+    peer_rekey_reject.add_argument('rekey_id', help='Rekey id (from `am peer rekey-log`)')
+    peer_rekey_reject.add_argument('--reason', help='Reason for rejection (stored in audit log)')
+    peer_rekey_reject.set_defaults(func=cmd_peer_rekey_reject)
+
+    peer_rekey_pending = peer_sub.add_parser('rekey-pending',
+        help='List pending rekey requests awaiting confirmation (Ship N)')
+    peer_rekey_pending.set_defaults(func=cmd_peer_rekey_pending)
+
     # v1.14.72 (2026-09-17) — Phase 3: peer_endpoint
     # am peer endpoint set <peer_id> <url>
     # am peer endpoint get <peer_id>
@@ -3904,6 +3919,73 @@ def cmd_peer_import_config(args) -> int:
         print("   topics_restored=" + str(result["topics_restored"]))
     if result.get("quarantined_restored"):
         print("   quarantined_restored=" + str(result["quarantined_restored"]))
+    return 0
+
+
+
+def cmd_peer_rekey_accept(args) -> int:
+    """v1.15.30 (2026-09-28) Ship N: accept a pending rekey by id.
+
+    Looks up the rekey record (by id), verifies the stored message
+    signature, then applies it (updates pubkey etc.). Use `am peer
+    rekey-log --status manual_pending` first to see what's pending.
+    """
+    from .._internal.peer_relationships import apply_rekey_by_id
+    rid = int(args.rekey_id)
+    result = apply_rekey_by_id(rid)
+    if result is None:
+        print(f"[ERR] rekey not found: {rid}", file=sys.stderr)
+        return 1
+    if "error" in result:
+        print(f"[ERR] {result['error']}", file=sys.stderr)
+        if "hint" in result:
+            print(f"  hint: {result['hint']}", file=sys.stderr)
+        return 1
+    if result.get("already_applied"):
+        print(f"[OK] rekey {rid} already applied (idempotent)")
+        return 0
+    print(f"[OK] rekey {rid} accepted and applied")
+    inner = result.get("result") or {}
+    if inner.get("trust_preserved") is not None:
+        print(f"   trust_preserved={inner['trust_preserved']}")
+    return 0
+
+
+def cmd_peer_rekey_reject(args) -> int:
+    """v1.15.30 Ship N: reject a pending rekey by id."""
+    from .._internal.peer_relationships import reject_rekey_by_id
+    rid = int(args.rekey_id)
+    result = reject_rekey_by_id(rid, reason=args.reason or "")
+    if result is None:
+        print(f"[ERR] rekey not found or not in pending state: {rid}",
+              file=sys.stderr)
+        return 1
+    if "error" in result:
+        print(f"[ERR] {result['error']}", file=sys.stderr)
+        return 1
+    print(f"[OK] rekey {rid} rejected (reason=" + repr(args.reason or "(none)") + ")")
+    return 0
+
+
+def cmd_peer_rekey_pending(args) -> int:
+    """v1.15.30 Ship N: list rekey entries awaiting admin confirmation."""
+    from .._internal.peer_relationships import get_rekey_log
+    rows = get_rekey_log(status='manual_pending')
+    if not rows:
+        print('(no pending rekey requests)')
+        return 0
+    print(f'[OK] {len(rows)} pending rekey(s):')
+    for r in rows:
+        old = r.get("old_peer_id", "")[:24]
+        new = r.get("new_peer_id", "")[:24]
+        at = (r.get("applied_at") or "?")[:19]
+        note = r.get("note") or "-"
+        has_msg = "+msg" if r.get("message") else "no-msg"
+        rid_str = str(r.get("id"))
+        line = ("  id=" + rid_str.rjust(4) + " " + old + "... -> " + new + "... at=" + at + " [" + has_msg + "] note=" + repr(note[:60]))
+        print(line)
+    print("Use `am peer rekey-accept <id>` to accept, "
+          "`am peer rekey-reject <id> --reason X` to reject.")
     return 0
 
 
