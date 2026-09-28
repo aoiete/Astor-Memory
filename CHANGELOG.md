@@ -1,3 +1,33 @@
+## v1.15.23 (2026-09-28) — Ship F: PPS trust auto-update
+
+Trust auto-bumps on successful adopt. Anti-hostile: only fires on
+EXPLICIT operator action (a POST to `/v1/peer/adopt`), not on any
+auto-path. Bound: +1 per adopt, clamps 0..100.
+
+New helpers in `peer_relationships.py`:
+  - `bump_trust(peer_id, delta)`: add delta, clamp 0..100
+  - `record_peer_error(peer_id)`: increment consecutive_error_count in
+    metadata (capped at 100, anti-flood)
+  - `clear_peer_errors(peer_id)`: reset the counter (call on success)
+  - `should_decay_trust(peer)`: True if peer is stale (>30d) AND
+    trust > 30
+  - `decay_peer_trust(peer_id)`: apply -5 (clamped at default_trust=30)
+
+Wired into `/v1/peer/adopt` success path: `+1` for the source peer
+when ≥ 1 fact is written. Response includes `peer_trust_after_adopt`
+(new trust) or `null` (peer unknown).
+
+CLI: `am peer trust bump <peer_id> <delta>` (manual override),
+`am peer trust decay` (sweep stale peers), `am peer trust show
+<peer_id>` (display current state with age, error count, decay
+eligibility).
+
+Tests: `tests/test_peer_trust_bump.py` 17/17 pass (bump_positive/
+negative/clamp/clamps_high/clamps_low/unknown/no_change + record_error
+increment/cap_at_100/unknown + clear_errors + should_decay recent/
+stale_above_default + decay_apply_minus_5/clamps_at_default + 3
+adopt endpoint E2E tests). Full non-flaky suite 466 passed.
+
 ## v1.15.22 (2026-09-28) — Ship E: PPS per-peer rate limit
 
 Per-peer rate limit on the PPS path (R12593 lock: PPS server-to-server
