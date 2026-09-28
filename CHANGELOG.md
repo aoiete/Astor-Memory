@@ -1,3 +1,32 @@
+## v1.15.24 (2026-09-28) — Ship H: PPS auto-trigger on body flag
+
+**`/v1/read` now accepts an optional `peer_fanout` body flag.** When set to
+`true` AND local recall returns zero hits, the server automatically dispatches
+to all eligible peers (trust ≥ 50, endpoint reachable, allow_search=true) and
+exposes the results as separate fields on the response:
+`peer_dispatched` (bool), `peer_count` (int), `peer_results` (list[dict]),
+`peer_per_peer` (list[dict]), `peer_local_error` (str | None).
+
+**Default behavior unchanged.** When the flag is absent or false, `/v1/read`
+behaves exactly as before (local-only recall).
+
+**Hermes adapter** (`astor_recall` tool) accepts the same flag. Default off.
+R12593 lock: peer fan-out is its own budget, separate from per-actor limits;
+explicit caller opt-in required.
+
+**Refactor:** the inline fan-out block in `/v1/peer/recall` was extracted
+into `astor_memory/_internal/peer_recall.dispatch_peer_fanout()` so the two
+endpoints share a single source of truth for peer dispatch.
+
+**Test coverage:** 9 new tests (4 helper, 4 /v1/read body-flag, 1 hermes
+adapter schema). Total PPS test count: 24 + 2 + 3 + 16 + 9 = 54.
+
+**Files changed (4):**
+- `astor_memory/_internal/peer_recall.py` (new, 3971 bytes)
+- `astor_memory/server.py` (+589 bytes net, /v1/peer/recall + /v1/read)
+- `astor_memory/hermes_adapter.py` (+967 bytes net, astor_recall tool schema)
+- `tests/test_peer_fanout.py` (new, 11264 bytes)
+
 ## v1.15.23 (2026-09-28) — Ship F: PPS trust auto-update
 
 Trust auto-bumps on successful adopt. Anti-hostile: only fires on

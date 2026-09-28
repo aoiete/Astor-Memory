@@ -189,6 +189,17 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                             "description": "Also search public and source scopes",
                             "default": False,
                         },
+                        # v1.15.24 Ship H: PPS auto-trigger flag.
+                        "peer_fanout": {
+                            "type": "boolean",
+                            "description": (
+                                "If local recall returns empty, automatically fan "
+                                "out to eligible peers (trust>=50, endpoint, "
+                                "allow_search=True). Off by default; per-peer "
+                                "rate limit applies. See peer-network.md."
+                            ),
+                            "default": False,
+                        },
                     },
                     "required": ["query"],
                 },
@@ -547,6 +558,11 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
             "query": query,
             "top_k": int(args.get("top_k", 5)),
             "hybrid": bool(args.get("hybrid", True)),
+            # v1.15.24 Ship H: PPS auto-trigger flag (default off).
+            # When true AND /v1/read local recall returns empty, fan out
+            # to eligible friends. R12593 lock: peer path is its own
+            # budget, separate from per-actor limits.
+            "peer_fanout": bool(args.get("peer_fanout", False)),
         }
         if endpoint.endswith("/multi"):
             body["user_id"] = user_id
