@@ -14,7 +14,7 @@ Tables:
 """
 
 import sqlite3
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 13
 
 SCHEMA_SQL = """
 -- Pragmas set at connection time (bus/store.py:connect)
@@ -146,6 +146,20 @@ CREATE TABLE IF NOT EXISTS memory_canonical (
     -- proximity signal for legacy facts without event_date. ISO 8601.
     -- Backfill populates current ISO timestamp on existing rows.
     created_at TEXT,
+    -- v1.14.74+ (2026-09-27 Ship A2-Akasha): evidence-grounded source linking.
+    -- evidence_quote = literal substring from the source that the fact
+    --   was extracted from. Empty for regex-only facts that have no
+    --   accessible source. Wire clients SHOULD populate when extracting
+    --   from external pages / files / chat transcripts.
+    -- source_ref = opaque pointer back to the origin (file:line,
+    --   wiki page slug, message id, URL). Lets the recall path and
+    --   audit path re-fetch the source on demand.
+    -- source_hash = SHA-256 of the source content at write time.
+    --   Recall compares against rehash of current source to mark
+    --   facts as [stale] when the source mutates.
+    evidence_quote TEXT NOT NULL DEFAULT '',
+    source_ref     TEXT NOT NULL DEFAULT '',
+    source_hash    TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (candidate_id) REFERENCES memory_candidates(id),
     FOREIGN KEY (event_id) REFERENCES events(id),
     FOREIGN KEY (parent_revision_id) REFERENCES memory_canonical(id),
@@ -315,6 +329,7 @@ def astor_init_schema(conn: sqlite3.Connection) -> None:
     _astor_upgrade_v9_to_v10(conn)
     _astor_upgrade_v10_to_v11(conn)
     _astor_upgrade_v11_to_v12(conn)
+    _astor_upgrade_v12_to_v13(conn)
     # Index that depends on the publishable column must be created AFTER the column exists.
     # The executescript above emits CREATE INDEX inside the same script as the table,
     # which works for fresh DBs but errors on v1 databases because the column doesn't exist yet.
@@ -533,6 +548,53 @@ def _astor_upgrade_v9_to_v10(conn: sqlite3.Connection) -> None:
 def _astor_upgrade_v10_to_v11(conn):
     """v1.14.73 stub fix migration (no DB schema changes, audit-only)."""
     return None
+
+
+def _astor_upgrade_v12_to_v13(conn: sqlite3.Connection) -> None:
+    """v1.14.74+ (2026-09-27 Ship A2-Akasha): Akasha-style evidence-grounded
+    source linking on memory_canonical.
+
+    Adds three columns:
+      - evidence_quote : literal substring of the source the fact was
+        extracted from. Empty default (regex-only / no-source facts
+        still valid).
+      - source_ref : opaque origin pointer ('wiki:slug', 'session:<id>',
+        'file:<path:line>', 'url:<href>').
+      - source_hash : SHA-256 hex of the source content at write time.
+        Recall compares against a fresh hash of the source URL to
+        mark [stale] when the source mutates.
+
+    All columns default to '' (text) so the migration is additive and
+    safe on every existing row. Idempotent: PRAGMA table_info probe.
+    """
+    try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(memory_canonical)"
+        ).fetchall()}
+    except Exception:
+        return
+    additions = [
+        ("evidence_quote", "TEXT NOT NULL DEFAULT ''"),
+        ("source_ref",     "TEXT NOT NULL DEFAULT ''"),
+        ("source_hash",    "TEXT NOT NULL DEFAULT ''"),
+    ]
+    for name, decl in additions:
+        if name in cols:
+            continue
+        try:
+            conn.execute(
+                f"ALTER TABLE memory_canonical ADD COLUMN {name} {decl}"
+            )
+        except Exception:
+            pass
+    # Index for source_ref-based retrieval (recall by origin pointer).
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canonical_source_ref "
+            "ON memory_canonical(source_ref) WHERE source_ref != ''"
+        )
+    except Exception:
+        pass
 
 
 def _astor_upgrade_v11_to_v12(conn):

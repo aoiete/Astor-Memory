@@ -221,6 +221,12 @@ class AstorBus:
         # manual am write). Default 'extracted' preserves existing rows.
         provenance_kind: str | None = None,
         provenance_agent: str | None = None,
+        # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking.
+        # All three default to '' to preserve backward compat with
+        # every existing caller.
+        evidence_quote: str = '',
+        source_ref: str = '',
+        source_hash: str = '',
     ) -> int:
         """Promote a candidate to canonical. Returns canonical_id.
 
@@ -326,8 +332,9 @@ class AstorBus:
                         event_date, event_date_precision,
                         entities_json,
                         provenance_kind, provenance_agent,
-                        created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        created_at,
+                        evidence_quote, source_ref, source_hash)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         candidate_id, event_id, namespace, content, kind, confidence, importance,
                         tags, metadata, kw_json, ctx_text,
@@ -353,6 +360,11 @@ class AstorBus:
                         (provenance_kind if provenance_kind is not None else 'extracted'),
                         (provenance_agent if provenance_agent is not None else promoted_by),
                         datetime.utcnow().isoformat() + 'Z',
+                        # v1.14.74+ Ship A2-Akasha: evidence-grounded source
+                        # linking columns. Defaults (= "") preserve backward
+                        # compat with existing callers; server /v1/write
+                        # threads real values via metadata.__evidence_quote__.
+                        evidence_quote, source_ref, source_hash,
                     ),
                 )
                 canonical_id = cur.lastrowid
