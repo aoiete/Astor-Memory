@@ -1,3 +1,25 @@
+## v1.15.22 (2026-09-28) — Ship E: PPS per-peer rate limit
+
+Per-peer rate limit on the PPS path (R12593 lock: PPS server-to-server
+sync is its own budget, separate from per-actor limits). New module
+`peer_rate_limit.py` keeps an in-memory sliding window per peer_id,
+default cap 1000 req/24h (override `ASTOR_PEER_RATE_LIMIT_PER_24H`).
+
+Endpoints (3 new):
+- `GET /v1/peer/rate-limit?peer_id=astor:<32-hex>` — single-peer snapshot
+- `GET /v1/peer/rate-limit?all=true` — full rollup + summary
+- `POST /v1/peer/rate-limit/reset` — admin escape: clear one peer's bucket
+- `POST /v1/peer/rate-limit/rebuild` — re-derive from last-24h audit log
+  (server-start hook calls this automatically on boot)
+
+Enforcement: `check_and_consume()` runs inside `/v1/peer/public_search`
+right after the opt-in gate. On 429 the response includes
+`Retry-After` header + JSON `count_in_window` + `retry_after_seconds`.
+
+CLI: `am peer rl status` (summary + per-peer list), `am peer rl status
+<peer_id>` (one peer), `am peer rl reset <peer_id>`, `am peer rl
+rebuild`. Tests 16/16 pass; full non-flaky suite 449 passed.
+
 ## v1.15.21 (2026-09-28) — Ship D: PPS-augmented recall
 
 New `GET /v1/peer/recall?q=&topic=&limit=&tier=&user=` endpoint runs local

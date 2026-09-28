@@ -595,6 +595,23 @@ def main(argv: list[str] | None = None) -> int:
     peer_unallow_search.add_argument('peer_id', help='Peer ID to revoke')
     peer_unallow_search.set_defaults(func=cmd_peer_unallow_search)
 
+    # v1.15.22 Ship E: PPS per-peer rate limit CLI.
+    peer_rl = peer_sub.add_parser('rl',
+        help='PPS per-peer rate-limit admin: status / reset / rebuild')
+    peer_rl_sub = peer_rl.add_subparsers(dest='rl_command')
+    rl_status = peer_rl_sub.add_parser('status',
+        help='Show summary (all peers with active windows)')
+    rl_status.add_argument('peer_id', nargs='?', default=None,
+        help='Optional: show only this peer_id')
+    rl_status.set_defaults(func=cmd_peer_rl_status)
+    rl_reset = peer_rl_sub.add_parser('reset',
+        help='Admin escape: clear one peer\'s bucket')
+    rl_reset.add_argument('peer_id', help='Peer ID to clear')
+    rl_reset.set_defaults(func=cmd_peer_rl_reset)
+    rl_rebuild = peer_rl_sub.add_parser('rebuild',
+        help='Re-derive buckets from audit (post-restart recovery)')
+    rl_rebuild.set_defaults(func=cmd_peer_rl_rebuild)
+
     peer_search = peer_sub.add_parser('search',
         help='Demand-driven search across friends (read-only, no DB write)')
     peer_search.add_argument('query', help='Search query')
@@ -3515,6 +3532,52 @@ def cmd_peer_send_topic(args) -> int:
     except (urllib.error.URLError, TimeoutError) as e:
         print(f'[ERR] cannot reach peer at {url}: {e}', file=sys.stderr)
         return 1
+
+def cmd_peer_rl_status(args) -> int:
+    """v1.15.22 Ship E: show per-peer rate limit summary (one peer or all)."""
+    from .._internal.peer_rate_limit import (
+        snapshot as _prl_snap, status_summary as _prl_sum, all_snapshots,
+    )
+    if args.peer_id:
+        s = _prl_snap(args.peer_id)
+        print(f'peer_id={s["peer_id"]} count={s["count"]}/{s["cap"]} '
+              f'window_hours={s["window_hours"]} '
+              f'last={s["last_request_iso"]} oldest={s["oldest_iso"]} '
+              f'retry_after={s["retry_after_seconds"]}s')
+        return 0
+    summary = _prl_sum()
+    print(f'peers_tracked={summary["peers_tracked"]} '
+          f'requests_in_window={summary["requests_in_window"]} '
+          f'cap_per_peer={summary["cap_per_peer_per_24h"]}/24h '
+          f'window={summary["window_hours"]}h')
+    rows = all_snapshots()
+    if not rows:
+        print('  (no peers in window)')
+        return 0
+    rows.sort(key=lambda r: r['count'], reverse=True)
+    for r in rows:
+        print(f'  peer_id={r["peer_id"]} count={r["count"]}/{r["cap"]} '
+              f'last={r["last_request_iso"]}')
+    return 0
+
+
+def cmd_peer_rl_reset(args) -> int:
+    """v1.15.22 Ship E: clear one peer's PPS rate-limit bucket (admin escape)."""
+    from .._internal.peer_rate_limit import reset as _prl_reset
+    n = _prl_reset(args.peer_id)
+    print(f'[OK] cleared {n} entries for {args.peer_id}')
+    return 0
+
+
+def cmd_peer_rl_rebuild(args) -> int:
+    """v1.15.22 Ship E: re-derive buckets from audit log (post-restart recovery)."""
+    from .._internal.peer_rate_limit import (
+        rebuild_from_audit as _prl_rebuild,
+    )
+    n = _prl_rebuild()
+    print(f'[OK] rebuilt {n} entries from last-24h audit log')
+    return 0
+
 
 def cmd_peer_unallow_search(args) -> int:
     """v1.14.73 (2026-09-27) Phase 4 PPS: revoke a friend's search opt-in."""
