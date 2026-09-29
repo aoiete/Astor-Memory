@@ -221,11 +221,18 @@ def get_policy() -> str:
 
 def audit_log_record(fact_id: int | None, user: str, tier: str,
                      matches: list[PIIMatch], policy_applied: str) -> dict:
-    """Build an audit-log entry dict. Caller writes via /v1/audit or direct SQL.
+    """Build an audit-log entry dict AND write to bus.audit_log.
+
+    v1.15.45 (Ship P0.1b): PII audit entries now persist to bus.audit_log
+    instead of stderr-only. Operators can query PII scan history via
+    /v1/audit or direct SQL: `SELECT * FROM audit_log WHERE event =
+    'memory_defense_scan' ORDER BY ts DESC LIMIT 50`. Severity is
+    'critical' for block policy (write rejected), 'warning' for redact.
 
     Never includes raw secrets — only `fingerprint()` (sha256[:12]).
     """
-    return {
+    severity = 'critical' if policy_applied == 'block' else 'warning'
+    entry = {
         "kind": "memory_defense_scan",
         "fact_id": fact_id,
         "user": user,
@@ -236,4 +243,36 @@ def audit_log_record(fact_id: int | None, user: str, tier: str,
             {"name": m.name, "severity": m.severity, "fingerprint": m.fingerprint()}
             for m in matches
         ],
+        "severity": severity,
     }
+    # v1.15.45 (Ship P0.1b): zero-match scans don't pollute audit log.
+    # Only write audit row when at least one PII match was detected.
+    if not matches:
+        return entry
+    # Write to bus.audit_log (fire-and-forget). If bus not yet initialized
+    # (early startup), fall back to stderr — never break the write path.
+    try:
+        from ..bus.store import astor_bus
+        from .._internal.acl import astor_check_write
+        # astor_check_write takes (tier, user_id) — no actor arg. ACL is
+        # thread-local already initialized by the request handler.
+        astor_check_write(
+            tier=tier if tier in ('public', 'source') else 'public',
+            user_id=user if tier.startswith('private') else None,
+        )
+        bus = astor_bus(tier=tier if tier in ('public', 'source') else 'public',
+                        user_id=user if tier.startswith('private') else None)
+        import json as _json
+        actor_str = 'admin:admin' if not user or user == 'admin:admin' else f'admin:{user}'
+        bus.write_audit(
+            event='memory_defense_scan',
+            actor=actor_str,
+            target_type='memory_defense',
+            target_id=str(fact_id) if fact_id else 'pre_write',
+            new_state=_json.dumps(entry),
+            severity=severity,
+        )
+    except Exception as _e:
+        import sys as _sys
+        _sys.stderr.write(f'[memory_defense.audit_log_record] bus write failed (non-fatal): {_e!r}\n')
+    return entry
