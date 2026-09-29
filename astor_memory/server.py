@@ -3725,6 +3725,167 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'traceback': _mm_tb.format_exc()[:500],
             }), 500
 
+    @app.route('/v1/knowledge_page', methods=['GET'])
+    def knowledge_page_get():
+        """Hindsight-style knowledge page lookup (Ship P3.1, v1.15.39).
+
+        GET /v1/knowledge_page?slug=X&tier=public
+            → {found, page: {slug, title, body, parent_fact_ids, ...},
+               linked_facts: [...]}
+        """
+        try:
+            from .nest.knowledge_pages import (
+                get_knowledge_page as _kp_get,
+                get_linked_facts as _kp_linked,
+                is_enabled as _kp_enabled,
+            )
+        except Exception as _kp_imp_exc:
+            return jsonify({
+                'error': 'knowledge_pages_module_missing',
+                'detail': repr(_kp_imp_exc),
+            }), 500
+        if not _kp_enabled():
+            return jsonify({'enabled': False}), 200
+        _slug = (request.args.get('slug') or '').strip()
+        if not _slug:
+            return jsonify({'error': 'slug query param required'}), 400
+        _tier = request.args.get('tier', 'public')
+        _user = request.args.get('user_id')
+        try:
+            from ._internal.acl import astor_check_read as _kp_acr
+            _kp_acr(tier=_tier, user_id=_user)
+        except Exception as _kp_acl_exc:
+            return jsonify({'error': 'acl_denied',
+                            'detail': str(_kp_acl_exc)}), 403
+        from .bus import astor_bus as _kp_bus_factory
+        _bus = _kp_bus_factory(tier=_tier, user_id=_user)
+        try:
+            _page = _kp_get(_bus, _slug, tier=_tier, user_id=_user)
+        except Exception as _kp_exc:
+            return jsonify({'error': 'knowledge_page_failed',
+                            'detail': repr(_kp_exc)}), 500
+        if _page is None:
+            return jsonify({
+                'found': False, 'slug': _slug, 'tier': _tier,
+            }), 404
+        _linked = _kp_linked(_bus, _page)
+        return jsonify({
+            'found': True,
+            'page': {
+                'fact_id': _page.fact_id,
+                'slug': _page.slug,
+                'title': _page.title,
+                'body': _page.body,
+                'parent_fact_ids': _page.parent_fact_ids,
+                'confidence': _page.confidence,
+                'created_at': _page.created_at,
+                'updated_at': _page.updated_at,
+                'tier': _page.tier,
+                'user_id': _page.user_id,
+            },
+            'linked_facts': _linked,
+        })
+
+    @app.route('/v1/knowledge_page/list', methods=['GET'])
+    def knowledge_page_list():
+        """List all knowledge_pages for tier (Ship P3.1, v1.15.39)."""
+        try:
+            from .nest.knowledge_pages import (
+                list_knowledge_pages as _kp_list,
+                is_enabled as _kp_enabled,
+            )
+        except Exception as _kp_imp_exc:
+            return jsonify({
+                'error': 'knowledge_pages_module_missing',
+                'detail': repr(_kp_imp_exc),
+            }), 500
+        if not _kp_enabled():
+            return jsonify({'enabled': False}), 200
+        _tier = request.args.get('tier', 'public')
+        _user = request.args.get('user_id')
+        try:
+            from ._internal.acl import astor_check_read as _kp_acr
+            _kp_acr(tier=_tier, user_id=_user)
+        except Exception as _kp_acl_exc:
+            return jsonify({'error': 'acl_denied',
+                            'detail': str(_kp_acl_exc)}), 403
+        from .bus import astor_bus as _kp_bus_factory
+        _bus = _kp_bus_factory(tier=_tier, user_id=_user)
+        try:
+            _pages = _kp_list(_bus, tier=_tier, user_id=_user)
+        except Exception as _kp_exc:
+            return jsonify({'error': 'list_kp_failed',
+                            'detail': repr(_kp_exc)}), 500
+        return jsonify({
+            'enabled': True,
+            'tier': _tier,
+            'count': len(_pages),
+            'pages': [
+                {
+                    'fact_id': p.fact_id,
+                    'slug': p.slug,
+                    'title': p.title,
+                    'parent_fact_ids': p.parent_fact_ids,
+                    'updated_at': p.updated_at,
+                }
+                for p in _pages
+            ],
+        })
+
+    @app.route('/v1/knowledge_page/upsert', methods=['POST'])
+    def knowledge_page_upsert():
+        """Upsert a knowledge_page (Ship P3.1, v1.15.39).
+
+        POST body: {slug, title, body, tier?, user_id?, parent_fact_ids?,
+                    confidence?}
+            → {ok: true, fact_id, slug, parent_fact_ids}
+        """
+        try:
+            from .nest.knowledge_pages import (
+                upsert_knowledge_page as _kp_upsert,
+            )
+        except Exception as _kp_imp_exc:
+            return jsonify({
+                'error': 'knowledge_pages_module_missing',
+                'detail': repr(_kp_imp_exc),
+            }), 500
+        _body = request.get_json(silent=True) or {}
+        _slug = (_body.get('slug') or '').strip()
+        _title = (_body.get('title') or '').strip()
+        _kp_body = _body.get('body') or ''
+        if not _slug or not _title:
+            return jsonify({
+                'error': 'slug and title required',
+            }), 400
+        _tier = _body.get('tier', 'public')
+        _user = _body.get('user_id')
+        _parents = _body.get('parent_fact_ids') or []
+        _conf = float(_body.get('confidence') or 0.7)
+        try:
+            from ._internal.acl import astor_check_write as _kp_acw
+            _kp_acw(tier=_tier, user_id=_user)
+        except Exception as _kp_acl_exc:
+            return jsonify({'error': 'acl_denied',
+                            'detail': str(_kp_acl_exc)}), 403
+        from .bus import astor_bus as _kp_bus_factory
+        _bus = _kp_bus_factory(tier=_tier, user_id=_user)
+        try:
+            _fid = _kp_upsert(
+                _bus, slug=_slug, title=_title, body=_kp_body,
+                tier=_tier, user_id=_user,
+                parent_fact_ids=[int(p) for p in _parents],
+                confidence=_conf,
+            )
+        except Exception as _kp_exc:
+            return jsonify({'error': 'kp_upsert_failed',
+                            'detail': repr(_kp_exc)}), 500
+        return jsonify({
+            'ok': True,
+            'fact_id': int(_fid),
+            'slug': _slug,
+            'parent_fact_ids': [int(p) for p in _parents],
+        })
+
     @app.route('/v1/graph_recall', methods=['GET'])
     def graph_recall():
         """Hindsight-style graph recall path (Ship P1.2, v1.15.37).
