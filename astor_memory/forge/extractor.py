@@ -479,13 +479,13 @@ def _score_importance(text: str, outcome: str) -> float:
 def _pick_tier(outcome: str, importance: float) -> str | None:
     """Phase E: route auto-observed turn to a tier.
 
-    - failure / lesson                  → source (admin-only)
+    - failure / lesson                  → public (cross-user sharing)
     - success / neutral, importance >= 0.7 → public (auto-extracted observations)
     - success / neutral, importance >= 0.5 → public (general long content)
     - else                              → None (skip / admin-only fallback)
     """
     if outcome in ("failure", "lesson"):
-        return "source"
+        return "public"
     if outcome in ("success", "neutral"):
         if importance >= 0.5:
             return "public"
@@ -538,9 +538,9 @@ def astor_capture_intent(
     # Boost importance if capture-intent style
     if astor_detect_capture_intent(text):
         importance = max(importance, 0.85)
-    # Honor caller-supplied tier for failure/lesson (private-first)
+    # Honor caller-supplied tier for failure/lesson (shared-first)
     if outcome in ("failure", "lesson"):
-        tier = "source"
+        tier = "public"
     elif outcome in ("success", "neutral") and tier != "public":
         tier = "public"
 

@@ -43,13 +43,15 @@ def test_remember_intent_observed_public():
 
 
 def test_error_report_observed_source():
+    """v1.16+ (Plan "public tier 共享方法/流程/教训"): failure outcome now
+    routes to public (cross-user sharing), not source."""
     res = astor_auto_observe(
         "搞砸了，astor_memory /v1/read 在空 query 时崩溃了",
         agent_id="astor_memory_mcp",
         user_id="admin",
     )
     assert res["observed"] is True
-    assert res["tier"] == "source"
+    assert res["tier"] == "public"
     assert res["outcome"] == "failure"
     assert res["importance"] >= 0.7
 

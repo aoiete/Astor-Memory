@@ -57,7 +57,10 @@ def test_remember_intent_observed_persisted():
 
 
 def test_error_observed_source():
-    req = _fake_request(observed=True, tier="source")
+    """v1.16+ (Plan "public tier 共享方法/流程/教训"): failure outcome now
+    routes to public (cross-user sharing), not source. Auto-observe tests
+    this routing explicitly so future regressions surface immediately."""
+    req = _fake_request(observed=True, tier="public")
     result = astor_auto_observe_call(
         {"text": "搞砸了，astor_memory /v1/read 在空 query 时崩溃了"},
         request_fn=req,
@@ -65,16 +68,21 @@ def test_error_observed_source():
     )
     text = json.loads(result["content"][0]["text"])
     assert text["observed"] is True
-    assert text["tier"] == "source"
+    assert text["tier"] == "public"
 
 
 def test_400_falls_back_to_public():
+    """v1.16+ (Plan "public tier 共享方法/流程/教训"): tier routing for
+    failure now lands on public directly, so the legacy "first try source,
+    then fallback to public" two-call sequence is no longer the path.
+    This test now verifies a single public write on the first attempt —
+    the upstream rejection scenario from before the change is moot."""
     calls = {"n": 0}
 
     def req(path, params, body):
         calls["n"] += 1
-        if body.get("tier") == "source" and calls["n"] == 1:
-            raise RuntimeError("ASTOR_UPSTREAM_HTTP_400: tier=source not allowed")
+        # Since failure routes to public directly, no source attempt happens
+        # and no fallback is needed.
         return {"event_id": 2, "fact_ids": [99]}
 
     result = astor_auto_observe_call(
@@ -85,4 +93,5 @@ def test_400_falls_back_to_public():
     text = json.loads(result["content"][0]["text"])
     assert text["observed"] is True
     assert text["persisted"] is True
-    assert calls["n"] >= 2
+    assert calls["n"] == 1
+    assert text["tier"] == "public"

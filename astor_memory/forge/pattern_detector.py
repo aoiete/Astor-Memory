@@ -203,8 +203,10 @@ def astor_detect_lesson_pattern(text: str) -> bool:
     Rationale: a single "崩溃" without a fix isn't a lesson — it's just
     a complaint. A "崩溃 + 因为" pair is a complete lesson.
 
-    Per astor iron rule (fact 3752): lessons go to tier='private' with
-    importance=0.99 and a `LESSON ` prefix in the content.
+    Per astor 3-zone architecture (fact 11938): lessons map to
+    kind='lesson' with importance>=0.99 and a `LESSON ` prefix in the
+    content. Tier is decided by `_pick_tier()` in extractor.py
+    (v1.16+: public — cross-user sharing).
     """
     if not text or not text.strip():
         return False
