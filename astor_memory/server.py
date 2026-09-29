@@ -3725,6 +3725,112 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'traceback': _mm_tb.format_exc()[:500],
             }), 500
 
+    @app.route('/v1/graph_recall', methods=['GET'])
+    def graph_recall():
+        """Hindsight-style graph recall path (Ship P1.2, v1.15.37).
+
+        GET /v1/graph_recall?entity=Hermes&tier=public&top_k=20
+            → {"entity", "tier", "count", "edges": [...], "facts": [...]}
+
+        Pure SQL via json_each on memory_canonical.entities_json.
+        Case-insensitive substring match on entity.value. Uses the
+        json_each index created by bus/schema.py backfill.
+        """
+        try:
+            from .nest.graph_recall import (
+                graph_recall_by_entity as _gr,
+            )
+        except Exception as _gr_imp_exc:
+            return jsonify({
+                'error': 'graph_recall_module_missing',
+                'detail': repr(_gr_imp_exc),
+            }), 500
+        _entity = (request.args.get('entity') or '').strip()
+        if not _entity:
+            return jsonify({'error': 'entity query param required'}), 400
+        _tier = request.args.get('tier', 'public')
+        _user = request.args.get('user_id')
+        _top_k = int(request.args.get('top_k', 20) or 20)
+        _entity_types_raw = request.args.get('entity_types', '')
+        _entity_types = (
+            [t.strip() for t in _entity_types_raw.split(',') if t.strip()]
+            if _entity_types_raw else None
+        )
+        # ACL — mirror /v1/read pattern
+        try:
+            from ._internal.acl import astor_check_read as _gr_acr
+            _gr_acr(tier=_tier, user_id=_user)
+        except Exception as _gr_acl_exc:
+            return jsonify({
+                'error': 'acl_denied', 'detail': str(_gr_acl_exc),
+            }), 403
+        # bus_conn — mirror /v1/read
+        from .bus import astor_bus as _gr_bus_factory
+        _bus = _gr_bus_factory(tier=_tier, user_id=_user)
+        try:
+            result = _gr(
+                _bus.conn,
+                entity=_entity,
+                tier=_tier,
+                user_id=_user,
+                top_k=_top_k,
+                entity_types=_entity_types,
+            )
+        except Exception as _gr_exc:
+            return jsonify({
+                'error': 'graph_recall_failed',
+                'detail': repr(_gr_exc),
+            }), 500
+        return jsonify(result)
+
+    @app.route('/v1/graph_recall/entities', methods=['GET'])
+    def graph_recall_entities():
+        """List top entities by fact-count (Ship P1.2, v1.15.37).
+
+        GET /v1/graph_recall/entities?tier=public&entity_type=person&limit=50
+            → {"tier", "entity_type", "limit", "entities": [...]}
+
+        Operators see which entities the bus is tracking. Pure SQL
+        GROUP BY on json_extract.
+        """
+        try:
+            from .nest.graph_recall import (
+                list_entities_by_freq as _lef,
+            )
+        except Exception as _lef_imp_exc:
+            return jsonify({
+                'error': 'graph_recall_module_missing',
+                'detail': repr(_lef_imp_exc),
+            }), 500
+        _tier = request.args.get('tier', 'public')
+        _entity_type = request.args.get('entity_type') or None
+        _limit = int(request.args.get('limit', 50) or 50)
+        try:
+            from ._internal.acl import astor_check_read as _lef_acr
+            _lef_acr(tier=_tier)
+        except Exception as _lef_acl_exc:
+            return jsonify({
+                'error': 'acl_denied', 'detail': str(_lef_acl_exc),
+            }), 403
+        from .bus import astor_bus as _lef_bus_factory
+        _bus = _lef_bus_factory(tier=_tier)
+        try:
+            entities = _lef(
+                _bus.conn, tier=_tier,
+                entity_type=_entity_type, limit=_limit,
+            )
+        except Exception as _lef_exc:
+            return jsonify({
+                'error': 'list_entities_failed',
+                'detail': repr(_lef_exc),
+            }), 500
+        return jsonify({
+            'tier': _tier,
+            'entity_type': _entity_type,
+            'limit': _limit,
+            'entities': entities,
+        })
+
     @app.route('/v1/install', methods=['POST'])
     def install():
         """Plan an install into another agent (returns file changes, does not write).
