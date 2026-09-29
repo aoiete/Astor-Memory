@@ -3644,6 +3644,87 @@ def create_app(astor_dir: str | None = None) -> Flask:
             pass
         return jsonify(result)
 
+    @app.route('/v1/mental_model', methods=['GET'])
+    @app.route('/v1/mental_model/list', methods=['GET'])
+    def mental_model():
+        """Hindsight-style fixed-question answer sheet (Ship P1.1, v1.15.36).
+
+        GET /v1/mental_model?question=<text>
+            → 200 {found, mental_model: {fact_id, question, answer, confidence, ...}}
+            → 404 {found: false} when no exact-match mental_model exists
+
+        GET /v1/mental_model/list
+            → 200 {mental_models: [...]}
+
+        Reads are direct DB lookups (no LLM, no vector search) — Hindsight's
+        "读它就是一次数据库读取, 不走检索也不调模型" property. Tier +
+        user_id filtered like /v1/read.
+        """
+        try:
+            from .nest.mental_models import (
+                get_mental_model as _mm_get, list_mental_models as _mm_list,
+                is_enabled as _mm_enabled,
+            )
+            from .bus import astor_bus as _mm_bus_factory
+        except Exception as _mm_imp_exc:
+            return jsonify({'error': 'mental_model_module_missing',
+                            'detail': repr(_mm_imp_exc)}), 500
+        # v1.15.36: open bus conn for this request. tier follows /v1/read
+        # semantics: 'private' → 'private_<user>'. user_id from query param.
+        _q = (request.args.get('question') or '').strip()
+        _tier = request.args.get('tier', 'public')
+        _user = request.args.get('user_id')
+        # astor_bus requires ACL context (read); mirror /v1/read pattern.
+        from ._internal.acl import astor_check_read as _mm_acr
+        try:
+            _mm_acr(tier=_tier, user_id=_user)
+        except Exception as _mm_acl_exc:
+            return jsonify({'error': 'permission_denied',
+                            'detail': repr(_mm_acl_exc)}), 403
+        try:
+            _mm_bus = _mm_bus_factory(tier=_tier, user_id=_user)
+        except Exception as _mm_bus_exc:
+            return jsonify({'error': 'bus_init_failed',
+                            'detail': repr(_mm_bus_exc)}), 500
+        try:
+            if _q:
+                _mm = _mm_get(_mm_bus, _q, tier=_tier, user_id=_user)
+                if _mm is None:
+                    return jsonify({'found': False, 'question': _q, 'tier': _tier}), 404
+                return jsonify({
+                    'found': True,
+                    'tier': _tier,
+                    'mental_model': {
+                        'fact_id': _mm.fact_id,
+                        'question': _mm.question,
+                        'answer': _mm.answer,
+                        'confidence': _mm.confidence,
+                        'created_at': _mm.created_at,
+                        'updated_at': _mm.updated_at,
+                    },
+                })
+            else:
+                _items = _mm_list(_mm_bus, tier=_tier, user_id=_user)
+                return jsonify({
+                    'tier': _tier,
+                    'mental_models': [{
+                        'fact_id': x.fact_id,
+                        'question': x.question,
+                        'answer': x.answer,
+                        'confidence': x.confidence,
+                        'created_at': x.created_at,
+                        'updated_at': x.updated_at,
+                    } for x in _items],
+                    'enabled': _mm_enabled(),
+                })
+        except Exception as _mm_op_exc:
+            import traceback as _mm_tb
+            return jsonify({
+                'error': 'mental_model_op_failed',
+                'detail': repr(_mm_op_exc),
+                'traceback': _mm_tb.format_exc()[:500],
+            }), 500
+
     @app.route('/v1/install', methods=['POST'])
     def install():
         """Plan an install into another agent (returns file changes, does not write).

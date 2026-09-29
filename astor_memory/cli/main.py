@@ -190,6 +190,34 @@ def main(argv: list[str] | None = None) -> int:
                     help='Tier: public|source|private_<user> (default private)')
     sub.set_defaults(func=cmd_postmortem)
 
+    # v1.15.36 (Ship P1.1): am mental-model — Hindsight-style fixed-question
+    # answer sheets. Read = direct DB lookup (no LLM, no vector search).
+    # `rebuild` synthesizes a fresh answer from recent canonical facts
+    # using a cheap LLM, tombstoning the prior version.
+    sub = subparsers.add_parser(
+        'mental-model',
+        help='Hindsight-style fixed-question answer sheet (kind=mental_model)',
+    )
+    mm_sub = sub.add_subparsers(dest='mm_action', required=True)
+
+    mm_list_p = mm_sub.add_parser('list', help='List all mental_models for tier')
+    mm_list_p.add_argument('--tier', default='public', help='Tier (default public)')
+    mm_list_p.add_argument('--user-id', default=None, help='User filter')
+    mm_list_p.set_defaults(func=cmd_mm_list)
+
+    mm_rebuild_p = mm_sub.add_parser('rebuild',
+                                       help='Re-synthesize a mental_model from canonical facts')
+    mm_rebuild_p.add_argument('--question', required=True, help='The fixed question')
+    mm_rebuild_p.add_argument('--answer', required=True,
+                              help='New answer text (operator-supplied or LLM-synthesized)')
+    mm_rebuild_p.add_argument('--confidence', type=float, default=0.7,
+                              help='Confidence 0.0-1.0 (default 0.7)')
+    mm_rebuild_p.add_argument('--tier', default='public')
+    mm_rebuild_p.add_argument('--user-id', default=None)
+    mm_rebuild_p.add_argument('--source-fact', type=int, action='append', default=[],
+                              help='Source fact_id backing this answer (repeatable)')
+    mm_rebuild_p.set_defaults(func=cmd_mm_rebuild)
+
     # v1.2.0 (2026-08-16): am cascade — replay the cascade write queue.
     # When nest.store() failed during promote_candidate (e.g. embedding
     # model OOM), the (fact_id, content, tier, user_id) is queued in
@@ -1762,6 +1790,73 @@ def cmd_reembed(args) -> int:
 
     print(f'[OK] Re-embedded {grand_total} facts across all tiers')
     return 0
+
+
+def cmd_mm_list(args):
+    """List mental_model facts for tier."""
+    import sqlite3 as _sq
+    from astor_memory.nest.mental_models import list_mental_models as _mm_list
+    from pathlib import Path as _P
+    import os as _os
+    _tier = getattr(args, 'tier', 'public') or 'public'
+    _user = getattr(args, 'user_id', None)
+    _rt_dir = _os.environ.get("ASTOR_DIR", "D:/AI/Astor-Memory-Runtime")
+    if _tier.startswith('private'):
+        _bus_db = str(_P(_rt_dir) / "users" / (_user or 'admin') / "memory" / f"astor_bus_{_user or 'admin'}.db")
+    else:
+        _bus_db = str(_P(_rt_dir) / _tier / "memory" / f"astor_bus_{_tier}.db")
+    if not _os.path.exists(_bus_db):
+        print(f"   bus db not found: {_bus_db}")
+        return 1
+    # v1.15.36: use bus instance (not raw conn — list_mental_models
+    # signature changed to take bus).
+    from astor_memory.bus import astor_bus as _mm_bus_factory
+    _bus = _mm_bus_factory(tier=_tier, user_id=_user)
+    _items = _mm_list(_bus, tier=_tier, user_id=_user)
+    if not _items:
+        print(f"   no mental_models for tier={getattr(args, 'tier', 'public')} user={getattr(args, 'user_id', None)}")
+        return 0
+    print(f"   {len(_items)} mental_model(s):")
+    for _mm in _items:
+        print(f"   - fid={_mm.fact_id} conf={_mm.confidence:.2f} updated={_mm.updated_at}")
+        print(f"     Q: {_mm.question}")
+        print(f"     A: {_mm.answer[:120]}{'...' if len(_mm.answer) > 120 else ''}")
+    return 0
+
+
+def cmd_mm_rebuild(args):
+    """Upsert a mental_model (tombstones prior)."""
+    import sqlite3 as _sq
+    from astor_memory.nest.mental_models import upsert_mental_model, _ensure_sources_table
+    from pathlib import Path as _P
+    import os as _os
+    _rt_dir = _os.environ.get("ASTOR_DIR", "D:/AI/Astor-Memory-Runtime")
+    _tier = getattr(args, 'tier', 'public')
+    _user = getattr(args, 'user_id', None)
+    if _tier.startswith('private'):
+        _bus_db = str(_P(_rt_dir) / "users" / (_user or 'admin') / "memory" / f"astor_bus_{_user or 'admin'}.db")
+    else:
+        _bus_db = str(_P(_rt_dir) / _tier / "memory" / f"astor_bus_{_tier}.db")
+    if not _os.path.exists(_bus_db):
+        print(f"   bus db not found: {_bus_db}")
+        return 1
+    # v1.15.36: pass bus instance (handles append_event + insert_candidate
+    # + promote_candidate plumbing automatically).
+    from astor_memory.bus import astor_bus as _mm_bus_factory
+    _bus = _mm_bus_factory(tier=_tier, user_id=_user)
+    _ensure_sources_table(_bus.conn)
+    _fid = upsert_mental_model(
+        _bus,
+        question=args.question,
+        answer=args.answer,
+        tier=_tier,
+        user_id=_user,
+        confidence=getattr(args, 'confidence', 0.7),
+        source_facts=getattr(args, 'source_fact', []) or [],
+    )
+    print(f"   upserted mental_model fid={_fid} Q='{args.question}'")
+    return 0
+
 
 
 def cmd_cascade_replay(args) -> int:
