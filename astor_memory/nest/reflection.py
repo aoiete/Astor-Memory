@@ -278,6 +278,89 @@ def deprecate_old_facts(bus, loser_ids: list[int], winner_id: int, actor: str) -
     return deprecated
 
 
+def _apply_confidence_updates(
+    bus,
+    winner_id: int,
+    merged_from_ids: list[int],
+    actor: str,
+    boost_strength: float = 0.1,
+    decay_strength: float = 0.3,
+) -> dict:
+    """v1.15.38: Hindsight-style confidence update on reflect.
+
+    When a cluster is merged into a winner:
+    - WINNER: confidence += 0.1 per absorbed fact (capped at 0.99).
+      More evidence converging on the same fact → higher confidence.
+    - LOSERS: each losing fact's confidence *= (1 - 0.3) before tombstone.
+      Decayed confidence is preserved on the row so audit-trail lookup
+      shows the final state. Tombstone still applies (no retrieval
+      surface).
+
+    boost_strength and decay_strength are operator-tunable defaults.
+    Returns {"winner_conf_before": float, "winner_conf_after": float,
+             "losers_decayed": int}.
+    """
+    result: dict = {"winner_conf_before": None, "winner_conf_after": None,
+                    "losers_decayed": 0}
+    # v1.15.38: always read winner_conf_before so callers can verify
+    # the no-op case (cluster of 1).
+    row = bus.conn.execute(
+        'SELECT confidence FROM memory_canonical WHERE id = ?',
+        (int(winner_id),),
+    ).fetchone()
+    if not row:
+        return result
+    pre_conf = float(row[0] or 0.0)
+    result["winner_conf_before"] = pre_conf
+    if not merged_from_ids:
+        # Cluster of 1 — nothing to absorb, winner_conf_after == before.
+        result["winner_conf_after"] = pre_conf
+        return result
+    boost = min(0.99, pre_conf + boost_strength * len(merged_from_ids))
+    bus.conn.execute(
+        'UPDATE memory_canonical SET confidence = ? WHERE id = ?',
+        (boost, int(winner_id)),
+    )
+    result["winner_conf_after"] = boost
+    # Decay losers (does NOT change tombstoned state — caller still
+    # tombstones; this just preserves confidence trace in audit).
+    for loser_id in merged_from_ids:
+        if int(loser_id) == int(winner_id):
+            continue
+        row = bus.conn.execute(
+            'SELECT confidence FROM memory_canonical WHERE id = ?',
+            (int(loser_id),),
+        ).fetchone()
+        if not row:
+            continue
+        old_conf = float(row[0] or 0.0)
+        new_conf = max(0.0, old_conf * (1.0 - decay_strength))
+        bus.conn.execute(
+            'UPDATE memory_canonical SET confidence = ? WHERE id = ?',
+            (new_conf, int(loser_id)),
+        )
+        result["losers_decayed"] += 1
+    bus.write_audit(
+        event='reflection_confidence_update',
+        actor=actor,
+        target_type='fact',
+        target_id=str(winner_id),
+        metadata={
+            'new_state': json.dumps({
+                'winner_conf_before': pre_conf,
+                'winner_conf_after': boost,
+                'losers_decayed': result['losers_decayed'],
+                'boost_strength': boost_strength,
+                'decay_strength': decay_strength,
+            }),
+        },
+        reason='reflection: confidence boost on winner + decay on losers',
+        severity='info',
+    )
+    return result
+
+
+
 def apply_merge(bus, winner_id: int, merged_content: str, merged_importance: float,
                 actor: str) -> int:
     """Apply merged content to winner row. Returns 1 on success.
@@ -369,6 +452,17 @@ def run_reflection(
             winner_id=merged['winner_id'],
             merged_content=merged['merged_content'],
             merged_importance=merged['merged_importance'],
+            actor=actor,
+        )
+        # v1.15.38: Hindsight-style confidence update — winner gets a
+        # boost (more evidence converging) and losers decay (lower
+        # confidence before they're tombstoned, preserving audit trail).
+        merged_from_ids = [f['id'] for f in facts
+                           if f['id'] != merged['winner_id']]
+        _apply_confidence_updates(
+            bus,
+            winner_id=merged['winner_id'],
+            merged_from_ids=merged_from_ids,
             actor=actor,
         )
         # Deprecate losers
