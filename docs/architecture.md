@@ -154,6 +154,8 @@ Three spatial tiers match the ACL needs of every agent system we've seen in prod
 | `source` | Admin only (agent sees, user doesn't) | Admin-private context, agent self-patterns, internal config |
 | `private × N` | One user at a time | Per-user private facts (preferences, history, audit) |
 
+> v1.16+：模式/方法/流程/教训自动走 public（agent 跨用户共享），operator 自己的 R-class 硬规则走 source（admin-only）。
+
 ### Why exactly 3?
 
 We considered 2 (just public/private) and 5 (PowerContext's profile/private/short/long/shared). The reason 3 wins:

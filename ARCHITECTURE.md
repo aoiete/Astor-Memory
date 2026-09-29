@@ -13,7 +13,7 @@ a few months.
 tier=public │       forge (LLM extracts)     │
             │       nest  (embeddings + lex) │
             ├─────────────────────────────────┤
-tier=source │       bus / forge / nest        │  admin-only
+tier=source │       bus / forge / nest        │  operator-only R-class
             ├─────────────────────────────────┤
 tier=private│       bus / forge / nest        │  per-user, ACL-gated
             └─────────────────────────────────┘
@@ -26,7 +26,7 @@ tier=private│       bus / forge / nest        │  per-user, ACL-gated
 
 3 tiers map to 3 ACL needs:
 - **public**: shared knowledge (admin-curated rules)
-- **source**: admin-only (operator's own rules)
+- **source**: operator-only R-class hard rules (模式/方法/流程/教训 → public)
 - **private**: per-user (cross-user isolation)
 
 ## 4th DB family: lex
