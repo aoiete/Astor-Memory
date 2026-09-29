@@ -92,6 +92,17 @@ def select_episode_clusters(
         placeholders = ','.join('?' * len(kinds))
         where_extra = f'AND kind IN ({placeholders})'
         params.extend(kinds)
+    # v1.15.44 (Ship P3.1g): NEVER reflect on operator-authored surfaces.
+    # Mental models + knowledge pages are admin-authored reference rows
+    # (fixed Q→A / wiki-style pages). They must NEVER be tombstoned by
+    # reflection merge-loser logic. Without this exclusion, two similar
+    # KPs/MMs get clustered, and the loser gets tombstoned (delete-merge)
+    # — making /v1/read auto-injection useless because rows vanish after
+    # the next /v1/reflect call.
+    if 'mental_model' not in (kinds or []):
+        where_extra += ' AND kind != \'mental_model\''
+    if 'knowledge_page' not in (kinds or []):
+        where_extra += ' AND kind != \'knowledge_page\''
     sql = (
         f'SELECT id, content, kind, scope_type, importance, '
         f'       promoted_at, confidence '
@@ -237,6 +248,12 @@ def deprecate_old_facts(bus, loser_ids: list[int], winner_id: int, actor: str) -
         # recall candidates. Silently skip them so a merge cluster can't
         # ever accidentally archive /v1/classify machinery.
         if row is not None and row[2] in ('lock_rule', 'rule'):
+            continue
+        # v1.15.44 (Ship P3.1g): defensive guard — same exclusion as the
+        # candidate SQL. If a future code path bypasses the WHERE filter
+        # (e.g. merge cluster crossing kinds), still skip operator-authored
+        # mental_model + knowledge_page rows here.
+        if row is not None and row[2] in ('mental_model', 'knowledge_page'):
             continue
         if row is None:
             continue
