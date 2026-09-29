@@ -853,6 +853,187 @@ def _decayed_count(astor_dir: Path) -> dict[str, int]:
     return buckets
 
 
+
+def _mental_models_section(astor_dir: Path, limit: int = 20) -> dict:
+    """Ship P3.1 dashboard panel: mental_model facts (kind=mental_model).
+
+    Scans public + private_<user> bus dbs. Returns top `limit` rows by
+    promoted_at desc, plus counts. Pure SQL — no LLM cost.
+
+    v1.15.40 (Ship P3.1 dashboard): dashboard now surfaces the
+    mental_model layer so operator sees their answer sheets at a glance
+    (previously: required am mental-model list or curl).
+    """
+    out: dict = {"count": 0, "by_tier": {}, "items": []}
+    rows = []
+    # Public tier
+    pub_db = astor_dir / "public" / "memory" / "astor_bus_public.db"
+    if pub_db.exists():
+        try:
+            with sqlite3.connect(str(pub_db)) as conn:
+                c = conn.execute(
+                    "SELECT COUNT(*) FROM memory_canonical "
+                    "WHERE kind='mental_model' AND tombstoned=0",
+                ).fetchone()[0]
+                out["by_tier"]["public"] = int(c)
+                rows.extend(
+                    (r, "public") for r in conn.execute(
+                        "SELECT id, content, confidence, promoted_at, user_id "
+                        "FROM memory_canonical "
+                        "WHERE kind='mental_model' AND tombstoned=0 "
+                        "ORDER BY promoted_at DESC LIMIT ?",
+                        (int(limit),),
+                    ).fetchall()
+                )
+        except Exception:
+            pass
+    # Private per-user dbs (best-effort: scan users/<u>/memory/astor_bus_<u>.db)
+    users_dir = astor_dir / "users"
+    if users_dir.exists():
+        for user_dir in users_dir.iterdir():
+            if not user_dir.is_dir():
+                continue
+            uid = user_dir.name
+            user_db = user_dir / "memory" / f"astor_bus_{uid}.db"
+            if not user_db.exists():
+                continue
+            try:
+                with sqlite3.connect(str(user_db)) as conn:
+                    c = conn.execute(
+                        "SELECT COUNT(*) FROM memory_canonical "
+                        "WHERE kind='mental_model' AND tombstoned=0",
+                    ).fetchone()[0]
+                    out["by_tier"][f"private:{uid}"] = int(c)
+                    rows.extend(
+                        (r, f"private:{uid}") for r in conn.execute(
+                            "SELECT id, content, confidence, promoted_at, user_id "
+                            "FROM memory_canonical "
+                            "WHERE kind='mental_model' AND tombstoned=0 "
+                            "ORDER BY promoted_at DESC LIMIT ?",
+                            (int(limit),),
+                        ).fetchall()
+                    )
+            except Exception:
+                continue
+    # Format items (parse question + answer from content)
+    items = []
+    for row, tier in rows:
+        rid, content, conf, promoted, uid = row
+        parsed = None
+        if content and content.startswith("[MM]"):
+            parts = content.split(chr(10), 2)
+            if len(parts) >= 2 and parts[0].startswith("[MM] question: "):
+                q = parts[0][len("[MM] question: "):].strip()
+                a = parts[1][len("answer: "):].strip() if parts[1].startswith("answer: ") else ""
+                parsed = (q, a)
+        items.append({
+            "fact_id": int(rid),
+            "tier": tier,
+            "user_id": uid,
+            "confidence": float(conf or 0.5),
+            "promoted_at": promoted,
+            "question": parsed[0] if parsed else "",
+            "answer_preview": (parsed[1][:200] + "...") if parsed and len(parsed[1]) > 200 else (parsed[1] if parsed else ""),
+        })
+    items.sort(key=lambda x: x.get("promoted_at") or "", reverse=True)
+    out["count"] = sum(out["by_tier"].values())
+    out["items"] = items[: int(limit)]
+    return out
+
+
+def _knowledge_pages_section(astor_dir: Path, limit: int = 20) -> dict:
+    """Ship P3.1 dashboard panel: knowledge_page facts (kind=knowledge_page).
+
+    Scans public + private_<user> bus dbs. Returns top `limit` rows by
+    promoted_at desc, plus counts. Pure SQL — no LLM cost.
+
+    v1.15.40 (Ship P3.1 dashboard): dashboard surfaces the
+    knowledge_page layer. Operator can see their wiki-style reference
+    pages without curling /v1/knowledge_page/list.
+    """
+    out: dict = {"count": 0, "by_tier": {}, "items": []}
+    rows = []
+    pub_db = astor_dir / "public" / "memory" / "astor_bus_public.db"
+    if pub_db.exists():
+        try:
+            with sqlite3.connect(str(pub_db)) as conn:
+                c = conn.execute(
+                    "SELECT COUNT(*) FROM memory_canonical "
+                    "WHERE kind='knowledge_page' AND tombstoned=0",
+                ).fetchone()[0]
+                out["by_tier"]["public"] = int(c)
+                rows.extend(
+                    (r, "public") for r in conn.execute(
+                        "SELECT id, content, confidence, promoted_at, user_id, metadata "
+                        "FROM memory_canonical "
+                        "WHERE kind='knowledge_page' AND tombstoned=0 "
+                        "ORDER BY promoted_at DESC LIMIT ?",
+                        (int(limit),),
+                    ).fetchall()
+                )
+        except Exception:
+            pass
+    users_dir = astor_dir / "users"
+    if users_dir.exists():
+        for user_dir in users_dir.iterdir():
+            if not user_dir.is_dir():
+                continue
+            uid = user_dir.name
+            user_db = user_dir / "memory" / f"astor_bus_{uid}.db"
+            if not user_db.exists():
+                continue
+            try:
+                with sqlite3.connect(str(user_db)) as conn:
+                    c = conn.execute(
+                        "SELECT COUNT(*) FROM memory_canonical "
+                        "WHERE kind='knowledge_page' AND tombstoned=0",
+                    ).fetchone()[0]
+                    out["by_tier"][f"private:{uid}"] = int(c)
+                    rows.extend(
+                        (r, f"private:{uid}") for r in conn.execute(
+                            "SELECT id, content, confidence, promoted_at, user_id, metadata "
+                            "FROM memory_canonical "
+                            "WHERE kind='knowledge_page' AND tombstoned=0 "
+                            "ORDER BY promoted_at DESC LIMIT ?",
+                            (int(limit),),
+                        ).fetchall()
+                    )
+            except Exception:
+                continue
+    # Format items (parse slug + title from content)
+    items = []
+    for row, tier in rows:
+        rid, content, conf, promoted, uid, meta_json = row
+        slug, title = "", ""
+        if content and content.startswith("[KP]"):
+            header = content.split(chr(10) + chr(10), 1)[0]
+            for ln in header.split(chr(10)):
+                if ln.startswith("[KP] slug: "):
+                    slug = ln[len("[KP] slug: "):].strip()
+                elif ln.startswith("title: "):
+                    title = ln[len("title: "):].strip()
+        parent_count = 0
+        try:
+            meta = json.loads(meta_json) if meta_json else {}
+            parent_count = len(meta.get("parent_fact_ids") or [])
+        except Exception:
+            pass
+        items.append({
+            "fact_id": int(rid),
+            "tier": tier,
+            "user_id": uid,
+            "confidence": float(conf or 0.5),
+            "promoted_at": promoted,
+            "slug": slug,
+            "title": title,
+            "parent_fact_count": parent_count,
+        })
+    items.sort(key=lambda x: x.get("promoted_at") or "", reverse=True)
+    out["count"] = sum(out["by_tier"].values())
+    out["items"] = items[: int(limit)]
+    return out
+
+
 def build_dashboard_payload(astor_dir: str | Path) -> dict:
     """Aggregate the 6 dashboard dimensions into a single JSON-ready dict.
 
@@ -901,6 +1082,11 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
     recent_capture = _recent_capture(astor, limit=10)
     # Phase E5 (2026-09-17): LLM call spend tracking.
     llm_spend = _summarize_llm_spend(astor)
+    # v1.15.40 (Ship P3.1 dashboard): Mental Models + Knowledge Pages panels.
+    # Surfaces the Hindsight-style fixed-question answer sheets + topic
+    # pages so the operator can see them at a glance (no curl needed).
+    mental_models_panel = _mental_models_section(astor)
+    knowledge_pages_panel = _knowledge_pages_section(astor)
     # v1.14.74 (2026-09-18) Hindsight insights: taxonomy distribution + decay stats.
     memory_class_distribution = _memory_class_distribution(astor)
     decayed_count = _decayed_count(astor)
@@ -942,6 +1128,10 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
         "entities_coverage": entities_cov,
         # v1.14.37 Ship N: Recent Capture panel — grouped facts for dashboard UI.
         "recent_capture": recent_capture,
+        # v1.15.40 (Ship P3.1 dashboard): Mental Models + Knowledge Pages
+        # panels for the Hindsight-style operator-curated content.
+        "mental_models": mental_models_panel,
+        "knowledge_pages": knowledge_pages_panel,
     }
 
 
