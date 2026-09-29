@@ -854,6 +854,30 @@ def _decayed_count(astor_dir: Path) -> dict[str, int]:
 
 
 
+def _compute_staleness(promoted_at: str, now_iso: str | None = None,
+                         stale_days: int = 30) -> dict:
+    """v1.15.41 (Ship P3.1 staleness): operator-curated sheets (mental_models
+    + knowledge_pages) need refresh. Compute age + is_stale flag.
+
+    Returns {age_days: float|None, is_stale: bool, stale_threshold_days: int}.
+    Tolerates missing / malformed promoted_at by returning None.
+    """
+    from datetime import datetime, timezone
+    out = {"age_days": None, "is_stale": False, "stale_threshold_days": stale_days}
+    if not promoted_at:
+        return out
+    try:
+        now = datetime.now(timezone.utc) if not now_iso else datetime.fromisoformat(now_iso)
+        ts = promoted_at.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts)
+        age = (now - dt).total_seconds() / 86400.0
+        out["age_days"] = round(age, 1)
+        out["is_stale"] = age > stale_days
+        return out
+    except Exception:
+        return out
+
+
 def _mental_models_section(astor_dir: Path, limit: int = 20) -> dict:
     """Ship P3.1 dashboard panel: mental_model facts (kind=mental_model).
 
@@ -934,10 +958,21 @@ def _mental_models_section(astor_dir: Path, limit: int = 20) -> dict:
             "promoted_at": promoted,
             "question": parsed[0] if parsed else "",
             "answer_preview": (parsed[1][:200] + "...") if parsed and len(parsed[1]) > 200 else (parsed[1] if parsed else ""),
+            **_compute_staleness(promoted or ""),
         })
     items.sort(key=lambda x: x.get("promoted_at") or "", reverse=True)
     out["count"] = sum(out["by_tier"].values())
     out["items"] = items[: int(limit)]
+    # v1.15.41 (Ship P3.1 staleness): aggregate stale count across all rows
+    # (not just the top-N items returned — operator wants full picture).
+    stale_count = 0
+    for row, _tier in rows:
+        # row index 3 = promoted_at (we know shape from the SELECTs above)
+        _promoted = row[3] if len(row) > 3 else None
+        _st = _compute_staleness(_promoted or "")
+        if _st["is_stale"]:
+            stale_count += 1
+    out["stale_count"] = stale_count
     return out
 
 
@@ -1027,10 +1062,21 @@ def _knowledge_pages_section(astor_dir: Path, limit: int = 20) -> dict:
             "slug": slug,
             "title": title,
             "parent_fact_count": parent_count,
+            **_compute_staleness(promoted or ""),
         })
     items.sort(key=lambda x: x.get("promoted_at") or "", reverse=True)
     out["count"] = sum(out["by_tier"].values())
     out["items"] = items[: int(limit)]
+    # v1.15.41 (Ship P3.1 staleness): aggregate stale count across all
+    # knowledge_page rows (not just top-N returned items).
+    stale_count = 0
+    for row, _tier in rows:
+        # kp SELECT has 6 columns; promoted_at at index 3
+        _promoted = row[3] if len(row) > 3 else None
+        _st = _compute_staleness(_promoted or "")
+        if _st["is_stale"]:
+            stale_count += 1
+    out["stale_count"] = stale_count
     return out
 
 
