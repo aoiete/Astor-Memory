@@ -2918,18 +2918,23 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     # auto-tombstoning them would silently break /v1/classify
                     # Path 2 (rule_ship / private routing). Same applies to
                     # `rule` facts (compiled Ship A/B rules).
+                    # v1.15.47 (Ship F.1): also skip operator-authored surfaces
+                    # mental_model + knowledge_page. These are admin reference
+                    # rows that should NEVER decay — they're refreshed by
+                    # explicit `am mental-model rebuild` / `am knowledge-page
+                    # upsert`, not by recall dynamics.
                     bus.conn.execute(
                         f"UPDATE memory_canonical SET access_count = MAX(1, access_count / 2) "
                         f"WHERE id NOT IN ({_ph_acc}) AND tombstoned = 0 "
                         f"AND (last_confirmed_at IS NULL OR last_confirmed_at < ?) "
-                        f"AND kind NOT IN ('lock_rule', 'rule')",
+                        f"AND kind NOT IN ('lock_rule', 'rule', 'mental_model', 'knowledge_page')",
                         _surfaced_fids + [_30d_iso],
                     )
                     bus.conn.execute(
                         f"UPDATE memory_canonical SET tombstoned = 1 "
                         f"WHERE id NOT IN ({_ph_acc}) AND tombstoned = 0 "
                         f"AND (last_confirmed_at IS NULL OR last_confirmed_at < ?) "
-                        f"AND kind NOT IN ('lock_rule', 'rule')",
+                        f"AND kind NOT IN ('lock_rule', 'rule', 'mental_model', 'knowledge_page')",
                         _surfaced_fids + [_90d_iso],
                     )
                 # Always: bump surfaced facts' access_count + last_confirmed_at.
@@ -3126,6 +3131,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # v1.15.42 (Ship P3.1 recall enhancement): mental_model auto-injection.
         try:
             _mm = _meta_recall_mental_models(query, body.get('user') or body.get('user_id'), tier)
+            _safe_stderr_write(f'[DEBUG-MM] query={query[:30]!r} tier={tier!r} user={body.get("user") or body.get("user_id")!r} → {len(_mm) if _mm else 0} hits\n')
             if _mm:
                 enriched = _mm + enriched
                 _meta_recall_stats['triggered'] += 1
