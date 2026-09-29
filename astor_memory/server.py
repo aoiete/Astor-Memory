@@ -4900,6 +4900,82 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'reference': 'mp.weixin.qq.com/s/aL1gaDDGR1eJy2uzL5kKdQ (Bannings 2026-08)'
         })
 
+    # v1.15.46 (Ship E.1): standalone staleness endpoint.
+    # Returns facts where staleness > threshold (default 30 days), grouped by
+    # kind + tier. Operators query via `curl /v1/staleness?tier=public`
+    # to find references that may need refreshing.
+    @app.route('/v1/staleness', methods=['GET'])
+    def staleness_list():
+        """List facts whose promoted_at exceeds the staleness threshold.
+
+        Query params:
+          tier:    public|source|private (default public)
+          user:    private tier only — namespace filter
+          threshold_days: int (default 30) — facts older than this are stale
+          kind:    optional — restrict to one kind (mental_model|knowledge_page|fact|...)
+          limit:   int (default 100) — max rows returned
+
+        Returns:
+          {stale_count, threshold_days, items: [{id, kind, content, age_days, is_stale}]}
+        """
+        from .dashboard_data import _compute_staleness
+        tier = request.args.get('tier', 'public')
+        user = request.args.get('user') or None
+        threshold_days = int(request.args.get('threshold_days', 30))
+        kind_filter = request.args.get('kind') or None
+        limit = int(request.args.get('limit', 100))
+        # ACL gate
+        try:
+            from ._internal.acl import astor_check_read as _stal_acr
+            _stal_acr(tier=tier, user_id=user)
+        except Exception as _acl_exc:
+            return jsonify({'error': 'forbidden', 'detail': str(_acl_exc)}), 403
+        bus = astor_bus(tier=tier, user_id=user)
+        where_extra = ''
+        params: list = []
+        if kind_filter:
+            where_extra = 'AND kind = ?'
+            params.append(kind_filter)
+        sql = (
+            f'SELECT id, kind, content, promoted_at, confidence, importance '
+            f'FROM memory_canonical '
+            f'WHERE tombstoned = 0 AND tier = ? '
+            f'  AND (user_id IS ? OR user_id = ?) '
+            f'  {where_extra} '
+            f'ORDER BY promoted_at ASC LIMIT ?'
+        )
+        rows = bus.conn.execute(
+            sql, [tier, user, user] + params + [limit * 4]  # over-fetch; filter after
+        ).fetchall()
+        items = []
+        stale_count = 0
+        for fid, kind, content, promoted_at, confidence, importance in rows:
+            st = _compute_staleness(promoted_at or '')
+            age_days = st.get('age_days', 0) or 0
+            is_stale = age_days >= threshold_days
+            if is_stale:
+                stale_count += 1
+            items.append({
+                'id': int(fid),
+                'kind': kind,
+                'content': (content or '')[:300],
+                'promoted_at': promoted_at,
+                'confidence': float(confidence or 0),
+                'importance': float(importance or 0),
+                'age_days': age_days,
+                'is_stale': is_stale,
+            })
+        items.sort(key=lambda x: x['age_days'], reverse=True)
+        return jsonify({
+            'tier': tier,
+            'user': user,
+            'threshold_days': threshold_days,
+            'kind_filter': kind_filter,
+            'stale_count': stale_count,
+            'total_returned': min(len(items), limit),
+            'items': items[:limit],
+        })
+
     @app.errorhandler(500)
     def internal_error(e):
         """Flask 500 handler that emits a structured JSON error + audit row.
