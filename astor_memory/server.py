@@ -1058,6 +1058,18 @@ def create_app(astor_dir: str | None = None) -> Flask:
         user = body.get('user', 'admin')
         mode = body.get('mode', 'auto')
         tier = body.get('tier', 'public')
+        # v1.16+ (Plan "public tier 共享方法/流程/教训"): public tier hard gate.
+        # Any write to tier='public' must pass through Memory Defense first.
+        # Default policy is 'block' (reject writes that contain PII patterns);
+        # caller may explicitly opt out with body.pii_scan=False (admin escape
+        # hatch). Env ASTOR_PII_PUBLIC_FORCE=0 disables the entire hard gate
+        # (emergency escape — normal ops should leave this on).
+        if (tier == 'public'
+                and body.get('pii_scan') is not False
+                and os.environ.get('ASTOR_PII_PUBLIC_FORCE', '1') == '1'):
+            body = dict(body)
+            body['pii_scan'] = True
+            body.setdefault('pii_policy', 'block')
         # v1.15.35 (Ship P0): Memory Defense — Hindsight-style PII scanner.
         # Gated by ASTOR_PII_SCAN_ON_WRITE=1 (default off). Two policies:
         # - 'redact' (default): replace PII with [BLOCKED:TYPE] tag, preserve write
@@ -1077,12 +1089,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 from .nest.memory_defense import get_policy as _md_get_policy
                 _md_policy = _md_get_policy()
             _processed_text, _md_matches = _md_scan(text, policy=_md_policy)
-            if _md_matches and _md_policy == 'block' and any(m.severity == 'block' for m in _md_matches):
-                _names = sorted({m.name for m in _md_matches if m.severity == 'block'})
+            # v1.16+ (Plan "public tier 共享方法/流程/教训"): when policy='block',
+            # reject on ANY PII match (severity in {redact, block}), not just
+            # block-severity. This is the contract that "宁可漏一条不能泄露一条"
+            # relies on — without it, redact-severity patterns (e.g. telegram_chat_id
+            # catching a CN phone) would still leak under the public-tier hard gate.
+            if _md_matches and _md_policy == 'block' and any(m.severity in ('block', 'redact') for m in _md_matches):
+                _names = sorted({m.name for m in _md_matches if m.severity in ('block', 'redact')})
                 return jsonify({
                     'error': 'pii_blocked',
                     'detail': f"Memory Defense (block policy) rejected write: {len(_md_matches)} PII match(es) including {_names[:3]}",
-                    'matches': [{'name': m.name, 'severity': m.severity} for m in _md_matches if m.severity == 'block'],
+                    'matches': [{'name': m.name, 'severity': m.severity} for m in _md_matches],
                 }), 400
             if _md_matches:
                 # Log to audit (fire-and-forget; never blocks the write)
@@ -1617,6 +1634,78 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return results
         except Exception as exc:
             _safe_stderr_write(f'[astor.server] meta-recall failed (non-fatal): {exc}\n')
+            return []
+
+    def _meta_recall_lessons(query: str, user: str, tier: str) -> list:
+        """v1.16+ (Plan "public tier 共享方法/流程/教训"): lesson auto-injection.
+
+        Mirror of _meta_recall_patterns but filters kind='lesson' only — keeps
+        lessons on their own top-2 quota so they don't compete with
+        success_pattern / failure_pattern hits. Same tier routing semantics
+        (private_X → private+public+source; source → source only;
+        public/None → public+source). Same latency budget (<100ms, pure SQL).
+
+        Why separate from _meta_recall_patterns: lessons are rarer + more
+        specific, and they have higher importance (>=0.99). Putting them
+        on a shared LIMIT 2 would risk getting crowded out by success/
+        failure pattern noise.
+        """
+        if not query or len(query.strip()) < 3:
+            return []
+        try:
+            words = [w.strip() for w in query.split() if len(w.strip()) >= 3][:6]
+            if not words:
+                return []
+            like_clauses = ' AND '.join(['content LIKE ?' for _ in words])
+            like_params = [f'%{w}%' for w in words]
+
+            # Same tier routing as _meta_recall_patterns.
+            tiers_to_query = []
+            if tier and tier.startswith('private'):
+                if user:
+                    tiers_to_query.append(('private', user))
+                tiers_to_query.append(('public', None))
+                tiers_to_query.append(('source', None))
+            elif tier == 'source':
+                tiers_to_query.append(('source', None))
+            else:  # public or None
+                tiers_to_query.append(('public', None))
+                tiers_to_query.append(('source', None))
+
+            results = []
+            seen_ids = set()
+            for t, u in tiers_to_query:
+                try:
+                    b = astor_bus(tier=t, user_id=u)
+                    rows = b.conn.execute(
+                        f"SELECT id, content, kind, importance, memory_class "
+                        f"FROM memory_canonical "
+                        f"WHERE tombstoned = 0 AND kind = 'lesson' "
+                        f"AND ({like_clauses}) "
+                        f"ORDER BY importance DESC, created_at DESC LIMIT 2",
+                        tuple(like_params)
+                    ).fetchall()
+                    for row in rows:
+                        if row[0] in seen_ids:
+                            continue
+                        seen_ids.add(row[0])
+                        results.append({
+                            'fact_id': row[0],
+                            'content': row[1][:500] if row[1] else '',
+                            'kind': row[2],
+                            'importance': row[3],
+                            'memory_class': row[4] if len(row) > 4 else 'world_fact',
+                            'meta_source': 'auto-meta-recall-lessons-v1.16',
+                            'meta_tier': t,
+                            'similarity': 0.99,  # synthetic — pattern match, not vector
+                            'hit_source': 'meta-recall-lessons',
+                        })
+                except Exception as inner_exc:
+                    _safe_stderr_write(f'[astor.server] meta-recall-lessons tier={t} err={inner_exc}\n')
+                    continue
+            return results
+        except Exception as exc:
+            _safe_stderr_write(f'[astor.server] meta-recall-lessons failed (non-fatal): {exc}\n')
             return []
 
     def _meta_recall_mental_models(query: str, user: str, tier: str) -> list:
@@ -3127,6 +3216,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _meta_recall_stats['returned_total'] += len(_meta)
         except Exception as _mr_exc:
             _safe_stderr_write(f'[astor.server] meta-recall prepend failed: {_mr_exc}\n')
+            _meta_recall_stats['errors'] += 1
+        # v1.16+ (Plan "public tier 共享方法/流程/教训"): lesson auto-injection.
+        # Mirror of the meta-recall block above but routed through _meta_recall_lessons.
+        # Lessons carry higher importance (>=0.99) and rarer phrasing, so they
+        # need their own top-2 channel to avoid being crowded out by pattern noise.
+        try:
+            _lessons = _meta_recall_lessons(query, body.get('user') or body.get('user_id'), tier)
+            if _lessons:
+                enriched = _lessons + enriched
+                _meta_recall_stats['triggered'] += 1
+                _meta_recall_stats['returned_total'] += len(_lessons)
+        except Exception as _ml_exc:
+            _safe_stderr_write(f'[astor.server] meta-recall-lessons prepend failed: {_ml_exc}\n')
             _meta_recall_stats['errors'] += 1
         # v1.15.42 (Ship P3.1 recall enhancement): mental_model auto-injection.
         try:
