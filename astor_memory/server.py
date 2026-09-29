@@ -1695,6 +1695,96 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _safe_stderr_write(f'[astor.server] mental-model auto-recall failed (non-fatal): {exc}\n')
             return []
 
+    def _meta_recall_knowledge_pages(query: str, user: str, tier: str) -> list:
+        """v1.15.43: Hindsight-style knowledge_page recall augmentation.
+
+        When the user's query matches a knowledge_page's slug/title keywords,
+        surface the page (with linked_fact count) as a reference card at
+        the top of recall. Returns dicts shaped like _meta_recall_patterns.
+
+        Pure SQL LIKE on memory_canonical.kind='knowledge_page' rows. Same
+        tier routing as _meta_recall_mental_models.
+        """
+        if not query or len(query.strip()) < 3:
+            return []
+        try:
+            # Tokenize query (>=2 chars, max 8 words).
+            words = [w.strip() for w in query.split() if len(w.strip()) >= 2][:8]
+            if not words:
+                return []
+            like_clauses = ' AND '.join(['content LIKE ?' for _ in words])
+            like_params = [f'%{w}%' for w in words]
+            tiers_to_query = []
+            if tier and tier.startswith('private'):
+                if user:
+                    tiers_to_query.append(('private', user))
+                tiers_to_query.append(('public', None))
+                tiers_to_query.append(('source', None))
+            elif tier == 'source':
+                tiers_to_query.append(('source', None))
+            else:
+                tiers_to_query.append(('public', None))
+                tiers_to_query.append(('source', None))
+            results = []
+            seen_ids = set()
+            for t, u in tiers_to_query:
+                try:
+                    b = astor_bus(tier=t, user_id=u)
+                    rows = b.conn.execute(
+                        f"SELECT id, content, importance, confidence, metadata "
+                        f"FROM memory_canonical "
+                        f"WHERE tombstoned = 0 AND kind = 'knowledge_page' "
+                        f"AND ({like_clauses}) "
+                        f"ORDER BY confidence DESC, importance DESC, id DESC LIMIT 3",
+                        tuple(like_params),
+                    ).fetchall()
+                    for row in rows:
+                        fid, content, imp, conf, meta_json = row
+                        if fid in seen_ids:
+                            continue
+                        # Parse slug + title.
+                        slug, title, body = "", "", ""
+                        if content and content.startswith("[KP]"):
+                            header = content.split(chr(10) + chr(10), 1)[0]
+                            for ln in header.split(chr(10)):
+                                if ln.startswith("[KP] slug: "):
+                                    slug = ln[len("[KP] slug: "):].strip()
+                                elif ln.startswith("title: "):
+                                    title = ln[len("title: "):].strip()
+                        if not slug:
+                            continue
+                        # Parent fact count from metadata.
+                        try:
+                            meta = json.loads(meta_json) if meta_json else {}
+                        except Exception:
+                            meta = {}
+                        parent_count = len(meta.get("parent_fact_ids") or [])
+                        seen_ids.add(fid)
+                        body_preview = (body[:200] + "...") if len(body) > 200 else body
+                        formatted = (
+                            f"[KP] slug={slug} title={title[:80]} "
+                            f"linked_facts={parent_count} body={body_preview[:300]}"
+                        )
+                        results.append({
+                            'fact_id': fid,
+                            'content': formatted[:500],
+                            'kind': 'knowledge_page',
+                            'importance': float(imp or 0.5),
+                            'memory_class': 'knowledge_page',
+                            'confidence': float(conf or 0.5),
+                            'meta_source': 'auto-knowledge-page-v1.15.43',
+                            'meta_tier': t,
+                            'similarity': 0.95,
+                            'hit_source': 'knowledge-page-auto',
+                        })
+                except Exception as inner_exc:
+                    _safe_stderr_write(f'[astor.server] kp recall tier={t} err={inner_exc}\n')
+                    continue
+            return results
+        except Exception as exc:
+            _safe_stderr_write(f'[astor.server] kp auto-recall failed (non-fatal): {exc}\n')
+            return []
+
     @app.route('/v1/read', methods=['POST'])
     def read():
         """Recall similar facts via nest vector search.
@@ -3034,10 +3124,6 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _safe_stderr_write(f'[astor.server] meta-recall prepend failed: {_mr_exc}\n')
             _meta_recall_stats['errors'] += 1
         # v1.15.42 (Ship P3.1 recall enhancement): mental_model auto-injection.
-        # When the user's query matches a fixed-question mental_model's
-        # question keywords, surface the answer at the top of recall (above
-        # even success_pattern results, since answers are operator-curated
-        # SSoT for "what is X?" style queries).
         try:
             _mm = _meta_recall_mental_models(query, body.get('user') or body.get('user_id'), tier)
             if _mm:
@@ -3046,6 +3132,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _meta_recall_stats['returned_total'] += len(_mm)
         except Exception as _mm_exc:
             _safe_stderr_write(f'[astor.server] mental-model recall failed (non-fatal): {_mm_exc}\n')
+            _meta_recall_stats['errors'] += 1
+        # v1.15.43 (Ship P3.1 knowledge_page recall):
+        try:
+            _kp = _meta_recall_knowledge_pages(query, body.get('user') or body.get('user_id'), tier)
+            _safe_stderr_write(f'[DEBUG-KP] query={query[:30]!r} tier={tier!r} user={body.get("user") or body.get("user_id")!r} → {len(_kp) if _kp else 0} hits\n')
+            if _kp:
+                enriched = _kp + enriched
+                _meta_recall_stats['triggered'] += 1
+                _meta_recall_stats['returned_total'] += len(_kp)
+        except Exception as _kp_exc:
+            _safe_stderr_write(f'[astor.server] kp recall failed: type={type(_kp_exc).__name__} {_kp_exc}\n')
             _meta_recall_stats['errors'] += 1
 
         return jsonify({
