@@ -203,5 +203,86 @@ def main() -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# v1.16+ Plan "public tier 共享方法/流程/教训": lesson auto-injection tests.
+# Verifies the SQL that backs the new _meta_recall_lessons() helper can
+# surface kind='lesson' rows under the same lexical LIKE filter used by
+# _meta_recall_patterns. Mirrors the existing KP / MM test style.
+# ---------------------------------------------------------------------------
+class FakeBusWithLessons(FakeBus):
+    """Same as FakeBus but ready to accept kind='lesson' rows."""
+
+
+def _insert_lesson(bus, content: str, importance: float = 0.99,
+                   tombstoned: int = 0, promoted_at: str = "2026-09-01T00:00:00Z"):
+    bus.conn.execute(
+        "INSERT INTO memory_canonical (tier, kind, content, importance, promoted_at, tombstoned) "
+        "VALUES ('public', 'lesson', ?, ?, ?, ?)",
+        (content, importance, promoted_at, tombstoned),
+    )
+    bus.conn.commit()
+
+
+def main_lessons() -> int:
+    print("\n=== Lesson injection (v1.16+) ===")
+
+    # 11) Lesson basic match — proves the new SQL surface for _meta_recall_lessons
+    bus = FakeBus()
+    _insert_lesson(bus, "教训：当 astor 公共层缺自动注入时 agent 学不到方法")
+    rows = bus.conn.execute(
+        "SELECT id FROM memory_canonical "
+        "WHERE tombstoned = 0 AND kind = 'lesson' "
+        "AND content LIKE '%教训%' AND content LIKE '%astor%' LIMIT 2"
+    ).fetchall()
+    _eq("lesson basic 2-token match", len(rows), 1)
+
+    # 12) Lesson with only one token overlap → still matched (no minimum bar)
+    bus2 = FakeBus()
+    _insert_lesson(bus2, "微信反爬技巧：先 GET 看 Location 头，不要直接 POST")
+    rows2 = bus2.conn.execute(
+        "SELECT id FROM memory_canonical "
+        "WHERE tombstoned = 0 AND kind = 'lesson' "
+        "AND content LIKE '%微信%' LIMIT 2"
+    ).fetchall()
+    _eq("lesson single-token match", len(rows2), 1)
+
+    # 13) Tombstoned lesson excluded
+    bus3 = FakeBus()
+    _insert_lesson(bus3, "alive lesson here", tombstoned=0)
+    _insert_lesson(bus3, "dead lesson here", tombstoned=1)
+    rows3 = bus3.conn.execute(
+        "SELECT id FROM memory_canonical "
+        "WHERE tombstoned = 0 AND kind = 'lesson' LIMIT 2"
+    ).fetchall()
+    _eq("lesson tombstone excluded", len(rows3), 1)
+
+    # 14) Success_pattern row should NOT show up in lesson query (kind filter)
+    bus4 = FakeBus()
+    bus4.conn.execute(
+        "INSERT INTO memory_canonical (tier, kind, content, importance) "
+        "VALUES ('public', 'success_pattern', 'A success fact', 0.85)"
+    )
+    bus4.conn.execute(
+        "INSERT INTO memory_canonical (tier, kind, content, importance) "
+        "VALUES ('public', 'lesson', 'A lesson fact', 0.99)"
+    )
+    bus4.conn.commit()
+    rows4 = bus4.conn.execute(
+        "SELECT kind FROM memory_canonical "
+        "WHERE tombstoned = 0 AND kind = 'lesson' LIMIT 2"
+    ).fetchall()
+    _eq("lesson kind filter excludes success_pattern", len(rows4), 1)
+    if rows4 and rows4[0][0] != 'lesson':
+        print(f"  [FAIL] lesson row kind mismatch: {rows4[0][0]!r}")
+        sys.exit(1)
+    print("  [PASS] lesson kind filter excludes success_pattern (kind check)")
+
+    print("\nAll tests PASSED.")
+    return 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    rc = main()
+    if rc == 0:
+        rc = main_lessons()
+    sys.exit(rc)
