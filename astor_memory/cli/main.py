@@ -218,6 +218,35 @@ def main(argv: list[str] | None = None) -> int:
                               help='Source fact_id backing this answer (repeatable)')
     mm_rebuild_p.set_defaults(func=cmd_mm_rebuild)
 
+    # v1.15.39 (Ship P3.1): am knowledge-page (kp) — Hindsight-style
+    # operator-curated markdown pages linking related facts.
+    sub = subparsers.add_parser(
+        'knowledge-page',
+        help='Hindsight-style knowledge page (kind=knowledge_page)',
+    )
+    kp_sub = sub.add_subparsers(dest='kp_action', required=True)
+
+    kp_upsert_p = kp_sub.add_parser('upsert', help='Insert or refresh a knowledge_page')
+    kp_upsert_p.add_argument('--slug', required=True, help='Unique slug (e.g. "astor-arch")')
+    kp_upsert_p.add_argument('--title', required=True, help='Page title')
+    kp_upsert_p.add_argument('--body', required=True, help='Markdown body')
+    kp_upsert_p.add_argument('--tier', default='public')
+    kp_upsert_p.add_argument('--user-id', default=None)
+    kp_upsert_p.add_argument('--parent-ids', default='', help='Comma-separated parent fact_ids')
+    kp_upsert_p.add_argument('--confidence', type=float, default=0.7)
+    kp_upsert_p.set_defaults(func=cmd_kp_upsert)
+
+    kp_list_p = kp_sub.add_parser('list', help='List knowledge_pages')
+    kp_list_p.add_argument('--tier', default='public')
+    kp_list_p.add_argument('--user-id', default=None)
+    kp_list_p.set_defaults(func=cmd_kp_list)
+
+    kp_get_p = kp_sub.add_parser('get', help='Get knowledge_page by slug + linked facts')
+    kp_get_p.add_argument('--slug', required=True)
+    kp_get_p.add_argument('--tier', default='public')
+    kp_get_p.add_argument('--user-id', default=None)
+    kp_get_p.set_defaults(func=cmd_kp_get)
+
     # v1.2.0 (2026-08-16): am cascade — replay the cascade write queue.
     # When nest.store() failed during promote_candidate (e.g. embedding
     # model OOM), the (fact_id, content, tier, user_id) is queued in
@@ -1857,6 +1886,78 @@ def cmd_mm_rebuild(args):
     print(f"   upserted mental_model fid={_fid} Q='{args.question}'")
     return 0
 
+
+
+def cmd_kp_upsert(args):
+    """Upsert a knowledge_page (tombstones prior same-slug)."""
+    from pathlib import Path as _P
+    import os as _os
+    from astor_memory.bus import astor_bus as _kp_bus_factory
+    from astor_memory.nest.knowledge_pages import (
+        upsert_knowledge_page as _kp_upsert,
+    )
+    _tier = getattr(args, 'tier', 'public')
+    _user = getattr(args, 'user_id', None)
+    _bus = _kp_bus_factory(tier=_tier, user_id=_user)
+    _parent_ids_raw = getattr(args, 'parent_ids', '') or ''
+    _parent_ids = [int(p) for p in _parent_ids_raw.split(',') if p.strip().isdigit()]
+    _fid = _kp_upsert(
+        _bus,
+        slug=args.slug, title=args.title, body=args.body,
+        tier=_tier, user_id=_user,
+        parent_fact_ids=_parent_ids,
+        confidence=getattr(args, 'confidence', 0.7),
+    )
+    print(f"   upserted knowledge_page fid={_fid} slug='{args.slug}' "
+          f"parents={len(_parent_ids)}")
+    return 0
+
+
+def cmd_kp_list(args):
+    """List knowledge_pages for tier."""
+    from pathlib import Path as _P
+    import os as _os
+    from astor_memory.bus import astor_bus as _kp_bus_factory
+    from astor_memory.nest.knowledge_pages import (
+        list_knowledge_pages as _kp_list,
+    )
+    _tier = getattr(args, 'tier', 'public')
+    _user = getattr(args, 'user_id', None)
+    _bus = _kp_bus_factory(tier=_tier, user_id=_user)
+    _pages = _kp_list(_bus, tier=_tier, user_id=_user)
+    if not _pages:
+        print(f"   no knowledge_pages for tier={_tier} user={_user}")
+        return 0
+    print(f"   {len(_pages)} knowledge_page(s):")
+    for _p in _pages:
+        print(f"   - fid={_p.fact_id} slug='{_p.slug}' title='{_p.title}' "
+              f"parents={len(_p.parent_fact_ids)} updated={_p.updated_at}")
+    return 0
+
+
+def cmd_kp_get(args):
+    """Get a knowledge_page by slug."""
+    from astor_memory.bus import astor_bus as _kp_bus_factory
+    from astor_memory.nest.knowledge_pages import (
+        get_knowledge_page as _kp_get,
+        get_linked_facts as _kp_linked,
+    )
+    _tier = getattr(args, 'tier', 'public')
+    _user = getattr(args, 'user_id', None)
+    _bus = _kp_bus_factory(tier=_tier, user_id=_user)
+    _p = _kp_get(_bus, args.slug, tier=_tier, user_id=_user)
+    if _p is None:
+        print(f"   knowledge_page slug='{args.slug}' not found")
+        return 1
+    print(f"--- {_p.title} (slug={_p.slug}) ---")
+    print(_p.body)
+    print()
+    _linked = _kp_linked(_bus, _p)
+    if _linked:
+        print(f"Linked facts ({len(_linked)}):")
+        for _lf in _linked:
+            print(f"  fid={_lf['fact_id']} {_lf['content']}")
+    return 0
 
 
 def cmd_cascade_replay(args) -> int:
