@@ -1560,7 +1560,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # Build a simple LIKE pattern from query keywords (no Chinese token split
             # needed; LIKE is case-insensitive on the column default). Use first 6
             # words as a coarse filter to avoid full-table scans.
-            words = [w.strip(' ,.?!:;"\'') for w in query.split() if len(w) >= 3][:6]
+            words = [w.strip() for w in query.split() if len(w.strip()) >= 3][:6]
             if not words:
                 return []
             like_clauses = ' AND '.join(['content LIKE ?' for _ in words])
@@ -1617,6 +1617,82 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return results
         except Exception as exc:
             _safe_stderr_write(f'[astor.server] meta-recall failed (non-fatal): {exc}\n')
+            return []
+
+    def _meta_recall_mental_models(query: str, user: str, tier: str) -> list:
+        """v1.15.42: Hindsight-style mental_model auto-injection.
+
+        When the user's query contains keywords that match a fixed-question
+        mental_model's question, surface the answer at the top of recall.
+        Returns dicts shaped like _meta_recall_patterns (compatible with
+        the existing meta-recall prepending path).
+
+        Pure SQL via json_each + lexical LIKE on memory_canonical.kind=
+        'mental_model' rows. Same tier routing as _meta_recall_patterns.
+        """
+        if not query or len(query.strip()) < 3:
+            return []
+        try:
+            from .nest.mental_models import _parse_mm_content
+            # Tokenize query (CJK-friendly: split on whitespace + take 2+ chars).
+            words = [w.strip() for w in query.split() if len(w.strip()) >= 2][:8]
+            if not words:
+                return []
+            like_clauses = ' AND '.join(['content LIKE ?' for _ in words])
+            like_params = [f'%{w}%' for w in words]
+            tiers_to_query = []
+            if tier and tier.startswith('private'):
+                if user:
+                    tiers_to_query.append(('private', user))
+                tiers_to_query.append(('public', None))
+                tiers_to_query.append(('source', None))
+            elif tier == 'source':
+                tiers_to_query.append(('source', None))
+            else:
+                tiers_to_query.append(('public', None))
+                tiers_to_query.append(('source', None))
+            results = []
+            seen_ids = set()
+            for t, u in tiers_to_query:
+                try:
+                    b = astor_bus(tier=t, user_id=u)
+                    rows = b.conn.execute(
+                        f"SELECT id, content, importance, confidence "
+                        f"FROM memory_canonical "
+                        f"WHERE tombstoned = 0 AND kind = 'mental_model' "
+                        f"AND ({like_clauses}) "
+                        f"ORDER BY confidence DESC, importance DESC, id DESC LIMIT 3",
+                        tuple(like_params),
+                    ).fetchall()
+                    for row in rows:
+                        fid, content, imp, conf = row
+                        if fid in seen_ids:
+                            continue
+                        parsed = _parse_mm_content(content or '')
+                        if parsed is None:
+                            continue
+                        q_text, a_text = parsed[0], parsed[1]
+                        seen_ids.add(fid)
+                        # Format: [MM] Q=<question> | A=<answer>
+                        formatted = f"[MM] Q={q_text} | A={a_text[:300]}"
+                        results.append({
+                            'fact_id': fid,
+                            'content': formatted[:500],
+                            'kind': 'mental_model',
+                            'importance': float(imp or 0.5),
+                            'memory_class': 'mental_model',
+                            'confidence': float(conf or 0.5),
+                            'meta_source': 'auto-mental-model-v1.15.42',
+                            'meta_tier': t,
+                            'similarity': 1.0,  # synthetic — direct match
+                            'hit_source': 'mental-model-auto',
+                        })
+                except Exception as inner_exc:
+                    _safe_stderr_write(f'[astor.server] mental-model recall tier={t} err={inner_exc}\n')
+                    continue
+            return results
+        except Exception as exc:
+            _safe_stderr_write(f'[astor.server] mental-model auto-recall failed (non-fatal): {exc}\n')
             return []
 
     @app.route('/v1/read', methods=['POST'])
@@ -2956,6 +3032,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _meta_recall_stats['returned_total'] += len(_meta)
         except Exception as _mr_exc:
             _safe_stderr_write(f'[astor.server] meta-recall prepend failed: {_mr_exc}\n')
+            _meta_recall_stats['errors'] += 1
+        # v1.15.42 (Ship P3.1 recall enhancement): mental_model auto-injection.
+        # When the user's query matches a fixed-question mental_model's
+        # question keywords, surface the answer at the top of recall (above
+        # even success_pattern results, since answers are operator-curated
+        # SSoT for "what is X?" style queries).
+        try:
+            _mm = _meta_recall_mental_models(query, body.get('user') or body.get('user_id'), tier)
+            if _mm:
+                enriched = _mm + enriched
+                _meta_recall_stats['triggered'] += 1
+                _meta_recall_stats['returned_total'] += len(_mm)
+        except Exception as _mm_exc:
+            _safe_stderr_write(f'[astor.server] mental-model recall failed (non-fatal): {_mm_exc}\n')
             _meta_recall_stats['errors'] += 1
 
         return jsonify({
