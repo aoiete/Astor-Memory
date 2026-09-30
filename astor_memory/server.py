@@ -6939,8 +6939,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _ep = _fr.path or ''
             if not (_ep.startswith('/v1/read') or _ep.startswith('/v1/write') or _ep.startswith('/v1/consult')):
                 return response
-            # Only run on POST /v1/write + /v1/read + /v1/consult
-            if _fr.method != 'POST' and _ep != '/v1/read':
+            # All three target endpoints (/v1/read, /v1/write, /v1/consult)
+            # are POST-only, so just filter on method == POST. (Old logic
+            # checked `_ep != '/v1/read'` which was dead code.)
+            if _fr.method != 'POST':
                 return response
             # IMPORTANT: do NOT consume request body via get_json() here —
             # Flask caches the parsed JSON, so the endpoint's own get_json()
