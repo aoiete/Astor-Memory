@@ -178,6 +178,52 @@ def reset_bank() -> None:
 # Built-in skills — wrap existing astor memory operations
 # ---------------------------------------------------------------------------
 
+def register_skill(
+    name: str | None = None,
+    description: str = '',
+    tags: list[str] | None = None,
+    version: int = 1,
+):
+    """Decorator: auto-register a function as a Skill.
+
+    Usage:
+        @register_skill(tags=['memory', 'write_hook'])
+        def my_skill(ctx: dict) -> dict:
+            ...
+
+    The function name becomes the skill name (unless `name` is
+    explicitly given). The bank is the singleton — registration
+    happens on import. Tests should call reset_bank() before
+    re-importing modules.
+
+    This is the v1.16.14 replacement for v1.16.13's manual
+    `_load_builtin_skills(bank)` pattern. Decorator-based registration
+    is the standard idiom in skill systems (LangChain tools,
+    FastAPI endpoints, etc.) — discoverable, low-boilerplate.
+    """
+    tags = tags or []
+
+    def _decorator(func):
+        skill_name = name or func.__name__
+        skill_desc = description or (func.__doc__ or '').strip().split('\n')[0]
+        s = Skill(
+            name=skill_name,
+            description=skill_desc,
+            tags=list(tags),
+            run=func,
+            version=version,
+        )
+        # Lazy: avoid circular ref (get_bank → _load_builtin_skills → decorator
+        # → get_bank). Direct singleton access.
+        global _BANK
+        if _BANK is None:
+            _BANK = SkillBank()
+        _BANK.register(s)
+        return func
+
+    return _decorator
+
+
 def _skill_coref_resolve(ctx: dict) -> dict:
     """Resolve pronouns in `text` against recent facts.
 
@@ -198,6 +244,14 @@ def _skill_coref_resolve(ctx: dict) -> dict:
     res = resolve_coreferences(bus, text, namespace=namespace,
                                 user_id=user_id, antecedent_window=window)
     return res
+
+
+@register_skill(
+    description='Resolve pronouns in text against recent facts (v1.16.10 heuristic coref).',
+    tags=['memory', 'coref', 'preprocess', 'write_hook', 'nlp'],
+)
+def coref_resolve(ctx: dict) -> dict:
+    return _skill_coref_resolve(ctx)
 
 
 def _skill_path_score(ctx: dict) -> dict:
@@ -222,6 +276,14 @@ def _skill_path_score(ctx: dict) -> dict:
     )
 
 
+@register_skill(
+    description='Compute path-based graph score for a candidate fact (v1.16.11 M-flow).',
+    tags=['memory', 'graph', 'scoring', 'read_hook', 'rank'],
+)
+def path_score(ctx: dict) -> dict:
+    return _skill_path_score(ctx)
+
+
 def _skill_bitemporal_invalidate(ctx: dict) -> dict:
     """Invalidate a fact by id (bi-temporal invalidation).
 
@@ -236,6 +298,14 @@ def _skill_bitemporal_invalidate(ctx: dict) -> dict:
     reason = ctx.get('reason') or 'manual'
     from ..bus.bitemporal import invalidate_fact
     return invalidate_fact(bus, int(fact_id), reason=reason)
+
+
+@register_skill(
+    description='Invalidate a fact by id (v1.16.8 bi-temporal lifecycle).',
+    tags=['memory', 'bitemporal', 'invalidate', 'write_hook', 'lifecycle'],
+)
+def bitemporal_invalidate(ctx: dict) -> dict:
+    return _skill_bitemporal_invalidate(ctx)
 
 
 def _skill_episode_link(ctx: dict) -> dict:
@@ -255,32 +325,67 @@ def _skill_episode_link(ctx: dict) -> dict:
     return {'ok': True, 'episode_id': int(episode_id), 'fact_id': int(fact_id)}
 
 
+@register_skill(
+    description='Link a derived fact to an L0 episode for evidence traceability (v1.16.12).',
+    tags=['memory', 'episode', 'l0', 'evidence', 'write_hook'],
+)
+def episode_link(ctx: dict) -> dict:
+    return _skill_episode_link(ctx)
+
+
 def _load_builtin_skills(bank: SkillBank) -> None:
-    """Register the built-in skills that wrap existing astor operations."""
-    bank.register(Skill(
-        name='coref_resolve',
-        description='Resolve pronouns in text against recent facts (v1.16.10 heuristic coref).',
-        tags=['memory', 'coref', 'preprocess', 'write_hook', 'nlp'],
-        run=_skill_coref_resolve,
-    ))
-    bank.register(Skill(
-        name='path_score',
-        description='Compute path-based graph score for a candidate fact (v1.16.11 M-flow).',
-        tags=['memory', 'graph', 'scoring', 'read_hook', 'rank'],
-        run=_skill_path_score,
-    ))
-    bank.register(Skill(
-        name='bitemporal_invalidate',
-        description='Invalidate a fact by id (v1.16.8 bi-temporal lifecycle).',
-        tags=['memory', 'bitemporal', 'invalidate', 'write_hook', 'lifecycle'],
-        run=_skill_bitemporal_invalidate,
-    ))
-    bank.register(Skill(
-        name='episode_link',
-        description='Link a derived fact to an L0 episode for evidence traceability (v1.16.12).',
-        tags=['memory', 'episode', 'l0', 'evidence', 'write_hook'],
-        run=_skill_episode_link,
-    ))
+    """Register the built-in skills that wrap existing astor operations.
+
+    DEPRECATED (v1.16.14): kept as no-op for backward compat.
+    Skills now self-register via @register_skill decorator at module
+    import time. The 4 built-in skills are auto-registered when
+    nest/skills.py is imported.
+    """
+    return None
+
+
+def invoke_chain(
+    skill_names: list[str],
+    context: dict,
+    bank: SkillBank | None = None,
+    stop_on_error: bool = False,
+) -> list[dict]:
+    """Invoke a chain of skills in order, threading context.
+
+    Args:
+        skill_names: list of skill names to invoke in order.
+        context: starting context dict. Each skill's result is
+            MERGED into the context (shallow update) before the
+            next skill runs, so skills can chain by reading each
+            other's outputs (e.g. coref_resolve rewrites ctx['text'],
+            then the next skill sees the rewritten text).
+        bank: SkillBank (defaults to singleton).
+        stop_on_error: if True, abort chain on first skill failure.
+            If False (default), continue with next skill regardless.
+
+    Returns:
+        list of result dicts (one per invoked skill), in order.
+    """
+    bank = bank or get_bank()
+    ctx = dict(context)  # shallow copy
+    results: list[dict] = []
+    for name in skill_names:
+        s = bank.get(name)
+        if s is None:
+            results.append({'ok': False, 'skill': name,
+                            'error': f'skill not found: {name}'})
+            if stop_on_error:
+                break
+            continue
+        r = s.invoke(ctx)
+        results.append(r)
+        if not r.get('ok') and stop_on_error:
+            break
+        # Thread outputs into context for next skill
+        for k, v in r.items():
+            if k not in ('ok', 'skill', 'elapsed_ms', 'error'):
+                ctx[k] = v
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -329,4 +434,6 @@ __all__ = [
     'get_bank',
     'reset_bank',
     'controller_select',
+    'register_skill',
+    'invoke_chain',
 ]

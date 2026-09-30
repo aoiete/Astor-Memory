@@ -1,3 +1,25 @@
+## [v1.16.14] - 2026-09-30
+
+### Added
+- **`@register_skill` decorator** — replace v1.16.13's manual `_load_builtin_skills()` pattern with self-registering decorator (LangChain-style). Function name becomes skill name; docstring's first line becomes description. Usage: `@register_skill(tags=['write_hook'])`.
+- **`invoke_chain(skills, context)` helper** — run multiple skills in order, threading context dict. Each skill's result merges into context (shallow update) before the next runs — so skills can chain (e.g. coref_resolve rewrites ctx['text'], next skill sees rewritten text). `stop_on_error=True` aborts on first failure.
+- **`POST /v1/skill/chain` endpoint** — body `{"skills": [...], "context": {...}, "stop_on_error": bool}` returns `{count, ok_count, results}`.
+
+### Changed
+- `_load_builtin_skills()` is now a no-op (kept for backward compat). Skills auto-register via decorator at module import time. Built-in skills (coref_resolve, path_score, bitemporal_invalidate, episode_link) now use the decorator pattern.
+
+### Tests
+- 9 new tests (34 total in tests/test_skills.py):
+  - Decorator: uses function name, uses explicit name, pulls docstring as description, default empty description
+  - Chain: runs in order, threads context (upper → suffix), handles missing skill, stop_on_error=True, stop_on_error=False (continue)
+- 107 total tests pass (34 skills + 15 episodes + 14 path_score + 12 ECV + 15 v1.16.9 + 12 bitemporal + 5 correction).
+
+### Live verified
+- POST /v1/skill/chain with `["path_score", "coref_resolve"]` → 2 results, ok_count=2
+- POST /v1/skill/chain with empty skills list → HTTP 400
+
+---
+
 ## [v1.16.13] - 2026-09-30
 
 ### Added
