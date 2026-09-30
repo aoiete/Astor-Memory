@@ -1106,6 +1106,36 @@ def create_app(astor_dir: str | None = None) -> Flask:
         status = 200 if result.get('ok') else 400
         return jsonify(result), status
 
+    # v1.16.14: chain endpoint — run multiple skills in order, threading
+    # context. Body: {"skills": ["coref_resolve", "path_score"], "context": {...}}
+    @app.route('/v1/skill/chain', methods=['POST'])
+    def skill_chain():
+        from .nest.skills import get_bank, invoke_chain
+        body = request.get_json(force=True) or {}
+        names = body.get('skills') or []
+        if not isinstance(names, list) or not names:
+            return jsonify({'error': 'body.skills must be a non-empty list'}), 400
+        ctx = dict(body.get('context') or {})
+        # Inject bus + conn
+        if 'bus' not in ctx:
+            _sk_tier = body.get('tier', 'public')
+            try:
+                ctx['bus'] = astor_bus(tier=_sk_tier, user_id=body.get('user_id'))
+            except Exception:
+                pass
+        if 'conn' not in ctx and 'bus' in ctx and hasattr(ctx['bus'], 'conn'):
+            ctx['conn'] = ctx['bus'].conn
+        results = invoke_chain(
+            names, ctx, bank=get_bank(),
+            stop_on_error=bool(body.get('stop_on_error', False)),
+        )
+        ok_count = sum(1 for r in results if r.get('ok'))
+        return jsonify({
+            'count': len(results),
+            'ok_count': ok_count,
+            'results': results,
+        })
+
     @app.route('/v1/dashboard', methods=['GET'])
     def dashboard():
         """Aggregated dashboard payload for the web UI.
