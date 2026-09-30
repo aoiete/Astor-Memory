@@ -557,10 +557,28 @@
 // =====================================================================
 async function fetchPeers() {
   try {
-    const r = await fetch('/v1/peer/list');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = await r.json();
-    renderPeerPanel(d.peers || []);
+    // v1.16.7: also fetch self peer_id for header + empty-state copy button
+    const [pr, ir] = await Promise.all([
+      fetch('/v1/peer/list'),
+      fetch('/v1/identity').catch(() => null),
+    ]);
+    let selfPeerId = null;
+    if (ir && ir.ok) {
+      const id = await ir.json();
+      selfPeerId = id.peer_id || null;
+      const el = document.getElementById('self-peer-id');
+      if (el && selfPeerId) {
+        const short = selfPeerId.length > 24
+          ? selfPeerId.slice(0, 22) + '…'
+          : selfPeerId;
+        el.textContent = 'self: ' + short;
+        el.title = 'Click to copy full peer_id: ' + selfPeerId;
+        el.onclick = () => copyPeerIdToClipboard(selfPeerId);
+      }
+    }
+    if (!pr.ok) throw new Error('HTTP ' + pr.status);
+    const d = await pr.json();
+    renderPeerPanel(d.peers || [], selfPeerId);
     return d;
   } catch (e) {
     document.getElementById('peer-panel-body').innerHTML =
@@ -568,9 +586,55 @@ async function fetchPeers() {
   }
 }
 
-function renderPeerPanel(peers) {
+// v1.16.7: helper — copy peer_id to clipboard with brief visual feedback
+async function copyPeerIdToClipboard(peerId) {
+  if (!peerId) return;
+  let copied = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(peerId);
+      copied = true;
+    } else {
+      // fallback: temporary textarea + execCommand
+      const ta = document.createElement('textarea');
+      ta.value = peerId;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      copied = document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+  } catch (e) {
+    copied = false;
+  }
+  if (copied) {
+    const el = document.getElementById('self-peer-id');
+    if (el) {
+      const orig = el.textContent;
+      el.textContent = '✓ copied!';
+      setTimeout(() => { el.textContent = orig; }, 1200);
+    }
+  } else {
+    alert('peer_id: ' + peerId + '\n\n(copy failed — select manually)');
+  }
+}
+
+function renderPeerPanel(peers, selfPeerId) {
   const body = document.getElementById('peer-panel-body');
   if (peers.length === 0) {
+    // v1.16.7: show the empty-state template (more helpful than raw hint)
+    const tmpl = document.getElementById('peer-empty-template');
+    if (tmpl) {
+      const node = tmpl.content.cloneNode(true);
+      body.innerHTML = '';
+      body.appendChild(node);
+      const copyBtn = document.getElementById('peer-self-copy-btn');
+      if (copyBtn && selfPeerId) {
+        copyBtn.addEventListener('click', () => copyPeerIdToClipboard(selfPeerId));
+      }
+      return;
+    }
     body.innerHTML = '<div class="recall-hint">No peers yet. Add one above to start building your PPS network.</div>';
     return;
   }

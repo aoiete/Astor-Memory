@@ -13,6 +13,7 @@
 <header class="dash-header">
   <h1>🧠 Astor Dashboard</h1>
   <div class="header-meta">
+    <span id="self-peer-id" class="self-peer-id" title="this server's peer_id — copy to share with other astor nodes">self: …</span>
     <span id="version-badge" class="version-badge" title="astor-memory server version">v…</span>
     <span id="cache-badge" class="cache-badge">…</span>
     <span id="last-event" class="last-event">last event: …</span>
@@ -52,13 +53,31 @@
       <input type="text" id="peer-add-pid" placeholder="astor:<32-hex>" autocomplete="off">
       <input type="text" id="peer-add-alias" placeholder="alias (optional)" autocomplete="off">
       <input type="number" id="peer-add-trust" placeholder="trust 0-100" min="0" max="100" value="30">
-      <button id="peer-add-btn" class="btn-refresh" title="Add peer (requires endpoint URL set in CLI for full PPS)">+ add</button>
+      <button id="peer-add-btn" class="btn-primary" title="Add peer (requires endpoint URL set in CLI for full PPS)">+ Add Friend</button>
       <button id="peer-refresh-btn" class="btn-refresh" title="Reload peer list">↻</button>
     </div>
   </div>
   <div id="peer-panel-body" class="peer-body">
     <div class="recall-hint">Loading peers…</div>
   </div>
+
+  <!-- v1.16.7: empty-state replaced inline by renderPeerPanel() when list is empty.
+       Below is the JS-rendered fallback for SSR-style initial load. -->
+  <template id="peer-empty-template">
+    <div class="peer-empty-state">
+      <div class="peer-empty-icon">🔗</div>
+      <div class="peer-empty-title">No peer friends yet</div>
+      <div class="peer-empty-hint">
+        PPS (peer-to-peer search) lets other astor nodes recall from your public tier.
+        Share your <code>self: astor:&lt;32-hex&gt;</code> with another operator and ask
+        them to add you via the field above — or copy your own peer_id from the header
+        and try the public-search test below.
+      </div>
+      <div class="peer-empty-actions">
+        <button class="btn-primary btn-sm" id="peer-self-copy-btn">Copy my peer_id</button>
+      </div>
+    </div>
+  </template>
 </section>
 
 

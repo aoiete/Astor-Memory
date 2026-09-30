@@ -857,6 +857,61 @@ def create_app(astor_dir: str | None = None) -> Flask:
             result['nest_error'] = str(e)
         return jsonify(result)
 
+    @app.route('/v1/identity', methods=['GET'])
+    def identity():
+        """v1.16.7: server self-identity (peer_id + keypair fingerprint).
+
+        SECURITY NOTE: _peer_id is a dict returned by init_identity() — DO
+        NOT serialize the whole dict, it contains the private_key. Always
+        extract _peer_id['peer_id'] explicitly (see print statement near
+        init_identity call below for the correct pattern).
+
+        Returns this astor-memory server's own peer_id so the dashboard
+        can show "you are astor:<32-hex>" and clients can share it
+        with other astor nodes for PPS public-search.
+
+        Response: {
+            peer_id: str (e.g. "astor:ea1c7c3110128ee1b828c54269341a98"),
+            public_key_fingerprint: str (first 16 chars of SHA-256 of pubkey),
+            astor_dir: str (server's data dir)
+        }
+        """
+        import hashlib
+        import base64 as _b64
+        try:
+            from pathlib import Path as _P
+            _id_dir = _P(str(get_default_astor_dir())) / 'identity'
+            _pub_path = _id_dir / 'keypair.json'
+            _pub_fp = ''
+            if _pub_path.exists():
+                try:
+                    import json as _j
+                    _kp = _j.loads(_pub_path.read_text())
+                    _pub = _kp.get('public_key', '')
+                    if _pub:
+                        try:
+                            _pub_fp = hashlib.sha256(_b64.b64decode(_pub)).hexdigest()[:16]
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            _pub_fp = ''
+        # Extract peer_id STRING from the dict — never serialize the whole dict.
+        _peer_id_str = ''
+        try:
+            if isinstance(_peer_id, dict):
+                _peer_id_str = _peer_id.get('peer_id', '')
+            elif isinstance(_peer_id, str):
+                _peer_id_str = _peer_id
+        except Exception:
+            pass
+        return jsonify({
+            'peer_id': _peer_id_str,
+            'public_key_fingerprint': _pub_fp,
+            'astor_dir': str(get_default_astor_dir()),
+        })
+
     @app.route('/v1/dashboard', methods=['GET'])
     def dashboard():
         """Aggregated dashboard payload for the web UI.

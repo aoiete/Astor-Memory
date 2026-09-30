@@ -1,3 +1,16 @@
+## [v1.16.7] - 2026-09-30
+
+### Added
+- **`/v1/identity` endpoint**: returns server's own peer_id + public_key_fingerprint. Powers the dashboard "self: astor:..." badge in the header. Click-to-copy supported via clipboard API + execCommand fallback.
+- **Dashboard self peer_id badge**: shows truncated `self: astor:ea1c7c...` in the header. Click anywhere on it to copy the full peer_id to clipboard. Title shows the full value on hover.
+- **Peer Friends empty state**: dedicated `<template id="peer-empty-template">` with icon + title + "how to add a friend" hint + "Copy my peer_id" CTA button. Replaces the generic "Loading peers…" / "No peers yet" text.
+- **Polished "Add Friend" button**: upgraded from square `btn-refresh` (28×28px accent-colored icon button that mangled text labels) to `btn-primary` class (text-style, padding 6×14px, accent-colored, hover dim).
+
+### Security
+- **CRITICAL FIX**: `/v1/identity` initial implementation serialized the full `_peer_id` dict returned by `init_identity()`, which contains `private_key`. v1.16.7 explicitly extracts `.peer_id` string from the dict before jsonify. Verified via live test: response now contains only `peer_id`, `public_key_fingerprint`, `astor_dir` — no private_key. **Lesson**: `_peer_id` is a dict (not a string), must always extract `_peer_id['peer_id']` for serialization. Existing print statement near `init_identity()` call was correct; new endpoint followed it incorrectly first time.
+
+---
+
 ## [v1.16.6] - 2026-09-30
 
 ### Added
