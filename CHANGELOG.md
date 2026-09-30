@@ -1,4 +1,88 @@
+## v1.15.51 (2026-09-29) — S25 完整集 A1+A2+A3 + source-tier endpoint fixes
+
+**A1 — knowledge_page auto-promote cron** (`scripts/auto_promote_knowledge_page.py`):
+5 operator-level topic pages (astor-architecture / hermes-runtime / maker-pocket / trading-policy / moomoo-bridge) auto-upserted into source tier. Idempotent (re-runs tombstone prior same-slug page). Same ACL bootstrap pattern as S24 mental_model cron.
+
+**A2 — source-tier endpoint fixes** (3 endpoints):
+- `GET /v1/mental_model/list?tier=source&user_id=admin` — was returning 0 rows because source tier rows have `user_id IS NULL`. Patched to bypass user filter for source tier (operator-level).
+- `GET /v1/mental_model?question=X&tier=source&user_id=admin` — same fix in `get_mental_model()` SQL.
+- `GET /v1/knowledge_page/list?tier=source&user_id=admin` — same bug in `list_knowledge_pages()`.
+- `GET /v1/knowledge_page?slug=X&tier=source&user_id=admin` — same fix in `get_knowledge_page()`.
+- `GET /v1/staleness?tier=source&user=admin` — same fix in staleness SQL.
+
+**A3 — mental_model source_facts traceback** (Hindsight "摘要可回溯"):
+- `upsert_mental_model()` now persists `source_facts` arg to `mental_model_sources` junction table (was collected into `append_event` metadata but never queryable).
+- New `list_source_facts(bus, mental_model_id)` helper returns linked evidence rows.
+- `/v1/mental_model?question=X` response now includes `source_facts: [{source_fact_id, linked_at}]` + `source_fact_count`.
+- `/v1/mental_model/list` items now include `source_fact_count` per MM.
+
+**B1 — private tier MM cron**: same S24 script with `--tier private --user-id admin` upserts 5 additional mental_models to admin's private DB.
+
+**Dashboard**:
+- `dashboard_data._knowledge_pages_section()` patched to scan source tier (was only public + private).
+- `dashboard_data._mental_models_section()` patched similarly in S24.
+
+**Eval baseline**: hit_rate@10 = 0.972 stable, mrr = 0.910 (slight improvement vs 0.906 pre-batch), p95 = 778ms warm.
+
+**Final state**: knowledge_pages 5, mental_models 12 (5 S24 source + 5 S24-re-run + 2 prior public), active_facts 4327 across 4 memory_class.
+
+---
+
+## v1.15.50 (2026-09-29) — S24 mental_model auto-promote cron
+
+**First auto-promote cron for Hindsight-style mental_models** (kind=mental_model):
+- `scripts/auto_promote_mental_model.py` writes 5 deterministic topic sheets into source tier.
+- Topics: user_timezone / ship_cadence / maker_pocket_state / portfolio_policy / recall_first_rule.
+- Each topic queries recent bus facts via deterministic SQL → synthesizes template answer + evidence_refs → upserts via `astor_init_acl + upsert_mental_model` (avoids CLI ACL block).
+- Re-runs idempotent (supersedes prior same-question MM via tombstone).
+- `dashboard_data._mental_models_section()` patched to include source tier (was only public + private).
+- Eval: hit_rate 0.972 stable, **mrr +0.018** (0.906 → 0.924 first run, settled 0.910 after tombstones).
+
+---
+
+## v1.15.49 (2026-09-29) — S23 memory_class auto-mapping
+
+**Hindsight 4-class taxonomy now actually populated**:
+- New `_derive_memory_class(kind, tags, content)` helper maps: rule/decision/user_preference → mental_model, success_pattern/failure_pattern/lesson → experience, observation → observation, default → world_fact.
+- `promote_candidate` INSERT now writes derived memory_class (was always defaulting to world_fact — 100% of 4979 facts stuck in single bucket).
+- New `AstorBus.backfill_memory_class(dry_run=True)` one-shot backfill helper.
+- New admin endpoint `POST /v1/backfill_memory_class` with `{tier, dry_run, user_id}` body.
+- 182 facts reclassified: 47 mental_model + 135 experience + 4797 world_fact (was 4979 world_fact).
+- Eval: hit_rate 0.972 stable, no regression, p95 706-910ms warm (cold 1007ms).
+
+---
+
+## v1.15.48 (2026-09-29) — S22 trigger-aware meta-recall bootstrap
+
+**Fixes 4× repeated mp.weixin failure mode** (facts 6215 / 12274 / 12736 — agent kept trying web_extract / browser / Perplexity before checking bus for known failure_patterns).
+
+**New `_detect_first_recall_trigger(query)`**:
+- Scans for fetch verbs (CN: 读/抓/爬/搜/找/看/分析/处理/帮我, EN: read/fetch/crawl/look at/...)
+- Plus resource hints (mp.weixin / github.com / arxiv / .pdf / paper / article / https://)
+- Both must match to trigger.
+
+**New `_meta_recall_trigger_aware(query, user, tier)`**:
+- When trigger fires: inject hardcoded `_COLD_START_FIRST_RECALL_RULE` (brand-new users without bus facts still get the gate).
+- Run broadened-keyword LIKE over success_pattern / failure_pattern / lesson to surface related bus facts even when lexically unrelated to query.
+
+**Wired FIRST in /v1/read** before normal pattern recall.
+
+**Live verified**: mp.weixin / github / .pdf / arxiv triggers fire correctly. Greeting / analysis-only queries don't trigger (no false positives).
+
+**Stats counter**: `_META_RECALL_STATS` extended with `trigger_aware_triggered` + `trigger_aware_returned_total` so dashboard can verify the gate is firing.
+
+---
+
 ## v1.15.34 (2026-09-28) — Ship O: HyDE for short abstract queries
+
+**Addresses the query-statement embedding gap.** Short queries
+(<8 tokens) like `健身`, `今日日柱`, `用户当前时区` live in a different
+embedding region than the target facts. HyDE flips the script: ask
+the LLM "what would the answer look like?", embed THAT, search.
+Hypothetical answer lives in the same region as actual stored facts.
+
+**New module** `astor_memory/nest/hyde.py`:
+- `hypothetical_answer(query)` — LLM call (cheap model
 
 **Addresses the query-statement embedding gap.** Short queries
 (<8 tokens) like `健身`, `今日日柱`, `用户当前时区` live in a different

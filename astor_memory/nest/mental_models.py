@@ -156,8 +156,12 @@ def get_mental_model(bus: Any, question: str,
         ORDER BY promoted_at DESC
         LIMIT 1
     """
+    # v1.15.51 A2 fix: source tier (operator-level) has user_id IS NULL.
+    # If caller passed user_id='admin' for source tier, query with NULL
+    # so the SQL `user_id IS NULL` branch matches.
+    _query_user = None if tier == 'source' else user_id
     pattern = f"[MM] question: {escaped_q}%"
-    rows = bus.conn.execute(sql, (tier, user_id, user_id, pattern)).fetchall()
+    rows = bus.conn.execute(sql, (tier, _query_user, _query_user, pattern)).fetchall()
     if not rows:
         return None
     r = rows[0]
@@ -280,7 +284,48 @@ def upsert_mental_model(bus: Any, question: str, answer: str,
     # insert_candidate + promote_candidate chain runs in its own internal
     # transactions, but the tombstone UPDATE here does not auto-commit.
     bus.conn.commit()
+
+    # v1.15.51 A3 (S25): persist source_facts to mental_model_sources
+    # junction table so the recall endpoint can return the traceback
+    # links (Hindsight "摘要可回溯" requirement). Without this, source_facts
+    # arg was collected into append_event metadata but never queryable.
+    if source_facts:
+        try:
+            _ensure_sources_table(bus.conn)
+            now_src = datetime.now(timezone.utc).isoformat(timespec='seconds')
+            for sf_id in source_facts:
+                if not isinstance(sf_id, int):
+                    continue
+                # Idempotent: INSERT OR IGNORE so re-runs don't duplicate.
+                bus.conn.execute(
+                    "INSERT OR IGNORE INTO mental_model_sources "
+                    "(mental_model_id, source_fact_id, created_at) VALUES (?, ?, ?)",
+                    (canonical_id, sf_id, now_src),
+                )
+            bus.conn.commit()
+        except Exception as _src_exc:
+            print(f'upsert_mental_model: source_facts persist failed: {_src_exc}')
+
     return canonical_id
+
+
+def list_source_facts(bus: Any, mental_model_id: int) -> list[dict]:
+    """v1.15.51 A3: return linked source_facts for a mental_model.
+
+    Returns list of {'source_fact_id': int, 'created_at': iso} dicts.
+    Empty list if no links (or table missing).
+    """
+    try:
+        rows = bus.conn.execute(
+            "SELECT source_fact_id, created_at FROM mental_model_sources "
+            "WHERE mental_model_id = ? ORDER BY created_at DESC",
+            (int(mental_model_id),),
+        ).fetchall()
+        return [{'source_fact_id': r[0], 'linked_at': r[1]} for r in rows]
+    except Exception:
+        return []
+
+
 
 def _ensure_sources_table(conn: sqlite3.Connection) -> None:
     """Create mental_model_sources table if missing. Idempotent."""
