@@ -1,3 +1,34 @@
+## [v1.16.9] - 2026-09-30
+
+### Changed
+- **Asymmetric decay in `match_experiences`** (`bus/store.py`):
+  - Good experiences (success_pattern, mental_model, observation) decay at **0.05/30d** (unchanged from v1.16.5).
+  - Bad experiences (failure_pattern, lesson, user_correction, pushback, correction) decay at **0.12/30d** — **2.4× faster**.
+  - Cap unchanged at -0.30 so old rows still surface when kw+emb matches.
+  - Article "评测-记忆-落地-控制飞轮" §2.3: "好经验强化速度(+0.05)远慢于坏经验淘汰速度(-0.12)——淘汰是强化的2.4倍. 逻辑: 一条错误记忆的伤害 > 一条正确记忆的收益."
+
+- **3-tier promotion ladder** (replaces v1.15.57 binary jump):
+  - 0-2 invokes → 0.70 (initial)
+  - 3 invokes → **0.85** (medium-HOT, new)
+  - 6 invokes → **0.95** (full HOT)
+  - Both promotion sites updated: `/v1/write` auto-fork hook + `/v1/experience` endpoint. Promotion is monotonic (never downgrades an already-HOT experience).
+
+### Added
+- **On-success auto-fork hook** in `/v1/write`:
+  - Triggers when `body.success_signal=True` OR `body.metadata.verified=True` AND kind ∈ {fact, observation, success_pattern, mental_model}.
+  - Inserts a `memory_experience` row with `outcome='success_pattern'`, `importance=0.7`, `trigger_keywords` derived from content, `trigger_fact_ids` linking the new facts.
+  - Article §2.3: "正信号触发写入: 只有收到明确的正信号时才写入长期记忆——用户确认/评测通过/任务成功". Previously only failure-kind triggers auto-forked.
+  - Response now includes `success_experience_ids: [int]` array (alongside existing `invalidated: [...]` and `experience_id`).
+  - Non-fatal: failure logs to stderr, write still succeeds.
+
+### Tests
+- 15 new tests in `tests/test_v1169_asymmetry_and_tiers.py`:
+  - `TestAsymmetricDecay` (7): zero age, negative age, good 30d, bad 30d 2.4×, cap, all 5 bad outcomes, all non-bad outcomes
+  - `TestThreeTierPromotion` (6): initial unchanged, tier 1 @ 3, tier 2 @ 6, no-downgrade invariant, monotonic
+  - `TestPromotionLadderBoundaries` (2): 2→3 transition, 5→6 transition
+
+---
+
 ## [v1.16.8] - 2026-09-30
 
 ### Added
