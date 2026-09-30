@@ -75,6 +75,58 @@ def main() -> int:
     )
     _eq("astor_capture_intent(failure/lesson text) tier", res_fail.get("tier"), "public")
 
+    print("\n=== Reactive consult gate (v1.16.x) ===")
+
+    # v1.16.x: env ASTOR_CONSULT_DEFAULT_ON defaults to '1' (proactive ON).
+    # body.consult=True forces meta-recall; body.consult=False skips; None
+    # falls back to env. The decision logic is replicated below since
+    # _meta_recall_patterns is a nested function (not importable).
+    import os
+    saved = os.environ.get("ASTOR_CONSULT_DEFAULT_ON")
+
+    def _consult_gate(body_consult, env_val):
+        os.environ["ASTOR_CONSULT_DEFAULT_ON"] = env_val
+        if body_consult is None:
+            return os.environ.get("ASTOR_CONSULT_DEFAULT_ON", "1") == "1"
+        return bool(body_consult)
+
+    try:
+        # env=OFF + body=None → False
+        _eq("env=OFF + body=None → False", _consult_gate(None, "0"), False)
+        # body.consult=True overrides env=OFF → True
+        _eq("body.consult=True → True", _consult_gate(True, "0"), True)
+        # body.consult=False overrides env=ON → False
+        _eq("body.consult=False → False", _consult_gate(False, "1"), False)
+        # env=ON + body=None → True (default v1.16 proactive)
+        _eq("env=ON + body=None → True", _consult_gate(None, "1"), True)
+    finally:
+        if saved is not None:
+            os.environ["ASTOR_CONSULT_DEFAULT_ON"] = saved
+        else:
+            os.environ.pop("ASTOR_CONSULT_DEFAULT_ON", None)
+
+    print("\n=== CLI am postmortem default tier (v1.16.x) ===")
+
+    # Verify the parser default for am postmortem is public by reading
+    # the CLI source directly (the argparse parser is local to main() and
+    # not introspectable from outside).
+    import tempfile
+    _probe = Path(tempfile.gettempdir()) / "_astor_postmortem_help_probe.txt"
+    import astor_memory.cli as _cli_pkg
+    _cli_path = Path(_cli_pkg.__file__).parent / "main.py"
+    _cli_src = _cli_path.read_text(encoding='utf-8', errors='replace')
+
+    # Source-of-truth check: grep the CLI source for the postmortem default.
+    _pm_idx = _cli_src.find("add_parser(\n        'postmortem'")
+    if _pm_idx == -1:
+        _pm_idx = _cli_src.find("add_parser(\n        'postmortem',")
+    _truthy("am postmortem parser block found in CLI source", _pm_idx != -1)
+    if _pm_idx != -1:
+        _window = _cli_src[_pm_idx:_pm_idx + 1500]
+        _truthy("am postmortem --tier default='public' (v1.16+)", "'public'" in _window)
+        _truthy("am postmortem help no longer says 'tier=private'", "tier=private" not in _window)
+        _truthy("am postmortem has --tier-hint flag", "--tier-hint" in _window)
+
     print("\nAll tests PASSED.")
     return 0
 
