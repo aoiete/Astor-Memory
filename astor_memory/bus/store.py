@@ -958,6 +958,58 @@ class AstorBus:
                     s += _ecv_score * 0.15
                 except Exception:
                     pass  # ECV failure must not break match_experiences
+                # v1.16.11 (2026-09-30): M-flow path-based graph scoring.
+                # Article "受生物启发的认知记忆引擎 M-flow" 指出: graph
+                # 应该作为 SCORING ENGINE, 不是只做存储. 即便一个 fact
+                # direct similarity 低, 如果 chain (query→entity→fact1→
+                # entity→fact2) 链路强, 也应该 boost. 我们 entity-overlap
+                # BFS 2-hop (cap +0.10, 跟 ECV 0.15 同级 — 不超过 ECV).
+                # Cheap (<5ms), no LLM cost. On failure: silent skip.
+                try:
+                    from ..nest.path_score import path_score_for_fact as _psf
+                    _ps_anchor = {
+                        'id': r[0],
+                        'content': _ecv_text,
+                        'keywords': _ecv_kw,
+                        'confidence': float(r[14]) if r[14] is not None else 0.7,
+                        'access_count': int(r[10]) if r[10] is not None else 0,
+                        'entities_json': None,  # memory_experience 没有 entities_json column
+                    }
+                    # Build neighbor pool from same query result rows
+                    # (path_score reuses them). Cheap to share.
+                    _ps_neighbors = []
+                    for _ps_other in scored:  # scored = list of (s, row, occ, created_at)
+                        _ps_other_row = _ps_other[1]
+                        if _ps_other_row[0] == r[0]:
+                            continue  # skip self
+                        _ps_ne_text = (_ps_other_row[6] or '') + ' ' + (_ps_other_row[8] or '') + ' ' + (_ps_other_row[9] or '')
+                        _ps_ne_kw = _ps_other_row[4]
+                        try:
+                            if isinstance(_ps_ne_kw, str) and _ps_ne_kw:
+                                _ps_ne_kw = _json_ecv.loads(_ps_ne_kw)
+                            elif not _ps_ne_kw:
+                                _ps_ne_kw = None
+                        except Exception:
+                            _ps_ne_kw = None
+                        _ps_neighbors.append({
+                            'id': _ps_other_row[0],
+                            'content': _ps_ne_text,
+                            'keywords': _ps_ne_kw,
+                            'confidence': float(_ps_other_row[14]) if len(_ps_other_row) > 14 and _ps_other_row[14] is not None else 0.7,
+                            'access_count': int(_ps_other_row[10]) if len(_ps_other_row) > 10 and _ps_other_row[10] is not None else 0,
+                            'entities_json': None,
+                        })
+                    _ps_result = _psf(
+                        query=query,
+                        anchor=_ps_anchor,
+                        neighbor_facts=_ps_neighbors,
+                        max_depth=2,
+                        decay=0.6,
+                        cap=0.10,  # tighter cap than path_score default (0.30) — we're a boost layer on top of ECV
+                    )
+                    s += _ps_result['boost']
+                except Exception:
+                    pass  # path_score failure must not break match_experiences
                 # Recency tiebreak: use created_at (immutable, set at insert)
                 # NOT last_invoked_at — that gets updated post-sort so all
                 # rows in this query would tie. created_at sort works for
