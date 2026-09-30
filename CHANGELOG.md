@@ -1,3 +1,26 @@
+## [v1.16.15] - 2026-09-30
+
+### Added
+- **`tests/test_bitemporal_e2e.py`** — 4 live-server end-to-end tests for bi-temporal auto-invalidation. Closes the audit gap from R-class 12392 (v1.16.9.3 INSERT bug). All prior tests for bi-temporal were unit-only; now we have full HTTP write → invalidate → lifecycle coverage.
+  - `test_health_returns_version` — server up, v1.16.x
+  - `test_write_fact_stores_with_valid_until_null` — fresh fact has `valid_until=None`, `is_active=True`
+  - `test_write_correction_kind_triggers_auto_invalidate` — correction write invalidates prior fact with overlapping entities
+  - `test_chain_with_two_skills` — `/v1/skill/chain` works end-to-end
+
+### Why end-to-end tests now
+- R-class 12392 (v1.16.9.3) caught a CRITICAL bug where bi-temporal cols were NEVER set on INSERT. Unit tests passed but real writes were silently broken.
+- v1.16.15 closes that gap. Tests use `unittest.skipUnless(_server_alive())` so they only run when the server is up — CI-friendly.
+
+### Tests
+- 111/111 pass on this session's test files (skills + episodes + path_score + ecv + v1.16.9 + bitemporal + correction + bitemporal_e2e)
+- Pre-existing `_FailedTest` errors in unrelated test modules (test_acl, test_basic, etc.) are loader failures from deleted-functionality references — NOT regressions from v1.16.15.
+
+### Live verified
+- GET /v1/health → v1.16.15
+- All 4 e2e tests pass against live server (PID 17392)
+
+---
+
 ## [v1.16.14] - 2026-09-30
 
 ### Added
