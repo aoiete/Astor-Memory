@@ -6395,6 +6395,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
             import sqlite3 as _sqlite3
             import uuid as _uuid
             _db = sqlite3.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            # v1.16.17.1 fix: auto-inherit role from user_meta.role if not
+            # explicitly provided. Avoids the cross_channel_inconsistency
+            # 409 when admin's role='admin' but binding's role_inherit='user'.
+            _user_role = _db.execute(
+                "SELECT role FROM user_meta WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            _role_inherit = body.get('role_inherit') or (
+                _user_role[0] if _user_role else 'user'
+            )
             # Upsert: same (platform_id, chat_id) → update user_id
             _existing = _db.execute(
                 "SELECT binding_id FROM bindings WHERE platform_id = ? AND chat_id = ?",
@@ -6404,9 +6413,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _binding_id = _existing[0]
                 _db.execute("""
                     UPDATE bindings
-                    SET user_id = ?, scope = ?, active = 1, bound_at = datetime('now')
+                    SET user_id = ?, scope = ?, role_inherit = ?, active = 1, bound_at = datetime('now')
                     WHERE binding_id = ?
-                """, (user_id, scope, _binding_id))
+                """, (user_id, scope, _role_inherit, _binding_id))
             else:
                 _binding_id = str(_uuid.uuid4())
                 _db.execute("""
@@ -6415,7 +6424,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                          bound_at, bound_by, role_inherit, allow_from)
                     VALUES (?, ?, ?, ?, ?, 1, datetime('now'), 'http:binding_bind', ?, ?)
                 """, (_binding_id, platform_id, chat_id, user_id, scope,
-                      body.get('role_inherit') or 'user', chat_id))
+                      _role_inherit, chat_id))
             _db.commit()
             _db.close()
             return jsonify({
@@ -6424,6 +6433,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'platform_id': platform_id,
                 'chat_id': chat_id,
                 'user_id': user_id,
+                'role_inherit': _role_inherit,
             }), 201
         except Exception as e:
             return jsonify({'ok': False, 'error': f'{type(e).__name__}: {e}'}), 500
