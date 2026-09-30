@@ -6220,6 +6220,71 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'reference': 'mp.weixin.qq.com/s/aL1gaDDGR1eJy2uzL5kKdQ (Bannings 2026-08)'
         })
 
+    # v1.16.16: orphan detection — find facts with no embedding, no
+    # entities, AND low importance. These are facts that don't help
+    # recall (no entities → no entity-overlap matching, no embedding
+    # → no vector recall, low importance → not HOT). Surface them
+    # so operators can decide to clean up (forget) or upgrade (add
+    # entities / importance via correction).
+    #
+    # Why ship: bus accumulates facts over time. Without periodic
+    # hygiene, the recall index bloats with low-signal facts that
+    # dilute the ECV / path_score boost ratios. This endpoint makes
+    # the hygiene problem observable.
+    @app.route('/v1/audit/orphans', methods=['GET'])
+    def audit_orphans():
+        import sqlite3 as _sqlite3
+        from ._internal.acl_layout import get_db_path, Tier, Store
+
+        _orphan_tier = request.args.get('tier', 'public')
+        _importance_max = float(request.args.get('importance_max', 0.5))
+        _limit = int(request.args.get('limit', 50))
+
+        try:
+            bus_path = str(get_db_path(
+                Tier.PUBLIC if _orphan_tier == 'public' else Tier.PRIVATE,
+                Store.BUS,
+            ))
+            conn = _sqlite3.connect(bus_path)
+            # Orphans: importance <= max AND entities is '[]' (no entities extracted)
+            # AND kind is generic 'fact' (not a hot memory_class)
+            rows = conn.execute(
+                """
+                SELECT id, content, kind, importance, created_at, entities_json
+                FROM memory_canonical
+                WHERE importance <= ?
+                  AND (entities_json IS NULL OR entities_json = '[]' OR entities_json = '')
+                  AND tombstoned = 0
+                ORDER BY importance ASC, created_at DESC
+                LIMIT ?
+                """,
+                (_importance_max, _limit),
+            ).fetchall()
+            conn.close()
+            orphans = [
+                {
+                    'id': r[0],
+                    'content': (r[1] or '')[:120],
+                    'kind': r[2],
+                    'importance': r[3],
+                    'created_at': r[4],
+                    'entities_count': 0 if not r[5] or r[5] in ('[]', '') else len(__import__('json').loads(r[5])),
+                }
+                for r in rows
+            ]
+            return jsonify({
+                'tier': _orphan_tier,
+                'importance_max': _importance_max,
+                'count': len(orphans),
+                'orphans': orphans,
+                'note': 'Low-importance facts with no entities. Consider /v1/forget or upgrade via correction.',
+            })
+        except Exception as e:
+            return jsonify({
+                'error': f'{type(e).__name__}: {e}',
+                'tier': _orphan_tier,
+            }), 500
+
     # v1.15.46 (Ship E.1): standalone staleness endpoint.
     # Returns facts where staleness > threshold (default 30 days), grouped by
     # kind + tier. Operators query via `curl /v1/staleness?tier=public`

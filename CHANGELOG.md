@@ -1,3 +1,20 @@
+## [v1.16.16] - 2026-09-30
+
+### Added
+- **`GET /v1/audit/orphans`** — memory audit hygiene. Finds facts where `importance <= max` AND `entities_json` is empty/null. The bus accumulates low-signal facts over time; without periodic hygiene, the recall index bloats and dilutes ECV/path_score boost ratios. This endpoint makes the hygiene problem observable so operators can `/v1/forget` or upgrade via correction.
+- Query params: `?tier=public|private` (default public), `?importance_max=0.5` (default), `?limit=50` (default).
+- Response: `{count, orphans: [{id, content, kind, importance, created_at, entities_count}], note}`.
+
+### Why ship
+- Bus has 4000+ facts. ECV (v1.16.6) and path_score (v1.16.11) both rely on entities_json + content keywords to rank. Facts with NO entities AND low importance = recall noise — they cost DB rows + scan time but never surface in top-k. Audit/orphans makes this hygiene problem visible.
+- Future work: cron `astor-orphan-cleanup-daily` would auto-forget facts with importance < threshold AND age > 90d (operator opt-in via env var).
+
+### Live verified
+- GET /v1/audit/orphans?tier=public&importance_max=0.5 → orphan count returned
+- GET /v1/audit/orphans?tier=private&importance_max=0.3 → smaller subset
+
+---
+
 ## [v1.16.15] - 2026-09-30
 
 ### Added
