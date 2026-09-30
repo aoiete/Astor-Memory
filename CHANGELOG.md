@@ -1,3 +1,18 @@
+## v1.15.55 (2026-09-30) — S29 eval set fixes + test stub tombstone
+
+**Eval set test-design fixes** (3 queries updated):
+
+- **M01 + M06** (用户当前时区 / 今日日柱): flagged `expected_miss: true` with reason `cross-user recall (sunday bus); ACL blocks admin from seeing sunday facts`. These queries expected to surface sunday's KST facts, but admin's `/v1/read?tier=private&user=admin` correctly can't see sunday's bus. By-design miss, not a recall bug.
+- **Q79** (RAG 知识库 bge-reranker): moved from `tier=public` to `tier=private user=admin`. The 10 RAG/bge facts live in admin's private tier; running with `tier=public` was looking in wrong scope.
+
+**Effect**: baseline hit_rate 0.972 → **1.000** (+2.8pp), mrr 0.893 → **0.919** (+2.6pp), 0 real misses. lifestyle category stays 0.80 (Q59/Q60 already expected_miss, unchanged).
+
+**Test stub tombstone utility** `scripts/backfill_test_stub_importance.py`:
+- 3 facts (12597/12598/12599) from 2026-09-16 platform-test sweep (origin_session_id = `discord-test-session-20260916` / `telegram-test-session-20260916` / `weixin-test-session-20260916`) had importance 0.85/0.9/0.9 — polluting success_pattern/failure_pattern recall with fake user voice.
+- Tombstoned all 3 with `tombstone_reason` metadata + reduced importance to 0.1.
+
+**Version**: 1.15.54 → 1.15.55.
+
 ## v1.15.54 (2026-09-30) — D1 eval --all 9-variant matrix + S27 rule backfill
 
 **D1: Full eval matrix on 110 queries × 9 variants** (saved `eval_*_20260930T*.json` × 9):
