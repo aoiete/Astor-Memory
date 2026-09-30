@@ -352,6 +352,79 @@ def batch_read(
     return out
 
 
+    def correct(
+        self,
+        text: str,
+        *,
+        reflection: str = "",
+        next_step_hint: str = "",
+        trigger_keywords: list[str] | None = None,
+        outcome: str = "failure",
+        tier: Literal["public", "source", "private"] | None = None,
+        importance: float | None = None,
+    ) -> dict[str, Any]:
+        """POST /v1/experience — capture a user pushback / correction.
+
+        v1.15.57 (2026-09-30) pushback-capture protocol. Any AI agent can call
+        this one method to record 'the user just told me I was wrong on X' —
+        no agent-side protocol glue needed. The server auto-detects pushback
+        language, dedups by (actor + text + keywords), increments occurrence
+        count, and auto-promotes to HOT rule at 3 occurrences.
+
+        Returns: {experience_id, occurrence_count, deduped, dedup_hash,
+                  promoted_to_hot, kind, importance}.
+        """
+        body = {
+            "text": text,
+            "user": self.user_id,
+            "outcome": outcome,
+            "reflection": reflection,
+            "next_step_hint": next_step_hint,
+            "tier": tier or self.tier,
+        }
+        if trigger_keywords:
+            body["trigger_keywords"] = list(trigger_keywords)
+        if importance is not None:
+            body["importance"] = importance
+        extra_fields, extra_headers = self._identity_fields()
+        body.update(extra_fields)
+        return self._request(
+            "POST", "/v1/experience", json_body=body, extra_headers=extra_headers
+        )
+
+    def match_experiences(
+        self,
+        query: str,
+        top_k: int = 5,
+        outcome: str | None = None,
+        tier: Literal["public", "source", "private"] | None = None,
+    ) -> list[dict[str, Any]]:
+        """POST /v1/experience/match — recall past pushbacks matching query.
+
+        Use before taking an action that might repeat a known correction:
+
+            hits = client.match_experiences("trim AVGO", top_k=3)
+            for h in hits:
+                if h['occurrence_count'] >= 3:
+                    print(f"HOT RULE: {h['next_step_hint']}")
+        """
+        body = {
+            "query": query,
+            "user": self.user_id,
+            "top_k": top_k,
+            "tier": tier or self.tier,
+        }
+        if outcome:
+            body["outcome"] = outcome
+        extra_fields, extra_headers = self._identity_fields()
+        body.update(extra_fields)
+        d = self._request(
+            "POST", "/v1/experience/match",
+            json_body=body, extra_headers=extra_headers,
+        )
+        return d.get("matches") or []
+
+
 __all__ = [
     "AstorClient",
     "AstorError",
