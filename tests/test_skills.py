@@ -23,6 +23,8 @@ from astor_memory.nest.skills import (
     get_bank,
     reset_bank,
     controller_select,
+    register_skill,
+    invoke_chain,
 )
 
 
@@ -137,6 +139,10 @@ class TestSkillBank(unittest.TestCase):
 class TestSingletonBank(unittest.TestCase):
     def setUp(self):
         reset_bank()
+        # Re-import to re-run decorators
+        import importlib
+        from astor_memory.nest import skills as _skills_mod
+        importlib.reload(_skills_mod)
 
     def tearDown(self):
         reset_bank()
@@ -196,6 +202,14 @@ class TestBuiltinSkillSmoke(unittest.TestCase):
 
     def setUp(self):
         reset_bank()
+        # Re-import the module so the decorators re-register.
+        # Python only runs decorator code at first import; reset_bank
+        # only clears the singleton. To test post-import state we
+        # need to actually invoke get_bank() which keeps the
+        # decorator-registered skills.
+        import importlib
+        from astor_memory.nest import skills as _skills_mod
+        importlib.reload(_skills_mod)
 
     def tearDown(self):
         reset_bank()
@@ -230,6 +244,135 @@ class TestBuiltinSkillSmoke(unittest.TestCase):
         r = s.invoke({})
         self.assertFalse(r["ok"])
         self.assertIn("fact_id required", r["error"])
+
+
+class TestRegisterSkillDecorator(unittest.TestCase):
+    """@register_skill decorator auto-registers at module import."""
+
+    def setUp(self):
+        reset_bank()
+        import importlib
+        from astor_memory.nest import skills as _skills_mod
+        importlib.reload(_skills_mod)
+
+    def tearDown(self):
+        reset_bank()
+
+    def test_decorator_uses_function_name(self):
+        @register_skill(tags=["test_tag"])
+        def my_test_skill_a(ctx):
+            return {"value": 42}
+
+        bank = get_bank()
+        s = bank.get("my_test_skill_a")
+        self.assertIsNotNone(s)
+        self.assertIn("test_tag", s.tags)
+
+    def test_decorator_uses_explicit_name(self):
+        @register_skill(name="custom_name", tags=["x"])
+        def some_func(ctx):
+            return {}
+
+        self.assertIsNotNone(get_bank().get("custom_name"))
+
+    def test_decorator_pulls_docstring_as_description(self):
+        @register_skill(tags=["doc"])
+        def skill_with_doc(ctx):
+            """My great description.
+
+            Second line ignored.
+            """
+            return {}
+
+        s = get_bank().get("skill_with_doc")
+        self.assertEqual(s.description, "My great description.")
+
+    def test_decorator_default_description_when_no_docstring(self):
+        @register_skill(tags=["d"])
+        def skill_no_doc(ctx):
+            return {}
+
+        s = get_bank().get("skill_no_doc")
+        self.assertEqual(s.description, "")
+
+
+class TestInvokeChain(unittest.TestCase):
+    """invoke_chain runs skills in order, threading context."""
+
+    def setUp(self):
+        reset_bank()
+        self.bank = get_bank()
+
+        # Register test skills for chain
+        @register_skill(tags=["chain_test"])
+        def add_value(ctx):
+            return {"value": ctx.get("value", 0) + 10}
+
+        @register_skill(tags=["chain_test"])
+        def multiply_value(ctx):
+            return {"value": ctx.get("value", 0) * 2}
+
+    def tearDown(self):
+        reset_bank()
+
+    def test_chain_runs_in_order(self):
+        results = invoke_chain(
+            ["add_value", "multiply_value"],
+            {"value": 5},
+            bank=self.bank,
+        )
+        self.assertEqual(len(results), 2)
+        # add_value: 5+10=15; multiply_value: 15*2=30
+        self.assertEqual(results[0]["value"], 15)
+        self.assertEqual(results[1]["value"], 30)
+
+    def test_chain_threads_context(self):
+        # First skill mutates ctx['text'], second skill reads it
+        @register_skill(tags=["mut"])
+        def upper(ctx):
+            return {"text": (ctx.get("text") or "").upper()}
+
+        @register_skill(tags=["mut"])
+        def suffix(ctx):
+            return {"text": ctx.get("text", "") + "!"}
+
+        results = invoke_chain(["upper", "suffix"], {"text": "hi"}, bank=self.bank)
+        self.assertEqual(results[0]["text"], "HI")
+        self.assertEqual(results[1]["text"], "HI!")
+
+    def test_chain_handles_missing_skill(self):
+        results = invoke_chain(
+            ["nope_skill"], {"x": 1}, bank=self.bank, stop_on_error=False
+        )
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0]["ok"])
+        self.assertIn("not found", results[0]["error"])
+
+    def test_chain_stop_on_error(self):
+        @register_skill(tags=["err"])
+        def boom(ctx):
+            raise ValueError("intentional")
+
+        results = invoke_chain(
+            ["boom", "add_value"], {"value": 1}, bank=self.bank, stop_on_error=True
+        )
+        # Only 1 result because boom failed → stop
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0]["ok"])
+
+    def test_chain_continue_on_error(self):
+        @register_skill(tags=["err"])
+        def boom(ctx):
+            raise ValueError("intentional")
+
+        results = invoke_chain(
+            ["boom", "add_value"], {"value": 1}, bank=self.bank, stop_on_error=False
+        )
+        # 2 results — boom failed, add_value still runs
+        self.assertEqual(len(results), 2)
+        self.assertFalse(results[0]["ok"])
+        self.assertTrue(results[1]["ok"])
+        self.assertEqual(results[1]["value"], 11)
 
 
 if __name__ == "__main__":
