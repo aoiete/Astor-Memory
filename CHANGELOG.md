@@ -1,3 +1,30 @@
+## v1.15.54 (2026-09-30) — D1 eval --all 9-variant matrix + S27 rule backfill
+
+**D1: Full eval matrix on 110 queries × 9 variants** (saved `eval_*_20260930T*.json` × 9):
+
+| variant         | mrr    | hit@10 | avg_ms | vs baseline   |
+|-----------------|--------|--------|--------|---------------|
+| baseline        | 0.893  | 0.972  | 545    | (reference)   |
+| vector_only     | 0.753  | 0.926  | 588    | **-0.140 mrr** (-5pp hit) — confirms hybrid > pure vector |
+| rerank_off      | **0.897** | 0.972 | 513    | +0.004 mrr / -32ms — **LLM rerank slightly hurts**, faster without |
+| mmr_lambda_05   | 0.891  | 0.972  | 506    | -0.002 |
+| mmr_lambda_07   | 0.893  | 0.972  | 511    | tie |
+| mmr_lambda_09   | 0.895  | 0.972  | 511    | +0.002 |
+| mmr_off         | 0.886  | 0.972  | 540    | **-0.007** — MMR diversity helps |
+| hyde_on         | 0.893  | 0.972  | 504    | tie / -41ms |
+| hyde_off        | 0.893  | 0.972  | **478**| tie / **fastest** |
+
+**Conclusions**:
+- Hybrid (bm25+vector) confirmed essential — pure vector loses 14pp mrr
+- LLM rerank edge case: marginal negative mrr (-0.004) with +32ms latency — could ship as opt-out flag
+- MMR diversity matters (-0.007 when off); lambda=0.7 baseline already good
+- HyDE on/off identical on this set (21 fortune queries mostly benefit, but fitness/lifestyle misses dominate)
+- Best mrr: `rerank_off` (0.897) but difference vs baseline (-0.004) within noise; baseline stays default
+
+**S27 follow-up: rules backfill**. Extended `scripts/backfill_mm_kp_entities.py` to also backfill kind=rule. Added `__topic__`, `tags`, and content noun-phrase fallback (English capitalized + Chinese 2-4 char). 8 more facts backfilled (peer-identity rules from 2026-09-17). Total source-tier entity coverage continues to improve.
+
+**Version**: 1.15.53 → 1.15.54.
+
 ## v1.15.53 (2026-09-30) — S27 entities_json backfill for source MM/KP
 
 **10 source-tier facts (5 mental_models + 5 knowledge_pages) had empty `entities_json`** because the S24/S25 auto-promote crons bypassed the forge/extractor pipeline. Dashboard showed source-tier entities_coverage = 0.75.
