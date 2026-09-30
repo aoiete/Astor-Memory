@@ -44,6 +44,25 @@
   </div>
 </section>
 
+<!-- v1.16.3 R-class: peer panel moved to top (after hero) — operator preference, friend management is the highest-ROI admin action -->
+<section class="card card-wide peer-panel">
+  <div class="peer-header">
+    <h2>Peer Friends <span class="subtitle">PPS public-search partners</span></h2>
+    <div class="peer-actions">
+      <input type="text" id="peer-add-pid" placeholder="astor:<32-hex>" autocomplete="off">
+      <input type="text" id="peer-add-alias" placeholder="alias (optional)" autocomplete="off">
+      <input type="number" id="peer-add-trust" placeholder="trust 0-100" min="0" max="100" value="30">
+      <button id="peer-add-btn" class="btn-refresh" title="Add peer (requires endpoint URL set in CLI for full PPS)">+ add</button>
+      <button id="peer-refresh-btn" class="btn-refresh" title="Reload peer list">↻</button>
+    </div>
+  </div>
+  <div id="peer-panel-body" class="peer-body">
+    <div class="recall-hint">Loading peers…</div>
+  </div>
+</section>
+
+
+
 <!-- Row 1: Eval + Growth -->
 <section class="grid-2">
   <div class="card">
@@ -162,21 +181,7 @@
 </div>
 
 <!-- v1.15.19 Ship C: Peer Friends panel (PPS Phase 4 dashboard) -->
-<section class="card card-wide peer-panel">
-  <div class="peer-header">
-    <h2>Peer Friends <span class="subtitle">PPS public-search partners</span></h2>
-    <div class="peer-actions">
-      <input type="text" id="peer-add-pid" placeholder="astor:<32-hex>" autocomplete="off">
-      <input type="text" id="peer-add-alias" placeholder="alias (optional)" autocomplete="off">
-      <input type="number" id="peer-add-trust" placeholder="trust 0-100" min="0" max="100" value="30">
-      <button id="peer-add-btn" class="btn-refresh" title="Add peer (requires endpoint URL set in CLI for full PPS)">+ add</button>
-      <button id="peer-refresh-btn" class="btn-refresh" title="Reload peer list">↻</button>
-    </div>
-  </div>
-  <div id="peer-panel-body" class="peer-body">
-    <div class="recall-hint">Loading peers…</div>
-  </div>
-</section>
+
 
 <footer class="dash-footer">
   Auto-refresh every 60s · Cache TTL 5min · <a href="/v1/dashboard" target="_blank">raw JSON</a>

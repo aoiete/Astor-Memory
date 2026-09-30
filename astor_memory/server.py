@@ -3928,6 +3928,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _words = [w.strip() for w in query.split() if len(w.strip()) >= 3][:6]
             patterns = []
             lessons = []
+            # v1.16.x patch: hoist experience_hits init out of the if-block so
+            # the return jsonify below can reference it even when _words=[].
+            # Ship P2 declared it inside the if, causing UnboundLocalError
+            # for short queries like "A" / "优" (1-2 chars).
+            experience_hits = []
             if _words:
                 _like_clauses = ' AND '.join(['content LIKE ?' for _ in _words])
                 _like_params = [f'%{w}%' for w in _words]
@@ -3991,7 +3996,6 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     except Exception:
                         pass
                 # v1.15.57 (2026-09-30) Ship P2: also pull from memory_experience table.
-                experience_hits = []
                 try:
                     for _t_e, _u_e in _tiers_to_query:
                         _b_e = astor_bus(tier=_t_e, user_id=_u_e)
