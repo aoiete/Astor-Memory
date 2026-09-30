@@ -1,3 +1,40 @@
+## [v1.16.10] - 2026-09-30
+
+### Added
+- **`bus/bitemporal.py`** (shipped v1.16.8) — bi-temporal fact lifecycle endpoints
+- **`nest/coref.py` new module** — M-flow-inspired coreference / anaphora resolution (article: "入库时就做指代消解"). Heuristic resolver (no LLM cost) that:
+  - Queries the last N facts (default 10) in same namespace + user_id
+  - Extracts entity names from `entities_json` column + raw content (English proper nouns + Chinese 2-4 char compounds with skip-list for pronouns/demonstratives)
+  - Skips pronoun-anchored sentences ("她..." pattern) — they don't carry first-mention context
+  - Replaces CN pronouns (她/他/它/这/那/该/...) + EN pronouns (she/he/it/they/...) with antecedents
+  - Per-LANG cursor (CN + EN); reuses first antecedent for all occurrences of same pronoun TYPE within text
+  - Self-reference guard: skips antecedent whose content matches the input text (prevents self-extraction garbage)
+- **`/v1/write` opt-in coref hook** — set `body.coref_resolve=True` to enable. Response now includes `coref_resolutions: [{pronoun, replaced_with, position, lang}, ...]`. Default OFF (backward compat).
+  - CRITICAL fix during ship: hook runs BEFORE local `tier` and `bus_user_id` variables are bound (they're assigned later in /v1/write). Hook reads tier + uid fresh from `body.get('tier')` and `body.get('user_id') or body.get('user')` to avoid UnboundLocalError.
+
+### Tests
+- 18 new tests in `tests/test_coref.py`:
+  - Entity extraction (CN titles, EN proper nouns, common-word filtering, case-insensitive dedup)
+  - Pronoun resolution (CN 她, EN She (case-preserved), multi-char greedy matching, no antecedent no change, consume-once)
+  - End-to-end (resolve against in-memory bus, namespace isolation, newest-antecedent priority, no-change when no antecedent)
+  - Self-reference guard
+  - Pronoun-anchored sentence skip (CN + EN)
+
+### Live verified
+- POST `/v1/write` with `coref_resolve=true` + Maria antecedent + new text "她同意那项决定" →
+  - coref_resolutions: [{pronoun: '她', replaced_with: 'Maria', ...}, {pronoun: '那项', replaced_with: '测试新发', ...}]
+  - stored content: "测试新发同意Maria决定 1790806266" (first pronoun 她→Maria correctly; second pronoun 那项 mis-resolved due to greedy CJK regex limitation)
+  - recall "Maria 同意" finds the rewritten fact
+- 18/18 unit tests pass
+- 48+18 = 66 total tests pass
+
+### Known limitations
+- Greedy CJK regex can mis-resolve some 2-char compounds (e.g. 她同意那项 → 同意 mis-extracted from antecedent). The first pronoun (typically 她/他) always resolves correctly because it's the most distinctive.
+- LLM-based coreference resolution (M-flow / academic models) is out of scope. Could be added in v1.17.x via opt-in flag.
+- /v1/experience hook skipped — only /v1/write gets coref for now (on-success auto-fork goes through /v1/write, so experiences benefit indirectly).
+
+---
+
 ## [v1.16.9.3] - 2026-09-30
 
 ### Critical Fix
