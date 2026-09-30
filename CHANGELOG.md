@@ -1,3 +1,15 @@
+## [v1.16.5] - 2026-09-30
+
+### Added
+- **Recency decay penalty in `match_experiences`**: half-life 30 days. Each 30-day period subtracts 0.05 from score (capped at -0.30 so old rows still surface when kw+emb matches). Inspired by PingMaster wechat article "智能体记忆系统关键技术" (mp.weixin.qq.com/s/pqr5LACq2HZyD1SEOaalQw) — "时间衰减遗忘: 记忆条目携带衰减权重, 时间越久远权重越低". Complements v1.16.4 HOT boost: HOT beats fresh, fresh beats old at same kw score. Tuned so kw-strong matches still rank high even with old age; generic kw matches decay.
+
+### Read
+- docs/wechat-mem0-zep-letta-article.txt — Mem0/Zep/Letta 对比选型 (article 1)
+- docs/wechat-agent-memory-deep-analysis-article.txt — 智能体记忆系统关键技术详细分析 (article 2)
+- docs/wechat-graphmemix-paper-article.txt — 北大 GraphMemix 论文解读 (article 3)
+
+---
+
 ## [v1.16.4] - 2026-09-30
 
 ### Added

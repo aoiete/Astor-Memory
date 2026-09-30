@@ -869,20 +869,40 @@ class AstorBus:
                     _occ_v, _imp_v = 0, 0.0
                 if _occ_v >= 3 or _imp_v >= 0.95:
                     s += 0.10  # bounded — stays tiebreak, not override
+                # v1.16.5 (2026-09-30): recency decay penalty. Inspired by
+                # PingMaster wechat "智能体记忆系统关键技术" 9/30 — "时间衰减
+                # 遗忘: 记忆条目携带衰减权重, 时间越久远权重越低". Half-life
+                # 30 days: each 30-day period subtracts 0.05 from score (capped
+                # at -0.30 so old rows still surface when kw+emb matches).
+                # Combined with v1.16.4 HOT boost (+0.10) the dynamics are:
+                # HOT beats fresh; fresh beats old at same kw score.
+                try:
+                    import datetime as _dt
+                    _ca = r[12]
+                    if _ca:
+                        _created = _dt.datetime.fromisoformat(_ca.replace('Z', '+00:00'))
+                        _age_days = (_dt.datetime.now(_dt.timezone.utc) - _created).days
+                        if _age_days > 0:
+                            _decay = min(0.30, _age_days / 30.0 * 0.05)
+                            s -= _decay
+                except Exception:
+                    pass  # no decay on bad timestamp — keep raw score
                 # Recency tiebreak: use created_at (immutable, set at insert)
                 # NOT last_invoked_at — that gets updated post-sort so all
                 # rows in this query would tie. created_at sort works for
                 # Zep-style "newer entries preferred at same score+occ".
                 scored.append((s, r, _occ_v, r[12]))  # created_at as recency
-        # v1.16.4: sort by (score DESC, occurrence_count DESC, recency DESC).
-        # recency = max(last_invoked_at, created_at) ISO string — ISO 8601
-        # sorts lexicographically as chronological (sortable text).
+        # v1.16.4: sort by (score DESC, occurrence_count DESC, created_at DESC).
+        # Recency = created_at (immutable, set at insert). We do NOT use
+        # last_invoked_at here — that's updated post-sort, so within a
+        # single query all rows see the same stale value and tiebreak
+        # silently fails. created_at is immutable so it actually orders.
         scored.sort(
             key=lambda x: (x[0], x[2], x[3] or ''),
             reverse=True,
         )
+        # Strip occ + recency back to 2-tuple for the rest of the handler.
         results = [(s, r) for s, r, _, _ in scored[:top_k]]
-        results = scored[:top_k]
         # Update invocation_count for matched experiences
         if results:
             ids = [r[0] for _, r in results]
