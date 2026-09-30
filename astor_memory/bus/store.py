@@ -883,10 +883,59 @@ class AstorBus:
                         _created = _dt.datetime.fromisoformat(_ca.replace('Z', '+00:00'))
                         _age_days = (_dt.datetime.now(_dt.timezone.utc) - _created).days
                         if _age_days > 0:
-                            _decay = min(0.30, _age_days / 30.0 * 0.05)
+                            # v1.16.9 (2026-09-30): asymmetric decay.
+                            # Article "评测-记忆-落地-控制飞轮" §2.3 指出:
+                            # "好经验强化速度(+0.05)远慢于坏经验淘汰速度(-0.12)
+                            # ——淘汰是强化的2.4倍. 逻辑:一条错误记忆的伤害
+                            # > 一条正确记忆的收益". Per-experience outcome
+                            # distinguishes good (success_pattern, mental_model)
+                            # from bad (failure_pattern, lesson, user_correction).
+                            # Cap kept at 0.30 (matches old behavior) so old rows
+                            # still surface when kw+emb matches.
+                            _outcome = (r[3] or '').lower() if len(r) > 3 else ''
+                            if _outcome in {
+                                'failure_pattern', 'lesson', 'user_correction',
+                                'pushback', 'correction',
+                            }:
+                                _rate = 0.12  # bad: 2.4× faster decay
+                            else:
+                                _rate = 0.05  # good: standard decay
+                            _decay = min(0.30, _age_days / 30.0 * _rate)
                             s -= _decay
                 except Exception:
                     pass  # no decay on bad timestamp — keep raw score
+                # v1.16.6: GraphMemix-style Node Verifier boost. Per
+                # PingMaster wechat "北大 GraphMemix 论文解读" 9/30 — Node
+                # Verifier scores each candidate's INDEPENDENT utility for
+                # the query (+5.2% in their ablation). We use a cheap
+                # token+entity-overlap heuristic (no LLM cost on hot path).
+                # Score is 0..1, boost = score * 0.15 so it stays a
+                # tiebreak not an override. Combined with kw + emb +
+                # HOT boost + recency decay: ranking now reflects
+                # relevance + usefulness + freshness + HOT status.
+                try:
+                    from ..nest.ecv import node_usefulness as _ecv_nu
+                    _ecv_text = (r[6] or '') + ' ' + (r[8] or '') + ' ' + (r[9] or '')
+                    _ecv_kw = r[4]
+                    try:
+                        import json as _json_ecv
+                        if isinstance(_ecv_kw, str) and _ecv_kw:
+                            _ecv_kw = _json_ecv.loads(_ecv_kw)
+                        elif not _ecv_kw:
+                            _ecv_kw = None
+                    except Exception:
+                        _ecv_kw = None
+                    _ecv_score = _ecv_nu(
+                        query=query,
+                        candidate_content=_ecv_text,
+                        candidate_keywords=_ecv_kw,
+                        candidate_entities_json=None,  # no entities_json column in memory_experience
+                        candidate_confidence=float(r[14]) if r[14] is not None else 0.7,
+                        candidate_access_count=int(r[10]) if r[10] is not None else 0,
+                    )
+                    s += _ecv_score * 0.15
+                except Exception:
+                    pass  # ECV failure must not break match_experiences
                 # Recency tiebreak: use created_at (immutable, set at insert)
                 # NOT last_invoked_at — that gets updated post-sort so all
                 # rows in this query would tie. created_at sort works for
