@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Bus: SQLite-based event log + canonical fact store.
 
@@ -9,7 +11,53 @@ Provides:
 v1.0 simple install: single file ~/.astor/astor.db
 """
 
-from __future__ import annotations
+# v1.15.49 S23 (2026-09-29): kind → memory_class auto-mapping.
+# Before S23: promote_candidate never wrote memory_class; all 4979 active
+# facts defaulted to 'world_fact' (taxonomy slot existed since v1.14.74 but
+# was only used by mental_models.py / knowledge_pages.py / meta-recall
+# response builders). Result: dashboard memory_class_distribution showed
+# 100% world_fact — no actual usage of experience / observation / mental_model
+# buckets, blocking future Ship-S24 work that depends on knowing which
+# facts are subjective experience vs objective world_fact.
+#
+# Mapping rule (locked 2026-09-29):
+#   mental_model    ← rule / decision / user_preference
+#   experience      ← success_pattern / failure_pattern / lesson / experience
+#   observation     ← 'observation' kind or content starts with '[observation]'
+#   world_fact      ← default (kind='fact' or anything else)
+#
+# Apply at promote_candidate INSERT time AND backfill existing rows via
+# _backfill_memory_class() so dashboard distribution becomes accurate
+# immediately. Backfill is idempotent (re-runnable).
+def _derive_memory_class(
+    kind: str | None,
+    tags: str | None = None,
+    content: str | None = None,
+) -> str:
+    """v1.15.49 S23: derive memory_class from kind (+ tags + content sniff).
+
+    Returns one of 'mental_model' / 'experience' / 'observation' /
+    'world_fact'. CHECK constraint in schema.py allows these 4 only.
+    """
+    if not kind:
+        return 'world_fact'
+    k = str(kind).strip().lower()
+    if k in ('rule', 'decision', 'user_preference'):
+        return 'mental_model'
+    if k in ('success_pattern', 'failure_pattern', 'lesson', 'experience'):
+        return 'experience'
+    if k == 'observation':
+        return 'observation'
+    # content sniff: facts marked with [observation] prefix become observations
+    if content and isinstance(content, str) and content.lstrip().startswith('[observation]'):
+        return 'observation'
+    # tags sniff: explicit taxonomy tag overrides
+    if tags:
+        for t in ('mental_model', 'experience', 'observation', 'world_fact'):
+            if t in str(tags).lower():
+                return t
+    return 'world_fact'
+
 
 import json
 import sqlite3
@@ -333,8 +381,9 @@ class AstorBus:
                         entities_json,
                         provenance_kind, provenance_agent,
                         created_at,
-                        evidence_quote, source_ref, source_hash)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        evidence_quote, source_ref, source_hash,
+                        memory_class)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         candidate_id, event_id, namespace, content, kind, confidence, importance,
                         tags, metadata, kw_json, ctx_text,
@@ -365,6 +414,9 @@ class AstorBus:
                         # compat with existing callers; server /v1/write
                         # threads real values via metadata.__evidence_quote__.
                         evidence_quote, source_ref, source_hash,
+                        # v1.15.49 S23: derive memory_class from kind/tags/content
+                        # instead of leaving the default 'world_fact'.
+                        _derive_memory_class(kind, tags, content),
                     ),
                 )
                 canonical_id = cur.lastrowid
@@ -881,6 +933,60 @@ class AstorBus:
             self.close()
         except Exception:
             pass
+
+    def backfill_memory_class(self, dry_run: bool = True) -> dict:
+        """v1.15.49 S23: one-shot backfill of memory_class for existing rows.
+
+        Returns dict with counts per kind → mapped_class.
+        Idempotent: safe to run multiple times; rows already with a non-default
+        memory_class (mental_model / experience / observation) are SKIPPED —
+        only rows still on the 'world_fact' default get re-derived. This means
+        if an admin manually changed a row to 'mental_model', backfill won't
+        clobber it (which is the safe behavior).
+
+        Use dry_run=True to preview (returns the plan without writing).
+        Call via:  bus.backfill_memory_class(dry_run=False)
+        Or trigger from the server via /v1/backfill_memory_class.
+        """
+        # Find rows where memory_class is still default 'world_fact' AND
+        # the auto-derived class would be something different.
+        kind_to_class: dict[str, int] = {}
+        for kind_name, mapped in [
+            ('rule', 'mental_model'),
+            ('decision', 'mental_model'),
+            ('user_preference', 'mental_model'),
+            ('success_pattern', 'experience'),
+            ('failure_pattern', 'experience'),
+            ('lesson', 'experience'),
+            ('observation', 'observation'),
+        ]:
+            count = self.conn.execute(
+                "SELECT COUNT(*) FROM memory_canonical "
+                "WHERE tombstoned = 0 AND kind = ? AND memory_class = 'world_fact'",
+                (kind_name,),
+            ).fetchone()[0]
+            if count > 0:
+                kind_to_class[kind_name] = count
+        result = {
+            'candidates_by_kind': kind_to_class,
+            'total_to_update': sum(kind_to_class.values()),
+            'dry_run': dry_run,
+        }
+        if dry_run:
+            return result
+        with self.transaction() as c:
+            for kind_name in kind_to_class:
+                c.execute(
+                    "UPDATE memory_canonical SET memory_class = ? "
+                    "WHERE tombstoned = 0 AND kind = ? AND memory_class = 'world_fact'",
+                    (
+                        'mental_model' if kind_name in ('rule', 'decision', 'user_preference')
+                        else 'experience' if kind_name in ('success_pattern', 'failure_pattern', 'lesson')
+                        else 'observation',
+                        kind_name,
+                    ),
+                )
+        return result
 
 
 # Module-level singleton (lazy init)
