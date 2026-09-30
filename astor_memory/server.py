@@ -1793,12 +1793,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     pass
                     _experience_deduped = True
                     _experience_id = _e_existing
-                    # 3-time auto-promote
-                    if _experience_occ >= 3:
+                    # v1.16.9: 3-tier promotion (medium 0.85 @ 3 invokes, HOT 0.95 @ 6).
+                    # Article §2.3 — graduated tiers from default 0.7 → 0.85 → 0.95
+                    # replaces the old binary jump.
+                    if _experience_occ >= 6:
                         _e_bus.conn.execute(
                             "UPDATE memory_experience SET importance = 0.95 WHERE id = ?",
                             (_e_existing,),
                         )
+                    elif _experience_occ >= 3:
+                        _e_bus.conn.execute(
+                            "UPDATE memory_experience SET importance = 0.85 WHERE id = ?",
+                            (_e_existing,),
+                        )
+                    if _experience_occ >= 3:
                         _e_bus.conn.commit()
                 else:
                     _e_reflection = f'[dedup:{_e_dedup}] auto-forked from /v1/write kind={_write_kind} fact_ids={fact_ids}'
@@ -1849,6 +1857,58 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # Bi-temporal failure must never break the write.
             _safe_stderr_write(f'[astor.server] bitemporal auto-invalidate failed (non-fatal): {type(_bt_exc).__name__}: {_bt_exc}\n')
 
+        # v1.16.9 (2026-09-30): on-success auto-fork. Article §2.3 指出
+        # "正信号触发写入: 只有收到明确的正信号时才写入长期记忆——用户
+        # 确认/评测通过/任务成功". Currently /v1/write only auto-forks on
+        # FAILURE-kind triggers (correction / pushback / etc); the success
+        # path is silent. This hook inserts a memory_experience row when:
+        #   (a) caller opted in via body.success_signal=True, OR
+        #   (b) caller metadata explicitly marks verified=True (e.g. a
+        #       post-tool-call hook confirming a successful ship).
+        # Outcome is "success_pattern"; importance 0.7 (matches existing
+        # auto-fork default). 3-occurrence auto-promote to medium-HOT (0.85)
+        # and 6-occurrence to full HOT (0.95) — see the new 3-tier ladder.
+        _success_exp_ids: list[int] = []
+        try:
+            _signal_success = bool(
+                body.get('success_signal')
+                or (body.get('metadata') or {}).get('verified') is True
+            )
+            # _write_kind may be empty (forge sets kind='fact' by default)
+            # so accept any kind that signals user-curated content.
+            _accepted_kind = _write_kind in {
+                '', 'fact', 'observation', 'success_pattern', 'mental_model',
+            }
+            if _signal_success and fact_ids and _accepted_kind:
+                import re as _re_s
+                _e_text_s = (body.get('text') or '').strip()
+                _e_keywords_s = list(dict.fromkeys(
+                    _re_s.findall(r'[\u4e00-\u9fff]{2,}|[A-Za-z][A-Za-z0-9_]{2,}',
+                                  _e_text_s)
+                ))[:8]
+                _e_reflect_s = f'[success] /v1/write kind={_write_kind or "fact"} fact_ids={fact_ids} verified=True'
+                # v1.16.9: use the SAME bus instance that wrote the canonical
+                # facts above — bus is already in scope as the closure variable
+                # in /v1/write. Avoid double-bus init (which races on ACL).
+                _e_id_s = bus.insert_experience(
+                    namespace=(('private:' + (bus_user_id or user))
+                               if tier.startswith('private') else tier),
+                    outcome='success_pattern',
+                    user_id=bus_user_id or user,
+                    trigger_keywords=_e_keywords_s or None,
+                    trigger_fact_ids=fact_ids or None,
+                    action_summary=_e_text_s,
+                    context=f'auto-forked from /v1/write kind={_write_kind or "fact"} (success signal)',
+                    reflection=_e_reflect_s,
+                    next_step_hint='',
+                    source_session_id=_write_session_id,
+                    importance=0.7,
+                )
+                _success_exp_ids.append(_e_id_s)
+        except Exception as _e_success_exc:
+            # On-success auto-fork failure must NEVER break the write — log only.
+            _safe_stderr_write(f'[astor.server] on-success auto-fork failed (non-fatal): {type(_e_success_exc).__name__}: {_e_success_exc}\n')
+
         resp_body = {
             'event_id': event_id,
             'fact_ids': fact_ids,
@@ -1856,6 +1916,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'tier': tier,
             'scope': scope,
             'mirrored': mirrored_fact_ids,
+            'success_experience_ids': _success_exp_ids,
             'invalidated': invalidated,
             # v1.14.23 Ship E: structured entity binding per fact.
             # Index N in entities_per_fact = entities for fact_ids[N].
@@ -4291,16 +4352,22 @@ def create_app(astor_dir: str | None = None) -> Flask:
             except Exception:
                 pass
             if _existing:
-                # P0.2: 3-time auto-promote flag. When occurrence_count hits 3,
-                # we bump importance to 0.95 and set a flag so future calls
-                # surface it as a HOT rule.
-                if _occ >= 3 and importance < 0.95:
+                # v1.16.9: 3-tier promotion. 3 invokes → 0.85 (medium-HOT);
+                # 6 invokes → 0.95 (full HOT). Graduated tiers vs binary jump.
+                if _occ >= 6 and importance < 0.95:
                     _bus.conn.execute(
                         "UPDATE memory_experience SET importance = 0.95 WHERE id = ?",
                         (_existing,),
                     )
                     _bus.conn.commit()
                     importance = 0.95
+                elif _occ >= 3 and importance < 0.85:
+                    _bus.conn.execute(
+                        "UPDATE memory_experience SET importance = 0.85 WHERE id = ?",
+                        (_existing,),
+                    )
+                    _bus.conn.commit()
+                    importance = 0.85
                 return jsonify({
                     'experience_id': _existing,
                     'occurrence_count': _occ,
