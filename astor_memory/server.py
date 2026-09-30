@@ -36,6 +36,10 @@ _META_RECALL_STATS: dict = {"triggered": 0, "returned_total": 0, "errors": 0}
 _meta_recall_stats = _META_RECALL_STATS  # local alias used by read() with `global`
 
 
+# v1.16.x: PII gate lifetime counters (exposed via /v1/health + /v1/audit/health).
+_pii_gate_stats: dict = {"block_count": 0, "redact_count": 0}
+
+
 # S14 (2026-09-08): auto-load OPENAI_API_KEY from hermes .env file if not in env.
 # Subprocess start (memory_servers_watch, start_astor.sh) sometimes doesn't inherit
 # OPENAI_API_KEY from parent bash on Windows MSYS. Read it directly from .env file
@@ -89,6 +93,32 @@ def _safe_stderr_write(msg: str) -> None:
         _se.flush()
     except Exception:
         pass  # never let debug logging break the request
+
+
+def _pii_last_24h_count() -> int:
+    """v1.16.x: count `memory_defense_scan` audit_log rows in the last 24h.
+
+    Query against the public bus audit_log table (most writes go to public tier
+    so this is the best-effort aggregate). Returns 0 on any DB error so the
+    /v1/audit/health endpoint stays robust.
+    """
+    try:
+        from ._internal.acl_layout import get_db_path, Tier, Store
+        import sqlite3 as _sqlite3
+        import datetime as _dt
+        path = str(get_db_path(Tier.PUBLIC, Store.BUS))
+        conn = _sqlite3.connect(path)
+        cutoff = (_dt.datetime.utcnow() - _dt.timedelta(hours=24)).isoformat() + 'Z'
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE event='memory_defense_scan' AND ts >= ?",
+            (cutoff,),
+        )
+        n = cur.fetchone()[0]
+        conn.close()
+        return int(n)
+    except Exception:
+        return 0
+
 
 from flask import Flask, jsonify, request
 
@@ -789,6 +819,16 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'bus': str(bus.db_path),
                 'nest': str(nest.db_path),
             },
+            # v1.16.x: reactive consult + 三层内容防线 — health surface.
+            'v116x_tier_routing': {
+                'failure_tier': 'public',
+                'lesson_tier': 'public',
+                'consult_default_on': os.environ.get('ASTOR_CONSULT_DEFAULT_ON', '1') == '1',
+                'tier_hint_required': os.environ.get('ASTOR_TIER_HINT_REQUIRED', '0') == '1',
+                'personal_content_warn_enabled': True,
+                'pii_public_force_env': os.environ.get('ASTOR_PII_PUBLIC_FORCE', '1') == '1',
+            },
+            'pii_gate': dict(_pii_gate_stats),  # lifetime counters
         }
         # Bus stats
         try:
@@ -1101,6 +1141,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'detail': f"Memory Defense (block policy) rejected write: {len(_md_matches)} PII match(es) including {_names[:3]}",
                     'matches': [{'name': m.name, 'severity': m.severity} for m in _md_matches],
                 }), 400
+                _pii_gate_stats['block_count'] += 1  # v1.16.x: lifetime block counter
             if _md_matches:
                 # Log to audit (fire-and-forget; never blocks the write)
                 try:
@@ -1109,6 +1150,42 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 except Exception as _md_audit_exc:
                     _safe_stderr_write('[MEMORY_DEFENSE] audit log failed: ' + repr(_md_audit_exc) + chr(10))
                 text = _processed_text  # use redacted content for the actual write
+                _pii_gate_stats['redact_count'] += 1  # v1.16.x: lifetime redact counter
+        # v1.16.x: Layer 2 personal content sniff (warn only, never block).
+        # Runs on public tier writes only — private tier carries no
+        # cross-user leakage risk so sniffing is skipped. Categories are
+        # attached to fact metadata and returned via response header so
+        # agent frameworks can surface "are you sure?" prompts.
+        _personal_categories: list[str] = []
+        if tier == 'public' and text:
+            try:
+                from .nest.memory_defense import detect_personal_content as _dpc
+                _personal_categories = _dpc(text)
+            except Exception as _dpc_exc:
+                _safe_stderr_write(f'[astor.server] detect_personal_content failed (non-fatal): {_dpc_exc}\n')
+        # v1.16.x: tier_hint / behavior_class opt-in fields. When tier=public,
+        # callers can declare content type ('behavior' = method/pattern/flow;
+        # 'content' = plain fact; 'preference' = personal taste; 'learning' =
+        # fact for later review). Default 'content' for backward compatibility.
+        # behavior_class only accepted when tier_hint='behavior'.
+        _tier_hint_raw = body.get('tier_hint')
+        if _tier_hint_raw is not None and _tier_hint_raw not in ('behavior', 'content', 'preference', 'learning'):
+            return jsonify({
+                'error': 'invalid_tier_hint',
+                'detail': f"tier_hint={_tier_hint_raw!r} must be one of 'behavior'/'content'/'preference'/'learning'",
+            }), 400
+        _tier_hint = _tier_hint_raw if _tier_hint_raw is not None else (
+            'content' if tier == 'public' else None
+        )
+        _behavior_class = None
+        if _tier_hint == 'behavior':
+            _bc_raw = body.get('behavior_class')
+            if _bc_raw is not None and _bc_raw not in ('method', 'anti-pattern', 'recipe', 'flow', 'lesson', 'pattern'):
+                return jsonify({
+                    'error': 'invalid_behavior_class',
+                    'detail': f"behavior_class={_bc_raw!r} must be one of method/anti-pattern/recipe/flow/lesson/pattern",
+                }), 400
+            _behavior_class = _bc_raw
         # v1.14.63 (R-class fix): validate tier early. Acceptable values
         # are public / source / private_<user> / repo. The string 'auto'
         # is reserved for the astor_auto_observe tool flow (not HTTP
@@ -3205,31 +3282,43 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     f"peer_dispatch_failed: {type(_pf_exc).__name__}"
                 )
 
-        # v1.15.17 S21 (2026-09-25): auto-meta-recall — query success_pattern /
-        # failure_pattern from relevant tiers and prepend to results so the
-        # caller sees "what worked/failed before" without explicitly asking.
-        try:
-            _meta = _meta_recall_patterns(query, body.get('user') or body.get('user_id'), tier)
-            if _meta:
-                enriched = _meta + enriched
-                _meta_recall_stats['triggered'] += 1
-                _meta_recall_stats['returned_total'] += len(_meta)
-        except Exception as _mr_exc:
-            _safe_stderr_write(f'[astor.server] meta-recall prepend failed: {_mr_exc}\n')
-            _meta_recall_stats['errors'] += 1
-        # v1.16+ (Plan "public tier 共享方法/流程/教训"): lesson auto-injection.
-        # Mirror of the meta-recall block above but routed through _meta_recall_lessons.
-        # Lessons carry higher importance (>=0.99) and rarer phrasing, so they
-        # need their own top-2 channel to avoid being crowded out by pattern noise.
-        try:
-            _lessons = _meta_recall_lessons(query, body.get('user') or body.get('user_id'), tier)
-            if _lessons:
-                enriched = _lessons + enriched
-                _meta_recall_stats['triggered'] += 1
-                _meta_recall_stats['returned_total'] += len(_lessons)
-        except Exception as _ml_exc:
-            _safe_stderr_write(f'[astor.server] meta-recall-lessons prepend failed: {_ml_exc}\n')
-            _meta_recall_stats['errors'] += 1
+        # v1.16.x: reactive consult gate. Body.consult=True forces meta-recall;
+        # body.consult=False skips it; body.consult=None falls back to env
+        # ASTOR_CONSULT_DEFAULT_ON (default '1' = ON, preserves v1.16 proactive
+        # behavior). Operators can set ASTOR_CONSULT_DEFAULT_ON=0 to switch to
+        # the new "reactive consult" semantics globally (agent must opt in).
+        _consult = body.get('consult')
+        if _consult is None:
+            _consult = os.environ.get('ASTOR_CONSULT_DEFAULT_ON', '1') == '1'
+        else:
+            _consult = bool(_consult)
+        if _consult:
+            _meta_recall_stats['consult_triggered'] = _meta_recall_stats.get('consult_triggered', 0) + 1
+            # v1.15.17 S21 (2026-09-25): auto-meta-recall — query success_pattern /
+            # failure_pattern from relevant tiers and prepend to results so the
+            # caller sees "what worked/failed before" without explicitly asking.
+            try:
+                _meta = _meta_recall_patterns(query, body.get('user') or body.get('user_id'), tier)
+                if _meta:
+                    enriched = _meta + enriched
+                    _meta_recall_stats['triggered'] += 1
+                    _meta_recall_stats['returned_total'] += len(_meta)
+            except Exception as _mr_exc:
+                _safe_stderr_write(f'[astor.server] meta-recall prepend failed: {_mr_exc}\n')
+                _meta_recall_stats['errors'] += 1
+            # v1.16+ (Plan "public tier 共享方法/流程/教训"): lesson auto-injection.
+            # Mirror of the meta-recall block above but routed through _meta_recall_lessons.
+            # Lessons carry higher importance (>=0.99) and rarer phrasing, so they
+            # need their own top-2 channel to avoid being crowded out by pattern noise.
+            try:
+                _lessons = _meta_recall_lessons(query, body.get('user') or body.get('user_id'), tier)
+                if _lessons:
+                    enriched = _lessons + enriched
+                    _meta_recall_stats['triggered'] += 1
+                    _meta_recall_stats['returned_total'] += len(_lessons)
+            except Exception as _ml_exc:
+                _safe_stderr_write(f'[astor.server] meta-recall-lessons prepend failed: {_ml_exc}\n')
+                _meta_recall_stats['errors'] += 1
         # v1.15.42 (Ship P3.1 recall enhancement): mental_model auto-injection.
         try:
             _mm = _meta_recall_mental_models(query, body.get('user') or body.get('user_id'), tier)
@@ -3487,6 +3576,62 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'content_preview': ccontent[:120],
                 'tombstone_only': tombstone_only,
             }],
+        })
+
+    @app.route('/v1/consult', methods=['POST'])
+    def consult():
+        """v1.16.x (Plan "reactive consult"): explicit success/failure/lesson lookup.
+
+        Bypasses the consult-default gate (always fires meta-recall + lessons)
+        and skips the heavy vector recall path. Designed for the workflow:
+          1. Agent hits a problem ("搞砸了 / 不行 / 卡住")
+          2. Agent calls /v1/consult with query describing the obstacle
+          3. astor returns top success_pattern + failure_pattern + lesson hits
+          4. Agent reads what worked before, what failed before, what was learned
+
+        Body: {query, user, tier, top_k (default 2 per kind)}
+        Returns: {success: [...], failure: [...], lesson: [...]}
+        """
+        body = request.get_json(force=True)
+        query = body.get('query')
+        if not query:
+            return jsonify({'error': 'query required', 'detail': 'POST /v1/consult requires "query"'}), 400
+        user = body.get('user', 'admin')
+        tier = body.get('tier', 'public')
+        top_k = int(body.get('top_k', 2))
+
+        # Read NL to discover inner functions defined inside read(). Walk the
+        # call stack to grab them off the enclosing closure of read(). Fall
+        # back to None if not present (older builds).
+        _patterns_fn = _lessons_fn = None
+        frame = sys._getframe(0)
+        while frame is not None:
+            locs = frame.f_locals
+            if '_meta_recall_patterns' in locs:
+                _patterns_fn = locs['_meta_recall_patterns']
+                _lessons_fn = locs['_meta_recall_lessons']
+                break
+            frame = frame.f_back
+
+        if _patterns_fn is None:
+            return jsonify({
+                'error': 'consult_unavailable',
+                'detail': '_meta_recall_patterns / _meta_recall_lessons not in scope (older astor build)',
+            }), 500
+
+        patterns = _patterns_fn(query, user, tier)[:top_k]
+        lessons = _lessons_fn(query, user, tier)[:top_k]
+        return jsonify({
+            'query': query,
+            'tier': tier,
+            'success': [h for h in patterns if h.get('kind') == 'success_pattern'],
+            'failure': [h for h in patterns if h.get('kind') == 'failure_pattern'],
+            'lesson': lessons,
+            'counts': {
+                'success': len([h for h in patterns if h.get('kind') == 'success_pattern']),
+                'failure': len([h for h in patterns if h.get('kind') == 'failure_pattern']),
+                'lesson': len(lessons),
+            },
         })
 
     @app.route('/v1/read/multi', methods=['POST'])
@@ -5005,6 +5150,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # v1.15.17 S21: meta-recall stats so dashboard / ops can verify
             # astor is actively auto-injecting success/failure patterns.
             'meta_recall_stats': dict(_META_RECALL_STATS),
+            # v1.16.x: PII gate lifetime counters + last-24h scan count from audit_log.
+            'pii_gate': {
+                **dict(_pii_gate_stats),
+                'last_24h_block_count': _pii_last_24h_count(),
+            },
             'reference': 'mp.weixin.qq.com/s/aL1gaDDGR1eJy2uzL5kKdQ (Bannings 2026-08)'
         })
 

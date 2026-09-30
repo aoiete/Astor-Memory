@@ -27,6 +27,7 @@ tier=private│       bus / forge / nest        │  per-user, ACL-gated
 3 tiers map to 3 ACL needs:
 - **public**: shared knowledge (admin-curated rules)
 - **source**: operator-only R-class hard rules (模式/方法/流程/教训 → public)
+v1.16.x: reactive consult by default (env ASTOR_CONSULT_DEFAULT_ON); personal content sniff warn-not-block; tier_hint opt-in field
 - **private**: per-user (cross-user isolation)
 
 ## 4th DB family: lex

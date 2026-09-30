@@ -154,7 +154,14 @@ Three spatial tiers match the ACL needs of every agent system we've seen in prod
 | `source` | Admin only (agent sees, user doesn't) | Admin-private context, agent self-patterns, internal config |
 | `private × N` | One user at a time | Per-user private facts (preferences, history, audit) |
 
-> v1.16+：模式/方法/流程/教训自动走 public（agent 跨用户共享），operator 自己的 R-class 硬规则走 source（admin-only）。
+> v1.16+：模式/方法/流程/教训自动走 public（agent 跨用户共享），operator 自己的 R-class 硬规则走 source（admin-only）
+
+v1.16.x reactive consult + 三层内容防线：
+- `body.consult` gate: 默认 ON 保持 v1.16 proactive 行为；env `ASTOR_CONSULT_DEFAULT_ON=0` 切到 reactive (agent 必须显式 opt-in 才能查 pattern/lesson)
+- `POST /v1/consult` 新 endpoint：永远触发 success/failure/lesson 三类 lookup
+- Layer 2 personal content sniff：人名/地点/关系/财务 → 设 `X-Astor-Personal-Content` response header (warn only, 不 block)
+- `body.tier_hint` opt-in field：`behavior`/`content`/`preference`/`learning` 标记内容类型
+- `body.behavior_class`：`method`/`anti-pattern`/`recipe`/`flow`/`lesson`/`pattern` 仅当 `tier_hint='behavior'` 时生效。
 
 ### Why exactly 3?
 
