@@ -1628,7 +1628,82 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception:
             pass
 
-        resp = jsonify({
+        # v1.15.57 (2026-09-30) Ship P1: auto-fork correction kinds to memory_experience.
+        # When caller writes a fact with kind in ('correction', 'pushback', 'user_correction',
+        # 'failure_pattern', 'lesson') we ALSO insert a memory_experience row so the
+        # self-improving gate (match_experiences) can recall it at next /v1/read time.
+        # This is the server-side enforcement of the pushback-capture protocol —
+        # no client opt-in required, so any framework (hermes / LangChain / custom)
+        # gets the benefit by just calling /v1/write with the right kind.
+        _experience_id = None
+        _experience_deduped = False
+        _experience_occ = 0
+        try:
+            _write_kind = body.get('kind', '')
+            _pushback_kinds = {'correction', 'pushback', 'user_correction', 'failure_pattern', 'lesson'}
+            if _write_kind in _pushback_kinds and text:
+                import hashlib as _hl_e
+                from .bus import astor_bus as _ab_e
+                _e_actor = user or 'admin'
+                _e_tier = 'private' if not _e_actor.startswith('admin') and not _e_actor == 'admin' else 'source'
+                _e_user_id = _e_actor if _e_tier.startswith('private') else None
+                _e_text = text.strip()
+                _e_keywords = body.get('tags') or []
+                _e_blob = _e_actor + '||' + _e_text + '||' + '|'.join(sorted(str(k) for k in _e_keywords[:5]))
+                _e_dedup = _hl_e.sha256(_e_blob.encode('utf-8')).hexdigest()[:16]
+                _e_outcome = 'failure' if _write_kind in ('correction', 'pushback', 'user_correction', 'failure_pattern') else 'neutral'
+                _e_bus = _ab_e(tier=_e_tier, user_id=_e_user_id)
+                # dedup lookup
+                _e_existing = None
+                _experience_occ = 0
+                try:
+                    _e_upd = _e_bus.conn.execute(
+                        "UPDATE memory_experience "
+                        "SET invocation_count = invocation_count + 1, "
+                        "    last_invoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+                        "WHERE user_id = ? AND instr(reflection, ?) > 0 "
+                        "RETURNING id, invocation_count",
+                        (_e_actor, f'[dedup:{_e_dedup}]'),
+                    ).fetchone()
+                    if _e_upd:
+                        _e_existing = int(_e_upd[0])
+                        _experience_occ = int(_e_upd[1])
+                        _e_bus.conn.commit()
+                except Exception:
+                    pass
+                if _e_existing:
+                    # _experience_occ already set by atomic UPDATE...RETURNING above.
+                    pass
+                    _experience_deduped = True
+                    _experience_id = _e_existing
+                    # 3-time auto-promote
+                    if _experience_occ >= 3:
+                        _e_bus.conn.execute(
+                            "UPDATE memory_experience SET importance = 0.95 WHERE id = ?",
+                            (_e_existing,),
+                        )
+                        _e_bus.conn.commit()
+                else:
+                    _e_reflection = f'[dedup:{_e_dedup}] auto-forked from /v1/write kind={_write_kind} fact_ids={fact_ids}'
+                    _experience_id = _e_bus.insert_experience(
+                        namespace=('private:' + _e_actor) if _e_tier.startswith('private') else _e_tier,
+                        outcome=_e_outcome,
+                        user_id=_e_actor,
+                        trigger_keywords=list(_e_keywords) or None,
+                        trigger_fact_ids=fact_ids or None,
+                        action_summary=_e_text,
+                        context=f'auto-forked from /v1/write kind={_write_kind}',
+                        reflection=_e_reflection,
+                        next_step_hint='',
+                        source_session_id=_write_session_id,
+                        importance=0.85,
+                    )
+                    _experience_occ = 1
+        except Exception as _e_fork_exc:
+            # Auto-fork failure must NEVER break the write — log to stderr only.
+            _safe_stderr_write(f'[astor.server] correction auto-fork failed (non-fatal): {type(_e_fork_exc).__name__}: {_e_fork_exc}\n')
+
+        resp_body = {
             'event_id': event_id,
             'fact_ids': fact_ids,
             'count': len(fact_ids),
@@ -1638,14 +1713,23 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # v1.14.23 Ship E: structured entity binding per fact.
             # Index N in entities_per_fact = entities for fact_ids[N].
             'entities_per_fact': facts_entities,
-        })
+            # v1.15.57 Ship P1: auto-fork to memory_experience.
+            'experience_id': _experience_id,
+            'experience_deduped': _experience_deduped,
+            'experience_occurrence': _experience_occ,
+        }
+        resp = jsonify(resp_body)
         # v1.16.x Layer 2: attach personal content sniff to response (warn only).
         if _personal_categories:
             resp.headers['X-Astor-Personal-Content'] = ','.join(_personal_categories)
-            resp_body = resp.get_json()
             resp_body['personal_content_categories'] = list(_personal_categories)
             resp = jsonify(resp_body)
             resp.headers['X-Astor-Personal-Content'] = ','.join(_personal_categories)
+        # v1.15.57 Ship P1: response header for downstream agents to detect
+        # that this write created/updated an experience row.
+        if _experience_id is not None:
+            resp.headers['X-Astor-Experience-Id'] = str(_experience_id)
+            resp.headers['X-Astor-Experience-Occurrence'] = str(_experience_occ)
         return resp
 
     # v1.15.17 S21 (2026-09-25): auto-meta-recall gate.
@@ -3906,6 +3990,30 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             })
                     except Exception:
                         pass
+                # v1.15.57 (2026-09-30) Ship P2: also pull from memory_experience table.
+                experience_hits = []
+                try:
+                    for _t_e, _u_e in _tiers_to_query:
+                        _b_e = astor_bus(tier=_t_e, user_id=_u_e)
+                        _e_rows = _b_e.match_experiences(
+                            query=query, namespace=None, user_id=_u_e,
+                            top_k=top_k, use_embedding=False,
+                        )
+                        for _e_row in _e_rows:
+                            experience_hits.append({
+                                'experience_id': _e_row['id'],
+                                'action_summary': _e_row['action_summary'][:500],
+                                'outcome': _e_row['outcome'],
+                                'reflection': _e_row['reflection'][:500],
+                                'next_step_hint': _e_row['next_step_hint'][:500],
+                                'occurrence_count': _e_row['invocation_count'],
+                                'importance': _e_row['importance'],
+                                'meta_source': 'auto-experience-consult',
+                                'meta_tier': _t_e,
+                            })
+                except Exception:
+                    pass
+                experience_hits = experience_hits[:top_k]
 
             return jsonify({
                 'query': query,
@@ -3913,10 +4021,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'success': [h for h in patterns if h.get('kind') == 'success_pattern'][:top_k],
                 'failure': [h for h in patterns if h.get('kind') == 'failure_pattern'][:top_k],
                 'lesson': lessons[:top_k],
+                'experience': experience_hits,
                 'counts': {
                     'success': len([h for h in patterns if h.get('kind') == 'success_pattern']),
                     'failure': len([h for h in patterns if h.get('kind') == 'failure_pattern']),
                     'lesson': len(lessons),
+                    'experience': len(experience_hits),
                 },
             })
         except Exception as _consult_exc:
@@ -3927,6 +4037,195 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'error': 'consult_internal_error',
                 'detail': f'{type(_consult_exc).__name__}: {_consult_exc}',
             }), 500
+
+    # ---- v1.15.57 (2026-09-30): /v1/experience endpoints — pushback-capture protocol
+    # (OpenClaw self-improving pattern, bus-side).  Three new routes:
+    #   POST /v1/experience        : explicit experience insert (anyone, any framework)
+    #   GET  /v1/experience/match  : recall experiences matching a query
+    #                                  (powers /v1/consult expansion in P2)
+    # Design notes:
+    #   - Backed by memory_experience table (already shipped v1.6.0) — we only
+    #     expose HTTP, no schema change.
+    #   - Pushback kinds ('correction', 'pushback', 'user_correction') auto-dedup
+    #     by sha256(text+context_keywords[:5]) — repeated pushback on the same
+    #     topic increments occurrence_count instead of inserting a new row.
+    #   - This is the channel external agents (hermes, LangChain, custom scripts)
+    #     use to capture 'the user just told me I'm wrong' without going through
+    #     memory_canonical first.
+
+    @app.route('/v1/experience', methods=['POST'])
+    def experience_insert():
+        """Insert a new experience (OpenClaw self-improving pattern).
+
+        Body JSON:
+          text / action_summary : str (required) — what was tried
+          outcome               : 'success'|'partial'|'failure'|'neutral' (default 'neutral')
+          reflection            : str (optional) — why it succeeded/failed
+          next_step_hint        : str (optional) — what to do next time
+          trigger_keywords      : list[str] (optional) — for retrieval matching
+          trigger_fact_ids      : list[int] (optional)
+          context               : str (optional)
+          user / actor          : str (default 'admin')
+          tier                  : 'public'|'source'|'private_<user>' (default 'private_<actor>')
+          source_session_id     : str (optional)
+          importance            : float (default 0.7; auto-bumped for pushback kinds)
+
+        Behavior:
+          - outcome ∈ {failure, partial} OR text starts with correction trigger
+            → kind='pushback_correction', importance=0.85, namespace='private:<actor>'
+          - Same actor + same text+keywords → return existing experience_id with
+            incremented occurrence_count (auto-dedup).
+          - Otherwise → fresh insert, returns experience_id.
+
+        Returns: {experience_id, occurrence_count, deduped: bool}
+        """
+        import hashlib as _hl
+        from .bus import astor_bus as _ab
+        body = request.get_json(force=True) or {}
+        text = body.get('text') or body.get('action_summary') or ''
+        if not text or len(text.strip()) < 4:
+            return jsonify({'error': 'text required', 'detail': 'POST /v1/experience requires text/action_summary (4+ chars)'}), 400
+        actor = body.get('user') or body.get('actor') or 'admin'
+        tier = body.get('tier') or ('private' if not actor.startswith('admin') else 'source')
+        outcome = (body.get('outcome') or 'neutral').lower()
+        if outcome not in ('success', 'partial', 'failure', 'neutral'):
+            outcome = 'neutral'
+        # Detect pushback kind from content
+        _pushback_triggers = ('不对', '错了', '应该是', '搞错了', '你错了', '你搞错',
+                              'no,', 'wrong', "that's wrong", 'should be', 'actually',
+                              '别再', 'stop', "don't", '不应该')
+        _is_pushback = (
+            outcome in ('failure', 'partial')
+            or any(t in text for t in _pushback_triggers)
+            or body.get('kind') in ('correction', 'pushback', 'user_correction')
+        )
+        kind = 'pushback_correction' if _is_pushback else 'experience'
+        importance = float(body.get('importance', 0.85 if _is_pushback else 0.7))
+        # Build dedup hash from (actor + text + first 5 trigger_keywords)
+        _trig_kws = body.get('trigger_keywords') or []
+        _dedup_blob = actor + '||' + text.strip() + '||' + '|'.join(sorted(str(k) for k in _trig_kws[:5]))
+        _dedup_hash = _hl.sha256(_dedup_blob.encode('utf-8')).hexdigest()[:16]
+        try:
+            _bus = _ab(tier=tier if tier != 'private' else 'private',
+                       user_id=actor if tier.startswith('private') else None)
+            # Dedup lookup: SELECT for existing row matching dedup hash. If
+            # found, increment its invocation_count and read back the new value
+            # via a follow-up SELECT (more verbose than UPDATE...RETURNING but
+            # matches db state reliably on this bus).
+            _existing = None
+            _occ = 0
+            try:
+                _row = _bus.conn.execute(
+                    "SELECT id, invocation_count FROM memory_experience "
+                    "WHERE user_id = ? AND instr(reflection, ?) > 0 LIMIT 1",
+                    (actor, f'[dedup:{_dedup_hash}]'),
+                ).fetchone()
+                if _row:
+                    _existing = int(_row[0])
+                    _bus.conn.execute(
+                        "UPDATE memory_experience "
+                        "SET invocation_count = invocation_count + 1, "
+                        "    last_invoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+                        "WHERE id = ?", (_existing,))
+                    _bus.conn.commit()
+                    _occ_row = _bus.conn.execute(
+                        "SELECT invocation_count FROM memory_experience WHERE id = ?",
+                        (_existing,),
+                    ).fetchone()
+                    _occ = int(_occ_row[0]) if _occ_row else (_existing and 1) or 0
+            except Exception:
+                pass
+            if _existing:
+                # P0.2: 3-time auto-promote flag. When occurrence_count hits 3,
+                # we bump importance to 0.95 and set a flag so future calls
+                # surface it as a HOT rule.
+                if _occ >= 3 and importance < 0.95:
+                    _bus.conn.execute(
+                        "UPDATE memory_experience SET importance = 0.95 WHERE id = ?",
+                        (_existing,),
+                    )
+                    _bus.conn.commit()
+                    importance = 0.95
+                return jsonify({
+                    'experience_id': _existing,
+                    'occurrence_count': _occ,
+                    'deduped': True,
+                    'dedup_hash': _dedup_hash,
+                    'promoted_to_hot': _occ >= 3,
+                    'kind': kind,
+                    'importance': importance,
+                })
+            # Fresh insert — encode dedup_hash into reflection field (cheap)
+            _reflection = body.get('reflection', '') or ''
+            _reflection_with_hash = f'[dedup:{_dedup_hash}] ' + _reflection if not _reflection.startswith('[dedup:') else _reflection
+            _exp_id = _bus.insert_experience(
+                namespace=('private:' + actor) if tier.startswith('private') else tier,
+                outcome=outcome,
+                user_id=actor,
+                trigger_keywords=_trig_kws or None,
+                trigger_fact_ids=body.get('trigger_fact_ids') or None,
+                action_summary=text.strip(),
+                context=body.get('context', ''),
+                reflection=_reflection_with_hash,
+                next_step_hint=body.get('next_step_hint', ''),
+                source_session_id=body.get('source_session_id'),
+                importance=importance,
+            )
+            return jsonify({
+                'experience_id': _exp_id,
+                'occurrence_count': 1,
+                'deduped': False,
+                'dedup_hash': _dedup_hash,
+                'promoted_to_hot': False,
+                'kind': kind,
+                'importance': importance,
+            })
+        except Exception as _exc:
+            _safe_stderr_write(f'[astor.server] /v1/experience failed: {type(_exc).__name__}: {_exc}\n')
+            return jsonify({'error': 'experience_insert_failed', 'detail': str(_exc)}), 500
+
+    @app.route('/v1/experience/match', methods=['POST'])
+    def experience_match():
+        """Match experiences against a query (hybrid kw + embedding).
+
+        Body: {query, user, tier, top_k (default 5), outcome (optional filter)}
+        Returns: {matches: [{experience_id, action_summary, outcome, reflection,
+                              next_step_hint, occurrence_count, importance, score}]}
+        """
+        try:
+            from .bus import astor_bus as _ab
+            body = request.get_json(force=True) or {}
+            query = body.get('query')
+            if not query:
+                return jsonify({'error': 'query required', 'detail': 'POST /v1/experience/match requires "query"'}), 400
+            actor = body.get('user', 'admin')
+            tier = body.get('tier') or ('private' if actor != 'admin' else 'public')
+            top_k = int(body.get('top_k', 5))
+            outcome_filter = body.get('outcome')
+            user_id = actor if tier.startswith('private') else None
+            _bus = _ab(tier=tier if tier != 'private' else 'private',
+                       user_id=user_id)
+            _rows = _bus.match_experiences(
+                query=query, namespace=None, user_id=user_id,
+                outcome=outcome_filter, top_k=top_k,
+            )
+            # Map to public API shape (rename keys)
+            matches = [{
+                'experience_id': r['id'],
+                'action_summary': r['action_summary'],
+                'outcome': r['outcome'],
+                'reflection': r['reflection'],
+                'next_step_hint': r['next_step_hint'],
+                'occurrence_count': r['invocation_count'],
+                'last_invoked_at': r['last_invoked_at'],
+                'importance': r['importance'],
+                'trigger_keywords': r['trigger_keywords'],
+                'score': 1.0,  # match_experiences returns by score already; we expose 1.0 placeholder
+            } for r in _rows]
+            return jsonify({'query': query, 'tier': tier, 'matches': matches, 'count': len(matches)})
+        except Exception as _exc:
+            _safe_stderr_write(f'[astor.server] /v1/experience/match failed: {type(_exc).__name__}: {_exc}\n')
+            return jsonify({'error': 'experience_match_failed', 'detail': str(_exc)}), 500
 
     @app.route('/v1/read/multi', methods=['POST'])
     def read_multi():
@@ -6623,6 +6922,68 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         'count': len(written),
                         'skipped': skipped,
                         'peer_trust_after_adopt': _bumped})
+
+    # ---- v1.15.57 (2026-09-30) Ship P3: experience-warning after_request middleware.
+    # When any caller hits /v1/read, /v1/write, /v1/consult, this hook re-runs
+    # match_experiences against the request body and surfaces the top experience
+    # as an X-Astor-Experience-Warning response header. The point: external agents
+    # don't have to opt in to "see" relevant pushback history — it's already on
+    # every response. They can surface it to the user, log it, or ignore it.
+    #
+    # Best-effort: any exception here is swallowed silently so the middleware
+    # never breaks the actual response.
+    @app.after_request
+    def _experience_warning_middleware(response):
+        try:
+            from flask import request as _fr
+            _ep = _fr.path or ''
+            if not (_ep.startswith('/v1/read') or _ep.startswith('/v1/write') or _ep.startswith('/v1/consult')):
+                return response
+            # Only run on POST /v1/write + /v1/read + /v1/consult
+            if _fr.method != 'POST' and _ep != '/v1/read':
+                return response
+            # IMPORTANT: do NOT consume request body via get_json() here —
+            # Flask caches the parsed JSON, so the endpoint's own get_json()
+            # would see None and break. Read raw bytes + parse manually.
+            _raw = _fr.get_data(cache=True, as_text=True) or ''
+            try:
+                import json as _json_mw
+                _body = _json_mw.loads(_raw) if _raw.strip() else {}
+            except Exception:
+                _body = {}
+            _qtext = ''
+            if _ep.startswith('/v1/read') or _ep.startswith('/v1/consult'):
+                _qtext = _body.get('query', '')
+            elif _ep.startswith('/v1/write'):
+                _qtext = _body.get('text', '')
+            if not _qtext or len(_qtext.strip()) < 4:
+                return response
+            _actor = _body.get('user') or _body.get('user_id') or _body.get('actor') or 'admin'
+            _tier = _body.get('tier') or 'private'
+            _user_id = _actor if _tier.startswith('private') else None
+            from .bus import astor_bus as _ab_mw
+            _mw_bus = _ab_mw(tier=_tier, user_id=_user_id)
+            _mw_hits = _mw_bus.match_experiences(
+                query=_qtext, namespace=None, user_id=_user_id,
+                top_k=2, use_embedding=False,  # kw-only for speed; middleware is per-request
+            )
+            if _mw_hits:
+                _top = _mw_hits[0]
+                _occ = _top.get('invocation_count', 1)
+                _is_hot = _occ >= 3 or _top.get('importance', 0) >= 0.95
+                # HTTP headers must be latin-1 (RFC 7230). Strip non-ASCII
+                # to avoid UnicodeEncodeError in werkzeug send_header.
+                _summary = (_top.get('next_step_hint') or _top.get('action_summary') or '')[:120]
+                _safe_summary = _summary.encode('latin-1', 'replace').decode('latin-1')
+                _warn_val = f"{_top['id']}|occ:{_occ}|{'HOT' if _is_hot else 'warm'}|{_safe_summary}"
+                response.headers['X-Astor-Experience-Warning'] = _warn_val
+                # multiple matches: IDs only (always ASCII-safe)
+                if len(_mw_hits) > 1:
+                    _all_ids = ','.join(str(h['id']) for h in _mw_hits[:3])
+                    response.headers['X-Astor-Experience-Matches'] = _all_ids
+        except Exception:
+            pass  # never break the response
+        return response
 
     return app
 
