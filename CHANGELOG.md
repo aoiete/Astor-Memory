@@ -1,3 +1,49 @@
+## [v1.16.13] - 2026-09-30
+
+### Added
+- **MemSkill-inspired Skill Bank abstraction** (article mp.weixin.qq.com/s/RmbEJ28DNQ4bI-olYTX5mA, NTU 2026, 4 SOTA benchmarks). The article argues agent memory operations should be ABSTRACTED as callable Skills, not hardcoded in server flow.
+- **`nest/skills.py` module**:
+  - `Skill` dataclass (name + description + tags + run callable + version)
+  - `SkillBank` registry with register/unregister/get/list/select/invoke
+  - `controller_select` helper for tag-based skill selection (any/all match)
+  - Singleton `get_bank()` lazy-loads 4 built-in skills on first call
+  - 4 built-in skills wrapping existing astor operations:
+    - `coref_resolve` (v1.16.10) — pronoun resolution
+    - `path_score` (v1.16.11) — graph path-based scoring
+    - `bitemporal_invalidate` (v1.16.8) — fact invalidation
+    - `episode_link` (v1.16.12) — L0 evidence linking
+- **3 new endpoints**:
+  - `GET /v1/skill` — list all skills (optional `?tag=X` filter)
+  - `GET /v1/skill/<name>` — inspect a single skill
+  - `POST /v1/skill/<name>/invoke` — invoke a skill with `body.context`
+
+### Tests
+- 25 new tests in `tests/test_skills.py`:
+  - Skill.invoke wraps run() in try/except (no raise on bug)
+  - SkillBank register/get/list/unregister/select (any/all)
+  - Singleton invariant (reset_bank for test isolation)
+  - Built-in skills auto-loaded + tagged correctly
+  - Smoke tests: path_score + coref_resolve + episode_link + bitemporal_invalidate all callable
+- 98 total tests pass (25 skills + 15 episodes + 14 path_score + 12 ECV + 15 v1.16.9 + 12 bitemporal + 5 correction).
+
+### Live verified
+- GET /v1/skill → 4 skills returned
+- GET /v1/skill?tag=write_hook → 3 skills (coref_resolve, bitemporal_invalidate, episode_link)
+- POST /v1/skill/path_score/invoke → direct=0.235, boost=0.0
+- POST /v1/skill/coref_resolve/invoke (empty text) → ok, changed=false
+- POST /v1/skill/nope/invoke → HTTP 400, "skill not found"
+
+### Why ship the abstraction now (vs Designer too)
+Designer requires training loop + reward signal + offline eval harness = multi-week project. Skill Bank is the FOUNDATION that Designer will operate on. Ship foundation first, layer Designer on top in v1.17.x.
+
+### Future v1.17.x roadmap
+- Designer: train-time skill evolution with hard-case mining
+- Snapshot rollback on Designer failure
+- Eval harness integration for skill quality measurement
+- Auto-generated skill descriptions via LLM
+
+---
+
 ## [v1.16.12] - 2026-09-30
 
 ### Added

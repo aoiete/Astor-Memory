@@ -1051,6 +1051,61 @@ def create_app(astor_dir: str | None = None) -> Flask:
         link_fact_to_episode(_ep_bus.conn, ep_id, fact_id)
         return jsonify({'ok': True, 'episode_id': ep_id, 'fact_id': fact_id})
 
+    # v1.16.13 (2026-09-30): MemSkill-inspired Skill Bank abstraction.
+    # Article mp.weixin.qq.com/s/RmbEJ28DNQ4bI-olYTX5mA: astor
+    # 当前的 hardcode 记忆操作 (extract/inject/update/forget) 应该抽象
+    # 成可调用的 skill. 4 built-in skills wrap 现有 ops:
+    #   - coref_resolve (wraps v1.16.10)
+    #   - path_score (wraps v1.16.11)
+    #   - bitemporal_invalidate (wraps v1.16.8)
+    #   - episode_link (wraps v1.16.12)
+    # Default OFF for backward compat.
+    @app.route('/v1/skill', methods=['GET'])
+    def skill_list():
+        from .nest.skills import get_bank
+        tag = request.args.get('tag')
+        bank = get_bank()
+        skills = bank.list(tag=tag)
+        return jsonify({
+            'count': len(skills),
+            'tag': tag,
+            'skills': skills,
+        })
+
+    @app.route('/v1/skill/<name>', methods=['GET'])
+    def skill_inspect(name):
+        from .nest.skills import get_bank
+        bank = get_bank()
+        s = bank.get(name)
+        if s is None:
+            return jsonify({'error': 'skill not found', 'name': name}), 404
+        return jsonify({
+            'name': s.name,
+            'description': s.description,
+            'tags': list(s.tags),
+            'version': s.version,
+        })
+
+    @app.route('/v1/skill/<name>/invoke', methods=['POST'])
+    def skill_invoke(name):
+        from .nest.skills import get_bank
+        body = request.get_json(force=True) or {}
+        bank = get_bank()
+        # Inject the bus + namespace into context for built-in skills
+        # that need DB access. Caller can override via body.context.
+        ctx = dict(body.get('context') or {})
+        if 'bus' not in ctx:
+            _sk_tier = body.get('tier', 'public')
+            try:
+                ctx['bus'] = astor_bus(tier=_sk_tier, user_id=body.get('user_id'))
+            except Exception:
+                pass
+        if 'conn' not in ctx and 'bus' in ctx and hasattr(ctx['bus'], 'conn'):
+            ctx['conn'] = ctx['bus'].conn
+        result = bank.invoke(name, ctx)
+        status = 200 if result.get('ok') else 400
+        return jsonify(result), status
+
     @app.route('/v1/dashboard', methods=['GET'])
     def dashboard():
         """Aggregated dashboard payload for the web UI.
