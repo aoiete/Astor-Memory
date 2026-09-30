@@ -1874,9 +1874,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 body.get('success_signal')
                 or (body.get('metadata') or {}).get('verified') is True
             )
-            # _write_kind may be empty (forge sets kind='fact' by default)
-            # so accept any kind that signals user-curated content.
-            _accepted_kind = _write_kind in {
+            # v1.16.9 defensive: _write_kind is assigned inside the auto-fork
+            # try block above. If body.get('kind') raised (e.g. body is None
+            # from a malformed POST), _write_kind would be unbound. Wrap
+            # in a `.get(..., '')` fallback via the source-of-truth `body`
+            # so this hook never NameErrors.
+            _write_kind_safe = body.get('kind', '') or ''
+            _accepted_kind = _write_kind_safe in {
                 '', 'fact', 'observation', 'success_pattern', 'mental_model',
             }
             if _signal_success and fact_ids and _accepted_kind:
