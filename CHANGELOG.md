@@ -1,3 +1,22 @@
+## [v1.16.9.3] - 2026-09-30
+
+### Critical Fix
+- **Bi-temporal columns were never set on INSERT** (`bus/store.py`):
+  - v1.16.8 schema migration v13→v14 added `valid_from`, `valid_until`, `invalidated_by`, `invalidated_at`, `invalidated_reason` columns to `memory_canonical`. Migration backfilled `valid_from = created_at` for EXISTING rows.
+  - But the INSERT statement in `promote_candidate()` was never updated: cols list had 29 names, VALUES tuple had 29 `?` placeholders, python params had 29 values. New rows landed with NULL for ALL 5 bi-temporal columns. `find_active_facts` worked because its LIKE fallback filter `valid_until IS NULL` is true for new rows. But `get_fact_lifecycle` couldn't compute `lifetime_seconds` (no valid_from → no anchor).
+  - **Bug not caught by v1.16.9.2 audit** because the existing tests don't exercise the full INSERT path with the new schema columns.
+  - v1.16.9.3 fixes the mismatch: cols list (34 names) + VALUES tuple (34 `?`) + python params (34 values: 29 original + 5 bi-temporal defaults). Defaults: `valid_from = datetime.utcnow().isoformat() + 'Z'`, `valid_until = None`, `invalidated_by = None`, `invalidated_at = None`, `invalidated_reason = ''`.
+  - Live verified: fact 6478 written with `valid_from = 2026-09-30T21:39:08Z`, invalidate sets `valid_until = 2026-09-30T21:39:14Z`, `lifetime_seconds = 5.42s` computed correctly.
+
+### Live verified
+- `/v1/health` → `v1.16.9.3`
+- POST `/v1/write` → 200, fact 6478 has valid_from populated
+- POST `/v1/bitemporal/invalidate` → 200, valid_until + invalidated_at + invalidated_reason populated
+- GET `/v1/bitemporal/lifecycle/6478` → 200, is_active=false, lifetime_seconds=5.42s
+- 48/48 unit tests pass
+
+---
+
 ## [v1.16.9.2] - 2026-09-30
 
 ### Fixed
