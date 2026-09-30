@@ -1,3 +1,15 @@
+## [v1.16.17.1] - 2026-09-30 (hotfix)
+
+### Fixed
+- **`/v1/binding/bind` auto-inherits `role_inherit` from `user_meta.role`** — previously defaulted to `'user'`, causing `cross_channel_inconsistency` HTTP 409 when admin user got bound with `role_inherit='user'` (mismatched against user_meta.role='admin'). Caught by 7-gate audit immediately after v1.16.17 ship.
+- **e2e tests use uuid.uuid4().hex for unique markers** — `test_write_fact_stores_with_valid_until_null` and `test_write_correction_kind_triggers_auto_invalidate` previously used `int(time.time())` which collided across runs (dedup 409). Fixed.
+- **`test_write_auto_fork_correction_kind` uses uuid marker** — same dedup issue.
+
+### Live verified
+- 111/111 tests pass (4 e2e + 5 correction + 14 path_score + 12 ECV + 12 bitemporal + 15 v1.16.9 + 15 episodes + 34 skills)
+
+---
+
 ## [v1.16.17] - 2026-09-30
 
 ### Added
