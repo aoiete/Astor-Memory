@@ -1,3 +1,29 @@
+## [v1.16.9.2] - 2026-09-30
+
+### Fixed
+- **Test pollution in `test_experience_match_recall`** (`tests/test_correction_protocol.py`):
+  - Symptom: test fails on rerun because live bus has 100+ `matchtest-*` entries from prior runs, all with `trigger_keywords=['match']`. With `top_k=5`, the new entry was never returned (older higher-importance rows outranked it).
+  - Fix: use the unique timestamp AS a trigger_keyword (not just `'match'`), then query with the unique token so the new row's kw-score (0.5 × exact match) outranks all pollution. Plus raise `top_k` from 5 to 50 to survive even heavier bus pollution.
+  - Verified: 5/5 correction_protocol tests pass after fix.
+
+### Added
+- **Dashboard cache-buster** (`astor_memory/dashboard/index.html`):
+  - User browser kept loading stale app.js after server restarts (missing v1.16.7 self-peer-id feature).
+  - Fix: append `?v=1.16.9.2` to local asset URLs (`style.css`, `app.js`). Browsers treat `?v=` as cache-buster and re-fetch.
+  - Result: fresh assets served automatically without manual Ctrl-F5.
+
+### Changed
+- **Version alignment** (`astor_memory/__init__.py`):
+  - `/v1/health` was reporting `v1.16.9` even after v1.16.9.1 ship because the `__version__` bump to 1.16.9.1 was skipped (CHANGELOG only updated). Bumped to v1.16.9.2 to reflect all v1.16.9.x hotfixes (defensive + test fix + cache-buster).
+  - Live verified: `/v1/health` returns `version=1.16.9.2`.
+
+### Live verified
+- `/v1/health` → `v1.16.9.2`
+- `/dashboard/` HTML has `style.css?v=1.16.9.2` + `app.js?v=1.16.9.2`
+- 48/48 unit tests pass (5 correction_protocol tests fixed + 43 others stable)
+
+---
+
 ## [v1.16.9.1] - 2026-09-30
 
 ### Changed
