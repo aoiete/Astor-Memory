@@ -97,7 +97,8 @@ class TestCorrectionProtocol(unittest.TestCase):
 
     def test_write_auto_fork_correction_kind(self):
         """POST /v1/write with kind=correction creates an experience row."""
-        unique = "auto fork-" + str(int(time.time()))
+        import uuid as _uuid
+        unique = "auto fork-" + _uuid.uuid4().hex[:12]
         code, d = _post("/v1/write", {
             "text": unique, "kind": "correction", "user": "admin", "tier": "source",
         })
