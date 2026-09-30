@@ -1223,6 +1223,61 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'text required', 'detail': 'POST /v1/write requires JSON body with "text" field (string, 8+ chars)'}), 400
         user = body.get('user', 'admin')
         mode = body.get('mode', 'auto')
+        # v1.16.10 (2026-09-30): coreference resolution (M-flow-inspired).
+        # When body.coref_resolve=True (default off for backward compat),
+        # rewrite pronouns in `text` against recent facts in the same
+        # namespace + user. Article: "入库时就做指代消解。'他/她/它/
+        # 那个/该公司'这类代词，在写入图之前就会被替换成具体的实体名。"
+        # Default OFF because: (a) adds 1 DB read per write, (b) could
+        # surface as a surprise in tests/CLI scripts that expect raw text.
+        # Audit row written when any pronoun was resolved.
+        _coref_meta: dict = {'enabled': bool(body.get('coref_resolve')), 'resolutions': []}
+        if _coref_meta['enabled']:
+            # Read tier + bus_user_id fresh from body — the local `tier`
+            # and `bus_user_id` variables aren't bound until LATER in
+            # /v1/write (after this hook runs). Reading them from body
+            # matches what /v1/write eventually uses for both.
+            _coref_tier = body.get('tier', 'public')
+            _coref_uid = body.get('user_id') or body.get('user') or 'admin'
+            try:
+                from .nest.coref import resolve_coreferences
+                # Resolve against the bus for the target tier.
+                _coref_bus = astor_bus(tier=_coref_tier, user_id=_coref_uid)
+                # CRITICAL: namespace must match what _resolve_namespace
+                # returns later in /v1/write (e.g. 'admin' for default
+                # admin user, '<agent_id>/<session_id>' when agent_ctx
+                # is set). Use _resolve_namespace here to match exactly.
+                _coref_ns = _resolve_namespace(
+                    agent_ctx,
+                    fallback=_coref_uid,
+                    session_id=body.get('session_id') or None,
+                )
+                _coref_result = resolve_coreferences(
+                    _coref_bus,
+                    text,
+                    namespace=_coref_ns,
+                    user_id=_coref_uid,
+                    antecedent_window=int(body.get('coref_window', 10)),
+                )
+                _safe_stderr_write(
+                    f'[astor.server] coref: text={text!r} ns={_coref_ns!r} '
+                    f'changed={_coref_result.get("changed")} '
+                    f'resolved={_coref_result.get("resolved", "")!r} '
+                    f'used={_coref_result.get("antecedents_used")}\n'
+                )
+                if _coref_result.get('changed'):
+                    text = _coref_result['resolved']
+                    _coref_meta['resolutions'] = _coref_result['resolutions']
+                    _coref_meta['antecedents_used'] = _coref_result.get('antecedents_used', [])
+                    _safe_stderr_write(
+                        f'[astor.server] coref resolved {len(_coref_result["resolutions"])} pronoun(s): '
+                        f'{_coref_result["antecedents_used"]}\n'
+                    )
+            except Exception as _coref_exc:
+                # Coref failure must never break the write — log + continue.
+                _safe_stderr_write(
+                    f'[astor.server] coref failed (non-fatal): {type(_coref_exc).__name__}: {_coref_exc}\n'
+                )
         tier = body.get('tier', 'public')
         # v1.16+ (Plan "public tier 共享方法/流程/教训"): public tier hard gate.
         # Any write to tier='public' must pass through Memory Defense first.
@@ -1921,6 +1976,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'scope': scope,
             'mirrored': mirrored_fact_ids,
             'success_experience_ids': _success_exp_ids,
+            # v1.16.10: coref resolution report (empty if disabled or no pronouns)
+            'coref_resolutions': _coref_meta.get('resolutions', []),
             'invalidated': invalidated,
             # v1.14.23 Ship E: structured entity binding per fact.
             # Index N in entities_per_fact = entities for fact_ids[N].
