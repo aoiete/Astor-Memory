@@ -1,3 +1,17 @@
+## v1.15.53 (2026-09-30) — S27 entities_json backfill for source MM/KP
+
+**10 source-tier facts (5 mental_models + 5 knowledge_pages) had empty `entities_json`** because the S24/S25 auto-promote crons bypassed the forge/extractor pipeline. Dashboard showed source-tier entities_coverage = 0.75.
+
+**New utility** `scripts/backfill_mm_kp_entities.py`:
+- One-shot: reads each MM/KP `metadata`, extracts `parent_fact_ids` (as `evidence:N`), `__keywords__`, `slug`/`question` slugs.
+- Backfills 10 facts with rich entities (avg 13 entities/fact: 10 evidence refs + 2 keywords + slug/question).
+
+**Effect**:
+- entities_coverage.source: 0.75 → **0.869** (+12%)
+- entities_coverage.coverage_ratio: 0.9719 → **0.9739**
+- p95 latency: 855ms → **690ms** (better recall ranking)
+- Eval: hit_rate 0.972 stable, mrr 0.893 (within noise).
+
 ## v1.15.52 (2026-09-30) — S26 tombstoned_at backfill utility
 
 **14,688 tombstones lacked `tombstoned_at` timestamp** across all tiers (admin 8145, public 3411, source 3130, private 132). Root cause: pre-feature tombstones + maker_pocket `_record_close()` tombstones without timestamp.
