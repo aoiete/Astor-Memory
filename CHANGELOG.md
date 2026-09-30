@@ -1,3 +1,31 @@
+## [v1.16.11] - 2026-09-30
+
+### Added
+- **`nest/path_score.py` new module** — M-flow "graph as scoring engine" path-based recall scoring. The article's key insight: even if a candidate fact has LOW direct similarity to query, a SHORT CHAIN (query→entity→fact1→entity→fact2) with strong links can provide evidence. astor's BFS 2-hop uses entity-overlap edges + ECV relation classifier (`relation()` returns corroboration/clarification/new_fact/repeat/conflict/none). Per-hop decay 0.6, max additive boost +0.10 (tight cap on top of ECV's +0.15 — direct evidence always wins). No LLM cost. ~5ms per anchor with 30 neighbors.
+- **match_experiences wire-in** — after ECV boost (+0.15) and before recency tiebreak, adds path_score boost (+0.10 max). Path failures silent (no match_experiences regression). Reuses the candidate set as the neighbor pool.
+
+### Tests
+- 14 new tests in `tests/test_path_score.py`:
+  - Baseline (no neighbors = direct-only, fallback chain)
+  - Corroborate boost (2-fact chain)
+  - Cap enforcement (+0.30 absolute)
+  - Conflict handling (no chain amplification)
+  - No-entity-overlap fallback
+  - apply_path_boost + batch_path_score coverage
+  - Constants: cap=0.30, decay=0.6, max_depth=2 (matches M-flow article spec)
+- 58 total tests pass (14 path_score + 12 ECV + 15 v1.16.9 + 12 bitemporal + 5 correction)
+
+### Live verified
+- POST /v1/health → v1.16.11
+- Wrote 3 success_pattern experiences (Maria×2 + John×1) with shared entities
+- POST /v1/experience/match "Maria Q3 发布" returns ranked list
+
+### Known limitations
+- memory_experience doesn't have entities_json column — path_score uses content+keywords only (not entity overlap directly). Less effective than it would be with a dedicated entities_json. Future v1.17.x could add entities_json to memory_experience schema.
+- 2-hop max is the article's recommendation. 3-hop would amplify noise.
+
+---
+
 ## [v1.16.10] - 2026-09-30
 
 ### Added
