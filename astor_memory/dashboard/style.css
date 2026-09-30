@@ -667,6 +667,74 @@ body {
   color: var(--text);
   word-break: break-word;
 }
+
+/* v1.16.7: dashboard self-identity badge */
+.self-peer-id {
+  font-family: monospace;
+  font-size: 0.75em;
+  padding: 3px 8px;
+  background: var(--bg);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  cursor: copy;
+  user-select: all;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.self-peer-id:hover {
+  background: var(--accent);
+  color: white;
+}
+
+/* v1.16.7: primary text button (replaces square btn-refresh for text labels) */
+.btn-primary {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 0.85em;
+  font-weight: 500;
+  transition: filter 0.15s;
+}
+.btn-primary:hover { filter: brightness(0.9); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary.btn-sm { padding: 4px 10px; font-size: 0.8em; }
+
+/* v1.16.7: peer empty state */
+.peer-empty-state {
+  text-align: center;
+  padding: 32px 20px;
+  color: var(--text-dim);
+  max-width: 560px;
+  margin: 0 auto;
+}
+.peer-empty-icon { font-size: 32px; opacity: 0.6; margin-bottom: 8px; }
+.peer-empty-title { font-size: 1.05em; color: var(--text); margin-bottom: 8px; font-weight: 500; }
+.peer-empty-hint { font-size: 0.85em; line-height: 1.5; margin-bottom: 16px; }
+.peer-empty-hint code {
+  font-family: monospace;
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.peer-empty-actions { display: flex; gap: 8px; justify-content: center; }
+
+/* v1.16.7: peer rows show 'you' tag for self */
+.peer-pid-self {
+  background: var(--good);
+  color: white;
+  font-size: 0.7em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
 @media (max-width: 720px) {
   .rc-tabs { flex-wrap: wrap; }
   .rc-tab { font-size: 11px; padding: 4px 8px; }
