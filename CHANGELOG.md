@@ -1,3 +1,19 @@
+## v1.15.52 (2026-09-30) — S26 tombstoned_at backfill utility
+
+**14,688 tombstones lacked `tombstoned_at` timestamp** across all tiers (admin 8145, public 3411, source 3130, private 132). Root cause: pre-feature tombstones + maker_pocket `_record_close()` tombstones without timestamp.
+
+**New utility** `scripts/backfill_tombstoned_at.py`:
+- One-shot backfill: 14688 tombstones get `tombstoned_at = promoted_at` (closest proxy).
+- Dry-run default, `--execute` to write.
+- Idempotent: re-run skips rows already with timestamp.
+
+**Effect**:
+- Dashboard `decayed_count.no_timestamp`: 14688 → 0
+- Dashboard `decayed_count.recent_30d`: 374 → 9778 (real signal that 64% of decay happened in last 30 days)
+- Dashboard `decayed_count.old`: 69 → 5353 (real signal)
+- staleness/decay logic now correctly ages all tombstones
+- Eval: hit_rate 0.972 stable, mrr 0.893 (within noise of 0.910), p95 855ms warm.
+
 ## v1.15.51 (2026-09-29) — S25 完整集 A1+A2+A3 + source-tier endpoint fixes
 
 **A1 — knowledge_page auto-promote cron** (`scripts/auto_promote_knowledge_page.py`):
