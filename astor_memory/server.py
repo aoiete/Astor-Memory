@@ -32,7 +32,16 @@ _DASHBOARD_TTL_SEC = 30  # 2026-09-25 S18: tighter TTL so dashboard reflects wri
 # facts were injected. Dashboard reads via /v1/audit/health endpoint to prove
 # "astor is working as a proactive advisor, not just a lookup table".
 # Reset only by server restart (deliberate: cumulative since boot = uptime signal).
-_META_RECALL_STATS: dict = {"triggered": 0, "returned_total": 0, "errors": 0}
+_META_RECALL_STATS: dict = {
+    "triggered": 0,
+    "returned_total": 0,
+    "errors": 0,
+    # v1.15.48 S22: separate counter for trigger-aware (fetch-resource) hits
+    # so the dashboard can show how often the cold-start rule fires vs normal
+    # pattern recall. Operators watch this to verify the gate is alive.
+    "trigger_aware_triggered": 0,
+    "trigger_aware_returned_total": 0,
+}
 _meta_recall_stats = _META_RECALL_STATS  # local alias used by read() with `global`
 
 
@@ -1797,6 +1806,147 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _safe_stderr_write(f'[astor.server] meta-recall-lessons failed (non-fatal): {exc}\n')
             return []
 
+    # v1.15.48 S22 (2026-09-29): trigger-aware meta-recall bootstrap.
+    #
+    # Root cause that motivated this: meta-recall only injects facts the agent
+    # CAN see. If the agent never calls /v1/read before grabbing tools, no
+    # pattern is injected — and the same "blind tool-grab" failure recurs.
+    # Repeated 4× for mp.weixin (fact 6215 + 12274 + 12736 + this ship).
+    #
+    # Fix: when the user's QUERY (first turn of a session) matches a fetch-
+    # like trigger verb + a resource hint (URL / platform token / file ext),
+    # this gate injects a hardcoded "always-first-recall" cold-start rule
+    # PLUS re-runs meta-recall with broader trigger-keywords so any matching
+    # bus fact surfaces even if the original query didn't lexically match.
+    #
+    # This means: even a brand-new user with zero facts in bus still gets the
+    # "recall before tool" reminder on their first wechat/github/pdf/url
+    # request. After 1-2 such incidents, the auto-extract hook writes a
+    # failure_pattern into bus and that fact starts surfacing instead.
+    _TRIGGER_VERBS_CN = ('读', '抓', '爬', '搜', '找', '看', '分析', '处理', '帮我')
+    _TRIGGER_VERBS_EN = (
+        'read', 'fetch', 'crawl', 'scrape', 'lookup', 'look up', 'look at',
+        'find', 'search', 'analyze', 'analyse', 'process', 'get',
+        'download', 'open', 'visit', 'browse', 'extract', 'parse',
+    )
+    _TRIGGER_RESOURCE_HINTS = (
+        'mp.weixin', 'weixin', '公众号', 'csdn', 'zhihu',
+        'github.com', 'gitlab.com', 'bitbucket',
+        'arxiv', 'doi.org', 'pubmed', 'ncbi.nlm',
+        '.pdf', '.docx', '.xlsx', '.pptx', '.csv', '.json', '.xml',
+        '.html', '.md', '.txt', '.log',
+        'paper', '论文', 'article', '文章', 'repo', '仓库',
+        'youtube.com', 'youtu.be', 'bilibili.com', 'vimeo',
+        'twitter.com', 'x.com', 'reddit.com',
+        'stackoverflow', 'http://', 'https://',
+    )
+    _COLD_START_FIRST_RECALL_RULE = (
+        '[astor cold-start rule] When the user asks you to read / fetch / '
+        'crawl / lookup any external resource (URL, paper, article, repo, '
+        'PDF, mp.weixin, github, etc.), your FIRST action MUST be '
+        'astor_recall (or astor_recall-equivalent like auto_route_read) to '
+        'check whether astor already has a success_pattern / failure_pattern '
+        'for that exact resource type. Do NOT call web_extract, browser_act, '
+        'web_search, Perplexity, curl, or any other fetch tool before that '
+        'recall returns. This rule was added 2026-09-29 after the 4th '
+        'repeated mp.weixin failure (facts 6215 / 12274 / 12736).'
+    )
+    _TRIGGER_BOOST_KEYWORDS = (
+        'recall', 'astor_recall', 'success_pattern', 'failure_pattern',
+        'first action', 'before tool', 'first recall',
+        '先 recall', '先查', '成功模式', '失败模式',
+        'first tool call', 'pre-tool-call',
+    )
+
+    def _detect_first_recall_trigger(query: str) -> bool:
+        """Return True iff query looks like 'fetch external resource X'."""
+        if not query or len(query.strip()) < 4:
+            return False
+        q = query
+        q_lower = q.lower()
+        has_verb = any(v in q for v in _TRIGGER_VERBS_CN) or any(
+            v in q_lower for v in _TRIGGER_VERBS_EN
+        )
+        has_hint = any(h.lower() in q_lower for h in _TRIGGER_RESOURCE_HINTS)
+        return has_verb and has_hint
+
+    def _meta_recall_trigger_aware(query: str, user: str, tier: str) -> list:
+        """v1.15.48 S22: trigger-aware meta-recall bootstrap.
+
+        When query is a 'fetch X' request:
+          1. Always inject the cold-start first-recall rule (so brand-new
+             users without bus facts still see the gate).
+          2. Run a broadened-keyword LIKE query across success_pattern /
+             failure_pattern / lesson tables so any matching bus fact
+             surfaces even if the original query didn't lexically match.
+        """
+        if not _detect_first_recall_trigger(query):
+            return []
+        out = [{
+            'fact_id': 0,
+            'content': _COLD_START_FIRST_RECALL_RULE,
+            'kind': 'cold_start_rule',
+            'importance': 0.99,
+            'memory_class': 'mental_model',
+            'meta_source': 'auto-trigger-aware-v1.15.48',
+            'meta_tier': 'source',
+            'similarity': 1.0,
+            'hit_source': 'trigger-aware',
+            'cold_start': True,
+        }]
+        try:
+            words = list(query.split())[:4] + list(_TRIGGER_BOOST_KEYWORDS)[:6]
+            words = [w for w in words if len(w.strip()) >= 2][:8]
+            if not words:
+                return out
+            like_clauses = ' OR '.join(['content LIKE ?' for _ in words])
+            like_params = [f'%{w}%' for w in words]
+            seen_ids = {r['fact_id'] for r in out if r.get('fact_id')}
+            tiers_to_query = []
+            if tier and tier.startswith('private'):
+                if user:
+                    tiers_to_query.append(('private', user))
+                tiers_to_query.append(('public', None))
+                tiers_to_query.append(('source', None))
+            elif tier == 'source':
+                tiers_to_query.append(('source', None))
+            else:
+                tiers_to_query.append(('public', None))
+                tiers_to_query.append(('source', None))
+            for t, u in tiers_to_query:
+                try:
+                    b = astor_bus(tier=t, user_id=u)
+                    rows = b.conn.execute(
+                        f"SELECT id, content, kind, importance, memory_class "
+                        f"FROM memory_canonical "
+                        f"WHERE tombstoned = 0 "
+                        f"AND kind IN ('success_pattern', 'failure_pattern', 'lesson') "
+                        f"AND ({like_clauses}) "
+                        f"ORDER BY importance DESC, created_at DESC LIMIT 5",
+                        tuple(like_params),
+                    ).fetchall()
+                    for row in rows:
+                        if row[0] in seen_ids:
+                            continue
+                        seen_ids.add(row[0])
+                        out.append({
+                            'fact_id': row[0],
+                            'content': row[1][:500] if row[1] else '',
+                            'kind': row[2],
+                            'importance': row[3],
+                            'memory_class': row[4] if len(row) > 4 else 'world_fact',
+                            'meta_source': 'auto-trigger-aware-v1.15.48',
+                            'meta_tier': t,
+                            'similarity': 0.95,
+                            'hit_source': 'trigger-aware-boost',
+                        })
+                except Exception as inner_exc:
+                    _safe_stderr_write(f'[astor.server] trigger-aware tier={t} err={inner_exc}\n')
+                    continue
+        except Exception as exc:
+            _safe_stderr_write(f'[astor.server] trigger-aware failed (non-fatal): {exc}\n')
+        return out
+
     def _meta_recall_mental_models(query: str, user: str, tier: str) -> list:
         """v1.15.42: Hindsight-style mental_model auto-injection.
 
@@ -3306,6 +3456,26 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _consult = bool(_consult)
         if _consult:
             _meta_recall_stats['consult_triggered'] = _meta_recall_stats.get('consult_triggered', 0) + 1
+            # v1.15.48 S22 (2026-09-29): trigger-aware meta-recall bootstrap.
+            # Runs FIRST so cold-start users + fetch-trigger queries get the
+            # 'recall before tool' reminder even before normal pattern recall.
+            # This is the code-level fix for the 4× repeated mp.weixin failure
+            # (facts 6215 / 12274 / 12736) — without this gate, /v1/read only
+            # injects facts that lexically match the query, and 'first recall
+            # before tool' facts don't lexically match 'read this mp.weixin'.
+            try:
+                _trigger = _meta_recall_trigger_aware(
+                    query, body.get('user') or body.get('user_id'), tier,
+                )
+                if _trigger:
+                    enriched = _trigger + enriched
+                    _meta_recall_stats['triggered'] += 1
+                    _meta_recall_stats['returned_total'] += len(_trigger)
+                    _meta_recall_stats['trigger_aware_triggered'] += 1
+                    _meta_recall_stats['trigger_aware_returned_total'] += len(_trigger)
+            except Exception as _tr_exc:
+                _safe_stderr_write(f'[astor.server] trigger-aware prepend failed: {_tr_exc}\n')
+                _meta_recall_stats['errors'] += 1
             # v1.15.17 S21 (2026-09-25): auto-meta-recall — query success_pattern /
             # failure_pattern from relevant tiers and prepend to results so the
             # caller sees "what worked/failed before" without explicitly asking.
@@ -3397,6 +3567,60 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'topic_boost_applied': _topic_boost_applied,
             'topics_used': (sorted(_topic_set)
                             if '_topic_set' in dir() and _topic_set else []),
+        })
+
+    @app.route('/v1/backfill_memory_class', methods=['POST'])
+    def backfill_memory_class():
+        """v1.15.49 S23: one-shot backfill of memory_class for existing rows.
+
+        Iterates per-tier DBs, calls AstorBus.backfill_memory_class(dry_run).
+        Body: {'tier': 'public'|'source'|'private'|'all' (default 'all'),
+               'dry_run': bool (default True),
+               'user_id': str (only when tier='private')}
+        Admin only (R218 astor no-restart rule: this writes to bus, so
+        write ACL gate applies). Returns counts per kind → mapped_class.
+        Idempotent: re-running with dry_run=True after a backfill returns
+        zero candidates (nothing more to update).
+        """
+        body = request.get_json(silent=True) or {}
+        tier_arg = body.get('tier', 'all')
+        dry_run = bool(body.get('dry_run', True))
+        user_id = body.get('user_id')
+        tiers_to_process = []
+        if tier_arg == 'all':
+            tiers_to_process = ['public', 'source']
+            if user_id:
+                tiers_to_process.append(('private', user_id))
+            else:
+                # admin tier
+                tiers_to_process.append(('private', 'admin'))
+        elif tier_arg == 'private':
+            if not user_id:
+                return jsonify({
+                    'error': 'user_id required',
+                    'detail': "tier='private' requires user_id in body (e.g. 'admin')",
+                }), 400
+            tiers_to_process = [('private', user_id)]
+        else:
+            tiers_to_process = [tier_arg]
+        results = {}
+        total_to_update = 0
+        for t in tiers_to_process:
+            if isinstance(t, tuple):
+                t_name, t_user = t
+            else:
+                t_name, t_user = t, None
+            try:
+                bus = astor_bus(tier=t_name, user_id=t_user)
+                r = bus.backfill_memory_class(dry_run=dry_run)
+                results[f"{t_name}:{t_user}"] = r
+                total_to_update += r.get('total_to_update', 0)
+            except Exception as exc:
+                results[f"{t_name}:{t_user}"] = {'error': str(exc)}
+        return jsonify({
+            'total_to_update': total_to_update,
+            'dry_run': dry_run,
+            'tiers': results,
         })
 
     @app.route('/v1/forget', methods=['POST'])
@@ -4173,6 +4397,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         try:
             from .nest.mental_models import (
                 get_mental_model as _mm_get, list_mental_models as _mm_list,
+                list_source_facts as _mm_list_sources,
                 is_enabled as _mm_enabled,
             )
             from .bus import astor_bus as _mm_bus_factory
@@ -4201,6 +4426,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _mm = _mm_get(_mm_bus, _q, tier=_tier, user_id=_user)
                 if _mm is None:
                     return jsonify({'found': False, 'question': _q, 'tier': _tier}), 404
+                # v1.15.51 A3: include source_facts traceback so callers can
+                # verify the mental_model is grounded in real bus facts.
+                _sources = _mm_list_sources(_mm_bus, _mm.fact_id)
                 return jsonify({
                     'found': True,
                     'tier': _tier,
@@ -4211,10 +4439,21 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         'confidence': _mm.confidence,
                         'created_at': _mm.created_at,
                         'updated_at': _mm.updated_at,
+                        # Traceback link to evidence (A3).
+                        'source_facts': _sources,
+                        'source_fact_count': len(_sources),
                     },
                 })
             else:
-                _items = _mm_list(_mm_bus, tier=_tier, user_id=_user)
+                # v1.15.51 A2 fix: for source tier (operator-level, user_id IS NULL),
+                # don't require user_id match — source rows are owned by admin role,
+                # not specific user. For private tier, user_id filter is required.
+                if _tier == 'source':
+                    _list_user = None
+                else:
+                    _list_user = _user
+                _items = _mm_list(_mm_bus, tier=_tier, user_id=_list_user)
+                # v1.15.51 A3: include source_fact_count for each MM in list view.
                 return jsonify({
                     'tier': _tier,
                     'mental_models': [{
@@ -4224,6 +4463,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         'confidence': x.confidence,
                         'created_at': x.created_at,
                         'updated_at': x.updated_at,
+                        'source_fact_count': len(_mm_list_sources(_mm_bus, x.fact_id)),
                     } for x in _items],
                     'enabled': _mm_enabled(),
                 })
@@ -4261,16 +4501,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'slug query param required'}), 400
         _tier = request.args.get('tier', 'public')
         _user = request.args.get('user_id')
+        # v1.15.51 A2 fix: source tier is operator-level (user_id IS NULL).
+        # Bypass user filter so admin caller sees source pages.
+        _kp_user = None if _tier == 'source' else _user
         try:
             from ._internal.acl import astor_check_read as _kp_acr
-            _kp_acr(tier=_tier, user_id=_user)
+            _kp_acr(tier=_tier, user_id=_kp_user)
         except Exception as _kp_acl_exc:
             return jsonify({'error': 'acl_denied',
                             'detail': str(_kp_acl_exc)}), 403
         from .bus import astor_bus as _kp_bus_factory
-        _bus = _kp_bus_factory(tier=_tier, user_id=_user)
+        _bus = _kp_bus_factory(tier=_tier, user_id=_kp_user)
         try:
-            _page = _kp_get(_bus, _slug, tier=_tier, user_id=_user)
+            _page = _kp_get(_bus, _slug, tier=_tier, user_id=_kp_user)
         except Exception as _kp_exc:
             return jsonify({'error': 'knowledge_page_failed',
                             'detail': repr(_kp_exc)}), 500
@@ -4298,7 +4541,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.route('/v1/knowledge_page/list', methods=['GET'])
     def knowledge_page_list():
-        """List all knowledge_pages for tier (Ship P3.1, v1.15.39)."""
+        """List all knowledge_pages for tier (Ship P3.1, v1.15.39).
+
+        v1.15.51 A2 fix: source tier bypass for user_id (same pattern as
+        knowledge_page_get above).
+        """
         try:
             from .nest.knowledge_pages import (
                 list_knowledge_pages as _kp_list,
@@ -4313,16 +4560,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'enabled': False}), 200
         _tier = request.args.get('tier', 'public')
         _user = request.args.get('user_id')
+        _kp_user = None if _tier == 'source' else _user
         try:
             from ._internal.acl import astor_check_read as _kp_acr
-            _kp_acr(tier=_tier, user_id=_user)
+            _kp_acr(tier=_tier, user_id=_kp_user)
         except Exception as _kp_acl_exc:
             return jsonify({'error': 'acl_denied',
                             'detail': str(_kp_acl_exc)}), 403
         from .bus import astor_bus as _kp_bus_factory
-        _bus = _kp_bus_factory(tier=_tier, user_id=_user)
+        _bus = _kp_bus_factory(tier=_tier, user_id=_kp_user)
         try:
-            _pages = _kp_list(_bus, tier=_tier, user_id=_user)
+            _pages = _kp_list(_bus, tier=_tier, user_id=_kp_user)
         except Exception as _kp_exc:
             return jsonify({'error': 'list_kp_failed',
                             'detail': repr(_kp_exc)}), 500
@@ -5249,16 +5497,18 @@ def create_app(astor_dir: str | None = None) -> Flask:
         from .dashboard_data import _compute_staleness
         tier = request.args.get('tier', 'public')
         user = request.args.get('user') or None
+        # v1.15.51 A2 fix: source tier bypass (operator-level, user_id IS NULL).
+        _stal_user = None if tier == 'source' else user
         threshold_days = int(request.args.get('threshold_days', 30))
         kind_filter = request.args.get('kind') or None
         limit = int(request.args.get('limit', 100))
         # ACL gate
         try:
             from ._internal.acl import astor_check_read as _stal_acr
-            _stal_acr(tier=tier, user_id=user)
+            _stal_acr(tier=tier, user_id=_stal_user)
         except Exception as _acl_exc:
             return jsonify({'error': 'forbidden', 'detail': str(_acl_exc)}), 403
-        bus = astor_bus(tier=tier, user_id=user)
+        bus = astor_bus(tier=tier, user_id=_stal_user)
         where_extra = ''
         params: list = []
         if kind_filter:
@@ -5273,7 +5523,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             f'ORDER BY promoted_at ASC LIMIT ?'
         )
         rows = bus.conn.execute(
-            sql, [tier, user, user] + params + [limit * 4]  # over-fetch; filter after
+            sql, [tier, _stal_user, _stal_user] + params + [limit * 4]  # over-fetch; filter after
         ).fetchall()
         items = []
         stale_count = 0
