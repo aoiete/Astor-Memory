@@ -115,6 +115,16 @@ _CN_SYNONYM_GROUPS: dict[str, list[str]] = {
     '扑克': ['poker', '德州', '德扑', 'texas holdem'],
     '德州': ['德扑', 'texas holdem', 'NLHE', '扑克'],
     '买入': ['buy-in', '买入', 'entry', '进入'],
+    # S30 (2026-09-30) poker + divination synonyms — added to unblock lifestyle eval
+    # category (Q49 NLH/现金局, Q51 六爻/起卦, Q52 梅花/时辰, Q57 旺时/凶时)
+    '现金局': ['cash game', 'cashgame', 'cash-game', 'ring game', 'cash桌'],
+    'cash game': ['现金局', 'cash桌', 'cashgame'],
+    'NLH': ['NLHE', 'No-Limit Hold\'em', '无限德州', 'no-limit holdem'],
+    '六爻': ['六爻预测', 'liuyao', '六爻排盘', '周易六爻'],
+    '起卦': ['占卜', '起盘', 'divination', 'cast hexagram'],
+    '梅花': ['梅花易数', 'plum blossom', '梅花数'],
+    '旺时': ['good hour', '吉时', '旺时'],
+    '凶时': ['bad hour', '凶时', '衰时'],
     # Workflow / cron
     '定时': ['cron', 'schedule', 'scheduled', '周期'],
     '备份': ['backup', 'snapshot', '存档'],
