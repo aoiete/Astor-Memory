@@ -974,6 +974,83 @@ def create_app(astor_dir: str | None = None) -> Flask:
         result = cascade_forget(_bt_bus, fid)
         return jsonify(result), (200 if result.get('ok') else 400)
 
+    # v1.16.12 (2026-09-30): M-flow L0 episode layer. Article "受
+    # 生物启发的认知记忆引擎 M-flow" 9/30 — 4-layer cone (Episode →
+    # Facet → FacetPoint → Entity). astor has L1/L2/L3; missing L0
+    # raw conversation chunks. Default OFF for backward compat.
+    # Usage: write episode first, then derive facts (or vice versa).
+    @app.route('/v1/episode', methods=['POST'])
+    def episode_write():
+        body = request.get_json(force=True) or {}
+        raw_text = body.get('raw_text') or body.get('text') or ''
+        if not raw_text:
+            return jsonify({'error': 'raw_text required'}), 400
+        _ep_tier = body.get('tier', 'public')
+        _ep_bus = astor_bus(tier=_ep_tier, user_id=body.get('user_id'))
+        from .nest.episodes import write_episode as _ep_write
+        _ep_id = _ep_write(
+            _ep_bus.conn,
+            raw_text=raw_text,
+            namespace=_ep_bus.namespace if hasattr(_ep_bus, 'namespace') else 'public',
+            user_id=body.get('user_id') or '',
+            tier=_ep_tier,
+            session_id=body.get('session_id') or '',
+            derived_fact_ids=body.get('derived_fact_ids') or [],
+            entities=body.get('entities'),
+        )
+        return jsonify({
+            'episode_id': _ep_id,
+            'tier': _ep_tier,
+            'raw_text_len': len(raw_text),
+        }), 201
+
+    @app.route('/v1/episode/<int:ep_id>', methods=['GET'])
+    def episode_read(ep_id):
+        _ep_tier = request.args.get('tier', 'public')
+        _ep_bus = astor_bus(tier=_ep_tier, user_id=request.args.get('user_id'))
+        from .nest.episodes import read_episode
+        ep = read_episode(_ep_bus.conn, ep_id)
+        if not ep:
+            return jsonify({'error': 'episode not found', 'episode_id': ep_id}), 404
+        return jsonify(ep)
+
+    @app.route('/v1/episode/list', methods=['GET'])
+    def episode_list():
+        _ep_tier = request.args.get('tier', 'public')
+        _ep_bus = astor_bus(tier=_ep_tier, user_id=request.args.get('user_id'))
+        from .nest.episodes import list_episodes
+        items = list_episodes(
+            _ep_bus.conn,
+            namespace=request.args.get('namespace'),
+            user_id=request.args.get('user_id_filter'),
+            session_id=request.args.get('session_id'),
+            limit=int(request.args.get('limit', 20)),
+            offset=int(request.args.get('offset', 0)),
+        )
+        return jsonify({'count': len(items), 'episodes': items})
+
+    @app.route('/v1/episode/by_fact/<int:fact_id>', methods=['GET'])
+    def episode_by_fact(fact_id):
+        _ep_tier = request.args.get('tier', 'public')
+        _ep_bus = astor_bus(tier=_ep_tier, user_id=request.args.get('user_id'))
+        from .nest.episodes import find_episodes_by_fact
+        items = find_episodes_by_fact(_ep_bus.conn, fact_id)
+        return jsonify({'count': len(items), 'fact_id': fact_id, 'episodes': items})
+
+    @app.route('/v1/episode/link', methods=['POST'])
+    def episode_link():
+        body = request.get_json(force=True) or {}
+        try:
+            ep_id = int(body.get('episode_id'))
+            fact_id = int(body.get('fact_id'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'episode_id and fact_id required (int)'}), 400
+        _ep_tier = body.get('tier', 'public')
+        _ep_bus = astor_bus(tier=_ep_tier, user_id=body.get('user_id'))
+        from .nest.episodes import link_fact_to_episode
+        link_fact_to_episode(_ep_bus.conn, ep_id, fact_id)
+        return jsonify({'ok': True, 'episode_id': ep_id, 'fact_id': fact_id})
+
     @app.route('/v1/dashboard', methods=['GET'])
     def dashboard():
         """Aggregated dashboard payload for the web UI.

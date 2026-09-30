@@ -14,7 +14,7 @@ Tables:
 """
 
 import sqlite3
-SCHEMA_VERSION = 14  # v1.16.8 (2026-09-30) bi-temporal columns + cascade forget support
+SCHEMA_VERSION = 15  # v1.16.12 (2026-09-30) M-flow L0 episode layer
 
 SCHEMA_SQL = """
 -- Pragmas set at connection time (bus/store.py:connect)
@@ -331,6 +331,7 @@ def astor_init_schema(conn: sqlite3.Connection) -> None:
     _astor_upgrade_v11_to_v12(conn)
     _astor_upgrade_v12_to_v13(conn)
     _astor_upgrade_v13_to_v14(conn)
+    _astor_upgrade_v14_to_v15(conn)
     # Index that depends on the publishable column must be created AFTER the column exists.
     # The executescript above emits CREATE INDEX inside the same script as the table,
     # which works for fresh DBs but errors on v1 databases because the column doesn't exist yet.
@@ -657,7 +658,60 @@ def _astor_upgrade_v12_to_v13(conn: sqlite3.Connection) -> None:
         pass
 
 
-def _astor_upgrade_v11_to_v12(conn):
+def _astor_upgrade_v14_to_v15(conn: sqlite3.Connection) -> None:
+    """v1.16.12 (2026-09-30) Ship: M-flow L0 episode layer.
+
+    Article: "受生物启发的认知记忆引擎 M-flow" 9/30 — 4-layer cone
+    graph (Episode → Facet → FacetPoint → Entity). astor already has
+    L1 memory_canonical (facts), L2 memory_experience (extracted
+    experiences), L3 mental_model (deep insights). Missing: L0
+    episodes — raw conversation chunks that L1 facts derive from.
+
+    Why L0 matters: when a fact is recalled, the user often needs
+    EVIDENCE (the original turn where it was said). Without L0 we can
+    only return the derived fact, not the source.
+
+    Schema: new `episodes` table stores raw conversation chunks.
+    - id (PK)
+    - namespace + user_id + tier (3-tier isolation, matches other tables)
+    - session_id (correlates with agent session)
+    - raw_text (the actual turn / conversation chunk)
+    - derived_fact_ids (JSON array of fact_ids this episode gave rise to)
+    - entities_json (entities extracted from raw_text)
+    - created_at (DATETIME)
+    - embedding (BLOB, optional, for vector recall)
+
+    Idempotent: CREATE TABLE IF NOT EXISTS.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS episodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            namespace TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT '',
+            tier TEXT NOT NULL DEFAULT 'public',
+            session_id TEXT NOT NULL DEFAULT '',
+            raw_text TEXT NOT NULL,
+            derived_fact_ids TEXT NOT NULL DEFAULT '[]',
+            entities_json TEXT NOT NULL DEFAULT '[]',
+            created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            embedding BLOB
+        )
+        """
+    )
+    # Indexes for common queries
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_episodes_session "
+        "ON episodes(namespace, user_id, session_id) "
+        "WHERE session_id != ''"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_episodes_created "
+        "ON episodes(namespace, user_id, created_at DESC)"
+    )
+
+
+def _astor_upgrade_v11_to_v12(conn) -> None:
     """v1.14.74 (2026-09-18): Hindsight 4-tier memory_class taxonomy column."""
     try:
         cols = {row[1] for row in conn.execute(
@@ -669,10 +723,15 @@ def _astor_upgrade_v11_to_v12(conn):
         return
     try:
         conn.execute(
-            "ALTER TABLE memory_canonical ADD COLUMN memory_class TEXT NOT NULL DEFAULT \'world_fact\'"
+            "ALTER TABLE memory_canonical ADD COLUMN memory_class TEXT NOT NULL DEFAULT 'world_fact'"
         )
     except Exception:
         pass
+
+
+def _astor_upgrade_v10_to_v11(conn) -> None:
+    """v1.14.73 stub fix migration (no DB schema changes, audit-only)."""
+    return None
 
 
 def _astor_upgrade_v6_to_v7(conn: sqlite3.Connection) -> None:
