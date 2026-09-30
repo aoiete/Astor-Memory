@@ -2779,11 +2779,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 except Exception:
                     pass
             # v1.10.9: multi-hop bridge. Disabled by default (env ASTOR_BRIDGE=1).
-            # Empirically: bridge decay<0.4 hurts LoCoMo accuracy because
-            # co-ranked entities often collide on generic nouns (places,
-            # common names) and over-promote wrong answers. Keep the
-            # implementation available; only enable via env when known-good.
-            if os.environ.get('ASTOR_BRIDGE', '0') == '1' and results and len(results) >= 2:
+            # v1.16.6 (2026-09-30): bridge boost ON by default (ASTOR_BRIDGE=1).
+            # Per GraphMemix ablation (北大 + MemoraX AI, wechat summary 9/30):
+            # multi-view + node verifier + ECV drives +5.2pp → +0.9pp → +1.85pp
+            # on multi-hop benchmarks. The bridge is our cheap proxy for
+            # "evidence chain coherence". Empirical note from earlier eval:
+            # decay<0.4 hurts LoCoMo — we pass decay=0.10 (well under 0.4)
+            # to keep entity collisions on generic nouns from over-promoting
+            # wrong answers. Set ASTOR_BRIDGE=0 to disable for opt-out.
+            if os.environ.get('ASTOR_BRIDGE', '1') == '1' and results and len(results) >= 2:
                 try:
                     from .nest.multi_hop_bridge import apply_multi_hop_boost as _bridge
                     _bfids = [fid for fid, _ in results]

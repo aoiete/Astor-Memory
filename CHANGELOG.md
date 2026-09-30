@@ -1,3 +1,15 @@
+## [v1.16.6] - 2026-09-30
+
+### Added
+- **`nest/ecv.py`**: GraphMemix-inspired Evidence-Chain Verifier. `node_usefulness()` scores candidate's INDEPENDENT utility for the query (40% token Jaccard + 25% keyword + 25% entity + 10% quality). `relation()` classifies anchor→candidate edges into `new_fact / clarification / corroboration / repeat / conflict / none` (cheap deterministic heuristic, no LLM cost on hot path). 12 unit tests pass.
+- **ECV boost in `match_experiences`**: third signal added to kw + emb score. Bounded +0.15 so it never overrides the kw primary. Inspired by GraphMemix §04 ablation showing Node Verifier drives +5.2pp → +0.9pp → +1.85pp on multi-hop benchmarks.
+- **ASTOR_BRIDGE default flipped 0 → 1**: `apply_multi_hop_boost` now active by default in `/v1/read`. `decay=0.10` explicit (safely under the 0.4 LoCoMo threshold that hurts accuracy per earlier eval). Set `ASTOR_BRIDGE=0` for opt-out. 4 bridge tests pass.
+
+### Why
+Per wechat article 3 ("北大 GraphMemix 论文解读", archived to `docs/wechat-graphmemix-paper-article.txt`), the key insight is that memory retrieval is fundamentally an **evidence chain optimization** problem, not Top-K ranking. Two cheap proxies — Node Verifier + chain bridge — give meaningful recall quality improvements without LLM cost.
+
+---
+
 ## [v1.16.5] - 2026-09-30
 
 ### Added
