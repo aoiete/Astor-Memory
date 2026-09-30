@@ -1,3 +1,16 @@
+## [v1.16.9.1] - 2026-09-30
+
+### Changed
+- **Defensive read of `_write_kind` in on-success auto-fork hook** (`server.py`): `_write_kind = body.get('kind', '')` was assigned inside the auto-fork `try:` block. The new on-success hook (placed OUTSIDE that try) reads `_write_kind`. If `body.get` raises (body=None from malformed POST — currently impossible due to upstream guard but defensively), `_write_kind` would be unbound → NameError. Fix: re-read `_write_kind_safe = body.get('kind', '') or ''` from the body dict in the on-success hook, with safe default.
+
+  NOTE: same potential issue exists in v1.16.8 bi-temporal auto-invalidation hook (also reads `_write_kind` from outside auto-fork try). Out of scope for this hotfix; flagged for v1.16.10 if a malformed-body case ever surfaces in production.
+
+### Live verified
+- `POST /v1/write kind=success_pattern success_signal=True` → returns `success_experience_ids=[int]` alongside existing `fact_ids`/`invalidated`/`experience_id`.
+- `/v1/health` returns `version=1.16.9.1`.
+
+---
+
 ## [v1.16.9] - 2026-09-30
 
 ### Changed
