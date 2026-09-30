@@ -1,3 +1,40 @@
+## [v1.16.3] - 2026-09-30
+
+### Fixed
+- **Dashboard 404 root cause**: `astor_sync.py` only synced `.py` files, never `dashboard/` directory. `/dashboard/` returned generic 404 because Flask's `send_from_directory` couldn't find the directory in runtime. Added `_iter_assets()` helper + `sync_dir()` now copies both `.py` AND static assets (`.html`, `.css`, `.js`, `.json`, `.yaml`, `.md`, `.txt`). Without this, every dashboard ship silently broke the runtime.
+- **`/v1/consult` UnboundLocalError on short queries**: `experience_hits = []` was declared inside `if _words:` block, raising UnboundLocalError for short queries (`"A"`, `"优"`). Hoisted to top of handler so both code paths see an empty list.
+
+### Changed
+- **Dashboard layout**: Peer Friends panel moved from position #7 (bottom) to position #2 (right after hero). Operator preference — friend management is the highest-ROI admin action, deserves top placement. (commit `779d41f`)
+
+## [v1.16.2] - 2026-09-30
+
+### Fixed
+- **3 v1.16/v1.16.x commits never bumped `__version__`** or updated the runtime changelog. This commit prepends changelog entries summarizing v1.16 / v1.16.x / v1.16.2 fixes.
+- Hermes `plugin.yaml` bumped to 1.16.2 with `consult_endpoint` annotation so client/server API contract stays in sync. (commit `0f88011`)
+
+## [v1.16.x] - 2026-09-29
+
+### Added
+- **POST /v1/consult** endpoint — always fires pattern + lessons recall (no gate). Returns `{success, failure, lesson}` separate lists. (commit `207645c`)
+- **Reactive consult design**: `body.consult=True` forces meta-recall; `body.consult=False` skips; `None` falls back to `ASTOR_CONSULT_DEFAULT_ON` env (default `'1'` = ON, preserves v1.16 proactive behavior; set to `'0'` to switch global default to reactive).
+- **Layer 2 personal content sniff** (warn only): `detect_personal_content(text)` returns category list (`name_chinese / location / relationship / financial`); `X-Astor-Personal-Content` response header + `personal_content_categories` body field. (commit `207645c`)
+- **CLI postmortem default tier = public** + `--tier-hint` / `--behavior-class` flags; CLI `am consult` new sub-command — direct SQL reactive lookup.
+
+## [v1.16] - 2026-09-29
+
+### Changed
+- **Tier routing**: failure/lesson outcomes now route to **public tier** (cross-user sharing), not source (admin-only). Aligns with the astor network final-goal: shared methods/flows/lessons across users + peers. (commit `878b309`)
+
+### Added
+- **PII hard gate on public tier**: `/v1/write` forces `pii_scan=True` + `pii_policy=block` when `tier='public'`. Admin escape hatch via `body.pii_scan=False`; env `ASTOR_PII_PUBLIC_FORCE=0` disables the gate for emergency ops. (commit `878b309`)
+- **`_meta_recall_lessons()`** auto-injects top-2 lesson facts per tier into every `/v1/read` result. Mirrors `_meta_recall_patterns` structure but independent top-2 quota to avoid crowding out pattern noise. (commit `878b309`)
+
+### Fixed
+- **PII block policy semantic fix**: any match (severity in `{block, redact}`) now rejects when `policy='block'` — was bug where redact-severity patterns (e.g. `telegram_chat_id` catching a CN phone) bypassed the gate. (commit `878b309`)
+
+---
+
 ## v1.15.56 (2026-09-30) — S30 poker + divination synonym expansion
 
 **9 synonym groups added** to `astor_memory/nest/synonym_expander.py` (operator-domain coverage):

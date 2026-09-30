@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "astor-memory"
 # Version unified across source, runtime, hooks, plugins.
-version = "1.15.56"
+version = "1.16.3"
 description = "Self-owned memory system for AI agents: 3-tier × 3-store × 3-scope = 9+ SQLite layout, multi-user ACL, WeChat/Telegram/Discord token manager, MCP server"
 readme = "README.md"
 license = "MIT"
@@ -153,7 +153,7 @@ asyncio_mode = "auto"
 
 # Astor-Memory-specific config (parsed by `am config` CLI)
 [tool.astor]
-version = "0.3.0"
+version = "1.16.3"
 config_schema_version = 2  # +1 for v0.3.0 (added platform CLI section)
 
 [tool.astor.docs]
