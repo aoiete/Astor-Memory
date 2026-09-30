@@ -836,6 +836,17 @@ class AstorBus:
         # matches below sim 0.55). The bge-base-en-v1.5 model returns 0.45-0.55
         # for any short Chinese-mixed text, so without this guard semantic
         # match returns junk like 'LSTM training' → 'Hermes gateway restart'.
+        #
+        # v1.16.4 (2026-09-30): Zep-style temporal tiebreak + HOT boost.
+        # Per PingMaster wechat article ("Mem0/Zep/Letta 对比选型", 9/30):
+        # Zep's Temporal KG uses t_valid/t_invalid to surface "current fact"
+        # over stale entries. We don't have full KG, but match_experiences
+        # can apply a cheap proxy: when scores tie, prefer the row whose
+        # last_invoked_at (or created_at) is newer; HOT experiences
+        # (occurrence_count ≥ 3 OR importance ≥ 0.95) get a small score
+        # bump so they outrank newly-recorded equivalents. Bounded to
+        # ±0.10 so it never overrides the kw primary signal — Zep's
+        # "current over stale" semantic stays as tiebreak, not override.
         for r in rows:
             fid = int(r[0])
             kw_s = kw_scores.get(fid, 0.0)
@@ -849,8 +860,28 @@ class AstorBus:
             else:
                 continue  # Filter noise
             if s > 0:
-                scored.append((s, r))
-        scored.sort(key=lambda x: x[0], reverse=True)
+                # v1.16.4: HOT boost — 3+ occurrences or importance >= 0.95.
+                # Zep-style "promoted rule" surfaces above fresh equivalents.
+                try:
+                    _occ_v = int(r[10]) if r[10] is not None else 0
+                    _imp_v = float(r[14]) if r[14] is not None else 0.0
+                except Exception:
+                    _occ_v, _imp_v = 0, 0.0
+                if _occ_v >= 3 or _imp_v >= 0.95:
+                    s += 0.10  # bounded — stays tiebreak, not override
+                # Recency tiebreak: use created_at (immutable, set at insert)
+                # NOT last_invoked_at — that gets updated post-sort so all
+                # rows in this query would tie. created_at sort works for
+                # Zep-style "newer entries preferred at same score+occ".
+                scored.append((s, r, _occ_v, r[12]))  # created_at as recency
+        # v1.16.4: sort by (score DESC, occurrence_count DESC, recency DESC).
+        # recency = max(last_invoked_at, created_at) ISO string — ISO 8601
+        # sorts lexicographically as chronological (sortable text).
+        scored.sort(
+            key=lambda x: (x[0], x[2], x[3] or ''),
+            reverse=True,
+        )
+        results = [(s, r) for s, r, _, _ in scored[:top_k]]
         results = scored[:top_k]
         # Update invocation_count for matched experiences
         if results:

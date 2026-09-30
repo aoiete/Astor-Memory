@@ -1,3 +1,10 @@
+## [v1.16.4] - 2026-09-30
+
+### Added
+- **Zep-style temporal tiebreak in `match_experiences`**: sort key `(score DESC, occurrence_count DESC, created_at DESC)`. HOT boost +0.10 when `invocation_count >= 3` OR `importance >= 0.95`, bounded so it never overrides the kw primary signal. Inspired by PingMaster wechat article "Mem0/Zep/Letta 对比选型" 9/30 — Zep's `t_valid/t_invalid` Temporal KG surfaces "current fact" over stale entries. astor proxy: `created_at` = when the lesson entered the system. Bug avoided: using `last_invoked_at` for in-query tiebreak is broken because the column is only updated AFTER the sort, so all rows in a single query tie on the same pre-update timestamp.
+
+---
+
 ## [v1.16.3] - 2026-09-30
 
 ### Fixed
