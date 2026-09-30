@@ -1,3 +1,44 @@
+## [v1.16.12] - 2026-09-30
+
+### Added
+- **L0 Episode layer (M-flow 4-layer cone closure)** — astor had L1 (memory_canonical facts), L2 (memory_experience), L3 (mental_model). Missing L0 raw conversation chunks. Article "受生物启发的认知记忆引擎 M-flow" §4-layer cone (Episode → Facet → FacetPoint → Entity).
+- **Schema v14→v15** — new `episodes` table: id, namespace, user_id, tier, session_id, raw_text, derived_fact_ids (JSON), entities_json, created_at, embedding (BLOB).
+- **New endpoints** (5):
+  - `POST /v1/episode` — write raw conversation chunk
+  - `GET /v1/episode/<id>` — read single episode
+  - `GET /v1/episode/list` — list with namespace/user/session filters + limit/offset
+  - `GET /v1/episode/by_fact/<fact_id>` — reverse lookup: which episodes derived to this fact
+  - `POST /v1/episode/link` — append fact_id to episode's derived_fact_ids (idempotent)
+- **`nest/episodes.py` module** — write_episode / read_episode / list_episodes / link_fact_to_episode / find_episodes_by_fact.
+
+### Tests
+- 15 new tests in `tests/test_episodes.py`:
+  - Schema migration creates episodes table on fresh DB
+  - Idempotent re-migration
+  - CRUD (write + read + list)
+  - 3-tier isolation (namespace/user_id filter)
+  - Limit/offset pagination
+  - Link idempotency (no duplicate fact_ids)
+  - find_episodes_by_fact reverse lookup
+- 73 total tests pass (15 episodes + 14 path_score + 12 ECV + 15 v1.16.9 + 12 bitemporal + 5 correction).
+
+### Live verified
+- POST /v1/episode → HTTP 201, episode_id returned
+- POST /v1/write → fact_id derived
+- POST /v1/episode/link → ok
+- GET /v1/episode/<id> → derived_fact_ids populated
+- GET /v1/episode/by_fact/<fid> → count=1
+
+### Why opt-in
+Default OFF because: (a) most callers don't need raw conversation stored — just the derived fact; (b) adds DB write per turn (storage cost) for evidence retrieval. Episodes are useful for debugging + "where did I say that?" — explicit caller choice.
+
+### Known limitations
+- Embedding column is BLOB but not auto-populated. Future: apply_embedding_cron for vector recall over episodes.
+- No LLM-based extraction — entities field is caller-supplied.
+- Episode lifetime not governed by bi-temporal (no valid_from/valid_until). Episodes are immutable once written; delete via /v1/forget (TODO).
+
+---
+
 ## [v1.16.11] - 2026-09-30
 
 ### Added
