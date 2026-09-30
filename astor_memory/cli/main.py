@@ -179,15 +179,22 @@ def main(argv: list[str] | None = None) -> int:
     sub.set_defaults(func=cmd_fail)
 
     # v1.13.1 (2026-09-14, Ship E): am postmortem — for severe error +
-    # root cause + lesson (LESSON zone, private, importance=0.99).
+    # root cause + lesson (LESSON zone, public, importance=0.99).
+    # v1.16.x: default tier changed private -> public to align with the
+    # "lessons are cross-user shared" principle. Use --tier private_<user>
+    # explicitly to keep a lesson private.
     sub = subparsers.add_parser(
         'postmortem',
-        help='Write a LESSON fact (kind=postmortem/lesson, tier=private, importance=0.99)',
+        help='Write a LESSON fact (kind=postmortem/lesson, tier=public, importance=0.99)',
     )
     sub.add_argument('text', help='LESSON fact text (must include error + root cause + fix)')
     sub.add_argument('--user', default='admin', help='User ID')
-    sub.add_argument('--tier', default='private',
-                    help='Tier: public|source|private_<user> (default private)')
+    sub.add_argument('--tier', default='public',
+                    help='Tier: public|source|private_<user> (default public, v1.16+)')
+    sub.add_argument('--tier-hint', default='lesson',
+                    help='tier_hint metadata field (default: lesson)')
+    sub.add_argument('--behavior-class', default='lesson',
+                    help='behavior_class when tier_hint=behavior (default: lesson)')
     sub.set_defaults(func=cmd_postmortem)
 
     # v1.15.36 (Ship P1.1): am mental-model — Hindsight-style fixed-question
@@ -473,6 +480,21 @@ def main(argv: list[str] | None = None) -> int:
     hist_p.add_argument('--reverse', action='store_true',
                         help='Show oldest first (default newest first)')
     hist_p.set_defaults(func=cmd_recall_history)
+
+    # v1.16.x: am consult — reactive consult endpoint. Use when stuck on a
+    # problem and want to see what worked/failed/was-learned before. Mirrors
+    # POST /v1/consult but uses direct SQL (no HTTP layer).
+    cons_p = subparsers.add_parser(
+        'consult',
+        help='Reactive consult: surface success_pattern / failure_pattern / lesson hits for query',
+    )
+    cons_p.add_argument('query', help='What you\'re stuck on / want to consult about')
+    cons_p.add_argument('--user', default='admin', help='User ID')
+    cons_p.add_argument('--tier', default='public',
+                        help='Tier to consult (public|source|private_<user>, default public)')
+    cons_p.add_argument('--top-k', type=int, default=2,
+                        help='Top K hits per kind (default 2)')
+    cons_p.set_defaults(func=cmd_consult)
 
     # v1.15.2 (2026-09-22, Ship b): am recall-auto — paste an error or
     # tool output and let the CLI auto-classify the right recall zone.
@@ -3090,6 +3112,71 @@ def cmd_lock_rule_test(args) -> int:
         return 0
     finally:
         con.close()
+
+
+def cmd_consult(args) -> int:
+    """v1.16.x: reactive consult — surface success_pattern / failure_pattern /
+    lesson hits for a stuck query.
+
+    Uses direct SQL via astor_bus so no HTTP layer is needed. Mirrors the
+    POST /v1/consult server endpoint but CLI-level for ad-hoc admin use.
+    """
+    from .._internal.acl import astor_init_acl, astor_current_acl
+    try:
+        ctx = astor_current_acl()
+    except Exception:
+        astor_init_acl(actor=f'admin:{args.user}', role='admin', tier=args.tier)
+    from ..bus import astor_bus
+
+    user = args.user
+    tier = args.tier
+    if tier.startswith('private') and user == 'admin':
+        user = 'admin'
+    elif tier.startswith('private'):
+        pass
+    else:
+        user = None  # public/source: no user namespace
+
+    bus = astor_bus(tier=tier, user_id=user)
+    query = args.query.strip()
+    words = [w for w in query.split() if len(w.strip()) >= 3]
+    if not words:
+        print('(query too short — need 3+ char tokens)', file=sys.stderr)
+        return 1
+    like_clauses = ' AND '.join(['content LIKE ?' for _ in words])
+    like_params = [f'%{w}%' for w in words]
+    top_k = args.top_k
+
+    # Success + failure (kind IN list)
+    rows = bus.conn.execute(
+        f"SELECT id, kind, content, importance FROM memory_canonical "
+        f"WHERE tombstoned=0 AND kind IN ('success_pattern','failure_pattern') "
+        f"AND ({like_clauses}) "
+        f"ORDER BY importance DESC, created_at DESC LIMIT ?",
+        tuple(like_params) + (top_k * 2,),
+    ).fetchall()
+    successes = [r for r in rows if r[1] == 'success_pattern'][:top_k]
+    failures = [r for r in rows if r[1] == 'failure_pattern'][:top_k]
+
+    # Lessons
+    lesson_rows = bus.conn.execute(
+        f"SELECT id, kind, content, importance FROM memory_canonical "
+        f"WHERE tombstoned=0 AND kind='lesson' "
+        f"AND ({like_clauses}) "
+        f"ORDER BY importance DESC, created_at DESC LIMIT ?",
+        tuple(like_params) + (top_k,),
+    ).fetchall()
+
+    def _show(label, hits):
+        print(f'\n[{label}] {len(hits)} hit(s):')
+        for r in hits:
+            snippet = (r[2] or '')[:140].replace('\n', ' ')
+            print(f'  fid={r[0]} importance={r[3]:.2f} {snippet}')
+
+    _show('success', successes)
+    _show('failure', failures)
+    _show('lesson', list(lesson_rows))
+    return 0
 
 
 def cmd_recall_history(args) -> int:
