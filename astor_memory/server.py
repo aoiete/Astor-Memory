@@ -6285,6 +6285,217 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'tier': _orphan_tier,
             }), 500
 
+    # v1.16.17 (2026-09-30): bot-binding endpoints for external agent
+    # platforms (muse, slack, custom) to self-register.
+    #
+    # Schema:
+    #   platforms (platform_id PK, account_token, base_url, enabled)
+    #   bindings  (binding_id PK, platform_id, chat_id, user_id, scope, active)
+    #   user_meta (user_id PK, short_alias, role, plan, tier)
+    #
+    # Flow for a new agent platform (e.g. muse):
+    #   1. POST /v1/binding/platform {platform_id, account_token, base_url}
+    #      → registers the bot/agent as a known platform
+    #   2. POST /v1/binding/user {user_id, short_alias, role, plan, default_tier}
+    #      → registers (or updates) a user
+    #   3. POST /v1/binding/bind {platform_id, chat_id, user_id, scope}
+    #      → binds chat to user (so /v1/write knows who is calling)
+    #   4. GET /v1/binding/lookup?platform=X&chat_id=Y
+    #      → reverse: returns {user_id, role, plan, default_tier, short_alias}
+    #
+    # Why this matters: hermes is hardcoded with admin's chat_id bindings.
+    # External agents (muse, slack, custom bots) need a way to register
+    # themselves without manual DB edits. These endpoints let the agent
+    # platform's admin (or astor's first_admin) wire bindings via HTTP.
+    @app.route('/v1/binding/platform', methods=['POST'])
+    def binding_register_platform():
+        body = request.get_json(force=True) or {}
+        platform_id = body.get('platform_id')  # e.g. "muse" or "muse:bot_alpha"
+        account_token = body.get('account_token') or ''
+        base_url = body.get('base_url') or ''
+        platform_kind = body.get('platform_kind') or 'custom'
+        account_id = body.get('account_id') or platform_id
+        if not platform_id:
+            return jsonify({'error': 'platform_id required'}), 400
+        try:
+            import sqlite3 as _sqlite3
+            _db = sqlite3.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            _db.execute("""
+                INSERT OR REPLACE INTO platforms
+                    (platform_id, platform_kind, account_id, account_token,
+                     base_url, enabled, created_at, updated_at, source)
+                VALUES (?, ?, ?, ?, ?, 1,
+                        COALESCE((SELECT created_at FROM platforms WHERE platform_id = ?), datetime('now')),
+                        datetime('now'),
+                        'http:binding_register_platform')
+            """, (platform_id, platform_kind, account_id, account_token,
+                  base_url, platform_id))
+            _db.commit()
+            _db.close()
+            return jsonify({
+                'ok': True,
+                'platform_id': platform_id,
+                'platform_kind': platform_kind,
+            }), 201
+        except Exception as e:
+            return jsonify({'ok': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+    @app.route('/v1/binding/user', methods=['POST'])
+    def binding_register_user():
+        body = request.get_json(force=True) or {}
+        user_id = body.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'user_id required'}), 400
+        try:
+            import sqlite3 as _sqlite3
+            _db = sqlite3.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            _db.execute("""
+                INSERT OR REPLACE INTO user_meta
+                    (user_id, short_alias, display_name, real_name, role,
+                     subscription_plan, timezone, tz_offset_hours, active,
+                     default_tier, trusted_agent, created_at, updated_at, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?,
+                        COALESCE((SELECT created_at FROM user_meta WHERE user_id = ?), datetime('now')),
+                        datetime('now'),
+                        'http:binding_register_user')
+            """, (
+                user_id,
+                body.get('short_alias') or user_id,
+                body.get('display_name'),
+                body.get('real_name'),
+                body.get('role') or 'user',
+                body.get('subscription_plan') or 'free',
+                body.get('timezone') or 'UTC',
+                int(body.get('tz_offset_hours') or 0),
+                body.get('default_tier') or 'public',
+                1 if body.get('trusted_agent') else 0,
+                user_id,
+            ))
+            _db.commit()
+            _db.close()
+            return jsonify({
+                'ok': True,
+                'user_id': user_id,
+                'role': body.get('role') or 'user',
+                'plan': body.get('subscription_plan') or 'free',
+            }), 201
+        except Exception as e:
+            return jsonify({'ok': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+    @app.route('/v1/binding/bind', methods=['POST'])
+    def binding_bind():
+        body = request.get_json(force=True) or {}
+        platform_id = body.get('platform_id')
+        chat_id = body.get('chat_id')
+        user_id = body.get('user_id')
+        scope = body.get('scope') or 'dm'
+        if not platform_id or not chat_id or not user_id:
+            return jsonify({'error': 'platform_id, chat_id, user_id required'}), 400
+        try:
+            import sqlite3 as _sqlite3
+            import uuid as _uuid
+            _db = sqlite3.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            # Upsert: same (platform_id, chat_id) → update user_id
+            _existing = _db.execute(
+                "SELECT binding_id FROM bindings WHERE platform_id = ? AND chat_id = ?",
+                (platform_id, chat_id),
+            ).fetchone()
+            if _existing:
+                _binding_id = _existing[0]
+                _db.execute("""
+                    UPDATE bindings
+                    SET user_id = ?, scope = ?, active = 1, bound_at = datetime('now')
+                    WHERE binding_id = ?
+                """, (user_id, scope, _binding_id))
+            else:
+                _binding_id = str(_uuid.uuid4())
+                _db.execute("""
+                    INSERT INTO bindings
+                        (binding_id, platform_id, chat_id, user_id, scope, active,
+                         bound_at, bound_by, role_inherit, allow_from)
+                    VALUES (?, ?, ?, ?, ?, 1, datetime('now'), 'http:binding_bind', ?, ?)
+                """, (_binding_id, platform_id, chat_id, user_id, scope,
+                      body.get('role_inherit') or 'user', chat_id))
+            _db.commit()
+            _db.close()
+            return jsonify({
+                'ok': True,
+                'binding_id': _binding_id,
+                'platform_id': platform_id,
+                'chat_id': chat_id,
+                'user_id': user_id,
+            }), 201
+        except Exception as e:
+            return jsonify({'ok': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+    @app.route('/v1/binding/lookup', methods=['GET'])
+    def binding_lookup():
+        platform_id = request.args.get('platform')
+        chat_id = request.args.get('chat_id')
+        if not platform_id or not chat_id:
+            return jsonify({
+                'error': 'platform and chat_id required',
+                'usage': '/v1/binding/lookup?platform=muse&chat_id=<their_chat_id>',
+            }), 400
+        try:
+            import sqlite3 as _sqlite3
+            _db = sqlite3.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            _db.row_factory = _sqlite3.Row
+            row = _db.execute("""
+                SELECT b.platform_id, b.chat_id, b.user_id, b.scope,
+                       m.short_alias, m.role, m.subscription_plan, m.default_tier,
+                       m.trusted_agent, m.timezone
+                FROM bindings b
+                LEFT JOIN user_meta m ON m.user_id = b.user_id
+                WHERE b.platform_id = ? AND b.chat_id = ? AND b.active = 1
+            """, (platform_id, chat_id)).fetchone()
+            _db.close()
+            if row is None:
+                return jsonify({
+                    'found': False,
+                    'platform_id': platform_id,
+                    'chat_id': chat_id,
+                    'note': 'no active binding — register platform + bind chat_id first',
+                }), 404
+            return jsonify({
+                'found': True,
+                'platform_id': row['platform_id'],
+                'chat_id': row['chat_id'],
+                'user_id': row['user_id'],
+                'short_alias': row['short_alias'],
+                'role': row['role'],
+                'subscription_plan': row['subscription_plan'],
+                'default_tier': row['default_tier'],
+                'trusted_agent': bool(row['trusted_agent']),
+                'timezone': row['timezone'],
+                'scope': row['scope'],
+            })
+        except Exception as e:
+            return jsonify({'found': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+    @app.route('/v1/binding/list', methods=['GET'])
+    def binding_list():
+        """List all active bindings (operator view)."""
+        try:
+            import sqlite3 as _sqlite3
+            _db = sqlite3.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            _db.row_factory = _sqlite3.Row
+            rows = _db.execute("""
+                SELECT b.platform_id, b.chat_id, b.user_id, b.scope, b.bound_at,
+                       m.short_alias, m.role, m.subscription_plan, m.default_tier
+                FROM bindings b
+                LEFT JOIN user_meta m ON m.user_id = b.user_id
+                WHERE b.active = 1
+                ORDER BY b.platform_id, b.user_id
+            """).fetchall()
+            _db.close()
+            return jsonify({
+                'count': len(rows),
+                'bindings': [dict(r) for r in rows],
+            })
+        except Exception as e:
+            return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+
     # v1.15.46 (Ship E.1): standalone staleness endpoint.
     # Returns facts where staleness > threshold (default 30 days), grouped by
     # kind + tier. Operators query via `curl /v1/staleness?tier=public`

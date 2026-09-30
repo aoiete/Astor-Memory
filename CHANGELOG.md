@@ -1,3 +1,28 @@
+## [v1.16.17] - 2026-09-30
+
+### Added
+- **Bot-binding self-service endpoints** — 5 new endpoints let external agent platforms (muse, slack, custom) register themselves and their users via HTTP, no more manual bot-binding.db SQL:
+  - `POST /v1/binding/platform` — register a platform (muse, slack, custom)
+  - `POST /v1/binding/user` — register/update a user (role, plan, tier, timezone)
+  - `POST /v1/binding/bind` — bind chat_id → user_id (upsert)
+  - `GET /v1/binding/lookup?platform=X&chat_id=Y` — reverse lookup → returns user_id, role, plan, tier, timezone, trusted_agent
+  - `GET /v1/binding/list` — operator view of all active bindings
+- **`docs/MUSE_INTEGRATION.md`** — step-by-step guide for Muse agent to add Astor as memory backend. Covers identity resolution, ACL behavior, production checklist.
+
+### Live verified
+- Register `muse` platform → HTTP 201
+- Register admin user (idempotent) → HTTP 201
+- Bind `muse_chat_admin_demo` → `admin` → HTTP 201
+- Lookup → returns `{user_id: admin, role: admin, plan: power, default_tier: admin, trusted_agent: true}`
+- List → 19 active bindings
+
+### Why ship
+- Herms hardcodes admin's chat_id bindings; external agents need a self-service path
+- `bot-binding.db` is SSoT — manual SQL edits are error-prone
+- Future v1.17.x: auto-discovery on first message (MCP-style handshake)
+
+---
+
 ## [v1.16.16] - 2026-09-30
 
 ### Added
