@@ -14,7 +14,7 @@ Tables:
 """
 
 import sqlite3
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14  # v1.16.8 (2026-09-30) bi-temporal columns + cascade forget support
 
 SCHEMA_SQL = """
 -- Pragmas set at connection time (bus/store.py:connect)
@@ -330,6 +330,7 @@ def astor_init_schema(conn: sqlite3.Connection) -> None:
     _astor_upgrade_v10_to_v11(conn)
     _astor_upgrade_v11_to_v12(conn)
     _astor_upgrade_v12_to_v13(conn)
+    _astor_upgrade_v13_to_v14(conn)
     # Index that depends on the publishable column must be created AFTER the column exists.
     # The executescript above emits CREATE INDEX inside the same script as the table,
     # which works for fresh DBs but errors on v1 databases because the column doesn't exist yet.
@@ -543,6 +544,65 @@ def _astor_upgrade_v9_to_v10(conn: sqlite3.Connection) -> None:
 
 
 
+
+
+
+
+def _astor_upgrade_v13_to_v14(conn: sqlite3.Connection) -> None:
+    """v1.16.8 (2026-09-30) Ship: bi-temporal fact lifecycle (Zep/Graphiti-inspired).
+
+    Adds four columns to memory_canonical to support bi-temporal
+    validity tracking — when a fact was true in the real world
+    (valid_from / valid_until) and whether it was superseded by another
+    fact (invalidated_by / invalidated_at / invalidated_reason).
+
+    Article "2026 Agent 记忆六条路线" route 5 (Temporal KG) identified
+    this gap in route 4 (Agentic Memory Pipeline / Mem0-style): old
+    facts linger forever and pollute recall after a "correction".
+
+    Migration is additive — all columns have safe defaults; existing
+    rows get valid_from = created_at, valid_until = NULL (active).
+    Idempotent via PRAGMA table_info probe.
+    """
+    try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(memory_canonical)"
+        ).fetchall()}
+    except Exception:
+        return
+    additions = [
+        ("valid_from",        "DATETIME"),
+        ("valid_until",       "DATETIME"),
+        ("invalidated_by",    "INTEGER"),
+        ("invalidated_at",    "DATETIME"),
+        ("invalidated_reason", "TEXT NOT NULL DEFAULT ''"),
+    ]
+    for name, decl in additions:
+        if name in cols:
+            continue
+        try:
+            conn.execute(
+                f"ALTER TABLE memory_canonical ADD COLUMN {name} {decl}"
+            )
+        except Exception:
+            pass
+    # Backfill: valid_from = created_at for existing rows.
+    try:
+        conn.execute(
+            "UPDATE memory_canonical SET valid_from = created_at "
+            "WHERE valid_from IS NULL AND created_at IS NOT NULL"
+        )
+    except Exception:
+        pass
+    # Index on valid_until for fast "active facts only" queries.
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canonical_valid_until "
+            "ON memory_canonical(valid_until) "
+            "WHERE valid_until IS NULL"
+        )
+    except Exception:
+        pass
 
 
 def _astor_upgrade_v10_to_v11(conn):

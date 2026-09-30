@@ -1,3 +1,33 @@
+## [v1.16.8] - 2026-09-30
+
+### Added
+- **`bus/bitemporal.py` new module** — bi-temporal fact lifecycle (Zep/Graphiti-inspired, Article "2026 Agent 记忆六条路线" route 5):
+  - `invalidate_fact(bus, fact_id, replaced_by_fact_id, reason)` — set `valid_until=NOW()`, `invalidated_by=<replacement>`, write audit row. Idempotent.
+  - `find_active_facts(bus, query, top_k, tier, user_id, namespace)` — recall wrapper that filters `valid_until IS NULL`.
+  - `get_fact_lifecycle(bus, fact_id)` — full temporal info including `lifetime_seconds`, `is_active`, `invalidated_by`, `invalidated_reason`.
+  - `auto_invalidate_on_update(bus, new_fact_id, content, entities, kind)` — heuristic: when kind ∈ {correction, update, fact_update, user_correction, pushback, success_pattern}, scan active facts with overlapping entities + content similarity ≥ 0.6, mark them invalid. Conservative — subject-mismatched facts not invalidated.
+  - `cascade_forget(bus, fact_id)` — tombstone + remove graph edges + clean entity refs in OTHER facts (GDPR-style cascade delete).
+- **Schema migration v13 → v14** — 5 new columns on `memory_canonical`: `valid_from`, `valid_until`, `invalidated_by`, `invalidated_at`, `invalidated_reason`. All default safe; existing rows backfilled `valid_from = created_at`. New partial index `idx_canonical_valid_until WHERE valid_until IS NULL` for fast "active facts only" queries.
+- **`/v1/write` auto-invalidation hook** — when a write carries an update-kind, runs `auto_invalidate_on_update` for each new fact_id. Non-fatal on failure (logged to stderr). Response now includes `invalidated: [...]` array of {fact_id, invalidated, reason, similarity}.
+- **4 new REST endpoints** under `/v1/bitemporal/`:
+  - `POST /v1/bitemporal/invalidate` body={fact_id, replaced_by_fact_id?, reason?}
+  - `GET /v1/bitemporal/lifecycle/<int:fact_id>`
+  - `POST /v1/bitemporal/active` body={query, top_k, tier, user_id, namespace}
+  - `POST /v1/bitemporal/cascade_forget` body={fact_id}
+
+### Background
+- Article: "2026 年主流六条 Agent 记忆技术路线" identified the gap in route 4 (Agentic Memory Pipeline / Mem0-style) — when a user says "I moved to Shanghai" while a prior fact says "I live in Beijing", BOTH facts remain active and pollute recall. Route 5 (Temporal KG) solves this with `t_valid`/`t_invalid` bi-temporal edges. This ship adds the minimum viable subset to astor's existing route-4 stack.
+
+### Tests
+- 12 new tests in `tests/test_bitemporal.py`:
+  - `TestInvalidateFact` (4): basic, idempotent, tombstoned returns error, missing returns error
+  - `TestGetFactLifecycle` (3): active, invalidated, missing
+  - `TestFindActiveFacts` (1): excludes invalidated via LIKE fallback
+  - `TestCascadeForget` (3): removes graph edges + cleans entity refs, already-tombstoned no-op, missing returns error
+  - `TestAutoInvalidateIntegration` (1): kind filter
+
+---
+
 ## [v1.16.7] - 2026-09-30
 
 ### Added
