@@ -224,7 +224,14 @@ def list_knowledge_pages(
     user_id: str | None = None,
     limit: int = 50,
 ) -> list[KnowledgePage]:
-    """Return all non-tombstoned knowledge_page facts for tier/user."""
+    """Return all non-tombstoned knowledge_page facts for tier/user.
+
+    v1.15.51 A2 fix: for source tier (operator-level, user_id IS NULL),
+    treat user_id query param as None so the SQL matches the rows that have
+    no user_id. Without this fix, source-tier pages are invisible when
+    caller passes user_id='admin'.
+    """
+    _query_user = None if tier == 'source' else user_id
     cur = bus.conn.execute(
         "SELECT id, content, confidence, created_at, promoted_at, "
         "       metadata, tier, user_id "
@@ -232,7 +239,7 @@ def list_knowledge_pages(
         "WHERE kind=? AND tombstoned=0 "
         "AND tier=? AND (user_id IS ? OR user_id=?) "
         "ORDER BY promoted_at DESC LIMIT ?",
-        (_KIND, tier, user_id, user_id or "", int(limit)),
+        (_KIND, tier, _query_user, _query_user or "", int(limit)),
     )
     out: list[KnowledgePage] = []
     for r in cur.fetchall():
@@ -248,13 +255,17 @@ def get_knowledge_page(
     tier: str = "public",
     user_id: str | None = None,
 ) -> KnowledgePage | None:
-    """Return the most-recent non-tombstoned knowledge_page for slug."""
+    """Return the most-recent non-tombstoned knowledge_page for slug.
+
+    v1.15.51 A2 fix: same source-tier user_id bypass as list_knowledge_pages.
+    """
     # Escape LIKE wildcards in slug.
     escaped = (
         slug.replace("\\", "\\\\")
         .replace("%", "\\%")
         .replace("_", "\\_")
     )
+    _query_user = None if tier == 'source' else user_id
     cur = bus.conn.execute(
         "SELECT id, content, confidence, created_at, promoted_at, "
         "       metadata, tier, user_id "
@@ -263,7 +274,7 @@ def get_knowledge_page(
         "AND content LIKE ? ESCAPE '\\' "
         "AND tier=? AND (user_id IS ? OR user_id=?) "
         "ORDER BY promoted_at DESC, id DESC LIMIT 1",
-        (_KIND, f"[KP] slug: {escaped}%", tier, user_id, user_id or ""),
+        (_KIND, f"[KP] slug: {escaped}%", tier, _query_user, _query_user or ""),
     )
     row = cur.fetchone()
     return _row_to_page(row)

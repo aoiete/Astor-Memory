@@ -881,12 +881,16 @@ def _compute_staleness(promoted_at: str, now_iso: str | None = None,
 def _mental_models_section(astor_dir: Path, limit: int = 20) -> dict:
     """Ship P3.1 dashboard panel: mental_model facts (kind=mental_model).
 
-    Scans public + private_<user> bus dbs. Returns top `limit` rows by
-    promoted_at desc, plus counts. Pure SQL — no LLM cost.
+    Scans public + source + private_<user> bus dbs. Returns top `limit` rows
+    by promoted_at desc, plus counts. Pure SQL — no LLM cost.
 
     v1.15.40 (Ship P3.1 dashboard): dashboard now surfaces the
     mental_model layer so operator sees their answer sheets at a glance
     (previously: required am mental-model list or curl).
+
+    v1.15.50 (S24 fix): include source tier — S24 auto-promote cron writes
+    mental_models into source tier (operator-level, ACL: source = admin only)
+    by default. Without this, dashboard missed all auto-promoted sheets.
     """
     out: dict = {"count": 0, "by_tier": {}, "items": []}
     rows = []
@@ -902,6 +906,27 @@ def _mental_models_section(astor_dir: Path, limit: int = 20) -> dict:
                 out["by_tier"]["public"] = int(c)
                 rows.extend(
                     (r, "public") for r in conn.execute(
+                        "SELECT id, content, confidence, promoted_at, user_id "
+                        "FROM memory_canonical "
+                        "WHERE kind='mental_model' AND tombstoned=0 "
+                        "ORDER BY promoted_at DESC LIMIT ?",
+                        (int(limit),),
+                    ).fetchall()
+                )
+        except Exception:
+            pass
+    # v1.15.50 S24: source tier — operator-level mental_models (auto-promoted).
+    src_db = astor_dir / "source" / "memory" / "astor_bus_source.db"
+    if src_db.exists():
+        try:
+            with sqlite3.connect(str(src_db)) as conn:
+                c = conn.execute(
+                    "SELECT COUNT(*) FROM memory_canonical "
+                    "WHERE kind='mental_model' AND tombstoned=0",
+                ).fetchone()[0]
+                out["by_tier"]["source"] = int(c)
+                rows.extend(
+                    (r, "source") for r in conn.execute(
                         "SELECT id, content, confidence, promoted_at, user_id "
                         "FROM memory_canonical "
                         "WHERE kind='mental_model' AND tombstoned=0 "
@@ -979,12 +1004,16 @@ def _mental_models_section(astor_dir: Path, limit: int = 20) -> dict:
 def _knowledge_pages_section(astor_dir: Path, limit: int = 20) -> dict:
     """Ship P3.1 dashboard panel: knowledge_page facts (kind=knowledge_page).
 
-    Scans public + private_<user> bus dbs. Returns top `limit` rows by
+    Scans public + source + private_<user> bus dbs. Returns top `limit` rows by
     promoted_at desc, plus counts. Pure SQL — no LLM cost.
 
     v1.15.40 (Ship P3.1 dashboard): dashboard surfaces the
     knowledge_page layer. Operator can see their wiki-style reference
     pages without curling /v1/knowledge_page/list.
+
+    v1.15.51 A1 (S25): include source tier — A1 auto-promote cron writes
+    knowledge_pages into source tier (operator-level, ACL: source = admin only)
+    by default.
     """
     out: dict = {"count": 0, "by_tier": {}, "items": []}
     rows = []
@@ -999,6 +1028,27 @@ def _knowledge_pages_section(astor_dir: Path, limit: int = 20) -> dict:
                 out["by_tier"]["public"] = int(c)
                 rows.extend(
                     (r, "public") for r in conn.execute(
+                        "SELECT id, content, confidence, promoted_at, user_id, metadata "
+                        "FROM memory_canonical "
+                        "WHERE kind='knowledge_page' AND tombstoned=0 "
+                        "ORDER BY promoted_at DESC LIMIT ?",
+                        (int(limit),),
+                    ).fetchall()
+                )
+        except Exception:
+            pass
+    # v1.15.51 A1: source tier — operator-level knowledge_pages (auto-promoted).
+    src_db = astor_dir / "source" / "memory" / "astor_bus_source.db"
+    if src_db.exists():
+        try:
+            with sqlite3.connect(str(src_db)) as conn:
+                c = conn.execute(
+                    "SELECT COUNT(*) FROM memory_canonical "
+                    "WHERE kind='knowledge_page' AND tombstoned=0",
+                ).fetchone()[0]
+                out["by_tier"]["source"] = int(c)
+                rows.extend(
+                    (r, "source") for r in conn.execute(
                         "SELECT id, content, confidence, promoted_at, user_id, metadata "
                         "FROM memory_canonical "
                         "WHERE kind='knowledge_page' AND tombstoned=0 "
