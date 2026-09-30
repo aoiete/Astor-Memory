@@ -1136,12 +1136,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # catching a CN phone) would still leak under the public-tier hard gate.
             if _md_matches and _md_policy == 'block' and any(m.severity in ('block', 'redact') for m in _md_matches):
                 _names = sorted({m.name for m in _md_matches if m.severity in ('block', 'redact')})
+                _pii_gate_stats['block_count'] += 1  # v1.16.x: lifetime block counter
                 return jsonify({
                     'error': 'pii_blocked',
                     'detail': f"Memory Defense (block policy) rejected write: {len(_md_matches)} PII match(es) including {_names[:3]}",
                     'matches': [{'name': m.name, 'severity': m.severity} for m in _md_matches],
                 }), 400
-                _pii_gate_stats['block_count'] += 1  # v1.16.x: lifetime block counter
             if _md_matches:
                 # Log to audit (fire-and-forget; never blocks the write)
                 try:
@@ -1348,7 +1348,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             if existing_row is not None:
                 # Same content already stored at this scope — return early.
                 self_audit_via_bus = bus  # not strictly needed
-                return jsonify({
+                resp = jsonify({
                     'event_id': None,
                     'fact_ids': [existing_row[0]],
                     'count': 1,
@@ -1359,6 +1359,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     # v1.14.23 Ship E: entities for existing row.
                     'entities_per_fact': [_extract_entities_for_fact(bus, existing_row[0])],
                 })
+                # v1.16.x Layer 2: personal content sniff on dedup short-circuit too.
+                if _personal_categories:
+                    resp.headers['X-Astor-Personal-Content'] = ','.join(_personal_categories)
+                return resp
         except Exception as dedup_exc:
             # Dedup check failure should not block write path.
             _safe_stderr_write(
@@ -1615,7 +1619,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception:
             pass
 
-        return jsonify({
+        resp = jsonify({
             'event_id': event_id,
             'fact_ids': fact_ids,
             'count': len(fact_ids),
@@ -1626,6 +1630,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # Index N in entities_per_fact = entities for fact_ids[N].
             'entities_per_fact': facts_entities,
         })
+        # v1.16.x Layer 2: attach personal content sniff to response (warn only).
+        if _personal_categories:
+            resp.headers['X-Astor-Personal-Content'] = ','.join(_personal_categories)
+            resp_body = resp.get_json()
+            resp_body['personal_content_categories'] = list(_personal_categories)
+            resp = jsonify(resp_body)
+            resp.headers['X-Astor-Personal-Content'] = ','.join(_personal_categories)
+        return resp
 
     # v1.15.17 S21 (2026-09-25): auto-meta-recall gate.
     #
@@ -3592,47 +3604,105 @@ def create_app(astor_dir: str | None = None) -> Flask:
         Body: {query, user, tier, top_k (default 2 per kind)}
         Returns: {success: [...], failure: [...], lesson: [...]}
         """
-        body = request.get_json(force=True)
-        query = body.get('query')
-        if not query:
-            return jsonify({'error': 'query required', 'detail': 'POST /v1/consult requires "query"'}), 400
-        user = body.get('user', 'admin')
-        tier = body.get('tier', 'public')
-        top_k = int(body.get('top_k', 2))
+        try:
+            body = request.get_json(force=True) or {}
+            query = body.get('query')
+            if not query:
+                return jsonify({'error': 'query required', 'detail': 'POST /v1/consult requires "query"'}), 400
+            user = body.get('user', 'admin')
+            tier = body.get('tier', 'public')
+            top_k = int(body.get('top_k', 2))
 
-        # Read NL to discover inner functions defined inside read(). Walk the
-        # call stack to grab them off the enclosing closure of read(). Fall
-        # back to None if not present (older builds).
-        _patterns_fn = _lessons_fn = None
-        frame = sys._getframe(0)
-        while frame is not None:
-            locs = frame.f_locals
-            if '_meta_recall_patterns' in locs:
-                _patterns_fn = locs['_meta_recall_patterns']
-                _lessons_fn = locs['_meta_recall_lessons']
-                break
-            frame = frame.f_back
+            # Direct SQL via astor_bus (re-implements _meta_recall_patterns +
+            # _meta_recall_lessons, which are nested inside read() and not
+            # callable from a sibling endpoint).
+            from .bus import astor_bus
+            _words = [w.strip() for w in query.split() if len(w.strip()) >= 3][:6]
+            patterns = []
+            lessons = []
+            if _words:
+                _like_clauses = ' AND '.join(['content LIKE ?' for _ in _words])
+                _like_params = [f'%{w}%' for w in _words]
+                _tiers_to_query = []
+                if tier and tier.startswith('private'):
+                    if user:
+                        _tiers_to_query.append(('private', user))
+                    _tiers_to_query.append(('public', None))
+                    _tiers_to_query.append(('source', None))
+                elif tier == 'source':
+                    _tiers_to_query.append(('source', None))
+                else:
+                    _tiers_to_query.append(('public', None))
+                    _tiers_to_query.append(('source', None))
+                # Patterns (success + failure) — fetch with LIMIT 4 so split gives
+                # ~2 of each kind.
+                _pat_seen = set()
+                for _t, _u in _tiers_to_query:
+                    try:
+                        _b = astor_bus(tier=_t, user_id=_u)
+                        _rows = _b.conn.execute(
+                            f"SELECT id, content, kind, importance FROM memory_canonical "
+                            f"WHERE tombstoned=0 AND kind IN ('success_pattern','failure_pattern') "
+                            f"AND ({_like_clauses}) ORDER BY importance DESC, created_at DESC LIMIT 4",
+                            tuple(_like_params)
+                        ).fetchall()
+                        for _row in _rows:
+                            if _row[0] in _pat_seen:
+                                continue
+                            _pat_seen.add(_row[0])
+                            # SQL row order: id, content, kind, importance
+                            patterns.append({
+                                'fact_id': _row[0], 'kind': _row[2],
+                                'content': (_row[1] or '')[:500], 'importance': _row[3],
+                                'meta_source': 'auto-meta-recall-patterns-consult',
+                                'meta_tier': _t,
+                            })
+                    except Exception:
+                        pass
+                # Lessons
+                _seen = set()
+                for _t, _u in _tiers_to_query:
+                    try:
+                        _b = astor_bus(tier=_t, user_id=_u)
+                        _rows = _b.conn.execute(
+                            f"SELECT id, content, kind, importance FROM memory_canonical "
+                            f"WHERE tombstoned=0 AND kind='lesson' "
+                            f"AND ({_like_clauses}) ORDER BY importance DESC, created_at DESC LIMIT 2",
+                            tuple(_like_params)
+                        ).fetchall()
+                        for _row in _rows:
+                            if _row[0] in _seen:
+                                continue
+                            _seen.add(_row[0])
+                            lessons.append({
+                                'fact_id': _row[0], 'kind': _row[2],
+                                'content': (_row[1] or '')[:500], 'importance': _row[3],
+                                'meta_source': 'auto-meta-recall-lessons-consult',
+                                'meta_tier': _t,
+                            })
+                    except Exception:
+                        pass
 
-        if _patterns_fn is None:
             return jsonify({
-                'error': 'consult_unavailable',
-                'detail': '_meta_recall_patterns / _meta_recall_lessons not in scope (older astor build)',
+                'query': query,
+                'tier': tier,
+                'success': [h for h in patterns if h.get('kind') == 'success_pattern'][:top_k],
+                'failure': [h for h in patterns if h.get('kind') == 'failure_pattern'][:top_k],
+                'lesson': lessons[:top_k],
+                'counts': {
+                    'success': len([h for h in patterns if h.get('kind') == 'success_pattern']),
+                    'failure': len([h for h in patterns if h.get('kind') == 'failure_pattern']),
+                    'lesson': len(lessons),
+                },
+            })
+        except Exception as _consult_exc:
+            _safe_stderr_write(
+                f'[astor.server] /v1/consult exception: {type(_consult_exc).__name__}: {_consult_exc}\n'
+            )
+            return jsonify({
+                'error': 'consult_internal_error',
+                'detail': f'{type(_consult_exc).__name__}: {_consult_exc}',
             }), 500
-
-        patterns = _patterns_fn(query, user, tier)[:top_k]
-        lessons = _lessons_fn(query, user, tier)[:top_k]
-        return jsonify({
-            'query': query,
-            'tier': tier,
-            'success': [h for h in patterns if h.get('kind') == 'success_pattern'],
-            'failure': [h for h in patterns if h.get('kind') == 'failure_pattern'],
-            'lesson': lessons,
-            'counts': {
-                'success': len([h for h in patterns if h.get('kind') == 'success_pattern']),
-                'failure': len([h for h in patterns if h.get('kind') == 'failure_pattern']),
-                'lesson': len(lessons),
-            },
-        })
 
     @app.route('/v1/read/multi', methods=['POST'])
     def read_multi():
