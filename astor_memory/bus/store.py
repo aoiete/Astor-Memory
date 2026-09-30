@@ -382,8 +382,20 @@ class AstorBus:
                         provenance_kind, provenance_agent,
                         created_at,
                         evidence_quote, source_ref, source_hash,
-                        memory_class)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        memory_class,
+                        -- v1.16.9.3 (2026-09-30): bi-temporal lifecycle columns
+                        -- (added in v1.16.8 schema migration v13→v14). New
+                        -- facts get valid_from = created_at (i.e. active from
+                        -- write time). valid_until stays NULL = currently
+                        -- active; cascade_forget sets it. This is the
+                        -- Zep/Graphiti-style t_valid semantics — a fact is
+                        -- "true" from valid_from until valid_until.
+                        valid_from,
+                        valid_until,
+                        invalidated_by,
+                        invalidated_at,
+                        invalidated_reason)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         candidate_id, event_id, namespace, content, kind, confidence, importance,
                         tags, metadata, kw_json, ctx_text,
@@ -417,6 +429,16 @@ class AstorBus:
                         # v1.15.49 S23: derive memory_class from kind/tags/content
                         # instead of leaving the default 'world_fact'.
                         _derive_memory_class(kind, tags, content),
+                        # v1.16.9.3: bi-temporal init values (cols in same
+                        # order as the INSERT col list above). valid_from
+                        # = now (same as created_at — active from write time);
+                        # valid_until = None (active); invalidated_* empty
+                        # until invalidate_fact() sets them.
+                        datetime.utcnow().isoformat() + 'Z',  # valid_from
+                        None,                                  # valid_until
+                        None,                                  # invalidated_by
+                        None,                                  # invalidated_at
+                        '',                                    # invalidated_reason
                     ),
                 )
                 canonical_id = cur.lastrowid
