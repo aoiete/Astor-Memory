@@ -276,3 +276,61 @@ def audit_log_record(fact_id: int | None, user: str, tier: str,
         import sys as _sys
         _sys.stderr.write(f'[memory_defense.audit_log_record] bus write failed (non-fatal): {_e!r}\n')
     return entry
+
+
+# ---------------------------------------------------------------------------
+# v1.16.x: Personal content sniff (Layer 2 defense)
+# ---------------------------------------------------------------------------
+# Detects non-PII personal content that the 45-pattern PII scanner misses:
+# names + events, locations, relationships, financial mentions. Severity is
+# 'warn' — never blocks the write, only tags it via response header
+# `X-Astor-Personal-Content` and persists category list into fact metadata.
+# Layer 1 (PII gate) is still the authoritative block — Layer 2 helps the
+# agent framework surface "are you sure this should be public?" prompts.
+_PERSONAL_CONTENT_PATTERNS: dict[str, list] = {
+    # 中文 2-4 字姓名 + 后续事件动词 (张三去了 / 张三家发生钱王) — 用反向匹配
+    # 后续是"发生/说/做/去/来/在/到/跟/和"等动词时，前面 2-4 中文字符视为人名
+    'name_chinese': [
+        re.compile(r'[一-鿿]{2,4}(?:家|说|做|去|来|在|到|跟|和|把|给|叫|想|觉得|发生|去世|结婚)'),
+    ],
+    # "我在 X" / "我去 X" / "她在 X" + 地点（中文 2-5 字地名，常见城市名 + 后缀可选）
+    'location': [
+        re.compile(r'[我她在](?:在|去|到|从)([一-鿿]{2,5})(?:市|省|县|区|路|街|公司|学校|医院|餐厅|机场|车站|酒店|家|工作)'),
+        re.compile(r'[我她](?:住在|在)([一-鿿]{2,5})'),
+        re.compile(r'(?:来自|出生于)([一-鿿]{2,5})'),
+    ],
+    # 私人关系 (女朋友/男朋友/老师/老板/父母/家人)
+    'relationship': [
+        re.compile(r'(?:我)?(?:女朋友|男朋友|老公|老婆|老师|老板|父母|父亲|母亲|爸爸|妈妈|爷爷|奶奶|同事|朋友|闺蜜)(?:[说做去叫]?)'),
+    ],
+    # 财务相关 (账户余额 / 工资收入 / 信用卡 / 贷款)
+    'financial': [
+        re.compile(r'(?:账户|余额|存款|工资|收入|资产|投资|月供|信用卡|贷款)(?:[余额总额数目]?)'),
+    ],
+}
+_PERSONAL_CONTENT_COMPILED: dict[str, list] = {
+    name: [rx for rx in rxs]
+    for name, rxs in _PERSONAL_CONTENT_PATTERNS.items()
+}
+
+
+def detect_personal_content(content: str) -> list[str]:
+    """v1.16.x (Plan "reactive consult + 三层内容防线"): Layer 2 sniff.
+
+    Detects non-PII personal content categories that the 45-pattern PII
+    scanner misses. Returns list of category names (e.g. ['name_chinese',
+    'financial']); empty list if clean. Severity is always 'warn' — never
+    blocks the write. Caller (server.py /v1/write) sets the X-Astor-Personal-
+    Content response header and persists categories into fact metadata.
+
+    Designed to be conservative: false positives should not block public
+    methods/patterns from being shared. Agent frameworks / dashboards use
+    the warning to prompt "are you sure this should be public?".
+    """
+    if not content:
+        return []
+    hits = []
+    for name, rxs in _PERSONAL_CONTENT_COMPILED.items():
+        if any(rx.search(content) for rx in rxs):
+            hits.append(name)
+    return hits
