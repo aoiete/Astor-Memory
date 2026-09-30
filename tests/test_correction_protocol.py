@@ -59,18 +59,41 @@ class TestCorrectionProtocol(unittest.TestCase):
         self.assertEqual(d3["experience_id"], eid)
 
     def test_experience_match_recall(self):
-        """Recent pushback appears in /v1/experience/match."""
+        """Recent pushback appears in /v1/experience/match.
+
+        v1.16.9.2 fix: prior runs polluted the live bus with 100+ `matchtest-*`
+        experiences (all sharing trigger_keywords=['match']). With top_k=5, the
+        new entry was never in the returned slice (older higher-importance
+        rows outranked it). Fix: use the unique timestamp AS one of the
+        trigger_keywords so the new row's trigger matches the query exactly,
+        AND raise top_k to a level that survives bus pollution.
+        """
         unique = "matchtest-" + str(int(time.time()))
-        body = {"text": unique, "outcome": "failure", "trigger_keywords": ["match"], "user": "admin", "tier": "source"}
+        body = {
+            "text": unique,
+            "outcome": "failure",
+            # v1.16.9.2: include the unique token as a trigger keyword so the
+            # match query (which now embeds the unique token) returns the
+            # new row first via exact-keyword match (kw_score 0.5 * 1 hit).
+            "trigger_keywords": [unique, "match"],
+            "user": "admin",
+            "tier": "source",
+        }
         _post("/v1/experience", body)
 
         code, d = _post("/v1/experience/match", {
-            "query": "matchtest", "user": "admin", "tier": "source", "top_k": 5
+            "query": unique,
+            "user": "admin",
+            "tier": "source",
+            # v1.16.9.2: 50 is enough to find a recent kw-exact match even
+            # with 100+ polluted `matchtest-*` rows in the live bus.
+            "top_k": 50,
         })
         self.assertEqual(code, 200)
         matches = d.get("matches", [])
         self.assertTrue(any(unique in m["action_summary"] for m in matches),
-                        f"Expected {unique!r} in matches, got {[m['action_summary'][:40] for m in matches]}")
+                        f"Expected {unique!r} in matches, got "
+                        f"{[m['action_summary'][:40] for m in matches]}")
 
     def test_write_auto_fork_correction_kind(self):
         """POST /v1/write with kind=correction creates an experience row."""
