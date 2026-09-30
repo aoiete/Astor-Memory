@@ -1,3 +1,20 @@
+## v1.15.56 (2026-09-30) — S30 poker + divination synonym expansion
+
+**9 synonym groups added** to `astor_memory/nest/synonym_expander.py` (operator-domain coverage):
+
+- `现金局 ↔ cash game / cashgame / cash桌 / ring game`
+- `cash game ↔ 现金局 / cash桌`
+- `NLH ↔ NLHE / No-Limit Hold'em / 无限德州 / no-limit holdem`
+- `六爻 ↔ 六爻预测 / liuyao / 六爻排盘 / 周易六爻`
+- `起卦 ↔ 占卜 / 起盘 / divination / cast hexagram`
+- `梅花 ↔ 梅花易数 / plum blossom / 梅花数`
+- `旺时 ↔ good hour / 吉时`
+- `凶时 ↔ bad hour / 衰时`
+
+**Effect**: lifestyle queries (Q49 NLH/现金局, Q51 六爻/起卦, Q52 梅花/时辰, Q57 旺时/凶时) now expand to multiple query variants. mrr unchanged at 0.633 (lifestyle has 3 queries with first_rank>1 due to embedding similarity dominating BM25 keyword match) but synonym coverage closes a real recall gap for human-written queries.
+
+**Version**: 1.15.55 → 1.15.56.
+
 ## v1.15.55 (2026-09-30) — S29 eval set fixes + test stub tombstone
 
 **Eval set test-design fixes** (3 queries updated):
