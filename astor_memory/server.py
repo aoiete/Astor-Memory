@@ -912,6 +912,68 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'astor_dir': str(get_default_astor_dir()),
         })
 
+    # ---- v1.16.8 bi-temporal fact lifecycle endpoints ----
+
+    @app.route('/v1/bitemporal/invalidate', methods=['POST'])
+    def bitemporal_invalidate():
+        """Mark a fact invalid (sets valid_until=NOW, invalidated_by=replaced_by)."""
+        body = request.get_json(force=True) or {}
+        try:
+            fid = int(body.get('fact_id'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'fact_id required (int)'}), 400
+        rb = body.get('replaced_by_fact_id')
+        try:
+            rb = int(rb) if rb is not None else None
+        except (TypeError, ValueError):
+            rb = None
+        from .bus.bitemporal import invalidate_fact as _bt_invalidate
+        _bt_bus = astor_bus(tier=body.get('tier') or 'public')
+        result = _bt_invalidate(_bt_bus, fid, replaced_by_fact_id=rb,
+                                reason=body.get('reason') or 'superseded')
+        return jsonify(result), (200 if result.get('ok') else 400)
+
+    @app.route('/v1/bitemporal/lifecycle/<int:fact_id>', methods=['GET'])
+    def bitemporal_lifecycle(fact_id: int):
+        """Return full temporal lifecycle for one fact."""
+        from .bus.bitemporal import get_fact_lifecycle
+        _bt_bus = astor_bus(tier=request.args.get('tier') or 'public')
+        info = get_fact_lifecycle(_bt_bus, fact_id)
+        if info is None:
+            return jsonify({'error': 'fact not found', 'fact_id': fact_id}), 404
+        return jsonify(info)
+
+    @app.route('/v1/bitemporal/active', methods=['POST'])
+    def bitemporal_active():
+        """Recall query that excludes invalidated facts."""
+        body = request.get_json(force=True) or {}
+        q = (body.get('query') or '').strip()
+        if not q:
+            return jsonify({'error': 'query required'}), 400
+        from .bus.bitemporal import find_active_facts
+        _bt_bus = astor_bus(tier=body.get('tier') or 'public')
+        results = find_active_facts(
+            _bt_bus, q,
+            top_k=body.get('top_k') or 10,
+            tier=body.get('tier') or 'public',
+            user_id=body.get('user_id'),
+            namespace=body.get('namespace'),
+        )
+        return jsonify({'count': len(results), 'facts': results, 'query': q})
+
+    @app.route('/v1/bitemporal/cascade_forget', methods=['POST'])
+    def bitemporal_cascade_forget():
+        """Cascade forget: tombstone + remove graph edges + clean entity refs."""
+        body = request.get_json(force=True) or {}
+        try:
+            fid = int(body.get('fact_id'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'fact_id required (int)'}), 400
+        from .bus.bitemporal import cascade_forget
+        _bt_bus = astor_bus(tier=body.get('tier') or 'public')
+        result = cascade_forget(_bt_bus, fid)
+        return jsonify(result), (200 if result.get('ok') else 400)
+
     @app.route('/v1/dashboard', methods=['GET'])
     def dashboard():
         """Aggregated dashboard payload for the web UI.
@@ -1758,6 +1820,35 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # Auto-fork failure must NEVER break the write — log to stderr only.
             _safe_stderr_write(f'[astor.server] correction auto-fork failed (non-fatal): {type(_e_fork_exc).__name__}: {_e_fork_exc}\n')
 
+        # v1.16.8 (2026-09-30): bi-temporal auto-invalidation. When this write
+        # carries an update-kind (correction / pushback / success_pattern /
+        # user_correction / update / fact_update), scan existing ACTIVE facts
+        # with overlapping entities and high content similarity, and mark them
+        # valid_until=now() so they no longer pollute recall. Article
+        # "2026 Agent 记忆六条路线" route 5 (Temporal KG) identified this gap
+        # in route 4 (Agentic Memory Pipeline / Mem0-style).
+        invalidated: list[dict] = []
+        try:
+            if fact_ids and _write_kind in {
+                'correction', 'update', 'fact_update',
+                'user_correction', 'pushback', 'success_pattern',
+            }:
+                from .bus.bitemporal import auto_invalidate_on_update
+                for _nfid in fact_ids:
+                    _ents = _extract_entities_for_fact(bus, _nfid) or []
+                    _inv = auto_invalidate_on_update(
+                        bus,
+                        new_fact_id=_nfid,
+                        content=body.get('text', '') or '',
+                        entities=_ents,
+                        kind=_write_kind,
+                    )
+                    if _inv:
+                        invalidated.extend(_inv)
+        except Exception as _bt_exc:
+            # Bi-temporal failure must never break the write.
+            _safe_stderr_write(f'[astor.server] bitemporal auto-invalidate failed (non-fatal): {type(_bt_exc).__name__}: {_bt_exc}\n')
+
         resp_body = {
             'event_id': event_id,
             'fact_ids': fact_ids,
@@ -1765,6 +1856,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'tier': tier,
             'scope': scope,
             'mirrored': mirrored_fact_ids,
+            'invalidated': invalidated,
             # v1.14.23 Ship E: structured entity binding per fact.
             # Index N in entities_per_fact = entities for fact_ids[N].
             'entities_per_fact': facts_entities,
