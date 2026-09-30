@@ -26,6 +26,7 @@ import os
 import sys
 import time
 import unittest
+import uuid
 
 import requests
 
@@ -56,15 +57,17 @@ class TestBitemporalE2E(unittest.TestCase):
                 break
             time.sleep(1)
 
-    def _write_fact(self, text, kind="fact", user_id="e2e_test_user",
+    def _write_fact(self, text, kind="fact", user_id=None,
                     extra=None, pii_scan=False):
+        # e2e tests don't pass user_id (let server resolve from default)
         body = {
             "text": text,
             "tier": self.tier,
             "kind": kind,
-            "user_id": user_id,
             "pii_scan": pii_scan,
         }
+        if user_id is not None:
+            body["user_id"] = user_id
         if extra:
             body.update(extra)
         return requests.post(
@@ -82,7 +85,7 @@ class TestBitemporalE2E(unittest.TestCase):
         self.assertTrue(d["version"].startswith("1.16."))
 
     def test_write_fact_stores_with_valid_until_null(self):
-        unique_marker = f"e2e_test_marker_{int(time.time())}"
+        unique_marker = f"e2e_test_marker_{uuid.uuid4().hex[:8]}_{int(time.time())}"
         text = f"Maria 完成了 {unique_marker} 测试"
         r = self._write_fact(text)
         self.assertEqual(r.status_code, 200)
@@ -105,7 +108,7 @@ class TestBitemporalE2E(unittest.TestCase):
     def test_write_correction_kind_triggers_auto_invalidate(self):
         """Correction write should invalidate the prior fact with
         overlapping entities."""
-        marker = f"e2e_correction_{int(time.time())}"
+        marker = f"e2e_correction_{uuid.uuid4().hex[:8]}_{int(time.time())}"
         # First write a fact
         text1 = f"Maria 启动了 {marker} 项目"
         r1 = self._write_fact(text1, kind="fact")
