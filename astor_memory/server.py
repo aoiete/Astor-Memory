@@ -2108,6 +2108,46 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 fx.tags = list(dict.fromkeys((fx.tags or []) + body_tags))
         if not facts:
             return jsonify({'event_id': event_id, 'facts': [], 'count': 0})
+
+        # v1.16.29 (2026-10-01): visibility tier classification.
+        # Three layers (R-class 7587 + 7568):
+        #   1. admin_global_toggle (user_meta.allow_commons_write) — if 0, force personal
+        #   2. visibility_hint — caller-passed explicit override
+        #   3. kind-driven auto — AUTO_COMMONS_KINDS + clean content (no PII / fp / emotion / geo)
+        from .nest.visibility_classifier import classify_visibility as _classify_vis
+        _vis_hint = body.get('visibility_hint') or body.get('visibility') or 'auto'
+        # Look up admin_global_toggle from bot-binding.db (cheap; called once per ())
+        _admin_allow = True
+        try:
+            import sqlite3 as _sq
+            _sqdb = _sq.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            _row = _sqdb.execute(
+                "SELECT allow_commons_write FROM user_meta WHERE user_id = ?",
+                (bus_user_id,),
+            ).fetchone()
+            _sqdb.close()
+            if _row is not None and _row[0] == 0:
+                _admin_allow = False
+        except Exception:
+            pass
+        # Apply to each fact
+        for _fx in facts:
+            _vis_decision = _classify_vis(
+                text=_fx.content or text,
+                kind=_fx.kind,
+                hint=_vis_hint if _vis_hint in ('auto', 'commons', 'personal') else 'auto',
+                admin_allow_commons=_admin_allow,
+            )
+            _fx.visibility = _vis_decision['visibility']
+            _fx.provenance_kind = 'auto_extracted'
+        # Store the visibility classification report (helpful for client introspection)
+        body['_visibility_report'] = {
+            'hint': _vis_hint,
+            'admin_allow': _admin_allow,
+            'count_personal': sum(1 for f in facts if getattr(f, 'visibility', None) == 'personal'),
+            'count_commons': sum(1 for f in facts if getattr(f, 'visibility', None) == 'commons'),
+        }
+
         # 3. Insert candidates + promote (which auto-stores embeddings via nest)
         fact_ids = []
         facts_entities: list[list[dict]] = []
@@ -2154,7 +2194,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 stable_id=stable_id,
                 # v1.14.34 Ship I: thread provenance from caller so hook
                 # writes can be filtered from manual am writes.
-                provenance_kind=body.get('provenance_kind') or _infer_provenance_kind(_write_session_id),
+                provenance_kind=getattr(f, 'provenance_kind', None) or body.get('provenance_kind') or _infer_provenance_kind(_write_session_id),
                 provenance_agent=body.get('provenance_agent') or None,  # P1-fix 2026-08-15: enable content-hash dedup
                 # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking.
                 # Caller may pass evidence_quote / source_ref / source_hash as
@@ -2163,6 +2203,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 evidence_quote=str(body.get('evidence_quote') or '')[:1024],
                 source_ref=str(body.get('source_ref') or '')[:512],
                 source_hash=str(body.get('source_hash') or '')[:64],
+                # v1.16.29 visibility tier (commons/personal).
+                visibility=getattr(f, 'visibility', 'personal'),
             )
             fact_ids.append(canon_id)
             # v1.14.23 Ship E (2026-09-15): read entities_json from DB so
@@ -2542,6 +2584,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'async_embed': bool(_async_embed),
             'async_embed_jobs': _async_embed_count,
             'effective_user_id': bus_user_id or user,
+            # v1.16.29: visibility tier report.
+            # visibility_report shows what visibility each fact was classified
+            # to (commons/personal) and why (kind / hint / admin toggle).
+            'visibility_report': body.get('_visibility_report') or {},
         }
         resp = jsonify(resp_body)
         # v1.16.x Layer 2: attach personal content sniff to response (warn only).
