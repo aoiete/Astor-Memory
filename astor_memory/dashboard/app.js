@@ -268,74 +268,64 @@
     }
   }
 
-  function renderConnections(d) {
-    const tbody = document.querySelector('#connections-table tbody');
-    if (!tbody) return;
-    const bindings = d.bindings || [];
-    tbody.innerHTML = '';
-    // group by platform
-    const byPlatform = {};
-    for (const b of bindings) {
-      const plat = (b.platform_id || '?').split(':')[0]; // strip bot-id suffix for grouping
-      if (!byPlatform[plat]) byPlatform[plat] = [];
-      byPlatform[plat].push(b);
-    }
-    const summary = document.getElementById('connections-summary');
-    if (summary) {
-      const platCount = Object.keys(byPlatform).length;
-      summary.textContent = bindings.length + ' active binding' + (bindings.length === 1 ? '' : 's')
-        + ' across ' + platCount + ' platform' + (platCount === 1 ? '' : 's');
-    }
-    // Sort: v1.16.27 — group by plan priority (power > vip > free > none),
-    // then by user_id alphabetically.
-    const PLAN_RANK = { power: 0, vip: 1, free: 2 };
-    const _planRank = b => (b.subscription_plan && PLAN_RANK[b.subscription_plan] != null
-      ? PLAN_RANK[b.subscription_plan] : 9);
-    const sorted = bindings.slice().sort((a, b) => {
-      const r = _planRank(a) - _planRank(b);
-      if (r !== 0) return r;
-      return (a.user_id || '').localeCompare(b.user_id || '');
-    });
-    const PAGE_SIZE = 10;
-    _conn_page = 0;
-    const _total = sorted.length;
-    const _pageCount = Math.max(1, Math.ceil(_total / PAGE_SIZE));
-    const _summary = document.getElementById('connections-summary');
-    const _renderPage = (pg) => {
-      const start = pg * PAGE_SIZE;
-      const slice = sorted.slice(start, start + PAGE_SIZE);
-      tbody.innerHTML = '';
-      for (const b of slice) {
-        const tr = document.createElement('tr');
-        const roleClass = b.role === 'admin' ? 'role-admin' : 'role-user';
-        tr.innerHTML = '<td>' + escapeHtml(b.platform_id || '—') + '</td>'
-          + '<td>' + escapeHtml(b.user_id || '—') + '</td>'
-          + '<td class="' + roleClass + '">' + escapeHtml(b.role || '—') + '</td>'
-          + '<td>' + escapeHtml(b.subscription_plan || '—') + '</td>'
-          + '<td>' + escapeHtml(b.default_tier || '—') + '</td>'
-          + '<td>' + escapeHtml(b.scope || '—') + '</td>'
-          + '<td>' + escapeHtml((b.bound_at || '').slice(0, 16) || '—') + '</td>';
-        tbody.appendChild(tr);
-      }
-      if (_summary) {
-        const pageLabel = _pageCount > 1
-          ? ' · page ' + (pg + 1) + '/' + _pageCount
-          : '';
-        _summary.innerHTML = _total + ' active binding' + (_total === 1 ? '' : 's')
-          + ' across ' + platCount + ' platform' + (platCount === 1 ? '' : 's')
-          + pageLabel + ' '
-          + '<button class="conn-page-btn" id="conn-prev" type="button">‹</button>'
-          + '<button class="conn-page-btn" id="conn-next" type="button">›</button>';
-        const prev = document.getElementById('conn-prev');
-        const next = document.getElementById('conn-next');
-        if (prev) prev.disabled = pg <= 0;
-        if (next) next.disabled = pg >= _pageCount - 1;
-        if (prev) prev.onclick = () => { if (_conn_page > 0) { _conn_page--; _renderPage(_conn_page); } };
-        if (next) next.onclick = () => { if (_conn_page < _pageCount - 1) { _conn_page++; _renderPage(_conn_page); } };
-      }
-    };
-    _renderPage(0);
+  // v1.16.27 Connections panel — uses module-level state to avoid any
+// function re-definition issues across page clicks.
+let _connPage = 0;
+let _connSorted = [];
+
+function renderConnections(d) {
+  const tbody = document.querySelector('#connections-table tbody');
+  if (!tbody) return;
+  const bindings = d.bindings || [];
+  // Sort: plan priority (power > vip > free) then user_id
+  const PLAN_RANK = { power: 0, vip: 1, free: 2 };
+  _connSorted = bindings.slice().sort((a, b) => {
+    const r = (PLAN_RANK[a.subscription_plan] != null ? PLAN_RANK[a.subscription_plan] : 9)
+            - (PLAN_RANK[b.subscription_plan] != null ? PLAN_RANK[b.subscription_plan] : 9);
+    if (r !== 0) return r;
+    return (a.user_id || '').localeCompare(b.user_id || '');
+  });
+  _connPage = 0;
+  _drawConnPage();
+}
+
+function _drawConnPage() {
+  const tbody = document.querySelector('#connections-table tbody');
+  const summary = document.getElementById('connections-summary');
+  if (!tbody) return;
+  const PAGE_SIZE = 10;
+  const total = _connSorted.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (_connPage >= pageCount) _connPage = pageCount - 1;
+  if (_connPage < 0) _connPage = 0;
+  const slice = _connSorted.slice(_connPage * PAGE_SIZE, (_connPage + 1) * PAGE_SIZE);
+  tbody.innerHTML = '';
+  for (const b of slice) {
+    const tr = document.createElement('tr');
+    const roleClass = b.role === 'admin' ? 'role-admin' : 'role-user';
+    tr.innerHTML = '<td>' + escapeHtml(b.platform_id || '—') + '</td>'
+      + '<td>' + escapeHtml(b.user_id || '—') + '</td>'
+      + '<td class="' + roleClass + '">' + escapeHtml(b.role || '—') + '</td>'
+      + '<td>' + escapeHtml(b.subscription_plan || '—') + '</td>'
+      + '<td>' + escapeHtml(b.default_tier || '—') + '</td>'
+      + '<td>' + escapeHtml(b.scope || '—') + '</td>'
+      + '<td>' + escapeHtml((b.bound_at || '').slice(0, 16) || '—') + '</td>';
+    tbody.appendChild(tr);
   }
+  if (summary) {
+    const platCount = new Set(_connSorted.map(b => (b.platform_id || '').split(':')[0])).size;
+    const pageLabel = pageCount > 1 ? ' · page ' + (_connPage + 1) + '/' + pageCount : '';
+    summary.innerHTML = total + ' active binding' + (total === 1 ? '' : 's')
+      + ' across ' + platCount + ' platform' + (platCount === 1 ? '' : 's')
+      + pageLabel + ' '
+      + '<button class="conn-page-btn" id="conn-prev" type="button" '
+      +   (_connPage <= 0 ? 'disabled' : '') + '>‹</button>'
+      + '<button class="conn-page-btn" id="conn-next" type="button" '
+      +   (_connPage >= pageCount - 1 ? 'disabled' : '') + '>›</button>';
+    document.getElementById('conn-prev').onclick = () => { _connPage--; _drawConnPage(); };
+    document.getElementById('conn-next').onclick = () => { _connPage++; _drawConnPage(); };
+  }
+}
 
   // -- Health diagnosis modal ------------------------------------------------
   // Click any health card → fetch /v1/health/diagnose → render modal.

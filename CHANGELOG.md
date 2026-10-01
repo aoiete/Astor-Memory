@@ -1,3 +1,8 @@
+## [1.16.28] - 2026-10-01
+
+### Fixed
+- **Connections panel pagination**: removed orphan renderConnections function body leftover from earlier rewrite (lines 329-385) that caused `const summary = ...` re-declaration SyntaxError. Single canonical renderConnections + _drawConnPage now ships.
+
 ## [1.16.27] - 2026-10-01
 
 ### Added
