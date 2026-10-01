@@ -714,6 +714,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # "astor_acl not initialized" → 500. POST requests get per-body binding.
         if request.method == 'POST' and request.is_json:
             body = request.get_json(silent=True) or {}
+            # v1.16.31: visibility_hint=personal forces tier=private so before_request
+            # binds ACL with the right identity.
+            if body.get('visibility_hint') == 'personal':
+                body['tier'] = 'private'
+                body['user_id'] = 'admin'
             tier = body.get('tier')
             if tier in ('public', 'source', 'private', 'repo'):
                 # v1.1: tier=repo uses repo_id (explicit field) or 'user' as repo_id.
@@ -899,7 +904,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     for _dbfile in _glob.glob(os.path.join(_p, 'astor_bus_*.db')):
                         # Try the user-uid DB (legacy naming)
                         try:
-                            _bus = astor_bus(tier=f'private_{_candidate_uid}', user_id=_candidate_uid)
+                            # v1.16.31: tier='private' (generic) is the bus layer;
+                            # user_id parameter differentiates the per-user DB.
+                            _bus = astor_bus(tier='private', user_id=_candidate_uid)
                             _bus.conn.row_factory = sqlite3.Row
                             _row = _bus.conn.execute(
                                 "SELECT id, content, kind, user_id, namespace, visibility FROM memory_canonical WHERE id = ? AND tombstoned = 0",
@@ -907,7 +914,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             ).fetchone()
                             if _row:
                                 src_fact = _row
-                                src_tier = f'private_{_candidate_uid}'
+                                src_tier = 'private'
                                 break
                         except Exception:
                             continue
@@ -928,7 +935,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # also check private_<user_id> if not found
         if not src_fact:
             try:
-                _bus = astor_bus(tier=f'private_{ctx.user_id}', user_id=ctx.user_id)
+                _bus = astor_bus(tier='private', user_id=ctx.user_id)
                 _bus.conn.row_factory = sqlite3.Row
                 _row = _bus.conn.execute(
                     "SELECT id, content, kind, user_id, namespace, visibility FROM memory_canonical WHERE id = ? AND tombstoned = 0",
@@ -936,7 +943,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 ).fetchone()
                 if _row:
                     src_fact = _row
-                    src_tier = f'private_{ctx.user_id}'
+                    src_tier = 'private'
             except Exception:
                 pass
         if not src_fact:
@@ -1796,6 +1803,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         f'[astor.server] tier resolver failed (non-fatal): {_tier_exc}\n'
                     )
 
+
+
         # v1.16.20 (2026-09-30): ASYNC embedding opt-in.
         # Per user feedback #1: "实测单次写 40 多秒, embedding 在 PC 上是
         # 最大瓶颈. 落库和 embedding 分离, 读加缓存".
@@ -2338,6 +2347,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'count_personal': sum(1 for f in facts if getattr(f, 'visibility', None) == 'personal'),
             'count_commons': sum(1 for f in facts if getattr(f, 'visibility', None) == 'commons'),
         }
+
+
 
         # 3. Insert candidates + promote (which auto-stores embeddings via nest)
         fact_ids = []
