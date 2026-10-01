@@ -210,6 +210,18 @@ def astor_detect_lesson_pattern(text: str) -> bool:
     """
     if not text or not text.strip():
         return False
+    # v1.16.37+: Fast-path for simple R-class / 下次 / 永远 keywords.
+    # Without this, generic "下次一定要 R-class lesson 记住" gets kind='fact'.
+    # Per R-class 12485 (完整性): user often writes lessons without a
+    # paired error description — pure rule statements like "下次一定要 X".
+    _SIMPLE_LESSON_KW = (
+        'r-class', '下次一定', '永久记住', '永远记住', '切记', '记得',
+        '下次一定要', 'rclass', 'remember to', 'next time',
+        '永远', 'permanent', 'always',
+    )
+    text_lower = text.lower()
+    if any(kw in text_lower for kw in _SIMPLE_LESSON_KW):
+        return True
     has_error = any(p.search(text) for p in _LESSON_ERROR_COMPILED)
     has_fix = any(p.search(text) for p in _LESSON_FIX_COMPILED)
     return has_error and has_fix
