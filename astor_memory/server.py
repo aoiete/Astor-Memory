@@ -4837,9 +4837,35 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     _READ_CACHE.pop(_k, None)
         except Exception:
             pass
+        # v1.16.34: RPMem-inspired recall-aware importance adjustment.
+        # Boost importance of facts that got recalled (they ARE useful);
+        # softly decay importance of facts that haven't been touched in
+        # 90+ days (noise accumulating). Article reference:
+        # "同领域事件的写入模式相似度为 0.872, 跨领域为 0.784"
+        try:
+            _hit_fact_ids = [
+                int(e.get('fact_id') or e.get('id'))
+                for e in (enriched or [])
+                if (e.get('fact_id') or e.get('id'))
+            ]
+            if _hit_fact_ids and body.get('recall_aware_decay', True):
+                _bus_for_decay = astor_bus(tier=tier, user_id=user_id)
+                _decay_report = _bus_for_decay.apply_recall_aware_decay(
+                    hit_fact_ids=_hit_fact_ids,
+                    decay_factor_unhit=0.95,
+                    boost_factor_hit=1.05,
+                    days_unhit_threshold=90,
+                )
+            else:
+                _decay_report = {'skipped': 'no_hits_or_disabled'}
+        except Exception as _dec_exc:
+            _decay_report = {'error': str(_dec_exc)}
         return jsonify({
             'results': enriched,
             'count': len(enriched),
+            'recall_aware_decay': _decay_report,
+            # v1.16.34: surface decay stats so callers know if any
+            # facts were touched (boosted or decayed) by this recall.
             'meta_recall': {
                 'triggered': '_meta' in dir() and bool(_meta),
                 'injected_count': len(_meta) if ('_meta' in dir() and _meta) else 0,
