@@ -378,8 +378,9 @@ def clear_tool_results(
     if len(matches) <= keep_recent_n:
         return text, []
 
-    # Drop all but the last N
-    to_drop = matches[:-keep_recent_n]
+    # Drop all but the last N. Note: matches[:-0] is [] (Python slice
+    # semantics), so we special-case 0 to mean "drop all".
+    to_drop = matches if keep_recent_n == 0 else matches[:-keep_recent_n]
     replaced = []
     cleaned = text
     for m in reversed(to_drop):

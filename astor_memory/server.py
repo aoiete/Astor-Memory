@@ -1002,21 +1002,36 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 return jsonify({'error': 'distill_opt_check_failed', 'detail': str(_e)}), 500
 
         # v1.16.32: pre-distill guards
-        # (a) source must be visibility=personal (don't distill commons→commons)
-        if getattr(src_fact, 'keys', None) is None:
-            # already sqlite3.Row (dict-like); the .get below handles missing keys
-            pass
+        # (a) commons→commons guard. v1.16.34 fix: this guard was too
+        # aggressive — auto-promoted facts (kind in AUTO_COMMONS_KINDS,
+        # e.g. success_pattern/method/lesson) are EXACTLY what we want
+        # to distill further. Only block if the source was ALREADY a
+        # user_distilled commons (avoid loops).
         try:
             _src_vis = src_fact['visibility']
         except (KeyError, TypeError, IndexError):
             _src_vis = None
         if _src_vis == 'commons':
-            return jsonify({
-                'error': 'source_already_commons',
-                'detail': 'distill only applies to personal-tier facts (commons→commons is no-op)',
-                'source_fact_id': fact_id,
-                'source_visibility': 'commons',
-            }), 422
+            # Allow re-distill of commons facts ONLY if they were auto-
+            # promoted (kind=method/success_pattern/lesson/etc.) and
+            # have NOT been distilled before.
+            _src_kind = ''
+            try:
+                _src_kind = src_fact['kind']
+            except (KeyError, TypeError, IndexError):
+                pass
+            _AUTO_COMMONS = {'method', 'recipe', 'lesson',
+                             'success_pattern', 'failure_pattern',
+                             'mental_model', 'knowledge_page', 'flow'}
+            if _src_kind not in _AUTO_COMMONS:
+                return jsonify({
+                    'error': 'source_already_commons',
+                    'detail': 'distill only applies to personal-tier or auto-promoted commons facts',
+                    'source_fact_id': fact_id,
+                    'source_visibility': 'commons',
+                    'source_kind': _src_kind,
+                }), 422
+            # Else: auto-promoted kind → allow (de-dupe handled by step b)
         # (b) source must not already be distilled (check provenance_kind of
         # commons facts that reference this source via metadata.distilled_from)
         try:
