@@ -712,15 +712,38 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # viewer_stats, lex_stats). Without this, Flask worker threads may
         # not have _CURRENT set, and downstream astor_check_* raises
         # "astor_acl not initialized" → 500. POST requests get per-body binding.
-        if request.method == 'POST' and request.is_json:
-            body = request.get_json(silent=True) or {}
+        if request.method == 'POST':
+            # v1.16.32: parse X-Actor header (legacy admin/user marker from muse
+            # clients). Without this, ctx.role in admin endpoints stayed at
+            # 'admin' from prior request — allowing non-admin callers to invoke
+            # admin-only paths. Header is parsed FIRST so it overrides body defaults.
+            _x_actor = request.headers.get('X-Actor', '').strip()
+            if request.is_json:
+                body = request.get_json(silent=True) or {}
+            else:
+                body = {}
+            if _x_actor:
+                # X-Actor formats: 'admin:<id>' or 'user:<id>' or just '<id>'
+                _actor_user_id = None
+                if _x_actor.startswith('admin:') or _x_actor.startswith('user:'):
+                    _actor_user_id = _x_actor.split(':', 1)[1] or None
+                else:
+                    _actor_user_id = _x_actor
+                if _actor_user_id:
+                    body['user'] = _actor_user_id
+                    body.setdefault('user_id', _actor_user_id)
             # v1.16.31: visibility_hint=personal forces tier=private so before_request
             # binds ACL with the right identity.
             if body.get('visibility_hint') == 'personal':
                 body['tier'] = 'private'
                 body['user_id'] = 'admin'
+            # v1.16.32: bind ACL for ALL POST requests, not just tier-based.
+            # Previously endpoints without tier (e.g. /v1/admin/toggle_distill)
+            # left _CURRENT contextvar stale from prior request, allowing a
+            # non-admin caller to invoke admin-only paths because ctx.role was
+            # still 'admin' from a prior request.
             tier = body.get('tier')
-            if tier in ('public', 'source', 'private', 'repo'):
+            if tier is None or tier in ('public', 'source', 'private', 'repo'):
                 # v1.1: tier=repo uses repo_id (explicit field) or 'user' as repo_id.
                 repo_id = body.get('repo_id')
                 if tier == 'repo' and repo_id:
@@ -734,12 +757,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     # became admin:admin).
                     body_user = body.get('user') or body.get('user_id')
                 actor, role, plan = _astor_resolve_actor(body_user)
+                # v1.16.32: tier=None -> public (admin endpoints can still role-check)
+                if tier is None:
+                    tier = 'public'
                 if tier == 'private':
                     target_user = body.get('user_id') or body_user
                 elif tier == 'repo':
                     target_user = body_user
                 else:
-                    target_user = None
+                    # v1.16.32: for tier=public (including tier-less fallback), use
+                    # body.user_id if present so admin endpoints like distill see
+                    # the proper caller identity. R-class 12747 locked user_id
+                    # binding as SSoT for downstream per-user DB routing.
+                    target_user = body.get('user_id') or body_user
                 try:
                     # Bind ACL with ACTOR's identity. user_id=body_user ALWAYS
                     # (not just for private) so astor_check_write can match
@@ -872,6 +902,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
     @app.route('/v1/fact/<int:fact_id>/distill', methods=['POST'])
     @app.route('/v1/fact/<int:fact_id>/distill_auto', methods=['POST'])
     def fact_distill(fact_id):
+        import datetime as _dt
         from .nest.distiller import distill as _distill
         body = request.get_json(force=True) if request.is_json else {}
         auto_mode = '/distill_auto' in request.path
@@ -888,6 +919,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
         else:
             if ctx.role != 'admin':
                 return jsonify({'error': 'distill requires admin'}), 403
+        # v1.16.32: silent ACL — verify caller can read the source fact's tier
+        # BEFORE loading (R-class 12283: don't leak fact_id existence to non-owner).
+        # For admin role this is always allowed; for user role, only own facts.
+        # Distill Auto path handles this in the auto_mode block below.
         # Load source fact from all tiers. Admin can distill any tier.
         # v1.16.30 schema: per-user dirs are users/<uid>/memory/astor_bus_<uid>.db.
         # Older 'private_<uid>' legacy paths still exist (admin_resolver fallback).
@@ -965,6 +1000,45 @@ def create_app(astor_dir: str | None = None) -> Flask:
                                     'detail': 'user must opt in via /v1/admin/user/{user_id}/toggle_distill'}), 403
             except Exception as _e:
                 return jsonify({'error': 'distill_opt_check_failed', 'detail': str(_e)}), 500
+
+        # v1.16.32: pre-distill guards
+        # (a) source must be visibility=personal (don't distill commons→commons)
+        if getattr(src_fact, 'keys', None) is None:
+            # already sqlite3.Row (dict-like); the .get below handles missing keys
+            pass
+        try:
+            _src_vis = src_fact['visibility']
+        except (KeyError, TypeError, IndexError):
+            _src_vis = None
+        if _src_vis == 'commons':
+            return jsonify({
+                'error': 'source_already_commons',
+                'detail': 'distill only applies to personal-tier facts (commons→commons is no-op)',
+                'source_fact_id': fact_id,
+                'source_visibility': 'commons',
+            }), 422
+        # (b) source must not already be distilled (check provenance_kind of
+        # commons facts that reference this source via metadata.distilled_from)
+        try:
+            import sqlite3 as _sq_d
+            _pub_db = _sq_d.connect(r'D:\AI\Astor-Memory-Runtime\public\memory\astor_bus_public.db')
+            _existing = _pub_db.execute(
+                "SELECT id FROM memory_canonical WHERE tombstoned = 0 "
+                "AND json_extract(metadata, '$.distilled_from') = ? LIMIT 1",
+                (fact_id,),
+            ).fetchone()
+            _pub_db.close()
+            if _existing:
+                return jsonify({
+                    'error': 'already_distilled',
+                    'detail': f'this fact already has a commons distillation (id={_existing[0]})',
+                    'existing_commons_fact_id': _existing[0],
+                }), 409
+        except Exception as _e_dup:
+            # Distillation dedup is best-effort; if the check fails (e.g.
+            # public bus unreachable), allow it through rather than blocking.
+            pass
+
         # Distill content
         from .nest.distiller import distill as _distill
         cleaned, removed_segments, distill_report = _distill(src_fact['content'])
@@ -993,18 +1067,24 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 importance=0.7,
                 tags=['distilled', 'from_personal'],
             )
+            # v1.16.32: persist audit metadata on the distilled commons row so
+            # we can trace each commons fact back to the personal source.
+            import json as _json_meta
             _meta = {
                 'distilled_from': fact_id,
                 'distilled_by': ctx.actor,
                 'removed_segments': removed_segments,
                 'distill_report': distill_report,
                 'source_tier': src_tier,
+                'source_user_id': src_fact['user_id'] if src_fact else None,
+                'distilled_at': _dt.datetime.now(_dt.timezone.utc).isoformat(),
             }
             new_fact_id = _bus.promote_candidate(
                 _cand, promoted_by=f'rest.distill.{ctx.actor}',
                 user_id=None, tier='public', scope_type='long_term',
                 provenance_kind='user_distilled',
                 visibility='commons',
+                extra_metadata=_json_meta.dumps(_meta, ensure_ascii=False),
             )
         except Exception as _e:
             return jsonify({'error': 'write_failed', 'detail': str(_e)}), 500
@@ -1035,7 +1115,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception:
             return jsonify({'error': 'astor_init_acl required'}), 503
         body = request.get_json(force=True) if request.is_json else {}
-        allow = bool(body.get('allow_distill'))
+        # v1.16.32: require explicit True/False (not bool coercion of 'maybe').
+        _v = body.get('allow_distill')
+        if not isinstance(_v, bool):
+            return jsonify({'error': 'allow_distill_must_be_bool',
+                            'detail': f'expected true/false, got {type(_v).__name__}'}), 400
+        allow = _v
         try:
             import sqlite3 as _sq
             _sqdb = _sq.connect(r'D:\\AI\\Astor-Memory-Runtime\\bot-binding.db')
