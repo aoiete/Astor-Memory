@@ -1192,6 +1192,11 @@ class AstorBus:
         soft_decay: bool = True,
         decay_factor: float = 0.5,
     ) -> list[dict]:
+        # v1.16.34 fix: validate decay_factor range. >1 would BOOST the
+        # older fact (wrong direction for conflict resolution). <0 would
+        # invert importance (corrupted data). Clamp to [0.0, 1.0].
+        if soft_decay and (decay_factor < 0.0 or decay_factor > 1.0):
+            decay_factor = max(0.0, min(1.0, decay_factor))
         """v1.16.34: per-coordinate gating for bi-temporal cascade.
 
         Inspired by RPMem paper (arxiv 2609.23466, 复旦 + 阿里 Qwen):
@@ -1382,7 +1387,10 @@ class AstorBus:
                     _is_old_enough = (_last_conf is not None and _last_conf < _cutoff)
                     if _is_old_enough and _imp > 0.1:
                         _new_imp = round(_imp * decay_factor_unhit, 4)
-                        if _new_imp != _imp:
+                        # v1.16.34 fix: don't let importance drop below 0.1
+                        # floor (otherwise a very small decay_factor could
+                        # kill a fact's importance to ~0 in one call).
+                        if _new_imp != _imp and _new_imp >= 0.1:
                             c.execute(
                                 "UPDATE memory_canonical "
                                 "SET importance = ? WHERE id = ?",

@@ -1,4 +1,40 @@
 
+## v1.16.35 — Bug-hunt fixes (5 bugs from post-ship audit) (2026-10-01)
+
+5 bugs found during systematic edge-case audit (per R-class 11463 + 12392,
+"扫完整类 bug, 不只扫已发现项").
+
+### Fixed
+
+- **BUG 1 (HIGH)**: `decay_factor_unhit=0.001` would crash importance to
+  ~0 in one call. Fix: floor `_new_imp >= 0.1` before UPDATE.
+- **BUG 2 (HIGH)**: `resolve_conflicts(decay_factor=2.0)` boosted old
+  fact from 0.5 to 1.0 (wrong direction for conflict resolution).
+  Fix: clamp `decay_factor` to `[0.0, 1.0]`.
+- **BUG 3 (HIGH)**: `resolve_conflicts(decay_factor=-0.5)` produced
+  negative importance (-0.25), corrupting bus. Same clamp fix.
+- **BUG 4 (MEDIUM)**: `clear_tool_results(keep_recent_n=0)` dropped
+  ZERO blocks because `matches[:-0]` is `[]` (Python slice semantics).
+  Fix: `matches if keep_recent_n == 0 else matches[:-keep_recent_n]`.
+- **BUG 5 (MEDIUM)**: `/v1/fact/{id}/distill` rejected commons-source
+  with kind=success_pattern (422 source_already_commons). But
+  auto-promoted commons (kind ∈ AUTO_COMMONS_KINDS) ARE exactly what
+  distill is meant to clean further. Fix: only block commons→commons
+  if kind NOT in AUTO_COMMONS_KINDS.
+
+### Tests
+All 36 cases still pass (test_distiller + test_tool_clearing +
+test_conflict_resolver + test_recall_aware_decay + test_visibility_classifier).
+
+### Live verified
+- BUG 1: `decay_factor=0.001` on imp=0.15 → unchanged (was 0.0001).
+- BUG 2: `decay_factor=2.0` clamped to 1.0 (was boosting old fact).
+- BUG 3: `decay_factor=-0.5` clamped to 0.0 (was negative).
+- BUG 4: `keep_recent_n=0` now drops all blocks (was dropping none).
+- BUG 5: `distill` on commons success_pattern fact → 200 + new commons
+  fact (was 422).
+
+
 ## v1.16.34 — RPMem-inspired gating + recall-aware decay (2026-10-01)
 
 Source: mp.weixin.qq.com/s/L9_TV26x5OqLLmcfB_C2vw "RPMem: Recurrent Parametric
