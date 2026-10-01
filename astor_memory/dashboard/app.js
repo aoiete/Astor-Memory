@@ -246,6 +246,59 @@
     setHealth('health-embed', h2.embedding_failed);
     setHealth('health-warn', h2.audit_warnings);
     setHealth('health-total', h2.audit_total);
+
+    // v1.16.25: Connections panel — live bindings to astor
+    fetchConnections();
+  }
+
+  async function fetchConnections() {
+    try {
+      const r = await fetch('/v1/binding/list');
+      if (!r.ok) return;
+      const d = await r.json();
+      renderConnections(d);
+    } catch (e) {
+      // silent — non-critical
+    }
+  }
+
+  function renderConnections(d) {
+    const tbody = document.querySelector('#connections-table tbody');
+    if (!tbody) return;
+    const bindings = d.bindings || [];
+    tbody.innerHTML = '';
+    // group by platform
+    const byPlatform = {};
+    for (const b of bindings) {
+      const plat = (b.platform_id || '?').split(':')[0]; // strip bot-id suffix for grouping
+      if (!byPlatform[plat]) byPlatform[plat] = [];
+      byPlatform[plat].push(b);
+    }
+    const summary = document.getElementById('connections-summary');
+    if (summary) {
+      const platCount = Object.keys(byPlatform).length;
+      summary.textContent = bindings.length + ' active binding' + (bindings.length === 1 ? '' : 's')
+        + ' across ' + platCount + ' platform' + (platCount === 1 ? '' : 's');
+    }
+    // Sort: platform alphabetically, then user
+    const sorted = bindings.slice().sort((a, b) => {
+      const pa = (a.platform_id || '').split(':')[0];
+      const pb = (b.platform_id || '').split(':')[0];
+      if (pa !== pb) return pa.localeCompare(pb);
+      return (a.user_id || '').localeCompare(b.user_id || '');
+    });
+    for (const b of sorted) {
+      const tr = document.createElement('tr');
+      const roleClass = b.role === 'admin' ? 'role-admin' : 'role-user';
+      tr.innerHTML = '<td>' + escapeHtml(b.platform_id || '—') + '</td>'
+        + '<td>' + escapeHtml(b.user_id || '—') + '</td>'
+        + '<td class="' + roleClass + '">' + escapeHtml(b.role || '—') + '</td>'
+        + '<td>' + escapeHtml(b.subscription_plan || '—') + '</td>'
+        + '<td>' + escapeHtml(b.default_tier || '—') + '</td>'
+        + '<td>' + escapeHtml(b.scope || '—') + '</td>'
+        + '<td>' + escapeHtml((b.bound_at || '').slice(0, 16) || '—') + '</td>';
+      tbody.appendChild(tr);
+    }
   }
 
   // -- Health diagnosis modal ------------------------------------------------
