@@ -1154,7 +1154,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
     # }
     @app.route('/v1/skill/recommend', methods=['POST'])
     def skill_recommend():
-        from .nest.skills import get_bank, controller_select
+        from .nest.skills import get_bank, controller_select, controller_select_scored
         body = request.get_json(force=True) or {}
         task = body.get('task', '').strip()
         platform = body.get('platform', 'muse')
@@ -1185,18 +1185,26 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if any(w in _task_lower for w in ['episode', 'chunk', 'conversation', 'turn']):
             _preferred_tags.extend(['episode', 'l0', 'evidence'])
 
-        _ranked_skills = controller_select(
-            _preferred_tags or ['memory'], available_tags=None, bank=bank,
-        )
-        _skill_summaries = []
-        for sn in _ranked_skills[:5]:
-            s = bank.get(sn)
-            if s:
-                _skill_summaries.append({
-                    'name': sn,
-                    'description': s.description,
-                    'tags': list(s.tags),
-                })
+        # v1.16.21: query-aware scoring replaces fixed tag routing.
+        # controller_select_scored ranks EVERY bank skill by token overlap
+        # with the task text (name + tags + description), so new skills are
+        # discoverable without updating keyword heuristics. Tag heuristic
+        # retained as fallback when scoring returns nothing.
+        _scored = controller_select_scored(task, top_n=5, bank=bank)
+        _skill_summaries = list(_scored)  # already has name/description/tags/score
+        if not _skill_summaries:
+            _ranked_skills = controller_select(
+                _preferred_tags or ['memory'], available_tags=None, bank=bank,
+            )
+            for sn in _ranked_skills[:5]:
+                s = bank.get(sn)
+                if s:
+                    _skill_summaries.append({
+                        'name': sn,
+                        'description': s.description,
+                        'tags': list(s.tags),
+                        'score': 0.0,
+                    })
 
         # Step 3: recall relevant facts.
         # Use BOTH /v1/read (semantic) AND substring fallback (for LOCK
@@ -5537,6 +5545,136 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception:
             pass
         return jsonify(result)
+
+    @app.route('/v1/failure_loop/run', methods=['POST'])
+    def failure_loop_run():
+        """v1.16.23 (2026-09-30): 失败复盘闭环 (user feedback #2).
+
+        3-step closed loop in one call:
+          1. SCAN — find recent failure/lesson facts (kind in
+             failure_pattern/lesson or outcome tags), up to N days old.
+          2. EXTRACT — for each failure, rank skills via
+             controller_select_scored on the failure content; top skill
+             names become the "提炼技能" recommendation. Recurring
+             failures (>=2 hits same topic) get promoted to a
+             success_pattern-style fact for future recall.
+          3. SNAPSHOT — pre-loop DB snapshot row (kind counts + fact
+             count) written to audit_log so a bad reflection merge can
+             be rolled back via /v1/snapshot/restore-style tooling.
+
+        Body: {tier (default public), user_id, days (default 7),
+               max_items (default 20)}
+        Returns: {scanned, recurring, skills_recommended, snapshot_id}
+        """
+        try:
+            ctx = astor_current_acl()
+            if ctx.role != 'admin':
+                return jsonify({'error': 'failure_loop requires admin'}), 403
+        except Exception:
+            pass
+        body = request.get_json(force=True) if request.is_json else {}
+        tier = body.get('tier', 'public')
+        user_id = body.get('user_id') or None
+        days = int(body.get('days', 7))
+        max_items = int(body.get('max_items', 20))
+        bus = astor_bus(tier=tier, user_id=user_id)
+
+        # ---- Step 3 FIRST: snapshot BEFORE any mutation ----
+        import json as _fl_json
+        import time as _fl_time
+        _snap = {
+            'ts': _fl_time.strftime('%Y-%m-%dT%H:%M:%S'),
+            'tier': tier, 'user_id': user_id,
+            'fact_count': 0, 'kind_counts': {},
+        }
+        try:
+            _rows = bus.conn.execute(
+                "SELECT kind, COUNT(*) FROM memory_canonical "
+                "WHERE tombstoned = 0 GROUP BY kind").fetchall()
+            _snap['fact_count'] = sum(r[1] for r in _rows)
+            _snap['kind_counts'] = {r[0]: r[1] for r in _rows}
+        except Exception:
+            pass
+        _snap_id = None
+        try:
+            bus.write_audit(
+                event='failure_loop_snapshot', actor='admin:admin',
+                target_type='system', target_id='failure_loop',
+                metadata=_snap, severity='info',
+            )
+            _snap_id = bus.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            bus.conn.commit()
+        except Exception:
+            pass
+
+        # ---- Step 1: scan recent failures/lessons ----
+        _fl_facts = []
+        try:
+            _cutoff = _fl_time.strftime('%Y-%m-%d', _fl_time.gmtime(
+                _fl_time.time() - days * 86400))
+            _rows = bus.conn.execute(
+                "SELECT id, content, kind, created_at FROM memory_canonical "
+                "WHERE tombstoned = 0 AND created_at >= ? AND "
+                "(kind IN ('failure_pattern', 'lesson', 'error') OR "
+                " content LIKE '%失败%' OR content LIKE '%error%' OR "
+                " content LIKE '%失败模式%') "
+                "ORDER BY created_at DESC LIMIT ?",
+                (_cutoff, max_items)).fetchall()
+            _fl_facts = [
+                {'id': r[0], 'content': r[1], 'kind': r[2], 'created_at': r[3]}
+                for r in _rows
+            ]
+        except Exception as _scan_exc:
+            return jsonify({'error': 'scan failed',
+                            'detail': str(_scan_exc)}), 500
+
+        # ---- Step 2: extract skills per failure + detect recurring ----
+        from .nest.skills import controller_select_scored
+        _skill_rec = {}
+        _topic_counts = {}
+        for _f in _fl_facts:
+            for _s in controller_select_scored(_f['content'], top_n=2):
+                _skill_rec[_s['name']] = max(_skill_rec.get(_s['name'], 0),
+                                             _s['score'])
+            # crude topic key: first 12 chars of normalized content
+            _topic = _f['content'][:12].strip()
+            _topic_counts[_topic] = _topic_counts.get(_topic, 0) + 1
+        _recurring = [{'topic': t, 'count': c}
+                      for t, c in _topic_counts.items() if c >= 2]
+
+        # Promote recurring failures (count>=2) into a lesson fact so
+        # future recall surfaces the pattern, not just the raw failure.
+        _promoted = []
+        for _r in _recurring:
+            try:
+                _prom_text = (f"[failure_loop] recurring failure x{_r['count']}: "
+                              f"{_r['topic']}... — review via /v1/consult")
+                _fl_cand = bus.insert_candidate(
+                    event_id=bus.append_event(
+                        namespace='failure_loop', agent_id='failure_loop',
+                        source='rest.failure_loop', action='write',
+                        content=_prom_text),
+                    namespace='failure_loop', content=_prom_text,
+                    kind='lesson', confidence=0.8, importance=0.7,
+                    tags=['failure_loop', 'recurring'])
+                bus.promote_candidate(_fl_cand, promoted_by='rest.failure_loop',
+                                      user_id=user_id, tier=tier)
+                _promoted.append(_r['topic'])
+            except Exception:
+                continue
+
+        return jsonify({
+            'scanned': len(_fl_facts),
+            'recurring': _recurring,
+            'promoted_lessons': _promoted,
+            'skills_recommended': [
+                {'name': k, 'score': v}
+                for k, v in sorted(_skill_rec.items(),
+                                   key=lambda kv: -kv[1])[:5]
+            ],
+            'snapshot_id': _snap_id,
+            'snapshot': _snap,
+        })
 
     @app.route('/v1/mental_model', methods=['GET'])
     @app.route('/v1/mental_model/list', methods=['GET'])
