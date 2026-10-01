@@ -1,4 +1,60 @@
 
+## v1.16.34 — RPMem-inspired gating + recall-aware decay (2026-10-01)
+
+Source: mp.weixin.qq.com/s/L9_TV26x5OqLLmcfB_C2vw "RPMem: Recurrent Parametric
+Memory" (arxiv 2609.23466, 复旦 + 阿里 Qwen).
+
+### OPT-A: per-fact soft-decay gating for bi-temporal cascade
+RPMem paper principle: "同领域事件的写入模式相似度为 0.872, 跨领域为
+0.784; 一次更新后, 同领域旧来源的贡献存留为 0.458, 跨领域为 0.818".
+Apply this to bitemporal cascade: instead of hard-invalidate (v1.16.33
+behavior), soft-gate via `importance *= decay_factor` so old fact stays
+queryable but ranks lower in recall.
+
+`resolve_conflicts(new_fact_id, kind, user_id, entities, content,
+soft_decay=True, decay_factor=0.5)`:
+- soft_decay=True (default): UPDATE memory_canonical SET
+  importance = old * decay, metadata += {gated_by, gate_reason,
+  gate_decay_factor, gate_at}. fact NOT tombstoned.
+- soft_decay=False: legacy hard-invalidate (valid_until=now).
+
+### OPT-C: recall-aware importance adjustment
+Article quote: "随时间变化, 经常被 recall 的信息应当保留更久; 长期未被
+recall 的 fact 加速衰减". Per `/v1/read` invocation:
+- HIT facts: `importance *= 1.05` (capped at 1.0), increment access_count,
+  update last_confirmed_at
+- UNHIT facts with last_confirmed_at older than 90 days:
+  `importance *= 0.95` (soft noise reduction)
+- UNHIT facts with last_confirmed_at=NULL (never confirmed):
+  NOT decayed (brand new, no recall trail established)
+
+`apply_recall_aware_decay(hit_fact_ids, decay_factor_unhit=0.95,
+boost_factor_hit=1.05, days_unhit_threshold=90)` returns
+{hit_count, boosted_count, decayed_count}.
+
+Auto-wired into `/v1/read` (response now includes
+`recall_aware_decay` field).
+
+### Bonus fix: sqlite3 Cursor iteration bug
+Re-using `c.execute(SELECT)` iterator for `c.execute(UPDATE)` inside the
+loop invalidated the iterator (sqlite3 quirk). Fix: snapshot via
+`.fetchall()` before the loop. Discovered during OPT-C implementation.
+
+### Tests shipped (all PASS, 36 total)
+- test_distiller: 12 (v1.16.33 state-const + v1.16.30 legacy)
+- test_tool_clearing: 4
+- test_visibility_classifier: 10
+- test_conflict_resolver: 7 (4 v1.16.33 + 3 v1.16.34 soft_decay)
+- test_recall_aware_decay: 3 (new in v1.16.34)
+
+### Live verified
+- OPT-A: admin direct-insert kind=user_preference → second fact
+  soft-gates first (importance 0.5 → 0.25, tombstoned=0, metadata has
+  gated_by + gate_at)
+- OPT-C: /v1/read returns `recall_aware_decay: {boosted_count: 2,
+  hit_count: 3}` when recalling TypeScript / Rust
+
+
 ## v1.16.33 — Article-driven optimizations (2026-10-01)
 
 4 optimizations from mp.weixin article "Agent 上下文压缩策略" (by 老贾探AI).

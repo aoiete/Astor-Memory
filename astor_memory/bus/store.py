@@ -1189,25 +1189,29 @@ class AstorBus:
         new_user_id: str | None,
         new_entities_json: str | None,
         new_content: str,
+        soft_decay: bool = True,
+        decay_factor: float = 0.5,
     ) -> list[dict]:
-        """v1.16.33: auto bitemporal invalidate older contradictory facts.
+        """v1.16.34: per-coordinate gating for bi-temporal cascade.
 
-        Per article 红线四 (no auto-merging = 3-month noise magnet):
-        '要么做冲突消解 (Mem0 的 update resolver、Zep 的 bi-temporal
-        失效边), 要么做定期归并'.
+        Inspired by RPMem paper (arxiv 2609.23466, 复旦 + 阿里 Qwen):
+        rather than hard-invalidate older facts (v1.16.33 behavior),
+        apply soft decay per-coordinate so old facts remain queryable
+        but de-prioritized in recall ranking.
 
-        Trigger conditions (new_fact kind must be one of these):
-          - 'user_correction' / 'correction' / 'pushback' / 'fact_update'
-          - 'user_preference' / 'decision' (user-level facts that often change)
-          - 'success_pattern' (when re-confirmed, demote older as 'counter')
+        Article reference: '同领域事件的写入模式相似度为 0.872, 跨领域为
+        0.784; 一次更新后, 同领域旧来源的贡献存留为 0.458, 跨领域为 0.818'.
 
-        Conflict detection heuristic:
-          - Same user_id AND
-          - shared entities (any overlap from new_entities_json vs old entities_json) AND
-          - kind ∈ {user_preference, decision, user_correction} AND
-          - old fact is still active (valid_until IS NULL, tombstoned=0)
+        Two modes:
+        - soft_decay=True (default, RPMem-style): older fact's importance
+          is multiplied by decay_factor (default 0.5) and metadata gets
+          'gated_by' / 'gate_reason' fields. fact is NOT tombstoned.
+        - soft_decay=False (legacy): older fact's valid_until is set to NOW
+          (hard bitemporal invalidation, v1.16.33 behavior).
 
-        Returns: list of invalidated fact_ids with metadata.
+        Returns: list of gated (or invalidated) fact_ids with metadata.
+        Each entry: {fact_id, mode: 'gated'|'invalidated', old_importance,
+                      new_importance, shared_entities}
         """
         if new_kind not in ('user_correction', 'correction', 'pushback',
                             'fact_update', 'user_preference', 'decision',
@@ -1258,23 +1262,141 @@ class AstorBus:
                                      if t and val}
                 if not _shared_types_values:
                     continue
-                # Same kind + overlap -> conflict
-                c.execute(
-                    "UPDATE memory_canonical "
-                    "SET valid_until = ?, invalidated_at = ?, "
-                    "    invalidated_by = ?, invalidated_reason = ? "
-                    "WHERE id = ? AND valid_until IS NULL",
-                    (_now, _now, new_fact_id,
-                     f'auto-resolved by conflict_resolver: new fact {new_fact_id} kind={new_kind} supersedes this {new_kind}',
-                     _old_id),
-                )
-                if c.rowcount > 0:
-                    invalidated.append({
-                        'invalidated_fact_id': _old_id,
-                        'reason': f'superseded by fact {new_fact_id} (kind={new_kind})',
-                        'shared_entities': list(new_ent_types & _old_types) + list(new_ent_values & _old_values),
-                    })
+                # Resolve conflict. v1.16.34: gating-style by default
+                # (RPMem per-coordinate preservation pattern).
+                _row_old = c.execute(
+                    "SELECT importance, metadata FROM memory_canonical WHERE id = ?",
+                    (_old_id,),
+                ).fetchone()
+                _old_imp = float(_row_old[0]) if _row_old and _row_old[0] is not None else 0.5
+                _old_meta_str = _row_old[1] if _row_old and _row_old[1] else ''
+                try:
+                    _old_meta = json.loads(_old_meta_str) if _old_meta_str else {}
+                except Exception:
+                    _old_meta = {}
+                if soft_decay:
+                    # Soft gating: keep fact alive, multiply importance
+                    # by decay_factor, record gate metadata. The fact
+                    # still appears in recall but ranks lower.
+                    _new_imp = round(_old_imp * decay_factor, 4)
+                    _gate_meta = {
+                        **(dict(_old_meta) if isinstance(_old_meta, dict) else {}),
+                        'gated_by': new_fact_id,
+                        'gate_reason': f'soft-decay gated by fact {new_fact_id} kind={new_kind} (RPMem-style)',
+                        'gate_decay_factor': decay_factor,
+                        'gate_at': _now,
+                    }
+                    c.execute(
+                        "UPDATE memory_canonical "
+                        "SET importance = ?, metadata = ? "
+                        "WHERE id = ?",
+                        (_new_imp, json.dumps(_gate_meta, ensure_ascii=False), _old_id),
+                    )
+                    if c.rowcount > 0:
+                        invalidated.append({
+                            'fact_id': _old_id,
+                            'mode': 'gated',
+                            'old_importance': _old_imp,
+                            'new_importance': _new_imp,
+                            'shared_entities': list(_shared_types_values),
+                            'reason': f'gated by fact {new_fact_id} (kind={new_kind})',
+                        })
+                else:
+                    # Legacy: hard bitemporal invalidation
+                    c.execute(
+                        "UPDATE memory_canonical "
+                        "SET valid_until = ?, invalidated_at = ?, "
+                        "    invalidated_by = ?, invalidated_reason = ? "
+                        "WHERE id = ? AND valid_until IS NULL",
+                        (_now, _now, new_fact_id,
+                         f'auto-resolved by conflict_resolver: new fact {new_fact_id} kind={new_kind} supersedes this {new_kind}',
+                         _old_id),
+                    )
+                    if c.rowcount > 0:
+                        invalidated.append({
+                            'fact_id': _old_id,
+                            'mode': 'invalidated',
+                            'shared_entities': list(_shared_types_values),
+                            'reason': f'superseded by fact {new_fact_id} (kind={new_kind})',
+                        })
         return invalidated
+
+    def apply_recall_aware_decay(
+        self,
+        hit_fact_ids: list[int],
+        decay_factor_unhit: float = 0.95,
+        boost_factor_hit: float = 1.05,
+        max_importance: float = 1.0,
+        days_unhit_threshold: int = 90,
+    ) -> dict:
+        """v1.16.34: RPMem-inspired recall-aware importance adjustment.
+
+        Article reference (RPMem paper): "同领域事件的写入模式相似度为
+        0.872, 跨领域为 0.784; 一次更新后, 同领域旧来源的贡献存留为 0.458,
+        跨领域为 0.818".
+
+        Two actions:
+        1. HIT facts (in hit_fact_ids): importance *= boost_factor_hit
+           (cap at max_importance). Justification: the system is
+           actively retrieving this fact; preserve it longer.
+        2. UNHIT facts (active for > days_unhit_threshold days and
+           last_confirmed_at < cutoff): importance *= decay_factor_unhit.
+           These are noise accumulating.
+
+        Returns: dict with hit_count, decayed_count, boosted_count.
+        """
+        import datetime as _dec_dt
+        _now = _dec_dt.datetime.now(_dec_dt.timezone.utc).isoformat()
+        _cutoff = (_dec_dt.datetime.now(_dec_dt.timezone.utc)
+                   - _dec_dt.timedelta(days=days_unhit_threshold)).isoformat()
+        hit_set = set(int(h) for h in hit_fact_ids) if hit_fact_ids else set()
+        boosted_count = 0
+        decayed_count = 0
+        with self.transaction() as c:
+            # v1.16.34 fix: materialize SELECT rows first. Re-using the
+            # same cursor for UPDATE inside the loop invalidates the
+            # SELECT iterator (sqlite3 Cursor semantics). fetchall()
+            # snapshots the rows so we can safely run UPDATEs in the loop.
+            _rows_snapshot = c.execute(
+                "SELECT id, importance, last_confirmed_at, created_at "
+                "FROM memory_canonical "
+                "WHERE tombstoned = 0 AND valid_until IS NULL",
+            ).fetchall()
+            for _id, _imp, _last_conf, _created in _rows_snapshot:
+                _imp = float(_imp) if _imp is not None else 0.5
+                if _id in hit_set:
+                    _new_imp = min(max_importance, round(_imp * boost_factor_hit, 4))
+                    if _new_imp != _imp:
+                        c.execute(
+                            "UPDATE memory_canonical "
+                            "SET importance = ?, last_confirmed_at = ?, access_count = access_count + 1 "
+                            "WHERE id = ?",
+                            (_new_imp, _now, _id),
+                        )
+                        boosted_count += 1
+                else:
+                    # v1.16.34 fix: NULL last_confirmed_at means "never
+                    # confirmed" — don't decay (the fact is brand new, we
+                    # haven't established a recall trail yet). Only decay
+                    # when last_confirmed_at was set AND is older than cutoff.
+                    _is_old_enough = (_last_conf is not None and _last_conf < _cutoff)
+                    if _is_old_enough and _imp > 0.1:
+                        _new_imp = round(_imp * decay_factor_unhit, 4)
+                        if _new_imp != _imp:
+                            c.execute(
+                                "UPDATE memory_canonical "
+                                "SET importance = ? WHERE id = ?",
+                                (_new_imp, _id),
+                            )
+                            decayed_count += 1
+        return {
+            'hit_count': len(hit_set),
+            'boosted_count': boosted_count,
+            'decayed_count': decayed_count,
+            'decay_factor_unhit': decay_factor_unhit,
+            'boost_factor_hit': boost_factor_hit,
+            'days_unhit_threshold': days_unhit_threshold,
+        }
 
 
 # Module-level singleton (lazy init)
