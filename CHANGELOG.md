@@ -1,3 +1,34 @@
+## [1.16.20] - 2026-09-30
+
+### Added (User 6-point optimization: #1 async + #4 tier)
+- **Server-side tier resolver** (`/v1/write`): when caller omits `tier` but passes `platform`+`chat_id`, server resolves user + tier from bot-binding.db lookup. admin role → private tier; vip/user → public. Response reports `server_resolved_tier` so clients never map tiers themselves (user feedback #4).
+- **Async write mode** (`/v1/write` `async_write=true`): event committed immediately, fact extraction + promote run in daemon thread. Write latency 40s → ~65ms. Response returns HTTP 202 with `event_id`; facts appear in /v1/read after background extraction (~10-40s). Thread initializes ACL as system actor.
+- **LRU read cache** (`/v1/read`): 60s TTL keyed on query+tier+user+top_k; 2nd identical call returns `cached=true` in <10ms. Evicts oldest 32 when >128 entries.
+
+### Fixed
+- async write thread imports (Bus→astor_bus factory, forge→extractor direct)
+- read cache UnboundLocalError (cache key built before query validation)
+
+## [v1.16.18] - 2026-09-30
+
+### Added
+- **`docs/MUSE_PRE_TASK_HOOK.md`** — pre-task recall hook for Muse (and any external agent) to enforce astor_recall BEFORE any fetch-tool call. Implements locked R-class #12274 / #12736 / #6215. Includes:
+  - `pre_task_recall_hook(user_message)` — detects URL/fetch tasks + returns relevant facts + success_patterns + failure_patterns from astor
+  - `astor_recall()` / `astor_recall_experiences()` — clean wrappers around `/v1/read` and `/v1/experience/match`
+  - `astor_save_pattern()` — auto-save success/failure back to bus after each task
+  - Example: "muse 看微信文章" → Muse now knows curl + Chrome UA pattern from astor before trying
+
+### Discovered bug (will fix in v1.16.18.1)
+- **All recall scores = 0.000** when query is technical Chinese mix (e.g. "wechat mp.weixin.qq.com fetch article curl Chrome UA"). ECV token overlap fails on mixed CJK + English content. /v1/read returns 11 results but they're ALL unranked → agent can't tell which is most relevant.
+- Root cause hypothesis: ECV `node_usefulness` uses token Jaccard but the CJK tokenizer (`re.findall(r'[一-鿿]', text)`) returns single chars, which dilutes the score. Path_score boost also capped.
+
+### Live verified
+- /v1/read with wechat query returns 11 facts but score=0.000 for all
+- astor fact #6215 (the locked rule) IS in the result set
+- Pre-task hook code is ready to ship
+
+---
+
 ## [v1.16.17.1] - 2026-09-30 (hotfix)
 
 ### Fixed

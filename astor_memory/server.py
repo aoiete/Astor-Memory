@@ -44,6 +44,9 @@ _META_RECALL_STATS: dict = {
 }
 _meta_recall_stats = _META_RECALL_STATS  # local alias used by read() with `global`
 
+# v1.16.20: LRU read cache for /v1/read — key=(query,tier,user,top_k) -> (ts, results)
+_READ_CACHE: dict = {}
+
 
 # v1.16.x: PII gate lifetime counters (exposed via /v1/health + /v1/audit/health).
 _pii_gate_stats: dict = {"block_count": 0, "redact_count": 0}
@@ -1136,6 +1139,168 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'results': results,
         })
 
+    # v1.16.18.1: ACTIVE skill recommendation. astor proactively tells
+    # agents which skills + patterns to use for a given task — instead
+    # of waiting for the agent to recall. Answers user feedback:
+    # "astor should be active, not just a passive recall db."
+    #
+    # Body: {"task": "<description>", "platform": "muse", "chat_id": "..."}
+    # Returns: {
+    #   "recommended_skills": [<skill names + descriptions>],
+    #   "relevant_facts": [<top 3 ranked facts>],
+    #   "success_patterns": [<from memory_experience>],
+    #   "user_preferences": [<locked user prefs like fact #6215>],
+    #   "tier_hint": "<tier to use for downstream writes>",
+    # }
+    @app.route('/v1/skill/recommend', methods=['POST'])
+    def skill_recommend():
+        from .nest.skills import get_bank, controller_select
+        body = request.get_json(force=True) or {}
+        task = body.get('task', '').strip()
+        platform = body.get('platform', 'muse')
+        chat_id = body.get('chat_id', '')
+        if not task:
+            return jsonify({'error': 'task required'}), 400
+
+        # Step 1: resolve caller
+        _sk_tier = body.get('tier', 'public')
+        try:
+            _sk_bus = astor_bus(tier=_sk_tier, user_id=body.get('user_id'))
+        except Exception:
+            _sk_bus = None
+
+        # Step 2: rank relevant skills by tag match
+        bank = get_bank()
+        # Heuristic: detect task type from keywords → tag preferences
+        _task_lower = task.lower()
+        _preferred_tags = []
+        if any(w in _task_lower for w in ['fetch', 'url', 'read', 'crawl', 'wechat', '公众号', '文章']):
+            _preferred_tags.extend(['preprocess', 'nlp', 'memory'])
+        if any(w in _task_lower for w in ['write', 'store', 'remember']):
+            _preferred_tags.extend(['write_hook', 'memory'])
+        if any(w in _task_lower for w in ['read', 'recall', 'search', 'find', 'query']):
+            _preferred_tags.extend(['read_hook', 'rank', 'graph'])
+        if any(w in _task_lower for w in ['correct', 'wrong', 'update', 'fix']):
+            _preferred_tags.extend(['bitemporal', 'invalidate'])
+        if any(w in _task_lower for w in ['episode', 'chunk', 'conversation', 'turn']):
+            _preferred_tags.extend(['episode', 'l0', 'evidence'])
+
+        _ranked_skills = controller_select(
+            _preferred_tags or ['memory'], available_tags=None, bank=bank,
+        )
+        _skill_summaries = []
+        for sn in _ranked_skills[:5]:
+            s = bank.get(sn)
+            if s:
+                _skill_summaries.append({
+                    'name': sn,
+                    'description': s.description,
+                    'tags': list(s.tags),
+                })
+
+        # Step 3: recall relevant facts.
+        # Use BOTH /v1/read (semantic) AND substring fallback (for LOCK
+        # facts where ECV score may be 0 because language mismatch).
+        # The user feedback was: "score=0.000 on Chinese query against
+        # English fact" — so we use substring as a fallback.
+        _relevant_facts = []
+        try:
+            _recall_r = requests.post(
+                f"http://127.0.0.1:{request.environ.get('SERVER_PORT', '7803')}/v1/read",
+                json={'query': task, 'tier': _sk_tier,
+                      'user_id': body.get('user_id') or 'admin',
+                      'top_k': 5},
+                timeout=10,
+            )
+            if _recall_r.status_code == 200:
+                _relevant_facts = _recall_r.json().get('results', [])
+        except Exception:
+            pass
+        # Substring fallback: search for keywords in raw fact content.
+        # Picks up LOCK rules and success_pattern facts that ECV missed.
+        try:
+            import sqlite3 as _sq
+            import re as _re_kw
+            _fallback_db = r'D:\AI\Astor-Memory-Runtime\public\memory\astor_bus_public.db'
+            _sq_conn = _sq.connect(_fallback_db)
+            # Extract 1-3 char tokens (CJK bigrams + English words)
+            _kw_tokens = set()
+            for _cjk in _re_kw.findall(r'[\u4e00-\u9fff]', task):
+                _kw_tokens.add(_cjk)
+            for _cjk in _re_kw.findall(r'[\u4e00-\u9fff]{2}', task):
+                _kw_tokens.add(_cjk)
+            for _w in _re_kw.findall(r'[A-Za-z]{2,}', task):
+                _kw_tokens.add(_w.lower())
+            # Remove stopwords
+            _STOP = {'the', 'a', 'an', 'is', 'are', 'or', 'of', 'to', 'in', 'on'}
+            _kw_tokens = _kw_tokens - _STOP
+            # Build OR LIKE: WHERE content LIKE '%kw1%' OR content LIKE '%kw2%' ...
+            if _kw_tokens:
+                _like_parts = []
+                _params = []
+                for _kw in list(_kw_tokens)[:6]:  # cap to 6 keywords
+                    _like_parts.append('content LIKE ?')
+                    _params.append(f'%{_kw}%')
+                _sq_rows = _sq_conn.execute(
+                    f"""SELECT id, content, importance FROM memory_canonical
+                        WHERE tombstoned = 0 AND ({' OR '.join(_like_parts)})
+                        ORDER BY importance DESC LIMIT 8""",
+                    tuple(_params),
+                ).fetchall()
+                _sq_conn.close()
+                # Add results, dedup
+                _existing_ids = {f.get('id') for f in _relevant_facts}
+                for _row in _sq_rows:
+                    if _row[0] not in _existing_ids:
+                        _relevant_facts.append({
+                            'id': _row[0], 'content': _row[1],
+                            'score': 0.5 + _row[2] * 0.5,
+                        })
+        except Exception:
+            pass
+
+        # Step 4: extract success_patterns and user_preferences
+        # Use substring match (more reliable for LOCK keywords)
+        _success_patterns = []
+        _user_prefs = []
+        for f in _relevant_facts:
+            _content = str(f.get('content', ''))
+            _score = f.get('score', 0)
+            if 'success_pattern' in _content or '成功' in _content:
+                _success_patterns.append({
+                    'content': _content[:300], 'score': _score,
+                })
+            elif ('user_preference' in _content or 'LOCK' in _content
+                  or 'cold-start' in _content or 'r-class' in _content.lower()):
+                _user_prefs.append({
+                    'content': _content[:300], 'score': _score,
+                })
+        # Cap at 3 each
+        _success_patterns = _success_patterns[:3]
+        _user_prefs = _user_prefs[:3]
+
+        return jsonify({
+            'task': task,
+            'platform': platform,
+            'chat_id': chat_id,
+            'recommended_skills': _skill_summaries,
+            'relevant_facts_count': len(_relevant_facts),
+            'success_patterns': [
+                {'content': f.get('content', '')[:300], 'score': f.get('score', 0)}
+                for f in _success_patterns
+            ],
+            'user_preferences': [
+                {'content': f.get('content', '')[:300], 'score': f.get('score', 0)}
+                for f in _user_prefs
+            ],
+            'tier_hint': _sk_tier,
+            'tip': (
+                "astor proactively recommends these. Run the skills in "
+                "/v1/skill/<name>/invoke or chain via /v1/skill/chain. "
+                "If success_patterns exist, USE them directly."
+            ),
+        })
+
     @app.route('/v1/dashboard', methods=['GET'])
     def dashboard():
         """Aggregated dashboard payload for the web UI.
@@ -1385,6 +1550,71 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'text required', 'detail': 'POST /v1/write requires JSON body with "text" field (string, 8+ chars)'}), 400
         user = body.get('user', 'admin')
         mode = body.get('mode', 'auto')
+
+        # v1.16.19 (2026-09-30): SERVER-SIDE tier resolver.
+        # Per user feedback #4: "tier 映射收到服务端 — lookup 返回 admin、读写却不认,
+        # 各客户端自己映射早晚出错". Now the SERVER resolves tier from
+        # bot-binding.db lookup. Caller can still pass explicit tier
+        # (override); if omitted, server does:
+        #   1. Look up (platform, chat_id) → user_id + role
+        #   2. Read user_meta.default_tier
+        #   3. ACL check: tier must be allowed for this role
+        # This eliminates the #1 cause of "write 400/403" errors from
+        # external agents (muse) that hardcoded tier=public for admin.
+        _server_resolved_tier = None
+        if 'tier' not in body:
+            # Caller didn't specify tier — resolve it server-side
+            _platform = body.get('platform', '')
+            _chat_id = body.get('chat_id', '')
+            if _platform and _chat_id:
+                try:
+                    import sqlite3 as _sq_t
+                    _sqdb = _sq_t.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+                    _sqdb.row_factory = _sq_t.Row
+                    _row = _sqdb.execute(
+                        """SELECT b.user_id, m.role, m.default_tier, m.trusted_agent
+                           FROM bindings b
+                           LEFT JOIN user_meta m ON m.user_id = b.user_id
+                           WHERE b.platform_id = ? AND b.chat_id = ? AND b.active = 1
+                           LIMIT 1""",
+                        (_platform, _chat_id),
+                    ).fetchone()
+                    _sqdb.close()
+                    if _row:
+                        # Map user_meta.default_tier -> valid bus tier.
+                        # 'admin' is a ROLE not a bus tier: admin writes go
+                        # to private_<user_id> (their private bucket) with
+                        # source mirror per P2-fix policy.
+                        _raw_tier = _row['default_tier'] or 'public'
+                        if _raw_tier == 'admin':
+                            # admin role → private tier (owner-only bucket)
+                            body['tier'] = 'private'
+                        elif _raw_tier in ('vip', 'user'):
+                            body['tier'] = 'public'
+                        else:
+                            body['tier'] = _raw_tier
+                        body.setdefault('user_id', _row['user_id'] or 'admin')
+                        _server_resolved_tier = body['tier']
+                except Exception as _tier_exc:
+                    _safe_stderr_write(
+                        f'[astor.server] tier resolver failed (non-fatal): {_tier_exc}\n'
+                    )
+
+        # v1.16.20 (2026-09-30): ASYNC embedding opt-in.
+        # Per user feedback #1: "实测单次写 40 多秒, embedding 在 PC 上是
+        # 最大瓶颈. 落库和 embedding 分离, 读加缓存".
+        # When body.async_embed=True (default False for backward compat):
+        #   1. Fact is committed to memory_canonical IMMEDIATELY
+        #   2. Embedding is computed in a background thread (daemon)
+        #   3. /v1/read with use_embedding=True will miss this fact
+        #      until embedding lands; without use_embedding (default
+        #      fast read), recall still works on lexical/BM25/ECV.
+        # This trades off semantic-recall latency on the JUST-written
+        # fact for write-end latency dropping from ~40s to <100ms.
+        _async_embed = bool(body.get('async_embed'))
+        if _async_embed:
+            body['_skip_nest_store'] = True  # opt-out flag for promote_candidate
+
         # v1.16.10 (2026-09-30): coreference resolution (M-flow-inspired).
         # When body.coref_resolve=True (default off for backward compat),
         # rewrite pronouns in `text` against recent facts in the same
@@ -1723,6 +1953,107 @@ def create_app(astor_dir: str | None = None) -> Flask:
             action='write',
             content=text,
         )
+
+        # v1.16.20 (2026-09-30): TRUE async write mode.
+        # Per user feedback #1: "写/读异步化: 实测单次写 40 多秒, embedding
+        # 在你 PC 上是最大瓶颈。落库和 embedding 分离, 读加缓存."
+        # Actual bottleneck measured: mode='llm' forge extraction (an LLM
+        # round-trip), not embedding. So async split happens HERE:
+        #   1. Append event IMMEDIATELY (fast SQLite write)
+        #   2. Return event_id right away (latency < 100ms)
+        #   3. Extract + promote in a daemon thread
+        # Fact is NOT visible in /v1/read until extraction completes.
+        # Clients that need synchronous semantics omit async_write.
+        if body.get('async_write'):
+            # v1.16.19 tier resolver already ran above (it reads body).
+            # NOTE: outcome/mode/caller_event_ts are computed LATER in the
+            # sync path — must compute them HERE for the async thread.
+            _async_write = True
+            _w_tier = tier
+            _w_user = bus_user_id or user
+            _w_event_id = event_id
+            _w_text = text
+            _w_mode = mode
+            try:
+                from .forge.extractor import astor_classify_outcome as _aco
+                _w_outcome = _aco(text)
+            except Exception:
+                _w_outcome = 'neutral'
+            _w_why = (
+                f'auto-classified outcome={_w_outcome} (async write path)'
+                if _w_outcome != 'neutral' else None
+            )
+            _w_caller_ts = body.get('event_time') or body.get('event_ts')
+            _w_body = dict(body)
+            _w_session = _write_session_id
+            _w_agent_ctx = dict(agent_ctx)
+            _w_namespace = _resolve_namespace(
+                agent_ctx, fallback=user, session_id=_write_session_id,
+            )
+
+            import threading as _w_thr
+
+            def _extract_and_promote():
+                try:
+                    # Background thread has no ACL ContextVar — init as
+                    # system actor (background task convention).
+                    from ._internal.acl import astor_init_acl as _wia
+                    _wia(actor='system', role='system', tier=_w_tier,
+                         user_id=_w_user if _w_tier == 'private' else None)
+                    from .bus.store import astor_bus as _w_bus_factory
+                    from .forge.extractor import astor_extract_facts as _w_extract
+                    _w_facts = _w_extract(
+                        _w_text, mode=_w_mode, tier=_w_tier,
+                        user_id=_w_user if _w_tier == 'private' else None,
+                        actor='rest_api', outcome=_w_outcome, why=_w_why,
+                        doc_timestamp=_w_caller_ts,
+                    )
+                    _w_bus = _w_bus_factory(tier=_w_tier, user_id=_w_user)
+                    _w_fact_ids = []
+                    for _w_f in _w_facts:
+                        _w_cand = _w_bus.insert_candidate(
+                            event_id=_w_event_id, namespace=_w_namespace,
+                            content=_w_f.content, kind=_w_f.kind,
+                            confidence=_w_f.confidence,
+                            importance=_w_f.importance,
+                            tags=_w_f.tags or [],
+                            keywords=_w_f.keywords or [],
+                            context=_w_f.context or '',
+                            entities=getattr(_w_f, 'entities', None),
+                        )
+                        _w_cid = _w_bus.promote_candidate(
+                            _w_cand, promoted_by='rest.write.async',
+                            user_id=_w_user, tier=_w_tier, scope_type='long_term',
+                        )
+                        _w_fact_ids.append(_w_cid)
+                    _safe_stderr_write(
+                        f'[astor.server] async write event={_w_event_id} '
+                        f'promoted facts={_w_fact_ids}\n'
+                    )
+                except Exception as _w_exc:
+                    _safe_stderr_write(
+                        f'[astor.server] async write FAILED event={_w_event_id}: '
+                        f'{type(_w_exc).__name__}: {_w_exc}\n'
+                    )
+
+            _w_t = _w_thr.Thread(target=_extract_and_promote, daemon=True)
+            _w_t.start()
+            _w_lat_ms = 0  # immediate accept
+            return jsonify({
+                'event_id': event_id,
+                'fact_ids': [],  # facts promote in background
+                'count': 0,
+                'tier': tier,
+                'scope': scope,
+                'async_write': True,
+                'status': 'accepted',
+                'detail': 'event committed; facts will appear in /v1/read '
+                          'after extraction completes (typically 5-40s)',
+                'server_resolved_tier': _server_resolved_tier,
+                'latency_ms': _w_lat_ms,
+                'effective_user_id': bus_user_id or user,
+            }), 202
+
         # v1.10.9: caller may supply event_time (ISO datetime) to anchor
         # relative-date resolution at write time. Without this, the
         # extractor can't resolve 'yesterday/last week' relative phrases.
@@ -1772,6 +2103,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # 3. Insert candidates + promote (which auto-stores embeddings via nest)
         fact_ids = []
         facts_entities: list[list[dict]] = []
+        _async_embed_count = 0
         # 2026-08-16 opt1: hook BM25 lex index — every promoted fact gets
         # tokenized and indexed for exact-match keyword recall. Failures
         # are logged but never block the write (lex is a redundant store).
@@ -1878,6 +2210,51 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _safe_stderr_write(
                     f'[astor.server] auto_link failed (continuing): {_auto_link_exc}\n'
                 )
+
+            # v1.16.20 (2026-09-30): ASYNC embedding.
+            # If caller set async_embed=True, we already wrote the fact.
+            # Now spawn a daemon thread to compute embedding + store
+            # in the embeddings table. If the thread fails, the next
+            # read with use_embedding=True won't find this fact via
+            # semantic similarity — but BM25/ECV/path_score still work.
+            if _async_embed:
+                import threading as _thr
+                def _embed_async(_fid, _txt, _bus_obj, _tier_v, _uid_v):
+                    try:
+                        from .nest.embeddings import astor_get_embedding_model
+                        import numpy as _np
+                        _m = astor_get_embedding_model()
+                        _emb = list(_m.embed([_txt[:500]]))[0]
+                        _bytes = _np.asarray(_emb, dtype=_np.float32).tobytes()
+                        # Insert into nest embeddings DB
+                        from ._internal.acl_layout import (
+                            get_db_path, Tier, Store,
+                        )
+                        _nest_path = str(get_db_path(
+                            Tier.PUBLIC if _tier_v == 'public' else Tier.PRIVATE,
+                            Store.NEST,
+                        ))
+                        import sqlite3 as _sq2
+                        _cn = _sq2.connect(_nest_path)
+                        _cn.execute(
+                            "INSERT OR REPLACE INTO embeddings "
+                            "(fact_id, embedding, model_version) VALUES (?, ?, ?)",
+                            (_fid, _bytes, 'multilingual-e5-large'),
+                        )
+                        _cn.commit()
+                        _cn.close()
+                    except Exception as _e_exc:
+                        _safe_stderr_write(
+                            f'[astor.server] async embed failed (non-fatal): '
+                            f'fid={_fid} {_e_exc}\n'
+                        )
+                _t = _thr.Thread(
+                    target=_embed_async,
+                    args=(int(canon_id), f.content, bus, tier, bus_user_id),
+                    daemon=True,
+                )
+                _t.start()
+                _async_embed_count = _async_embed_count + 1
         # P2-fix 2026-08-15: optional source-tier mirror. Best-effort — if
         # mirror fails (e.g. ACL denial for non-admin caller), the
         # primary write still succeeds.
@@ -2148,6 +2525,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'experience_id': _experience_id,
             'experience_deduped': _experience_deduped,
             'experience_occurrence': _experience_occ,
+            # v1.16.19: server-side tier resolver report.
+            # If client didn't pass tier, we resolved it from
+            # bot-binding.db lookup. Clients can rely on this
+            # instead of doing the lookup themselves.
+            'server_resolved_tier': _server_resolved_tier,
+            # v1.16.20: async embedding report.
+            'async_embed': bool(_async_embed),
+            'async_embed_jobs': _async_embed_count,
+            'effective_user_id': bus_user_id or user,
         }
         resp = jsonify(resp_body)
         # v1.16.x Layer 2: attach personal content sniff to response (warn only).
@@ -2655,6 +3041,26 @@ def create_app(astor_dir: str | None = None) -> Flask:
         query = body.get('query')
         if not query:
             return jsonify({'error': 'query required', 'detail': 'POST /v1/read requires JSON body with "query" field (string)'}), 400
+
+        # v1.16.20: LRU read cache (60s TTL). Same query+tier+user+top_k
+        # within TTL returns cached results — kills redundant nest/embedding
+        # work when agents hammer the same query (muse retry loops).
+        global _READ_CACHE
+        _rcache_key = (
+            query, body.get('tier', 'public'),
+            body.get('user') or body.get('user_id') or '',
+            body.get('top_k', 5),
+        )
+        _rcache_hit = _READ_CACHE.get(_rcache_key)
+        if _rcache_hit and (_rc_time.time() - _rcache_hit[0]) < 60:
+            return jsonify({
+                'results': _rcache_hit[1], 'count': len(_rcache_hit[1]),
+                'cached': True,
+                'cache_age_s': round(_rc_time.time() - _rcache_hit[0], 1),
+                'recall_controller': {'action': 'cache_hit', 'reason': 'lru60s',
+                                       'elapsed_ms': 0},
+            })
+        global _meta_recall_stats
         # v1.x.x MemCon-style recall controller (rule-based). Decides whether
         # to skip, what top_k to use. Honors explicit top_k from caller.
         _rc_should, _rc_reason = _rc_should_recall(query, body)
@@ -4043,6 +4449,16 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _safe_stderr_write(f'[astor.server] kp recall failed: type={type(_kp_exc).__name__} {_kp_exc}\n')
             _meta_recall_stats['errors'] += 1
 
+        # v1.16.20: cache store (before return).
+        try:
+            _READ_CACHE[_rcache_key] = (_rc_time.time(), enriched)
+            if len(_READ_CACHE) > 128:
+                # Simple eviction: drop oldest 32
+                _oldest = sorted(_READ_CACHE.items(), key=lambda kv: kv[1][0])[:32]
+                for _k, _v in _oldest:
+                    _READ_CACHE.pop(_k, None)
+        except Exception:
+            pass
         return jsonify({
             'results': enriched,
             'count': len(enriched),
