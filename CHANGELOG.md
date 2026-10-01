@@ -1,4 +1,54 @@
 
+## v1.16.32 — Bug-hunt fixes (2026-10-01)
+
+5 bugs found during post-ship edge-case audit. All fixed.
+
+### Fixed
+- **BUG #5 (CRITICAL SECURITY)**: `X-Actor` header was never parsed by
+  `before_request` — `_astor_resolve_actor(None)` defaulted to admin role,
+  allowing any non-admin caller to invoke admin-only endpoints like
+  `POST /v1/admin/user/{id}/toggle_distill`. **Fix**: parse `X-Actor`
+  header in `_astor_bind_request_acl`, populate body.user/user_id so
+  `astor_init_acl` binds the right identity. Now non-admin → 403.
+- **BUG #6 (CRITICAL)**: `toggle_distill` accepted any truthy value for
+  `allow_distill` (e.g. `"maybe"` → True). **Fix**: `isinstance(v, bool)`
+  check, returns 400 `allow_distill_must_be_bool` otherwise.
+- **BUG #10 (HIGH)**: Distill endpoint built `_meta` dict but never
+  persisted to the commons fact's metadata column. **Fix**: added
+  `extra_metadata` parameter to `promote_candidate` which is merged
+  into the canonical metadata JSON. Now `metadata.distilled_from` is
+  queryable for audit.
+- **BUG #8 (HIGH)**: Concurrent or repeated distill produced duplicate commons
+  facts. **Fix**: pre-distill guard checks `metadata.distilled_from` in
+  public bus; if a commons fact already references this source, return
+  409 `already_distilled` with `existing_commons_fact_id`.
+- **BUG #3 (HIGH)**: Distilling a commons fact → created duplicate commons
+  fact. **Fix**: pre-distill guard checks `src_fact.visibility`; if
+  `commons`, return 422 `source_already_commons`.
+
+### Also fixed (v1.16.32 system-wide)
+- `before_request` now binds ACL for ALL POST requests (previously only
+  requests with `body.tier` in {public, source, private, repo}; tier-less
+  endpoints left the ContextVar stale from prior request).
+- Tier-less path uses `body.user_id` as `target_user` so admin endpoints
+  see proper caller identity.
+
+### Live verified
+- BUG #5: `X-Actor=user:fake_user` toggle_distill → 403 admin_only
+- BUG #6: `allow_distill='maybe'` → 400 `allow_distill_must_be_bool`
+- BUG #10: distilled commons fact 6564 metadata has `distilled_from: 12846,
+  distilled_by: admin:admin, distill_report: {...}`
+- BUG #8: re-distill same fact 12846 → 409 `already_distilled,
+  existing_commons_fact_id: 6564`
+- BUG #3: distill commons fact 6563 → 422 `source_already_commons`
+
+### Finding (not bug, working as designed)
+- fact 12837 / 12835 / 12836 became tombstoned via auto bitemporal
+  cascade when similar facts were re-written. Re-distill fails with 404.
+  This is correct — once distilled and re-written, no further
+  re-distillation needed.
+
+
 ## v1.16.30 — Personal-to-Commons Distillation (2026-10-01)
 
 Yuqi story: yuqi did a workflow that contained private data; astor extracts

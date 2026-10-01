@@ -278,6 +278,9 @@ class AstorBus:
         # v1.16.29 visibility tier (commons/personal). Default 'personal'
         # so server-side visibility classifier can override per fact.
         visibility: str = 'personal',
+        # v1.16.32 distill metadata: caller may pass a JSON-encoded dict to
+        # be stored on the canonical row for audit (e.g. distilled_from).
+        extra_metadata: str = '',
     ) -> int:
         """Promote a candidate to canonical. Returns canonical_id.
 
@@ -358,6 +361,16 @@ class AstorBus:
                     meta_dict = json.loads(metadata) if metadata else {}
                 except Exception:
                     meta_dict = {}
+                # v1.16.32: merge caller-passed audit metadata (e.g. distilled_from)
+                # into the canonical metadata column so it's queryable.
+                if extra_metadata:
+                    try:
+                        _extra = json.loads(extra_metadata)
+                        if isinstance(_extra, dict):
+                            meta_dict.update(_extra)
+                        metadata = json.dumps(meta_dict, ensure_ascii=False)
+                    except Exception:
+                        pass
                 kw_json = json.dumps(meta_dict.get('__keywords__') or [])
                 ctx_text = str(meta_dict.get('__context__') or '')[:500]
                 # v1.10.0: extract event_date from metadata JSON (legacy path).
