@@ -784,3 +784,17 @@ body {
   background: var(--bg); color: var(--text-dim);
 }
 .peer-table .btn-refresh { padding: 2px 6px; font-size: 0.85em; margin-right: 2px; }
+
+/* v1.16.25: Connections panel */
+.connections-summary {
+  font-size: 0.9em;
+  color: var(--text-dim);
+  margin-left: auto;
+}
+.role-admin {
+  color: var(--accent, #c97a3a);
+  font-weight: 600;
+}
+.role-user {
+  color: var(--text-dim, #888);
+}

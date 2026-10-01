@@ -1,3 +1,8 @@
+## [1.16.25] - 2026-10-01
+
+### Added
+- **Dashboard Connections panel**: hero 下方新增表, 显示哪些 agent platform + chat_id + user + role/plan/tier 已 bind 到 astor. 拉取 /v1/binding/list 实时刷新. 当前 21 active bindings (discord 10 / muse 3 / telegram 3 / weixin 5), 16 个 distinct users.
+
 ## [1.16.24] - 2026-09-30
 
 ### Added
