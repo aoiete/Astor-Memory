@@ -1,29 +1,29 @@
-"""v1.16.30: distiller regression test (5 locked cases)."""
+"""v1.16.30 + v1.16.31: distiller regression test (8 locked cases)."""
 import sys
 sys.path.insert(0, r'D:\AI\astor-memory')
 from astor_memory.nest.distiller import distill
 
 CASES = [
-    # (description, input, expected_contains, expected_NOT_contains,
+    # (description, input, exp_contains, exp_NOT_contains,
     #  expected_dropped_count_min, expected_method_keywords_present)
     ('case 1: clean method content — no drops',
      '微信抓取 method curl+UA 抓 mp.weixin.qq.com/s/abc 文章, 验证后先 query 再 hot-link',
-     ['method'],      # has 'method' keyword
-     ['mp.weixin', '13800'],  # URL replaced
-     0,              # no drops (no PII / fp / emotion)
-     True),          # method keywords present
+     ['method'],
+     ['mp.weixin', '13800'],
+     0,
+     True),
 
     ('case 2: PII inline-redacted within sentence',
      '今天用 13800138000 测试, 微信抓取 method curl+UA 抓文章',
      ['method'],
      ['13800138000'],
-     0,              # PII inline-redact — sentence not removed
+     0,
      True),
 
     ('case 3: first-person sentences dropped',
      '我今天心情不好, 微信抓取 method curl+UA 抓文章先 query 再 hot-link',
      ['method', 'query', 'hot-link'],
-     ['我今天'],        # "我" sentence dropped
+     ['我今天'],
      1,
      True),
 
@@ -36,10 +36,30 @@ CASES = [
 
     ('case 5: pure personal content — distilled to empty',
      '我今天心情不好, 我累了, 我想自杀',
-     [],              # nothing survives
+     [],
      ['我', '抑郁', '自杀'],
-     3,              # all 3 sentences dropped
-     False),         # no method keywords remain -> empty result
+     3,
+     False),
+
+    # v1.16.31: 3 new tests covering yuqi scenario (PII + first-person + method)
+    ('case 6: yuqi PII + first-person + method (inline-redact PII, drop first-person)',
+     '我今天用 13800138000 测试, 微信抓取 method curl+UA 抓文章, 验证后先 query 再 hot-link 比较稳',
+     ['method', 'curl', 'query', 'hot-link'],
+     ['13800138000', '我'],
+     1,
+     True),
+    ('case 7: emotion + first-person sentences dropped, method kept',
+     '我想哭, 我很焦虑, 今天用 method curl+UA 抓文章',
+     ['method', 'curl'],
+     ['我想哭', '焦虑'],
+     2,
+     True),
+    ('case 8: yuqi snippet (period separator), first-person dropped, method kept',
+     '我今天做的。method curl+UA 抓文章',
+     ['method', 'curl'],
+     ['我今天做的'],
+     1,
+     True),
 ]
 
 
@@ -60,7 +80,7 @@ def run_case(desc, text, exp_contains, exp_not, exp_dropped_min, exp_method):
 
 def main():
     print('=' * 70)
-    print('Distiller regression (v1.16.30, 5 locked cases)')
+    print('Distiller regression (v1.16.31, 8 locked cases)')
     print('=' * 70)
     passed = 0
     failed = []
