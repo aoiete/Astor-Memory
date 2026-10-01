@@ -1,0 +1,8 @@
+URL: https://mp.weixin.qq.com/s/RmbEJ28DNQ4bI-olYTX5mA
+Title: MemSkill：Agent 记忆不再手工写死！让记忆管理技能自己进化
+Author: 学术拾光绘
+Date: 2026-09-30
+Chars: 1483
+================================================================================
+
+南洋理工大学 NTU 团队提出 MemSkill 面向自进化 Agent 的记忆技能学习与演化框架，针对现有 Agent 记忆系统大多依赖手工固化的记忆操作，适配交互模式有限、长历史处理效率低下的痛点；将记忆增删改查操作重新抽象为可学习、可演化的记忆技能 Skill Bank；由 Controller 控制器 学习为当前上下文挑选相关技能，Executor 执行器依据技能生成记忆；新增 Designer 设计器挖掘训练过程中的困难样例，迭代精炼、扩充技能库，形成 “使用技能‑演化技能” 闭环；在 LoCoMo、LongMemEval、HotpotQA、ALFWorld 四大基准，对话问答、具身交互两类任务全面优于 MemoryOS、Mem0、A‑MEM 等强基线；技能具备跨模型、跨数据集迁移能力，推理采用 span‑level 分块处理大幅减少 LLM 调用次数，代码开源。 Q1 Skill Bank 和 Memory Bank 核心区别是什么？ Skill Bank 是 全局共享的技能模板库 ：定义 “怎么抽取、怎么修改记忆” 的操作（什么时候触发、怎么做、约束）；Memory Bank 是 每条交互轨迹私有 ：真正存储该会话提取出来的事实记忆条目。一个是操作手册，一个是操作产出的数据。 Q2 Designer 是推理阶段运行吗？ 不是。Designer 仅训练阶段周期性运行，用于迭代更新 Skill Bank ；模型上线推理只跑 Controller+Executor，技能库冻结，不会再进化。 Q3 Controller 为什么可以支持动态变化大小的 Skill Bank？ 不对技能数量做固定维度输出头；对「状态表征」和「每一条技能描述表征」做配对，用共享打分网络逐个打分；新增 / 删除技能，直接增加 / 减少配对即可，网络权重不用改动。 Q4 span‑level 分块处理对比传统 turn‑by‑turn 逐轮记忆更新的好处？ turn‑by‑turn 每一轮对话都调用 LLM 更新记忆，长交互下 LLM 调用爆炸。span‑level 按 token 块处理，一块处理一大段交互， 大幅减少 LLM 调用次数与 token 开销 ；span 大小可以作为旋钮做质量‑速度权衡。 Q5 为什么 MemSkill 可以做到跨基座迁移，LLaMA 训练的 Skill Bank 直接给 Qwen 用？ Skill Bank 存的是自然语言写的技能指令模板，不是模型权重；Executor 是通用 LLM 执行这些指令；因此技能模板本身可以跨大模型迁移，不需要重新训练 Controller。 Q6 Designer 的快照回滚机制解决什么问题？ Designer 由 LLM 驱动，偶尔会生成质量变差的新技能；快照保存每一轮技能库版本；如果演化之后稳定任务奖励没有提升，就回退到历史最优快照，防止技能库持续退化漂移。 Q7 hard‑case 缓存里面的难度分数\(d(q)\)含义？ d(q)=(1‑r(q))\cdot c(q)；r(q)是该样例任务奖励，c(q)是累计失败次数；分数越高代表该样例奖励低、反复出错，属于高价值需要被 Designer 分析的故障案例。 Q8 消融实验 w/o Designer（只用初始 4 个技能）性能大幅下降说明什么？ 只靠 INSERT/UPDATE/DELETE/SKIP 这 4 个通用基础原语不足以适配复杂任务；必须从真实交互失败样例中演化出领域特化记忆技能，才能提升记忆抽取质量。
