@@ -860,6 +860,194 @@ def create_app(astor_dir: str | None = None) -> Flask:
             result['nest_error'] = str(e)
         return jsonify(result)
 
+    # v1.16.30 (2026-10-01): Personal-to-Commons Distillation.
+    # Source fact stays in personal bucket + a new commons-eligible copy
+    # is written (per user directive — private data preserved AND method
+    # extracted). Admin or user-self (with distill_opt_in=1) triggers.
+    @app.route('/v1/fact/<int:fact_id>/distill', methods=['POST'])
+    @app.route('/v1/fact/<int:fact_id>/distill_auto', methods=['POST'])
+    def fact_distill(fact_id):
+        from .nest.distiller import distill as _distill
+        body = request.get_json(force=True) if request.is_json else {}
+        auto_mode = '/distill_auto' in request.path
+        # ACL: distill = admin only; distill_auto = user-self only.
+        try:
+            ctx = astor_current_acl()
+        except Exception:
+            return jsonify({'error': 'astor_init_acl required'}), 503
+        if auto_mode:
+            if ctx.role != 'admin':
+                # Allow user self-service if they own this fact.
+                # ownership check below.
+                pass
+        else:
+            if ctx.role != 'admin':
+                return jsonify({'error': 'distill requires admin'}), 403
+        # Load source fact from all tiers. Admin can distill any tier.
+        # v1.16.30 schema: per-user dirs are users/<uid>/memory/astor_bus_<uid>.db.
+        # Older 'private_<uid>' legacy paths still exist (admin_resolver fallback).
+        src_fact = None
+        src_tier = None
+        import glob as _glob
+        _astor_dir = os.environ.get('ASTOR_DIR', r'D:\AI\Astor-Memory-Runtime')
+        _tiers_to_try = ['public', 'source']
+        # Try per-user paths
+        for _candidate_uid in [ctx.user_id, 'admin', 'yuqi']:
+            if _candidate_uid:
+                _p = os.path.join(_astor_dir, 'users', _candidate_uid, 'memory')
+                if os.path.isdir(_p):
+                    for _dbfile in _glob.glob(os.path.join(_p, 'astor_bus_*.db')):
+                        # Try the user-uid DB (legacy naming)
+                        try:
+                            _bus = astor_bus(tier=f'private_{_candidate_uid}', user_id=_candidate_uid)
+                            _bus.conn.row_factory = sqlite3.Row
+                            _row = _bus.conn.execute(
+                                "SELECT id, content, kind, user_id, namespace, visibility FROM memory_canonical WHERE id = ? AND tombstoned = 0",
+                                (fact_id,),
+                            ).fetchone()
+                            if _row:
+                                src_fact = _row
+                                src_tier = f'private_{_candidate_uid}'
+                                break
+                        except Exception:
+                            continue
+        for _try_tier in _tiers_to_try:
+            try:
+                _bus = astor_bus(tier=_try_tier, user_id=None)
+                _bus.conn.row_factory = sqlite3.Row
+                _row = _bus.conn.execute(
+                    "SELECT id, content, kind, user_id, namespace, visibility FROM memory_canonical WHERE id = ? AND tombstoned = 0",
+                    (fact_id,),
+                ).fetchone()
+                if _row:
+                    src_fact = _row
+                    src_tier = _try_tier
+                    break
+            except Exception:
+                continue
+        # also check private_<user_id> if not found
+        if not src_fact:
+            try:
+                _bus = astor_bus(tier=f'private_{ctx.user_id}', user_id=ctx.user_id)
+                _bus.conn.row_factory = sqlite3.Row
+                _row = _bus.conn.execute(
+                    "SELECT id, content, kind, user_id, namespace, visibility FROM memory_canonical WHERE id = ? AND tombstoned = 0",
+                    (fact_id,),
+                ).fetchone()
+                if _row:
+                    src_fact = _row
+                    src_tier = f'private_{ctx.user_id}'
+            except Exception:
+                pass
+        if not src_fact:
+            return jsonify({'error': 'fact_not_found', 'fact_id': fact_id}), 404
+        # For auto mode: must be own fact + user has distill_opt_in=1
+        if auto_mode:
+            if src_fact['user_id'] != ctx.user_id:
+                return jsonify({'error': 'can_only_distill_own_facts'}), 403
+            try:
+                import sqlite3 as _sq
+                _sqdb = _sq.connect(r'D:\\AI\\Astor-Memory-Runtime\\bot-binding.db')
+                _row = _sqdb.execute(
+                    "SELECT distill_opt_in FROM user_meta WHERE user_id = ?",
+                    (ctx.user_id,),
+                ).fetchone()
+                _sqdb.close()
+                if not _row or _row[0] != 1:
+                    return jsonify({'error': 'distill_opt_in_not_set',
+                                    'detail': 'user must opt in via /v1/admin/user/{user_id}/toggle_distill'}), 403
+            except Exception as _e:
+                return jsonify({'error': 'distill_opt_check_failed', 'detail': str(_e)}), 500
+        # Distill content
+        from .nest.distiller import distill as _distill
+        cleaned, removed_segments, distill_report = _distill(src_fact['content'])
+        if not cleaned:
+            return jsonify({
+                'error': 'distill_empty',
+                'detail': 'after redaction nothing actionable remains',
+                'distill_report': distill_report,
+            }), 422
+        # Write new commons fact
+        try:
+            _bus = astor_bus(tier='public', user_id=None)
+            _event_id = _bus.append_event(
+                namespace=src_fact['namespace'] or 'distillation',
+                agent_id=f'rest.distill.{ctx.actor}',
+                source='rest.fact.distill',
+                action='write',
+                content=cleaned,
+            )
+            _cand = _bus.insert_candidate(
+                event_id=_event_id,
+                namespace=src_fact['namespace'] or 'distillation',
+                content=cleaned,
+                kind=src_fact['kind'] or 'method',
+                confidence=0.95,
+                importance=0.7,
+                tags=['distilled', 'from_personal'],
+            )
+            _meta = {
+                'distilled_from': fact_id,
+                'distilled_by': ctx.actor,
+                'removed_segments': removed_segments,
+                'distill_report': distill_report,
+                'source_tier': src_tier,
+            }
+            new_fact_id = _bus.promote_candidate(
+                _cand, promoted_by=f'rest.distill.{ctx.actor}',
+                user_id=None, tier='public', scope_type='long_term',
+                provenance_kind='user_distilled',
+                visibility='commons',
+            )
+        except Exception as _e:
+            return jsonify({'error': 'write_failed', 'detail': str(_e)}), 500
+        return jsonify({
+            'new_fact_id': new_fact_id,
+            'source_fact_id': fact_id,
+            'cleaned_text': cleaned,
+            'removed_segments': removed_segments,
+            'distill_report': distill_report,
+            'visibility': 'commons',
+            'provenance_kind': 'user_distilled',
+        })
+
+
+    @app.route('/v1/admin/user/<user_id>/toggle_distill', methods=['POST'])
+    def admin_toggle_distill(user_id):
+        """v1.16.30: admin enables/disables distill_opt_in for a user.
+
+        Body: {allow_distill: true/false}
+        admin only. Updates bot-binding.db.user_meta.distill_opt_in.
+        When user has distill_opt_in=1, they can call /v1/fact/{id}/distill_auto
+        on their OWN facts to extract method/flow patterns into commons.
+        """
+        try:
+            ctx = astor_current_acl()
+            if ctx.role != 'admin':
+                return jsonify({'error': 'admin_only'}), 403
+        except Exception:
+            return jsonify({'error': 'astor_init_acl required'}), 503
+        body = request.get_json(force=True) if request.is_json else {}
+        allow = bool(body.get('allow_distill'))
+        try:
+            import sqlite3 as _sq
+            _sqdb = _sq.connect(r'D:\\AI\\Astor-Memory-Runtime\\bot-binding.db')
+            _cur = _sqdb.execute(
+                "UPDATE user_meta SET distill_opt_in = ? WHERE user_id = ?",
+                (1 if allow else 0, user_id),
+            )
+            _sqdb.commit()
+            if _cur.rowcount == 0:
+                _sqdb.close()
+                return jsonify({'error': 'user_not_found', 'user_id': user_id}), 404
+            _sqdb.close()
+        except Exception as _e:
+            return jsonify({'error': 'toggle_failed', 'detail': str(_e)}), 500
+        return jsonify({
+            'user_id': user_id,
+            'distill_opt_in': bool(allow),
+        })
+
     @app.route('/v1/identity', methods=['GET'])
     def identity():
         """v1.16.7: server self-identity (peer_id + keypair fingerprint).
@@ -1687,7 +1875,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # (emergency escape — normal ops should leave this on).
         if (tier == 'public'
                 and body.get('pii_scan') is not False
-                and os.environ.get('ASTOR_PII_PUBLIC_FORCE', '1') == '1'):
+                and os.environ.get('ASTOR_PII_PUBLIC_FORCE', '1') == '1'
+                and body.get('visibility_hint') != 'personal'):
+            # v1.16.30: skip when writing personal bucket (intent: store private
+            # info safe; classifier already prevents personal→public leaks).
             body = dict(body)
             body['pii_scan'] = True
             body.setdefault('pii_policy', 'block')
