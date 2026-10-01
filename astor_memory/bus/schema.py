@@ -14,7 +14,7 @@ Tables:
 """
 
 import sqlite3
-SCHEMA_VERSION = 15  # v1.16.12 (2026-09-30) M-flow L0 episode layer
+SCHEMA_VERSION = 16  # v1.16.29 (2026-10-01) visibility tier (commons/personal) + provenance_kind
 
 SCHEMA_SQL = """
 -- Pragmas set at connection time (bus/store.py:connect)
@@ -332,6 +332,7 @@ def astor_init_schema(conn: sqlite3.Connection) -> None:
     _astor_upgrade_v12_to_v13(conn)
     _astor_upgrade_v13_to_v14(conn)
     _astor_upgrade_v14_to_v15(conn)
+    _astor_upgrade_v15_to_v16(conn)
     # Index that depends on the publishable column must be created AFTER the column exists.
     # The executescript above emits CREATE INDEX inside the same script as the table,
     # which works for fresh DBs but errors on v1 databases because the column doesn't exist yet.
@@ -709,6 +710,59 @@ def _astor_upgrade_v14_to_v15(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_episodes_created "
         "ON episodes(namespace, user_id, created_at DESC)"
     )
+
+
+def _astor_upgrade_v15_to_v16(conn: sqlite3.Connection) -> None:
+    """v1.16.29 (2026-10-01) visibility tier + provenance_kind.
+
+    User feedback (R-class 7587/7568/11938):
+      - Replace leaky "public tier defaults for all users" with explicit
+        commons/personal visibility classification based on kind + content signals.
+      - AUTO_COMMONS_KINDS = {method, recipe, lesson, success_pattern,
+        failure_pattern, mental_model, knowledge_page, flow}
+      - PII / emotion / first-person triggers force personal.
+
+    Schema additions:
+      - visibility TEXT NOT NULL DEFAULT 'personal'
+      - provenance_kind TEXT NOT NULL DEFAULT 'user_write'
+
+    Idempotent: ALTER TABLE ADD COLUMN via PRAGMA check.
+    """
+    from ..nest.visibility_classifier import (
+        has_pii, has_first_person, has_emotion, has_geographic, AUTO_COMMONS_KINDS,
+    )
+
+    def _col_exists(c, col_name):
+        rows = c.execute("PRAGMA table_info(memory_canonical)").fetchall()
+        return any(r[1] == col_name for r in rows)
+
+    if not _col_exists(conn, 'visibility'):
+        conn.execute("ALTER TABLE memory_canonical ADD COLUMN visibility TEXT NOT NULL DEFAULT 'personal'")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canonical_visibility_kind "
+            "ON memory_canonical(visibility, kind, tombstoned)"
+        )
+    if not _col_exists(conn, 'provenance_kind'):
+        conn.execute("ALTER TABLE memory_canonical ADD COLUMN provenance_kind TEXT NOT NULL DEFAULT 'user_write'")
+
+    # Backfill: existing rows — promote auto-commons kind if content is clean.
+    placeholders = ','.join('?' * len(AUTO_COMMONS_KINDS))
+    rows = conn.execute(
+        f"SELECT id, content FROM memory_canonical "
+        f"WHERE visibility = 'personal' AND tombstoned = 0 AND kind IN ({placeholders})",
+        tuple(AUTO_COMMONS_KINDS)
+    ).fetchall()
+    for _id, _content in rows:
+        _content = _content or ''
+        if (not has_pii(_content)
+                and not has_first_person(_content)
+                and not has_emotion(_content)
+                and not has_geographic(_content)):
+            conn.execute(
+                "UPDATE memory_canonical SET visibility = 'commons' WHERE id = ?",
+                (_id,)
+            )
+    conn.commit()
 
 
 def _astor_upgrade_v11_to_v12(conn) -> None:

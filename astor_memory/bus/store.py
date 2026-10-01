@@ -275,6 +275,9 @@ class AstorBus:
         evidence_quote: str = '',
         source_ref: str = '',
         source_hash: str = '',
+        # v1.16.29 visibility tier (commons/personal). Default 'personal'
+        # so server-side visibility classifier can override per fact.
+        visibility: str = 'personal',
     ) -> int:
         """Promote a candidate to canonical. Returns canonical_id.
 
@@ -383,6 +386,8 @@ class AstorBus:
                         created_at,
                         evidence_quote, source_ref, source_hash,
                         memory_class,
+                        visibility,
+                        -- v1.16.29 visibility tier marker
                         -- v1.16.9.3 (2026-09-30): bi-temporal lifecycle columns
                         -- (added in v1.16.8 schema migration v13→v14). New
                         -- facts get valid_from = created_at (i.e. active from
@@ -395,7 +400,7 @@ class AstorBus:
                         invalidated_by,
                         invalidated_at,
                         invalidated_reason)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         candidate_id, event_id, namespace, content, kind, confidence, importance,
                         tags, metadata, kw_json, ctx_text,
@@ -429,6 +434,7 @@ class AstorBus:
                         # v1.15.49 S23: derive memory_class from kind/tags/content
                         # instead of leaving the default 'world_fact'.
                         _derive_memory_class(kind, tags, content),
+                        visibility,
                         # v1.16.9.3: bi-temporal init values (cols in same
                         # order as the INSERT col list above). valid_from
                         # = now (same as created_at — active from write time);
