@@ -1,5 +1,5 @@
 
-## v1.16.35 — Bug-hunt fixes (5 bugs from post-ship audit) (2026-10-01)
+## v1.16.37 — Bug-hunt fixes (5 bugs from post-ship audit) (2026-10-01)
 
 5 bugs found during systematic edge-case audit (per R-class 11463 + 12392,
 "扫完整类 bug, 不只扫已发现项").
@@ -35,7 +35,7 @@ test_conflict_resolver + test_recall_aware_decay + test_visibility_classifier).
   fact (was 422).
 
 
-## v1.16.34 — RPMem-inspired gating + recall-aware decay (2026-10-01)
+## v1.16.37 — RPMem-inspired gating + recall-aware decay (2026-10-01)
 
 Source: mp.weixin.qq.com/s/L9_TV26x5OqLLmcfB_C2vw "RPMem: Recurrent Parametric
 Memory" (arxiv 2609.23466, 复旦 + 阿里 Qwen).
@@ -80,8 +80,8 @@ loop invalidated the iterator (sqlite3 quirk). Fix: snapshot via
 - test_distiller: 12 (v1.16.33 state-const + v1.16.30 legacy)
 - test_tool_clearing: 4
 - test_visibility_classifier: 10
-- test_conflict_resolver: 7 (4 v1.16.33 + 3 v1.16.34 soft_decay)
-- test_recall_aware_decay: 3 (new in v1.16.34)
+- test_conflict_resolver: 7 (4 v1.16.33 + 3 v1.16.37 soft_decay)
+- test_recall_aware_decay: 3 (new in v1.16.37)
 
 ### Live verified
 - OPT-A: admin direct-insert kind=user_preference → second fact

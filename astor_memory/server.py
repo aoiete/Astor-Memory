@@ -637,6 +637,127 @@ def _expand_wing_to_provenance(wing: str | None) -> set[str] | None:
     return WING_TO_PROVENANCE[w]
 
 
+_astor_outcome_verbs_dict = {
+    'success_pattern': ['成功', 'verified', 'ship', '搞定', 'works', 'verified working'],
+    'failure_pattern': ['失败', 'failed', 'broken', '崩溃', 'bug', 'error', 'unable'],
+    'lesson':           ['下次', 'remember', 'lesson', 'R-class', 'fix', '永久', 'always'],
+    'method':           ['方法', 'how to', 'procedure'],
+}
+
+
+def _classify_fact_outcome(text):
+    text_lower = text.lower()
+    scores = {k: sum(1 for kw in v if kw in text_lower)
+              for k, v in _astor_outcome_verbs_dict.items()}
+    if not any(scores.values()):
+        return 'fact', 0.5
+    best = max(scores, key=scores.get)
+    return best, 0.5 + 0.15 * scores[best]
+
+
+# v1.16.37+ Hook: classify_fact_outcome + REUSE + EXPIRY + auto-link
+# Insert BEFORE _astor_bind_request_acl at module level
+_ASTOR_OUTCOME_VERBS = {
+    'success_pattern': [
+        # English
+        'success', 'verified', 'ship', 'works', 'fixed', 'pass', 'good', 'ok',
+        # Chinese
+        '成功', '搞定', '可以', '已 ship', '通过', '解决',
+    ],
+    'failure_pattern': [
+        'failed', 'broken', 'fail', 'unable', 'cannot', "doesn't work",
+        '失败', '崩溃', '不行', '出错', '错误', 'bug', '问题', 'fix',
+    ],
+    'lesson': [
+        # English — LESSON LLM hints
+        'r-class', 'always', 'never', 'remember', 'must', 'rule', 'lesson',
+        'permanent', 'forever', 'in future', 'next time',
+        # Chinese
+        '下次', '永久', '永远', '记住', '规则', '原则', '教训',
+        # Specific keywords
+        '下次一定要', '记得', '切记',
+    ],
+    'method': [
+        'how to', 'procedure', 'method', 'step by step',
+        '方法', '步骤', '流程', '怎么',
+    ],
+}
+
+
+def _classify_fact_outcome(text):
+    """Auto-classify fact kind based on outcome keywords.
+    Returns (suggested_kind, confidence 0..1).
+    """
+    text_lower = text.lower()
+    scores = {k: sum(1 for kw in v if kw in text_lower)
+              for k, v in _ASTOR_OUTCOME_VERBS.items()}
+    if not any(scores.values()):
+        return 'fact', 0.5
+    best = max(scores, key=scores.get)
+    return best, 0.5 + 0.15 * scores[best]
+
+
+# === REUSE PATTERNS (before-action hook) ===
+_ASTOR_REUSE_PATTERNS = [
+    ('moomoo', 'place_order', True),
+    ('moomoo', 'cancel_order', True),
+    ('moomoo', 'unlock_trade', True),
+    ('moomoo', 'get_positions', False),
+    ('kraken', 'place_order', True),
+    ('kraken', 'withdraw', True),
+    ('kraken', 'ticker', False),
+    ('opend', 'unlock_trade', True),
+    ('opend', 'place_order', True),
+]
+
+
+def _check_reuse_pattern(text):
+    """Check if text matches a REUSE pattern. Returns (matched, block_msg) tuple."""
+    text_lower = text.lower()
+    for platform, action, block in _ASTOR_REUSE_PATTERNS:
+        if platform in text_lower and action in text_lower:
+            return True, f'REUSE pattern: {platform}.{action} (block={block})'
+    return False, None
+
+
+# === EXPIRY TTL ===
+_ASTOR_TTL_DAYS = {
+    'lesson': None,            # permanent
+    'postmortem': None,        # permanent
+    'success_pattern': 365,    # 1 year
+    'failure_pattern': 365,    # 1 year
+    'method': 180,            # 6 months
+    'recipe': 180,
+    'fact': 90,               # 3 months
+    'mental_model': None,      # permanent
+}
+
+
+def _compute_ttl_days(kind):
+    """TTL days based on kind. None = permanent."""
+    return _ASTOR_TTL_DAYS.get(kind, 90)
+
+
+# === AUTO-LINK (find parent fact_id in text) ===
+import re
+_ASTOR_FACT_ID_PATTERN = re.compile(
+    r'(?:fact\s*|R-class\s*|\[|#)(\d{2,5})\b'
+)
+
+
+def _find_parent_fact_ids(text):
+    """Find candidate parent fact_ids mentioned in text. Returns list[int]."""
+    if not text:
+        return []
+    matches = []
+    for m in _ASTOR_FACT_ID_PATTERN.finditer(text):
+        try:
+            matches.append(int(m.group(1)))
+        except ValueError:
+            pass
+    return list(set(matches))
+
+
 def create_app(astor_dir: str | None = None) -> Flask:
     """Create Flask app. astor_dir override for tests."""
     app = Flask(__name__)
@@ -702,6 +823,158 @@ def create_app(astor_dir: str | None = None) -> Flask:
     # Also rebind in the local module namespace (server.py imports these).
     globals()['astor_bus'] = _tracking_bus_factory
     globals()['astor_nest'] = _tracking_nest_factory
+
+    # v1.16.37+ Hook: classify_fact_outcome + REUSE + EXPIRY + auto-link
+    # Insert BEFORE _astor_bind_request_acl at module level
+    _ASTOR_OUTCOME_VERBS = {
+        'success_pattern': [
+            # English
+            'success', 'verified', 'ship', 'works', 'fixed', 'pass', 'good', 'ok',
+            # Chinese
+            '成功', '搞定', '可以', '已 ship', '通过', '解决',
+        ],
+        'failure_pattern': [
+            'failed', 'broken', 'fail', 'unable', 'cannot', "doesn't work",
+            '失败', '崩溃', '不行', '出错', '错误', 'bug', '问题', 'fix',
+        ],
+        'lesson': [
+            # English — LESSON LLM hints
+            'r-class', 'always', 'never', 'remember', 'must', 'rule', 'lesson',
+            'permanent', 'forever', 'in future', 'next time',
+            # Chinese
+            '下次', '永久', '永远', '记住', '规则', '原则', '教训',
+            # Specific keywords
+            '下次一定要', '记得', '切记',
+        ],
+        'method': [
+            'how to', 'procedure', 'method', 'step by step',
+            '方法', '步骤', '流程', '怎么',
+        ],
+    }
+
+
+    def _classify_fact_outcome(text):
+        """Auto-classify fact kind based on outcome keywords.
+        Returns (suggested_kind, confidence 0..1).
+        """
+        text_lower = text.lower()
+        scores = {k: sum(1 for kw in v if kw in text_lower)
+                  for k, v in _ASTOR_OUTCOME_VERBS.items()}
+        if not any(scores.values()):
+            return 'fact', 0.5
+        best = max(scores, key=scores.get)
+        return best, 0.5 + 0.15 * scores[best]
+
+
+    # === REUSE PATTERNS (before-action hook) ===
+    _ASTOR_REUSE_PATTERNS = [
+        ('moomoo', 'place_order', True),
+        ('moomoo', 'cancel_order', True),
+        ('moomoo', 'unlock_trade', True),
+        ('moomoo', 'get_positions', False),
+        ('kraken', 'place_order', True),
+        ('kraken', 'withdraw', True),
+        ('kraken', 'ticker', False),
+        ('opend', 'unlock_trade', True),
+        ('opend', 'place_order', True),
+    ]
+
+
+    def _check_reuse_pattern(text):
+        """Check if text matches a REUSE pattern. Returns (matched, block_msg) tuple."""
+        text_lower = text.lower()
+        for platform, action, block in _ASTOR_REUSE_PATTERNS:
+            if platform in text_lower and action in text_lower:
+                return True, f'REUSE pattern: {platform}.{action} (block={block})'
+        return False, None
+
+
+    # === EXPIRY TTL ===
+    _ASTOR_TTL_DAYS = {
+        'lesson': None,            # permanent
+        'postmortem': None,        # permanent
+        'success_pattern': 365,    # 1 year
+        'failure_pattern': 365,    # 1 year
+        'method': 180,            # 6 months
+        'recipe': 180,
+        'fact': 90,               # 3 months
+        'mental_model': None,      # permanent
+    }
+
+
+    def _compute_ttl_days(kind):
+        """TTL days based on kind. None = permanent."""
+        return _ASTOR_TTL_DAYS.get(kind, 90)
+
+
+    # === AUTO-LINK (find parent fact_id in text) ===
+    import re
+    _ASTOR_FACT_ID_PATTERN = re.compile(
+        r'(?:fact\s*|R-class\s*|\[|#)(\d{2,5})\b'
+    )
+
+
+    def _find_parent_fact_ids(text):
+        """Find candidate parent fact_ids mentioned in text. Returns list[int]."""
+        if not text:
+            return []
+        matches = []
+        for m in _ASTOR_FACT_ID_PATTERN.finditer(text):
+            try:
+                matches.append(int(m.group(1)))
+            except ValueError:
+                pass
+        return list(set(matches))
+
+
+    # === BEFORE-WRITE HOOK ===
+    @app.before_request
+    def _astor_before_write_hook():
+        """v1.16.37+: BEFORE-WRITE hook — classify outcome + REUSE check + auto-link.
+
+        Per R-class 12485 (完整性), this hook covers:
+          - 3: AUTO-CAPTURE (outcome classifier -> kind)
+          - 4: AUTO-LINK (find parent fact_ids in text)
+          - 6: REUSE (block if no astor_recall was done before moomoo/kraken/etc action)
+
+        Stashes suggestions on request.environ; write() handler reads them.
+        """
+        try:
+            if not (request.method == 'POST' and request.path == '/v1/write'):
+                return
+
+            body = request.get_json(silent=True) or {}
+            text = body.get('text', '')
+            if not text or len(text) < 10:
+                return
+
+            # 3. AUTO-CAPTURE: outcome classifier
+            suggested_kind, confidence = _classify_fact_outcome(text)
+            request.environ['ASTOR_SUGGESTED_KIND'] = suggested_kind
+            request.environ['ASTOR_SUGGESTED_CONFIDENCE'] = confidence
+            if 'kind' not in body:
+                body['kind'] = suggested_kind
+                request.environ['ASTOR_AUTO_FILLED_KIND'] = True
+
+            # 4. AUTO-LINK: find parent fact_ids
+            parent_ids = _find_parent_fact_ids(text)
+            if parent_ids:
+                request.environ['ASTOR_PARENT_IDS'] = parent_ids
+
+            # 6. REUSE: check for known patterns
+            matched, msg = _check_reuse_pattern(text)
+            if matched and request.environ.get('ASTOR_REUSE_CHECKED') is None:
+                # Log a warning (don't block by default — agent may legitimately
+                # need to act without prior recall)
+                _safe_stderr_write(
+                    f'[astor.before_write_hook] REUSE pattern detected: {msg}\n'
+                    f'  text={text[:120]}\n'
+                    f'  astor_recall should have been called before this write.\n'
+                )
+                request.environ['ASTOR_REUSE_WARNING'] = msg
+        except Exception as exc:
+            _safe_stderr_write(f'[astor.before_write_hook] hook error: {exc}\n')
+
 
     @app.before_request
     def _astor_bind_request_acl() -> None:
@@ -1865,6 +2138,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'text required', 'detail': 'POST /v1/write requires JSON body with "text" field (string, 8+ chars)'}), 400
         user = body.get('user', 'admin')
         mode = body.get('mode', 'auto')
+        # v1.16.37+: ASTOR_AUTO_FILLED_KIND set by before_write_hook.
+        # If agent wrote no kind, we already filled in our suggestion.
+        # But forge_extract_uses_acts will overwrite; below we re-apply after.
+        _astor_suggested_kind = request.environ.get('ASTOR_SUGGESTED_KIND')
+        _astor_suggested_conf = request.environ.get('ASTOR_SUGGESTED_CONFIDENCE', 0)
 
         # v1.16.19 (2026-09-30): SERVER-SIDE tier resolver.
         # Per user feedback #4: "tier 映射收到服务端 — lookup 返回 admin、读写却不认,
@@ -3122,6 +3400,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
         'read', 'fetch', 'crawl', 'scrape', 'lookup', 'look up', 'look at',
         'find', 'search', 'analyze', 'analyse', 'process', 'get',
         'download', 'open', 'visit', 'browse', 'extract', 'parse',
+        # 2026-10-01: internal domain action verbs (R-class 12574,
+        # fact 6463 'astor_memory 召回返回空 lesson 没自动注入',
+        # R-class 6570 'global trigger lesson').
+        # Without these, queries about internal SDK / API actions
+        # don't trigger meta-recall and miss the relevant lessons.
+        # Generic internal-domain verbs (any platform):
+        'place_order', 'cancel_order', 'submit', 'fill', 'settle',
+        'unlock', 'authenticate', 'deposit', 'withdraw',
+        'buy', 'sell', 'trade', 'trading',
+        'query', 'fetch_positions', 'list_orders', 'list_fills',
+        'cancel', 'replace', 'modify', 'amend',
+        # Chinese internal action verbs:
+        '下单', '撤单', '挂单', '改单', '买入', '卖出', '交易',
+        '查询', '解锁', '转账',
+        # Generic CLI action verbs (helps with bash, git, kubectl, etc.):
+        'run', 'execute', 'deploy', 'restart', 'start', 'stop',
+        'install', 'uninstall', 'upgrade', 'update',
+        'commit', 'push', 'pull', 'merge', 'rebase', 'checkout',
+        'shell', 'cd', 'ls', 'cat', 'grep',
     )
     _TRIGGER_RESOURCE_HINTS = (
         'mp.weixin', 'weixin', '公众号', 'csdn', 'zhihu',
@@ -3133,6 +3430,29 @@ def create_app(astor_dir: str | None = None) -> Flask:
         'youtube.com', 'youtu.be', 'bilibili.com', 'vimeo',
         'twitter.com', 'x.com', 'reddit.com',
         'stackoverflow', 'http://', 'https://',
+        # 2026-10-01: internal domain resource hints (R-class 12574,
+        # fact 6570 'global trigger lesson').
+        # When query mentions ANY internal platform / SDK / CLI tool,
+        # the trigger fires and pulls in success_pattern / lesson /
+        # failure_pattern. This is GLOBAL across all domains.
+        # moomoo / OpenD
+        'moomoo', 'opend', 'futu', 'opend_core', 'credentials.py',
+        'moomooapi',
+        # crypto exchanges
+        'kraken', 'bybit', 'ndax', 'binance', 'coinbase', 'kucoin',
+        # stock brokers / SEC filings
+        'sec_firm', 'interactive brokers', 'schwab', 'robinhood',
+        'wealthsimple', 'questrade',
+        # shell / OS / k8s / git / docker
+        'kubectl', 'docker', 'terraform', 'aws cli', 'gcloud',
+        # sci / eng tooling
+        'arxiv', 'pubmed', 'github', 'gitlab',
+        # internal astor itself
+        'astor', 'astor_recall', 'memory_canonical', 'memory_bus',
+        # web resources (already covered above but added for completeness)
+        'wikipedia', 'docs.', 'documentation',
+        # .py files (Python source code) — these often have success_patterns
+        '.py', 'python script',
     )
     _COLD_START_FIRST_RECALL_RULE = (
         '[astor cold-start rule] When the user asks you to read / fetch / '
