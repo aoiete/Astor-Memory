@@ -428,12 +428,60 @@ def controller_select(
     return out
 
 
+def controller_select_scored(
+    query: str,
+    top_n: int = 5,
+    available_tags: list[str] | None = None,
+    bank: SkillBank | None = None,
+) -> list[dict]:
+    """v1.16.21: query-aware Controller scoring.
+
+    Instead of fixed tag routing, score EVERY skill in the bank against
+    the task query: token overlap on (name + tags + description). Skills
+    whose trigger vocabulary matches the query rank higher. Zero-LLM,
+    deterministic, O(n_skills) per call.
+
+    Returns: [{name, description, tags, score}] sorted desc, top_n only.
+    Zero-score skills are dropped (Controller never recommends irrelevant).
+    """
+    bank = bank or get_bank()
+    import re as _re
+
+    def _tok(s: str) -> set[str]:
+        return {t for t in _re.findall(r"[a-zA-Z0-9\u4e00-\u9fff]+", (s or '').lower()) if len(t) >= 2}
+
+    q_tokens = _tok(query)
+    if not q_tokens:
+        return []
+    scored = []
+    for s in bank.list():
+        if available_tags and not (set(available_tags) & set(s.get('tags', []))):
+            continue
+        skill_tokens = (
+            _tok(s['name']) | _tok(' '.join(s.get('tags', []))) | _tok(s.get('description', ''))
+        )
+        if not skill_tokens:
+            continue
+        overlap = q_tokens & skill_tokens
+        if not overlap:
+            continue
+        # Jaccard-lite: overlap / sqrt(|q| * |skill|) — favors precise hits
+        score = len(overlap) / ((len(q_tokens) ** 0.5) * (len(skill_tokens) ** 0.5))
+        scored.append({
+            'name': s['name'], 'description': s.get('description', ''),
+            'tags': s.get('tags', []), 'score': round(score, 4),
+        })
+    scored.sort(key=lambda d: d['score'], reverse=True)
+    return scored[:top_n]
+
+
 __all__ = [
     'Skill',
     'SkillBank',
     'get_bank',
     'reset_bank',
     'controller_select',
+    'controller_select_scored',
     'register_skill',
     'invoke_chain',
 ]

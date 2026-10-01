@@ -1,3 +1,11 @@
+## [1.16.24] - 2026-09-30
+
+### Added
+- **v1.16.21** skill Controller scoring: `controller_select_scored(query)` ranks every bank skill by token overlap (name+tags+description) — new skills discoverable without keyword-heuristic edits. `/v1/skill/recommend` now uses scoring first, tag heuristic as fallback.
+- **v1.16.22** memory eval set: `tests/eval_memory.py` — 30 fixed query->fact pairs (15 zh + 15 en), temp-DB isolated, gate hit_rate>=0.80 / mrr>=0.70. Baseline: hit_rate 0.933, mrr 0.917, PASS. CJK bigram fallback mirrors ecv.py tokenizer fix.
+- **v1.16.23** 失败复盘闭环: `POST /v1/failure_loop/run` — 3-step loop: snapshot-to-audit (rollback anchor) → scan failure/lesson facts (N days) → extract skills via controller_select_scored + promote recurring (>=2x) failures into lesson facts.
+- **v1.16.24** tunnel watchdog: `D:/AI/scripts/admin/astor_tunnel_watchdog.py` — 502 self-heal (origin down -> respawn; tunnel down -> restart CloudflaredAstor) + telegram alert on unrecovered failure. Cron `astor-tunnel-watchdog-15min` (job 9d601f55ba47, silent-ok pattern). Python urllib default UA blocked by CF — watchdog sends browser UA.
+
 ## [1.16.20] - 2026-09-30
 
 ### Added (User 6-point optimization: #1 async + #4 tier)
