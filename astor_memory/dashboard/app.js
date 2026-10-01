@@ -97,6 +97,12 @@
     // hero
     const h = d.hero || {};
     document.getElementById('hero-users').textContent = fmtInt(h.total_users);
+    const _sub = document.getElementById('hero-users-sub');
+    if (_sub) {
+      const bu = h.bound_users;
+      _sub.textContent = bu != null ? (bu + ' bound via bindings') : '';
+      _sub.title = 'Users with active bot-binding (may have 0 facts yet — freshly registered integrations)';
+    }
     document.getElementById('hero-facts').textContent = fmtInt(h.active_facts);
     document.getElementById('hero-tomb').textContent = fmtInt(h.tombstoned);
     document.getElementById('hero-high').textContent = fmtInt(h.high_importance);
@@ -280,25 +286,55 @@
       summary.textContent = bindings.length + ' active binding' + (bindings.length === 1 ? '' : 's')
         + ' across ' + platCount + ' platform' + (platCount === 1 ? '' : 's');
     }
-    // Sort: platform alphabetically, then user
+    // Sort: v1.16.27 — group by plan priority (power > vip > free > none),
+    // then by user_id alphabetically.
+    const PLAN_RANK = { power: 0, vip: 1, free: 2 };
+    const _planRank = b => (b.subscription_plan && PLAN_RANK[b.subscription_plan] != null
+      ? PLAN_RANK[b.subscription_plan] : 9);
     const sorted = bindings.slice().sort((a, b) => {
-      const pa = (a.platform_id || '').split(':')[0];
-      const pb = (b.platform_id || '').split(':')[0];
-      if (pa !== pb) return pa.localeCompare(pb);
+      const r = _planRank(a) - _planRank(b);
+      if (r !== 0) return r;
       return (a.user_id || '').localeCompare(b.user_id || '');
     });
-    for (const b of sorted) {
-      const tr = document.createElement('tr');
-      const roleClass = b.role === 'admin' ? 'role-admin' : 'role-user';
-      tr.innerHTML = '<td>' + escapeHtml(b.platform_id || '—') + '</td>'
-        + '<td>' + escapeHtml(b.user_id || '—') + '</td>'
-        + '<td class="' + roleClass + '">' + escapeHtml(b.role || '—') + '</td>'
-        + '<td>' + escapeHtml(b.subscription_plan || '—') + '</td>'
-        + '<td>' + escapeHtml(b.default_tier || '—') + '</td>'
-        + '<td>' + escapeHtml(b.scope || '—') + '</td>'
-        + '<td>' + escapeHtml((b.bound_at || '').slice(0, 16) || '—') + '</td>';
-      tbody.appendChild(tr);
-    }
+    const PAGE_SIZE = 10;
+    _conn_page = 0;
+    const _total = sorted.length;
+    const _pageCount = Math.max(1, Math.ceil(_total / PAGE_SIZE));
+    const _summary = document.getElementById('connections-summary');
+    const _renderPage = (pg) => {
+      const start = pg * PAGE_SIZE;
+      const slice = sorted.slice(start, start + PAGE_SIZE);
+      tbody.innerHTML = '';
+      for (const b of slice) {
+        const tr = document.createElement('tr');
+        const roleClass = b.role === 'admin' ? 'role-admin' : 'role-user';
+        tr.innerHTML = '<td>' + escapeHtml(b.platform_id || '—') + '</td>'
+          + '<td>' + escapeHtml(b.user_id || '—') + '</td>'
+          + '<td class="' + roleClass + '">' + escapeHtml(b.role || '—') + '</td>'
+          + '<td>' + escapeHtml(b.subscription_plan || '—') + '</td>'
+          + '<td>' + escapeHtml(b.default_tier || '—') + '</td>'
+          + '<td>' + escapeHtml(b.scope || '—') + '</td>'
+          + '<td>' + escapeHtml((b.bound_at || '').slice(0, 16) || '—') + '</td>';
+        tbody.appendChild(tr);
+      }
+      if (_summary) {
+        const pageLabel = _pageCount > 1
+          ? ' · page ' + (pg + 1) + '/' + _pageCount
+          : '';
+        _summary.innerHTML = _total + ' active binding' + (_total === 1 ? '' : 's')
+          + ' across ' + platCount + ' platform' + (platCount === 1 ? '' : 's')
+          + pageLabel + ' '
+          + '<button class="conn-page-btn" id="conn-prev" type="button">‹</button>'
+          + '<button class="conn-page-btn" id="conn-next" type="button">›</button>';
+        const prev = document.getElementById('conn-prev');
+        const next = document.getElementById('conn-next');
+        if (prev) prev.disabled = pg <= 0;
+        if (next) next.disabled = pg >= _pageCount - 1;
+        if (prev) prev.onclick = () => { if (_conn_page > 0) { _conn_page--; _renderPage(_conn_page); } };
+        if (next) next.onclick = () => { if (_conn_page < _pageCount - 1) { _conn_page++; _renderPage(_conn_page); } };
+      }
+    };
+    _renderPage(0);
   }
 
   // -- Health diagnosis modal ------------------------------------------------
@@ -699,15 +735,15 @@ function renderPeerPanel(peers, selfPeerId) {
   let html = '';
   if (friendPeers.length > 0) {
     html += '<div class="peer-section-label">Friends</div>';
-    html += renderPeerRows(friendPeers);
+    html += renderPeerRows(friendPeers, 'friends');
   }
   if (otherPeers.length > 0) {
     html += '<div class="peer-section-label">Other</div>';
-    html += renderPeerRows(otherPeers);
+    html += renderPeerRows(otherPeers, 'other');
   }
   if (blacklistPeers.length > 0) {
     html += '<div class="peer-section-label peer-blacklist">Blacklisted</div>';
-    html += renderPeerRows(blacklistPeers);
+    html += renderPeerRows(blacklistPeers, 'blacklist');
   }
   body.innerHTML = html;
   // bind row actions
@@ -717,15 +753,35 @@ function renderPeerPanel(peers, selfPeerId) {
   body.querySelectorAll('input.peer-trust-input').forEach(inp => {
     inp.addEventListener('change', onPeerTrustEdit);
   });
+  // v1.16.27: peer pager buttons
+  body.querySelectorAll('[data-peer-page]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const dir = e.currentTarget.getAttribute('data-peer-page');
+      const sec = e.currentTarget.getAttribute('data-section');
+      const totalForSec = (sec === 'friends' ? friendPeers
+        : sec === 'blacklist' ? blacklistPeers : otherPeers).length;
+      const pageCount = Math.ceil(totalForSec / 10);
+      const cur = _peer_page[sec] || 0;
+      if (dir === 'prev' && cur > 0) _peer_page[sec] = cur - 1;
+      else if (dir === 'next' && cur < pageCount - 1) _peer_page[sec] = cur + 1;
+      renderPeerPanel(peers, selfPeerId);
+    });
+  });
 }
 
-function renderPeerRows(rows) {
+let _peer_page = {};   // v1.16.27: per-section page state
+
+function renderPeerRows(rows, sectionKey) {
+  const PAGE_SIZE = 10;
+  const page = _peer_page[sectionKey] || 0;
+  const total = rows.length;
+  const slice = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   let html = '<table class="peer-table"><thead><tr>'
     + '<th>peer_id</th><th>alias</th><th>trust</th>'
     + '<th>endpoint</th><th>pubkey</th><th>allow</th>'
     + '<th>updated</th><th>actions</th>'
     + '</tr></thead><tbody>';
-  rows.forEach(p => {
+  slice.forEach(p => {
     const pid = encodeURIComponent(p.peer_id);
     const alias = p.alias || '';
     const trust = p.trust != null ? p.trust : '?';
@@ -760,6 +816,16 @@ function renderPeerRows(rows) {
       + '</tr>';
   });
   html += '</tbody></table>';
+  if (total > PAGE_SIZE) {
+    const pageCount = Math.ceil(total / PAGE_SIZE);
+    html += '<div class="peer-pager">'
+      + '<span class="peer-pager-info">' + (page + 1) + '/' + pageCount + ' (' + total + ')</span>'
+      + '<button class="conn-page-btn" data-peer-page="prev" data-section="' + sectionKey + '" '
+      + (page <= 0 ? 'disabled' : '') + '>‹</button>'
+      + '<button class="conn-page-btn" data-peer-page="next" data-section="' + sectionKey + '" '
+      + (page >= pageCount - 1 ? 'disabled' : '') + '>›</button>'
+      + '</div>';
+  }
   return html;
 }
 

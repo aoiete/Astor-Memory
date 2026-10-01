@@ -798,3 +798,47 @@ body {
 .role-user {
   color: var(--text-dim, #888);
 }
+
+/* v1.16.26: hero sub-label */
+.hero-sub {
+  font-size: 0.7em;
+  color: var(--text-dim);
+  margin-top: 2px;
+  font-weight: normal;
+  letter-spacing: 0.02em;
+}
+
+/* v1.16.27: Connections pagination buttons */
+.conn-page-btn {
+  background: var(--bg-card, #1a1a1a);
+  border: 1px solid var(--border, #444);
+  color: var(--text, #ddd);
+  padding: 2px 8px;
+  margin-left: 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9em;
+}
+.conn-page-btn:hover:not(:disabled) {
+  border-color: var(--accent, #c97a3a);
+  color: var(--accent, #c97a3a);
+}
+.conn-page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* v1.16.27: peer pager */
+.peer-pager {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 8px;
+  font-size: 0.85em;
+}
+.peer-pager-info {
+  color: var(--text-dim, #888);
+  margin-right: 6px;
+}
