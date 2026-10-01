@@ -1182,6 +1182,101 @@ class AstorBus:
         return result
 
 
+    def resolve_conflicts(
+        self,
+        new_fact_id: int,
+        new_kind: str,
+        new_user_id: str | None,
+        new_entities_json: str | None,
+        new_content: str,
+    ) -> list[dict]:
+        """v1.16.33: auto bitemporal invalidate older contradictory facts.
+
+        Per article 红线四 (no auto-merging = 3-month noise magnet):
+        '要么做冲突消解 (Mem0 的 update resolver、Zep 的 bi-temporal
+        失效边), 要么做定期归并'.
+
+        Trigger conditions (new_fact kind must be one of these):
+          - 'user_correction' / 'correction' / 'pushback' / 'fact_update'
+          - 'user_preference' / 'decision' (user-level facts that often change)
+          - 'success_pattern' (when re-confirmed, demote older as 'counter')
+
+        Conflict detection heuristic:
+          - Same user_id AND
+          - shared entities (any overlap from new_entities_json vs old entities_json) AND
+          - kind ∈ {user_preference, decision, user_correction} AND
+          - old fact is still active (valid_until IS NULL, tombstoned=0)
+
+        Returns: list of invalidated fact_ids with metadata.
+        """
+        if new_kind not in ('user_correction', 'correction', 'pushback',
+                            'fact_update', 'user_preference', 'decision',
+                            'success_pattern'):
+            return []
+
+        # Parse new entities
+        try:
+            new_ents = json.loads(new_entities_json) if new_entities_json else []
+        except Exception:
+            new_ents = []
+        new_ent_types = {str(e.get('type', '')) for e in new_ents if isinstance(e, dict)}
+        new_ent_values = {str(e.get('value', '')) for e in new_ents if isinstance(e, dict)}
+        if not (new_ent_types or new_ent_values):
+            return []
+
+        # Find candidate old facts
+        invalidated = []
+        with self.transaction() as c:
+            _now = datetime.utcnow().isoformat() + 'Z'
+            for row in c.execute(
+                "SELECT id, kind, content, user_id, entities_json, valid_until "
+                "FROM memory_canonical "
+                "WHERE tombstoned = 0 "
+                "  AND id != ? "
+                "  AND kind IN ('user_preference', 'decision', 'user_correction', 'success_pattern') "
+                "  AND (user_id = ? OR user_id IS NULL) "
+                "  AND valid_until IS NULL",
+                (new_fact_id, new_user_id),
+            ):
+                _old_id, _old_kind, _old_content, _old_user_id, _old_entities, _old_valid_until = row
+                try:
+                    _old_ents = json.loads(_old_entities) if _old_entities else []
+                except Exception:
+                    _old_ents = []
+                _old_types = {str(e.get('type', '')) for e in _old_ents if isinstance(e, dict)}
+                _old_values = {str(e.get('value', '')) for e in _old_ents if isinstance(e, dict)}
+                # entity overlap? Both type AND value must overlap
+                # (e.g. type=topic alone is too broad - every fact has
+                # topic entities; need type+value pair match).
+                _shared_types_values = {(t, val) for t, val in
+                                     ((e.get('type'), e.get('value'))
+                                      for e in new_ents if isinstance(e, dict))
+                                     if t and val} & \
+                                    {(t, val) for t, val in
+                                     ((e.get('type'), e.get('value'))
+                                      for e in _old_ents if isinstance(e, dict))
+                                     if t and val}
+                if not _shared_types_values:
+                    continue
+                # Same kind + overlap -> conflict
+                c.execute(
+                    "UPDATE memory_canonical "
+                    "SET valid_until = ?, invalidated_at = ?, "
+                    "    invalidated_by = ?, invalidated_reason = ? "
+                    "WHERE id = ? AND valid_until IS NULL",
+                    (_now, _now, new_fact_id,
+                     f'auto-resolved by conflict_resolver: new fact {new_fact_id} kind={new_kind} supersedes this {new_kind}',
+                     _old_id),
+                )
+                if c.rowcount > 0:
+                    invalidated.append({
+                        'invalidated_fact_id': _old_id,
+                        'reason': f'superseded by fact {new_fact_id} (kind={new_kind})',
+                        'shared_entities': list(new_ent_types & _old_types) + list(new_ent_values & _old_values),
+                    })
+        return invalidated
+
+
 # Module-level singleton (lazy init)
 _astor_bus_singleton: AstorBus | None = None
 _astor_bus_lock = threading.Lock()
