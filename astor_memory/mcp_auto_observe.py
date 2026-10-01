@@ -8,7 +8,7 @@ and posts the result to Astor REST. Designed to be imported from
 ``server.py`` without modifying the high-sensitivity path's existing
 ``list_tools()`` / ``call_tool()`` registrations directly.
 
-Usage from ``C:\\Users\\TheNuts\\.evox\\agent\\mcp-servers\\astor-memory-rest-mcp\\server.py``::
+Usage from ``C:\\Users\\<user>\\.evox\\agent\\mcp-servers\\astor-memory-rest-mcp\\server.py``::
 
     from astor_memory.mcp_auto_observe import (
         astor_auto_observe_tool_schema,

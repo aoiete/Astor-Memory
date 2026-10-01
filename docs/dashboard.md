@@ -22,7 +22,7 @@ reverse-proxy auth, etc.).
 
 ```bash
 # 1. Install astor-memory (any 1.14.13+)
-git clone https://github.com/aoiete/Astor-Memory
+git clone https://github.com/<repo-owner>/Astor-Memory
 cd Astor-Memory
 pip install -e .
 

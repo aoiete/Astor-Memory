@@ -97,7 +97,7 @@ The MCP-side and runtime patches need manual application.
 ### Step 1: patch MCP `server.py`
 
 Open
-`C:\Users\TheNuts\.evox\agent\mcp-servers\astor-memory-rest-mcp\server.py`
+`C:\Users\<user>\.evox\agent\mcp-servers\astor-memory-rest-mcp\server.py`
 and add at the top (after the imports):
 
 ```python
@@ -144,7 +144,7 @@ curl -m 5 -sS http://127.0.0.1:7803/v1/health
 ### Step 3: verify auto-memory works end-to-end
 
 ```bash
-cd /c/Users/TheNuts/.evox/agent/mcp-servers/astor-memory-rest-mcp
+cd /c/Users/<user>/.evox/agent/mcp-servers/astor-memory-rest-mcp
 ASTOR_DIR='D:\AI\Astor-Memory-Runtime' python -c "
 import sys
 sys.path.insert(0, r'D:\ai\astor-memory')

@@ -18,7 +18,7 @@ rem OpenRouter provides OpenAI-compatible /chat/completions, so this is
 
 rem the cheapest LLM-extract path that actually works in production.
 
-for /f "usebackq tokens=1,* delims==" %%a in (`findstr /r "OPENROUTER_API_KEY=" "C:\Users\TheNuts\AppData\Local\hermes\.env"`) do (
+for /f "usebackq tokens=1,* delims==" %%a in (`findstr /r "OPENROUTER_API_KEY=" "C:\Users\<user>\AppData\Local\hermes\.env"`) do (
 
     set "OPENROUTER_API_KEY=%%b"
 

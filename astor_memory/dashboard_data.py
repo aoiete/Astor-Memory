@@ -1196,10 +1196,27 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
         except Exception:
             delta_min = None
 
+
+    # v1.16.26: also count users with active bot-binding (even if they have
+    # no canonical facts yet — e.g. just registered a binding but haven't
+    # written anything). Surfaces new integrations in hero immediately.
+    bound_users_total = 0
+    try:
+        import sqlite3 as _b_sql
+        _b_db = _b_sql.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+        _b_db.row_factory = _b_sql.Row
+        bound_users_total = _b_db.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM bindings WHERE active = 1"
+        ).fetchone()[0]
+        _b_db.close()
+    except Exception:
+        pass
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "hero": {
             "total_users": users_total,
+            "bound_users": bound_users_total,
             "total_facts": facts_total,
             "active_facts": active_total,
             "tombstoned": tomb_total,

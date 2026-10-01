@@ -479,4 +479,4 @@ tests/                     # 87+ tests across test_peer_*.py
 - `docs/architecture.md` — system-wide architecture
 - `docs/fact-lifecycle.md` — how fact decay + tombstoning works
 - `CHANGELOG.md` — version history; v1.15.18 through v1.15.23 are PPS ships
-- GitHub: github.com/aoiete/Astor-Memory
+- GitHub: github.com/<repo-owner>/Astor-Memory
