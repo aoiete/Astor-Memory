@@ -903,7 +903,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
     @app.route('/v1/fact/<int:fact_id>/distill_auto', methods=['POST'])
     def fact_distill(fact_id):
         import datetime as _dt
-        from .nest.distiller import distill as _distill
+        from .nest.distiller import distill as _distill, clear_tool_results as _clear_tool_results
         body = request.get_json(force=True) if request.is_json else {}
         auto_mode = '/distill_auto' in request.path
         # ACL: distill = admin only; distill_auto = user-self only.
@@ -1039,9 +1039,21 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # public bus unreachable), allow it through rather than blocking.
             pass
 
-        # Distill content
+        # v1.16.33: tool result clearing (OPT-1) — apply to source content
+        # before distillation. Older tool_result JSON blobs are replaced with
+        # compact reference placeholders. Keeps the most recent N (default 3).
+        # Article claim: "单做 context editing 就把 token 消耗降了 84%".
+        _keep_recent = int(body.get('keep_tool_results', 3))
+        src_text_cleared, _cleared_blocks = _clear_tool_results(
+            src_fact['content'], keep_recent_n=_keep_recent,
+        )
+        # Distill content (using cleared text)
         from .nest.distiller import distill as _distill
-        cleaned, removed_segments, distill_report = _distill(src_fact['content'])
+        cleaned, removed_segments, distill_report = _distill(src_text_cleared)
+        # audit: record which tool_results were cleared
+        if _cleared_blocks:
+            distill_report['tool_results_cleared'] = _cleared_blocks
+            distill_report['tool_results_kept_recent_n'] = _keep_recent
         if not cleaned:
             return jsonify({
                 'error': 'distill_empty',
@@ -2317,7 +2329,32 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         _w_cid = _w_bus.promote_candidate(
                             _w_cand, promoted_by='rest.write.async',
                             user_id=_w_user, tier=_w_tier, scope_type='long_term',
+                            # v1.16.33: thread conflict_kind + entities through
+                            # so the auto-resolver can match against old facts.
                         )
+                        # v1.16.33: auto conflict resolution (OPT-2). When
+                        # the new fact is a correction/preference/decision
+                        # and shares entities with an older active fact of
+                        # the same kind, mark the older one valid_until=now
+                        # (Zep-style bi-temporal invalidation).
+                        try:
+                            _w_invalidated = _w_bus.resolve_conflicts(
+                                new_fact_id=_w_cid,
+                                new_kind=_w_f.kind or 'fact',
+                                new_user_id=_w_user,
+                                new_entities_json=getattr(_w_f, 'entities_json', None)
+                                    or json.dumps(getattr(_w_f, 'entities', None) or []),
+                                new_content=_w_f.content or '',
+                            )
+                            if _w_invalidated:
+                                _safe_stderr_write(
+                                    f'[v1.16.33] conflict_resolver: fact={_w_cid} '
+                                    f'invalidated {len(_w_invalidated)} older fact(s)\n'
+                                )
+                        except Exception as _cr_exc:
+                            _safe_stderr_write(
+                                f'[v1.16.33] conflict_resolver failed (non-fatal): {_cr_exc}\n'
+                            )
                         _w_fact_ids.append(_w_cid)
                     _safe_stderr_write(
                         f'[astor.server] async write event={_w_event_id} '
@@ -7118,6 +7155,153 @@ def create_app(astor_dir: str | None = None) -> Flask:
     # hygiene, the recall index bloats with low-signal facts that
     # dilute the ECV / path_score boost ratios. This endpoint makes
     # the hygiene problem observable.
+
+    @app.route('/v1/audit/memory_snr', methods=['GET'])
+    def audit_memory_snr():
+        """v1.16.33: memory SNR audit (article eval criterion).
+
+        Article quote: '第三点几乎没有 benchmark 覆盖, 但它决定了一个记忆
+        系统能不能活过半年 — 跑 3 个月之后, 检索回来的 top-5 里还有几条是有用的'.
+
+        Returns signal-vs-noise metrics for the memory library:
+          - total_facts: total active (non-tombstoned) facts across all tiers
+          - tombstoned_ratio: 0..1 (higher = more invalidations / deletes)
+          - high_importance_count: facts with importance >= 0.7
+          - high_importance_ratio: high_importance / total_facts
+          - stale_count_90d: facts not accessed in 90+ days (likely noisy)
+          - stale_ratio: stale / total_facts
+          - recently_invalidated_30d: facts invalidated in last 30 days
+          - top10_content_diversity: distinct first-50-chars in top-10 most
+            recent facts (proxy for 'all-same-template' noise)
+          - tier_distribution: {public, source, private_<uid>: count}
+          - kind_distribution: {fact, rule, ...: count}
+          - memory_class_distribution: {world_fact, mental_model, ...}
+          - snr_score: 0..100 composite (high_importance_ratio * 100 -
+            stale_ratio * 50 - tombstoned_ratio * 30, clamped 0..100)
+        """
+        import sqlite3 as _audit_sql
+        import datetime as _audit_dt
+        import glob as _audit_glob
+        import os as _audit_os
+
+        result = {
+            'total_facts': 0,
+            'tombstoned_count': 0,
+            'tombstoned_ratio': 0.0,
+            'high_importance_count': 0,
+            'high_importance_ratio': 0.0,
+            'stale_count_90d': 0,
+            'stale_ratio': 0.0,
+            'recently_invalidated_30d': 0,
+            'top10_content_diversity': 0,
+            'tier_distribution': {},
+            'kind_distribution': {},
+            'memory_class_distribution': {},
+            'snr_score': 0.0,
+            'computed_at': _audit_dt.datetime.now(_audit_dt.timezone.utc).isoformat(),
+        }
+
+        _astor_dir = _audit_os.environ.get('ASTOR_DIR', r'D:\AI\Astor-Memory-Runtime')
+        _bus_files = []
+        _bus_files += _audit_glob.glob(_audit_os.path.join(_astor_dir, 'public', 'memory', 'astor_bus_*.db'))
+        _bus_files += _audit_glob.glob(_audit_os.path.join(_astor_dir, 'source', 'memory', 'astor_bus_*.db'))
+        _bus_files += _audit_glob.glob(_audit_os.path.join(_astor_dir, 'users', '*', 'memory', 'astor_bus_*.db'))
+
+        _now = _audit_dt.datetime.now(_audit_dt.timezone.utc)
+        _cutoff_90d = (_now - _audit_dt.timedelta(days=90)).isoformat()
+        _cutoff_30d = (_now - _audit_dt.timedelta(days=30)).isoformat()
+
+        for _dbpath in _bus_files:
+            try:
+                _conn = _audit_sql.connect(_dbpath)
+                _conn.row_factory = _audit_sql.Row
+                # Total + tombstoned
+                _row = _conn.execute(
+                    "SELECT COUNT(*) AS n, SUM(tombstoned) AS t "
+                    "FROM memory_canonical",
+                ).fetchone()
+                _total = int(_row['n'] or 0)
+                _tomb = int(_row['t'] or 0)
+                result['total_facts'] += _total
+                result['tombstoned_count'] += _tomb
+
+                # High importance
+                _row = _conn.execute(
+                    "SELECT COUNT(*) AS n FROM memory_canonical "
+                    "WHERE tombstoned = 0 AND importance >= 0.7",
+                ).fetchone()
+                result['high_importance_count'] += int(_row['n'] or 0)
+
+                # Stale (last_confirmed_at NULL OR < cutoff_90d)
+                _row = _conn.execute(
+                    "SELECT COUNT(*) AS n FROM memory_canonical "
+                    "WHERE tombstoned = 0 "
+                    "  AND (last_confirmed_at IS NULL OR last_confirmed_at < ?) "
+                    "  AND (created_at < ? OR created_at IS NULL)",
+                    (_cutoff_90d, _cutoff_90d),
+                ).fetchone()
+                result['stale_count_90d'] += int(_row['n'] or 0)
+
+                # Recently invalidated (30d)
+                _row = _conn.execute(
+                    "SELECT COUNT(*) AS n FROM memory_canonical "
+                    "WHERE invalidated_at IS NOT NULL AND invalidated_at > ?",
+                    (_cutoff_30d,),
+                ).fetchone()
+                result['recently_invalidated_30d'] += int(_row['n'] or 0)
+
+                # Top-10 content diversity (proxy)
+                try:
+                    _rows = _conn.execute(
+                        "SELECT content FROM memory_canonical "
+                        "WHERE tombstoned = 0 ORDER BY id DESC LIMIT 10",
+                    ).fetchall()
+                    _fingerprints = {str(r['content'])[:50] for r in _rows}
+                    result['top10_content_diversity'] = max(
+                        result['top10_content_diversity'],
+                        len(_fingerprints),
+                    )
+                except Exception:
+                    pass
+
+                # Tier / kind / memory_class distributions
+                _tier_label = _audit_os.path.basename(_audit_os.path.dirname(_audit_os.path.dirname(_dbpath)))
+                _row = _conn.execute(
+                    "SELECT kind, COUNT(*) AS n FROM memory_canonical "
+                    "WHERE tombstoned = 0 GROUP BY kind",
+                ).fetchall()
+                for _kr in _row:
+                    _k = str(_kr['kind'] or 'unknown')
+                    result['kind_distribution'][_k] = result['kind_distribution'].get(_k, 0) + int(_kr['n'])
+                _row = _conn.execute(
+                    "SELECT memory_class, COUNT(*) AS n FROM memory_canonical "
+                    "WHERE tombstoned = 0 GROUP BY memory_class",
+                ).fetchall()
+                for _kr in _row:
+                    _mc = str(_kr['memory_class'] or 'unknown')
+                    result['memory_class_distribution'][_mc] = result['memory_class_distribution'].get(_mc, 0) + int(_kr['n'])
+
+                result['tier_distribution'][_tier_label] = result['tier_distribution'].get(_tier_label, 0) + _total
+
+                _conn.close()
+            except Exception as _audit_e:
+                continue
+
+        # Derive ratios + SNR score
+        if result['total_facts'] > 0:
+            result['tombstoned_ratio'] = round(result['tombstoned_count'] / result['total_facts'], 4)
+            result['high_importance_ratio'] = round(result['high_importance_count'] / result['total_facts'], 4)
+            result['stale_ratio'] = round(result['stale_count_90d'] / result['total_facts'], 4)
+            # SNR score: reward high importance, penalize stale + tombstoned
+            _snr = (
+                result['high_importance_ratio'] * 100
+                - result['stale_ratio'] * 50
+                - result['tombstoned_ratio'] * 30
+            )
+            result['snr_score'] = max(0, min(100, round(_snr, 2)))
+
+        return jsonify(result)
+
     @app.route('/v1/audit/orphans', methods=['GET'])
     def audit_orphans():
         import sqlite3 as _sqlite3

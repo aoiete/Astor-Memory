@@ -1,4 +1,4 @@
-"""v1.16.30 + v1.16.31: distiller regression test (8 locked cases)."""
+"""v1.16.30 + v1.16.31 + v1.16.33: distiller regression test (12 locked cases)."""
 import sys
 sys.path.insert(0, r'D:\AI\astor-memory')
 from astor_memory.nest.distiller import distill
@@ -60,6 +60,35 @@ CASES = [
      ['我今天做的'],
      1,
      True),
+
+    # v1.16.33 state-const protection (article 红线一)
+    # Note: tokens in [STATE-CONST] block use full-width dot '．' (instead of '.')
+    # so the second-pass sentence split doesn't fragment them. Caller can
+    # normalize back to ASCII '.' via .replace('．', '.') on read.
+    ('case 9: file paths preserved in [STATE-CONST] block',
+         'method curl+UA 抓文章, file: src/api/v2/handler.py:142 验证通过',
+         ['method', 'curl', '[STATE-CONST]', 'src/api/v2/handler．py:142'],
+         [],
+         0,
+         True),
+    ('case 10: version number preserved',
+     '用 method curl, v2.1.3 修复 ok',
+     ['method', 'curl', 'v2.1.3'],
+     [],
+     0,
+     True),
+    ('case 11: function call preserved',
+     'method: astor_recall() returns top_k facts',
+     ['method', 'astor_recall()'],
+     [],
+     0,
+     True),
+    ('case 12: state-const preserved even when sentence is dropped',
+     '我今天做了 abc.py:10, 但 method 是 curl+UA',
+     ['method', 'curl', 'abc．py:10'],
+     [],
+     1,  # first-person "我今天做了" dropped, but state preserved
+     True),
 ]
 
 
@@ -80,7 +109,7 @@ def run_case(desc, text, exp_contains, exp_not, exp_dropped_min, exp_method):
 
 def main():
     print('=' * 70)
-    print('Distiller regression (v1.16.31, 8 locked cases)')
+    print('Distiller regression (v1.16.33, 12 locked cases)')
     print('=' * 70)
     passed = 0
     failed = []

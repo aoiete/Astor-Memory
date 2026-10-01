@@ -1,4 +1,75 @@
 
+## v1.16.33 — Article-driven optimizations (2026-10-01)
+
+4 optimizations from mp.weixin article "Agent 上下文压缩策略" (by 老贾探AI).
+Article URL: https://mp.weixin.qq.com/s/5jW9XNY0fzh6DvhdxZUF1Q
+
+### OPT-3 (highest ROI): State-Const Protected Compression
+**Article 红线一**: 路径、ID、版本号、约束条件、待办状态 — 这些必须在
+压缩前 flush 到持久层，或者干脆常驻不压。Token-level pruning (LLMLingua)
+destroys these because they're "highly predictable".
+
+`nest/distiller.py` now extracts state-const tokens BEFORE sentence split:
+- File paths (`src/api/v2/handler.py:142`, `C:\path\file.py:42`)
+- URL paths (`/api/v2/handler`)
+- Semver (`v2.1.3`)
+- HTTP status codes (`200 status`)
+- Function calls (`astor_recall()`, `Foo.bar()`)
+- Env-var names (`MY_VAR`)
+- Hex hashes (8+ chars) + UUIDs
+- Bare `key=value` pairs
+
+Tokens preserved as `[STATE-CONST] [STATE:N]=<token>` block at end of
+cleaned text. Full-width dots used in state-const values to prevent
+second-pass sentence split from fragmenting them.
+
+### OPT-1: Tool Result Clearing
+**Article quote**: "ROI 最高的一招，也是最少人用的一招。一条 tool_result 在被
+消费之后, Agent 为什么还要再看一遍原始 JSON?"
+
+`clear_tool_results(text, keep_recent_n=3)` strips older `__tool_result_<id>__...__/tool_result__`
+JSON blobs to compact `[TOOL_RESULT_CLEARED:<id>]` references.
+Wired into `/v1/fact/{id}/distill` source-content path. **Verified 82.9%
+token reduction** matches article's 84% claim.
+
+### OPT-2: Auto Conflict Resolution
+**Article 红线四**: 要么做冲突消解 (Mem0 的 update resolver、Zep 的
+bi-temporal 失效边), 要么做定期归并。
+
+`AstorBus.resolve_conflicts(new_fact_id, new_kind, user_id, entities_json,
+content)` auto-invalidates older active facts sharing entity type+value
+when new fact's kind ∈ {user_correction, correction, pushback, fact_update,
+user_preference, decision, success_pattern}. Older fact's `valid_until` is
+set to NOW; `invalidated_by` and `invalidated_reason` recorded.
+
+Triggered automatically in `/v1/write` async path. Bitemporal Zep-style.
+
+### OPT-4: Memory SNR Audit
+**Article eval criterion**: 第三点几乎没有 benchmark 覆盖, 但它决定了
+一个记忆系统能不能活过半年 — 跑 3 个月之后, 检索回来的 top-5 里还有
+几条是有用的。
+
+`GET /v1/audit/memory_snr` returns:
+- `total_facts` (across all tiers)
+- `tombstoned_ratio` (invalidation rate)
+- `high_importance_count/ratio` (importance >= 0.7)
+- `stale_count_90d/ratio` (not accessed in 90+ days)
+- `recently_invalidated_30d`
+- `top10_content_diversity` (distinct first-50-char in recent top-10)
+- `tier_distribution`, `kind_distribution`, `memory_class_distribution`
+- `snr_score` (composite 0..100)
+
+**Live snapshot (2026-10-01)**: total=20287, tombstoned_ratio=0.75,
+high_importance_ratio=0.078. Confirms article's warning about "3-month
+noise accumulation". SNR=0 mostly driven by 75% tombstone rate — operator
+should review whether `decay sweep` is too aggressive.
+
+### Tests shipped (all PASS)
+- `tests/test_distiller.py`: 12 cases (8 prior + 4 new state-const)
+- `tests/test_tool_clearing.py`: 4 cases (82.9% token reduction verified)
+- `tests/test_conflict_resolver.py`: 4 cases (auto-invalidates same-kind)
+
+
 ## v1.16.32 — Bug-hunt fixes (2026-10-01)
 
 5 bugs found during post-ship edge-case audit. All fixed.
