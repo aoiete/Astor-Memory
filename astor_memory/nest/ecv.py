@@ -68,12 +68,28 @@ REL_NONE = "none"                  # no useful relation
 
 
 def _tokenize(text: str) -> set[str]:
-    """CJK char + latin word tokenization (matches lex_index._tokenize)."""
+    """CJK bigram + latin word tokenization (matches lex_index._tokenize).
+
+    v1.16.18.1 fix: use CJK BIGRAMS (2-char sliding window) instead of
+    single chars. Single-char tokens diluted Jaccard similarity (any
+    query that touched CJK got score=0.000 because the candidate
+    had hundreds of single-char tokens, washing out query overlap).
+
+    Example:
+        "微信公众号" with single-char → {"微", "信", "公", "众", "号"} (5 tokens)
+        "微信公众号" with bigram     → {"微信", "信公", "众众", "众号"} (4 tokens)
+
+    The bigram token set is much more discriminative — overlapping
+    bigrams indicate true semantic overlap, not just shared characters.
+    """
     if not text:
         return set()
     toks = set()
-    for ch in re.findall(r'[\u4e00-\u9fff]', text):
-        toks.add(ch)
+    cjk_chars = re.findall(r'[\u4e00-\u9fff]', text)
+    # Bigrams (sliding window of 2 chars) — discriminative token unit
+    for i in range(len(cjk_chars) - 1):
+        toks.add(cjk_chars[i] + cjk_chars[i + 1])
+    # Latin words
     for w in re.findall(r'[A-Za-z0-9]+', text):
         toks.add(w.lower())
     return toks
