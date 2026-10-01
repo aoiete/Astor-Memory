@@ -55,7 +55,7 @@ def main() -> int:
         ("openrouter", "sk-or-v1-1234567890abcdefghijklmnop", "openrouter_api_key"),
         ("anthropic", "sk-ant-api03-1234567890abcdefghijklmnopqrst", "anthropic_api_key"),
         ("email", "alice@example.com", "email"),
-        ("wechat chat id", "o9cq80yiAS1cNr7QNAJ0YVwdLBgs@im.wechat", "wechat_chat_id"),
+        ("wechat chat id", "<test-wechat-user-id>@im.wechat", "wechat_chat_id"),
         ("btc legacy", "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", "btc_address"),
         ("eth", "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1", "eth_address"),
         ("aws access key", "AKIAIOSFODNN7EXAMPLE", "aws_access_key"),
@@ -167,7 +167,7 @@ def main() -> int:
     # 15) Real-world composite
     txt = (
         "User Alice (alice@example.com) sent a message to "
-        "o9cq80yiAS1cNr7QNAJ0YVwdLBgs@im.wechat from 192.168.1.1. "
+        "<test-wechat-user-id>@im.wechat from 192.168.1.1. "
         "Her API key was sk-abcdefghijklmnopqrstuvwxyz0123456789."
     )
     matches = scan_facts(txt)

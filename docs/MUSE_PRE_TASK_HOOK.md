@@ -24,7 +24,7 @@ The correct path (locked in astor fact **6215**) is:
 import requests
 from functools import wraps
 
-ASTOR_BASE = "https://astor.flopworld.com"
+ASTOR_BASE = "https://astor.astor.example.com"
 PLATFORM = "muse"
 
 def astor_recall(query: str, top_k: int = 5, chat_id: str = "") -> list[dict]:

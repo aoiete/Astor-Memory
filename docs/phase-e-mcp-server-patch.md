@@ -1,7 +1,7 @@
 # Phase E MCP server.py Patch (2026-09-16)
 
 EvoX Desktop stores its MCP server at
-`C:\Users\TheNuts\.evox\agent\mcp-servers\astor-memory-rest-mcp\server.py`.
+`C:\Users\<user>\.evox\agent\mcp-servers\astor-memory-rest-mcp\server.py`.
 That workspace is **not a git repository**, so the Phase E change
 needs to be shipped out-of-band. This patch captures exactly what was
 added to that file. Apply with `git apply`, or by hand at the
@@ -114,7 +114,7 @@ export ASTOR_MEMORY_SRC='D:\ai\astor-memory'
 export ASTOR_MEMORY_AGENT_ID=evox
 
 # Per-user identity (optional override, default = admin):
-# export ASTOR_MEMORY_USER_ID=aoiete
+# export ASTOR_MEMORY_USER_ID=<repo-owner>
 
 python server.py
 ```

@@ -1,3 +1,20 @@
+## [1.16.27] - 2026-10-01
+
+### Added
+- **Dashboard Connections panel**: sort by plan priority (power > vip > free > none) then user_id alphabetically (was: platform then user).
+- **Connections + Peer Friends pagination**: 10 rows per page, prev/next buttons + `1/N (total)` indicator. Peer panel paginates Friends / Other / Blacklisted sections independently.
+
+## [1.16.26] - 2026-10-01
+
+### Security: PII leak purge
+- **Removed 21 real PII hits** across 11 files: real user IDs (Telegram chat IDs, Discord IDs), real WeChat chat IDs (o9cq80...), real bot IDs (<weixin-bot-yuqi-token> etc.), real demo bindings (`<test-muse-chat-id>`, `<test-muse-chat-id-2>`), personal handles (`astor`, `<repo-owner>`, `<user>`), personal domain (`astor.example.com`), personal host paths (`C:\Users\<user>`).
+- **Replaced with placeholders**: `<admin-telegram-chat-id>`, `<weixin-bot-...>`, `<admin-muse-chat-id>`, `<user>`, `<repo-owner>`, `<home>`, `astor.example.com`.
+- **Pre-commit PII guard** (`.git/hooks/pre-commit`): blocks any commit that introduces real user/bot/chat IDs or personal host paths into staged files. Self-tested: real ID blocked (rc=1), placeholder passes (rc=0).
+- **CI-level audit script** (`scripts/ci/pii_audit.sh`): scans entire tracked tree. Catches `--no-verify` bypasses at next push or CI run.
+
+### Added
+- Hero "Total Users" sub-label shows `bound_users` count (active bot-binding distinct user_ids), so newly-registered integrations surface immediately even before they write a fact. `total_users` (canonical fact writers) stays the primary metric.
+
 ## [1.16.25] - 2026-10-01
 
 ### Added
@@ -68,7 +85,7 @@
 ### Live verified
 - Register `muse` platform → HTTP 201
 - Register admin user (idempotent) → HTTP 201
-- Bind `muse_chat_admin_demo` → `admin` → HTTP 201
+- Bind `<test-muse-chat-id>` → `admin` → HTTP 201
 - Lookup → returns `{user_id: admin, role: admin, plan: power, default_tier: admin, trusted_agent: true}`
 - List → 19 active bindings
 

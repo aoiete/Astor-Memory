@@ -7053,10 +7053,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 ORDER BY b.platform_id, b.user_id
             """).fetchall()
             _db.close()
-            return jsonify({
+            resp = jsonify({
                 'count': len(rows),
                 'bindings': [dict(r) for r in rows],
             })
+            # v1.16.25: never let CF edge cache operator-view endpoints.
+            resp.headers['Cache-Control'] = 'no-store'
+            return resp
         except Exception as e:
             return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
 
