@@ -1,3 +1,21 @@
+## [1.16.29] - 2026-10-01
+
+### Added (visibility tier — user feedback #7587 + #7568 + #11938)
+- **Three-layer visibility classification** (`astor_memory.nest.visibility_classifier`):
+  1. `admin_global_toggle` (user_meta.allow_commons_write, default 1) — if 0, force personal (user never learns)
+  2. `visibility_hint` (caller-passed: 'commons'/'personal'/'auto') — explicit override
+  3. **kind-driven auto** — method/recipe/lesson/success_pattern/failure_pattern/mental_model/knowledge_page/flow + clean content (no PII / first-person / emotion / geographic) → commons
+- **Content sniffing fallback** — when forge/regex defaults to kind=fact, `_looks_like_knowledge()` detects method/recipe/lesson keywords (CN + EN) and triggers auto-promote
+- **`/v1/write` visibility_report in response** — clients see per-fact visibility + reason (kind / hint / admin toggle / PII block)
+- **PII gate enhancement** — added CN ID card 18-digit (last X), bank card 16-19 (Luhn), SSN, CN/EN keyword anchors; emotional keywords (suicide/depression/诊断) trigger personal
+- **Schema v15 → v16** — memory_canonical gains `visibility` + `provenance_kind` columns; backfilled existing rows by kind-driven reclassification
+- **`bot-binding.db` user_meta.allow_commons_write** — admin toggle (default 1 = open)
+
+### Fixed
+- `from .nest.visibility_classifier` → `from ..nest.visibility_classifier` (correct relative path in `astor_memory/bus/schema.py`)
+- INSERT 34→35 placeholders (visibility column added)
+- `promote_candidate` signature gained `visibility: str = 'personal'`
+
 ## [1.16.28] - 2026-10-01
 
 ### Fixed
