@@ -1,3 +1,41 @@
+
+## v1.16.30 — Personal-to-Commons Distillation (2026-10-01)
+
+Yuqi story: yuqi did a workflow that contained private data; astor extracts
+the method/flow/pattern from it, strips user personal data, and writes the
+clean version to commons.
+
+### Shipped
+- **`nest/distiller.py`**: deterministic PII/first-person/emotion scrubber.
+  Inline-redacts PII (so a sentence with `[PHONE]` still keeps the rest),
+  then drops first-person and emotion sentences, returns clean commons text +
+  distill_report. 5/5 unit tests locked.
+- **`POST /v1/fact/{id}/distill`** (admin only): load fact from any tier,
+  distill content, write new commons-tier fact with `provenance_kind=
+  user_distilled`. Original personal fact stays in place; new commons copy
+  is for cross-user reuse.
+- **`POST /v1/fact/{id}/distill_auto`** (user-self): only user owns the fact
+  + `user_meta.distill_opt_in=1` in bot-binding.db.
+- **`POST /v1/admin/user/{user_id}/toggle_distill`** (admin): admin opt-in
+  per user.
+- **`bot-binding.db user_meta.distill_opt_in`** new column (default 0).
+- **`/v1/write` PII-hard-gate bypass** when `visibility_hint=personal`
+  (personal bucket accepts PII because personal does not leak to admin or
+  other users).
+
+### Live verified
+- write public method fact → distill → new commons fact 6553,
+  `provenance_kind=user_distilled`, `visibility=commons`, all keywords
+  preserved.
+- `distill_report`: `dropped_count=0, method_keywords_present=True,
+  has_first_person_after=False, has_pii_after=False`.
+
+### Known gap (v1.16.31)
+- ACL for admin writing personal tier (`visibility_hint=personal` returns
+  403 permission_denied). Personal→commons distillation requires the
+  personal fact to exist first; the write path needs an admin-side
+  bypass for personal-tier writes with PII. Tracked in v1.16.31.
+
 ## [1.16.29] - 2026-10-01
 
 ### Added (visibility tier — user feedback #7587 + #7568 + #11938)
