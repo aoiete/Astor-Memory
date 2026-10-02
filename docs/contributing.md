@@ -29,7 +29,7 @@ This document is the source of truth for:
 ## Quick start
 
 ```bash
-git clone https://github.com/<repo_owner>/<repo_name>.git
+git clone https://github.com/aoiete/Astor-Memory.git
 cd astor-memory
 pip install -e .[dev]
 pytest tests/
@@ -475,7 +475,7 @@ For non-trivial changes, file an issue describing the problem. This avoids waste
 ### Step 2: Fork and branch
 
 ```bash
-git clone https://github.com/your-username/astor-memory.git
+git clone https://github.com/aoiete/Astor-Memory.git
 cd astor-memory
 git checkout -b feat/my-feature
 ```
