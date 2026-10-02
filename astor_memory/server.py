@@ -120,7 +120,7 @@ def _pii_last_24h_count() -> int:
         import datetime as _dt
         path = str(get_db_path(Tier.PUBLIC, Store.BUS))
         conn = _sqlite3.connect(path)
-        cutoff = (_dt.datetime.utcnow() - _dt.timedelta(hours=24)).isoformat() + 'Z'
+        cutoff = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds') + 'Z'
         cur = conn.execute(
             "SELECT COUNT(*) FROM audit_log WHERE event='memory_defense_scan' AND ts >= ?",
             (cutoff,),
@@ -4793,7 +4793,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _tb_window_days = int(body.get('time_boost_days', 7))
             _tb_factor = float(body.get('time_boost_factor', 1.10))
             if _tb_enabled and enriched:
-                _now_tb = _dt_tb.datetime.utcnow()
+                _now_tb = _dt_tb.datetime.now(_dt_tb.timezone.utc).replace(tzinfo=None)
                 _cutoff = (_now_tb - _dt_tb.timedelta(days=_tb_window_days)).isoformat(timespec='seconds') + 'Z'
                 for r in enriched:
                     _ca = r.get('created_at') or ''
@@ -4868,7 +4868,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _surfaced_fids = [int(r['fact_id']) for r in enriched if r.get('fact_id') is not None]
             if _surfaced_fids and _os_acc.environ.get('ASTOR_ACCESS_TRACKING', '1') != '0':
                 _ph_acc = ','.join('?' * len(_surfaced_fids))
-                _now_iso = _dt_acc.datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+                _now_iso = _dt_acc.datetime.now(_dt_acc.timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds') + 'Z'
                 # Decay sweep (ENABLED by default as of v1.14.39 — disable via
                 # ASTOR_DECAY_SWEEP=0). MemPalace's living-memory dynamics (Hebbian
                 # potentiation + Ebbinghaus decay, v3.3.6) validates this direction:
@@ -4877,8 +4877,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # 30d no-recall: access_count halved (floor 1).
                 # 90d no-recall: tombstoned (archive).
                 if _os_acc.environ.get('ASTOR_DECAY_SWEEP', '1') != '0':
-                    _30d_iso = (_dt_acc.datetime.utcnow() - _dt_acc.timedelta(days=30)).isoformat(timespec='seconds') + 'Z'
-                    _90d_iso = (_dt_acc.datetime.utcnow() - _dt_acc.timedelta(days=90)).isoformat(timespec='seconds') + 'Z'
+                    _30d_iso = (_dt_acc.datetime.now(_dt_acc.timezone.utc).replace(tzinfo=None) - _dt_acc.timedelta(days=30)).isoformat(timespec='seconds') + 'Z'
+                    _90d_iso = (_dt_acc.datetime.now(_dt_acc.timezone.utc).replace(tzinfo=None) - _dt_acc.timedelta(days=90)).isoformat(timespec='seconds') + 'Z'
                     # v1.14.63 (R-class fix): skip LOCK rules. They are
                     # administrative configuration, not recall-derived facts;
                     # auto-tombstoning them would silently break /v1/classify
@@ -6831,7 +6831,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         out = {
             'version': __version__,
             'astor_dir': str(astor_dir),
-            'generated_at': __import__('datetime').datetime.utcnow().isoformat() + 'Z',
+            'generated_at': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).replace(tzinfo=None).isoformat() + 'Z',
             'dbs': {},
             'counts': {
                 'facts_total': 0,
@@ -7489,7 +7489,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
          )
         return jsonify({
             'version': __version__,
-            'audit_ts': __import__('datetime').datetime.utcnow().isoformat() + 'Z',
+            'audit_ts': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).replace(tzinfo=None).isoformat() + 'Z',
             'dimension_scores': scores,
             'total_score': f'{total}/3',
             'verdict': verdict,
