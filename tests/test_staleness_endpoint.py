@@ -18,7 +18,7 @@ def _make_app():
     """Build a fresh Flask app for testing."""
     import os as _os
     # Use runtime DB so we see real rows
-    _os.environ.setdefault('ASTOR_DIR', r'D:\AI\Astor-Memory-Runtime')
+    _os.environ.setdefault('ASTOR_DIR', _os.path.expanduser('~/.astor'))
     app = create_app()
     return app
 

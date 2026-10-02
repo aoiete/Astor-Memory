@@ -97,13 +97,13 @@ _KEYPAIR_FILE = "keypair.json"
 
 
 def _identity_dir(astor_dir: str | None = None) -> Path:
-    base = astor_dir or os.environ.get("ASTOR_DIR", "D:/AI/Astor-Memory-Runtime")
+    base = astor_dir or os.environ.get("ASTOR_DIR") or os.path.expanduser("~/.astor")
     return Path(base) / _IDENTITY_DIR
 
 
 def _db_path(astor_dir: str | None = None) -> str:
     """Canonical DB path — what we're hashing for peer_id."""
-    base = astor_dir or os.environ.get("ASTOR_DIR", "D:/AI/Astor-Memory-Runtime")
+    base = astor_dir or os.environ.get("ASTOR_DIR") or os.path.expanduser("~/.astor")
     # Use the public bus DB as the canonical identifier. If user moves
     # the DB but keeps ASTOR_DIR, peer_id follows.
     return str(Path(base) / "public" / "memory" / "astor_bus_public.db")

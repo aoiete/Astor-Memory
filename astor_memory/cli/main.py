@@ -1535,7 +1535,7 @@ def cmd_doctor(args) -> int:
     print(f'[astor] astor-memory v{__version__} health check')
     print(f'   PID: {process.pid}  Memory RSS: {mem_mb:.1f} MB')
 
-    astor_dir = os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor')
+    astor_dir = os.environ.get('ASTOR_DIR') or str(_P.home() / '.astor')
     print(f'   ASTOR_DIR: {astor_dir}')
     bb_path = Path(astor_dir) / 'bot-binding.db'
     print(f'   bot-binding.db: {"EXISTS" if bb_path.exists() else "MISSING"} ({bb_path.stat().st_size if bb_path.exists() else 0} bytes)')
@@ -1851,7 +1851,7 @@ def cmd_mm_list(args):
     import os as _os
     _tier = getattr(args, 'tier', 'public') or 'public'
     _user = getattr(args, 'user_id', None)
-    _rt_dir = _os.environ.get("ASTOR_DIR", "D:/AI/Astor-Memory-Runtime")
+    _rt_dir = os.environ.get("ASTOR_DIR") or str(_Path_h.expanduser(_Path_h.home() / ".astor"))
     if _tier.startswith('private'):
         _bus_db = str(_P(_rt_dir) / "users" / (_user or 'admin') / "memory" / f"astor_bus_{_user or 'admin'}.db")
     else:
@@ -1881,7 +1881,7 @@ def cmd_mm_rebuild(args):
     from astor_memory.nest.mental_models import upsert_mental_model, _ensure_sources_table
     from pathlib import Path as _P
     import os as _os
-    _rt_dir = _os.environ.get("ASTOR_DIR", "D:/AI/Astor-Memory-Runtime")
+    _rt_dir = os.environ.get("ASTOR_DIR") or str(_Path_h.expanduser(_Path_h.home() / ".astor"))
     _tier = getattr(args, 'tier', 'public')
     _user = getattr(args, 'user_id', None)
     if _tier.startswith('private'):
@@ -3195,7 +3195,7 @@ def cmd_recall_history(args) -> int:
     import datetime as _dt_h
     from pathlib import Path as _Path_h
 
-    astor_dir = os.environ.get('ASTOR_DIR', 'D:/AI/Astor-Memory-Runtime')
+    astor_dir = os.environ.get('ASTOR_DIR') or os.path.expanduser(os.path.join('~', '.astor'))  # cross-platform default
     log_path = _Path_h(astor_dir) / 'astor' / 'metrics' / 'recall_log.jsonl'
     if not log_path.exists():
         print(f'[ERR] recall_log not found at {log_path}')

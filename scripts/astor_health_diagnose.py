@@ -1,5 +1,6 @@
 """astor_health_diagnose.py — diagnose dashboard "health" counters.
 
+import os
 Reads the same audit_log the dashboard samples, and explains what each counter
 means + lists the underlying records.
 
@@ -35,7 +36,7 @@ def _open_bus(user: str, astor_dir: str | None) -> tuple[sqlite3.Connection, str
         base = Path(astor_dir)
     else:
         # Default: sibling layout of Astor-Memory-Runtime
-        base = Path(r"D:/AI/Astor-Memory-Runtime")
+        base = Path(os.path.expanduser("~/.astor"))
     db = base / "users" / user / "memory" / f"astor_bus_{user}.db"
     if not db.exists():
         raise FileNotFoundError(f"DB not found: {db}")
@@ -223,7 +224,7 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--user", default="admin", help="user to diagnose (default admin)")
-    ap.add_argument("--astor-dir", help="ASTOR runtime root (default D:/AI/Astor-Memory-Runtime)")
+    ap.add_argument("--astor-dir", help="ASTOR runtime root (default: $ASTOR_DIR env or ~/.astor)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--summary", action="store_true", default=True,
                      help="show summary (default)")

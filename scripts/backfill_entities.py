@@ -5,7 +5,7 @@ Usage:
     python backfill_entities.py --apply    # write entities_json in place
 
 Env:
-    ASTOR_DIR  runtime root (default D:/AI/Astor-Memory-Runtime)
+    ASTOR_DIR  runtime root (default: $ASTOR_DIR env or ~/.astor)
 
 Safety:
     - sqlite3 backup API snapshot of each bus DB before any write
@@ -22,7 +22,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from astor_memory.forge.extractor import extract_entities  # noqa: E402
 
-ASTOR_DIR = os.environ.get("ASTOR_DIR", r"D:/AI/Astor-Memory-Runtime")
+ASTOR_DIR = os.environ.get("ASTOR_DIR") or os.path.expanduser("~/.astor")
 
 
 def find_bus_dbs(root):

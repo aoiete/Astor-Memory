@@ -4977,7 +4977,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
         # v1.14.28 Ship J: usage log best-effort.
         try:
-            _usage_path = os.environ.get('ASTOR_DIR', 'D:/AI/Astor-Memory-Runtime')
+            _usage_path = os.environ.get('ASTOR_DIR') or os.path.expanduser('~/.astor')
             _log_dir = os.path.join(_usage_path, 'astor', 'metrics')
             os.makedirs(_log_dir, exist_ok=True)
             _log_path = os.path.join(_log_dir, 'recall_log.jsonl')
