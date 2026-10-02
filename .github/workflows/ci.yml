@@ -17,7 +17,7 @@ jobs:
   test:
     name: pytest (${{ matrix.python-version }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30  # 2026-10-02: 781 tests + 4 Python versions need >15min; 30min covers it safely
     strategy:
       fail-fast: false
       matrix:
