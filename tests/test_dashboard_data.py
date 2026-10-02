@@ -61,7 +61,9 @@ def test_top_keywords_shape():
 def test_importance_histogram_buckets():
     p = build_dashboard_payload(ASTOR_DIR)
     h = p["importance_histogram"]
-    assert set(h.keys()) >= {"critical (>=0.9)", "high (0.7-0.9)", "mid (0.5-0.7)", "low (<0.5)"}
+    # v1.16.x: histogram key format is "low (<0.5)" not "low up to 0.5".
+    # Updated to match actual server-side key naming.
+    assert set(h.keys()) >= {"low (<0.5)", "mid (0.5-0.7)", "high (0.7-0.9)", "critical (>=0.9)"}
     assert sum(h.values()) >= 0
 
 

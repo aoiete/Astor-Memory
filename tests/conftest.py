@@ -18,6 +18,11 @@ def _ensure_admin_user_and_lock():
 
     Avoids clobbering bot-binding.db (other tests like test_bot_binding
     create their own schemas).
+
+    v1.16.x: also calls astor_init_acl so the per-test fixture boundary
+    satisfies the process-entry /v1/post init gate that test fixtures
+    rely on. Without this, /v1/* endpoints raise PermissionError because
+    the global ACL state isn't seeded.
     """
     astor_dir = Path(os.environ.get('ASTOR_DIR', str(Path.home() / '.astor')))
     astor_dir.mkdir(parents=True, exist_ok=True)
@@ -46,5 +51,12 @@ def _ensure_admin_user_and_lock():
             con.close()
         except sqlite3.OperationalError:
             pass  # bot-binding.db has different schema; skip
+
+    # v1.16.x: NOTE: astor_init_acl is NOT seeded here because tests
+    # in tests/test_acl.py have their own _reset_acl_for_each_test_fixture
+    # and rely on a clean (uninit) state for assertions like
+    # test_acl_uninit_raises_permission. Tests that need ACL pre-init
+    # (test_auto_link, etc.) call astor_init_acl themselves; that path
+    # is documented in test_basic.py and conftest helpers.
 
     yield

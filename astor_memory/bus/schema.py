@@ -728,9 +728,9 @@ def _astor_upgrade_v15_to_v16(conn: sqlite3.Connection) -> None:
 
     Idempotent: ALTER TABLE ADD COLUMN via PRAGMA check.
     """
-    from ..nest.visibility_classifier import (
-        has_pii, has_first_person, has_emotion, has_geographic, AUTO_COMMONS_KINDS,
-    )
+    from astor_memory.nest.visibility_classifier import (
+            has_pii, has_first_person, has_emotion, has_geographic, AUTO_COMMONS_KINDS,
+        )
 
     def _col_exists(c, col_name):
         rows = c.execute("PRAGMA table_info(memory_canonical)").fetchall()
