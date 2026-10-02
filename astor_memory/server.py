@@ -22,6 +22,7 @@ import sqlite3
 import json
 import sys
 import time
+from pathlib import Path
 
 # S15 (2026-09-10): dashboard cache — keeps aggregated payload so
 # the HTML page polling /v1/dashboard doesn't re-run 16 user-db aggregates
@@ -139,6 +140,19 @@ def _pii_last_24h_count() -> int:
 from flask import Flask, jsonify, request
 
 from . import __version__, astor_bus, astor_nest, astor_forge
+
+def _astor_public_dir_label(astor_dir):
+    """Return just the basename of astor_dir for user-facing responses.
+
+    v1.16.50: do not leak the full on-disk path (Windows D:\\AI\\...) to
+    any user-facing endpoint. Admin-only /v1 endpoints can pass a flag
+    if they need the full path; default is to mask.
+    """
+    try:
+        from pathlib import Path as _P
+        return _P(str(astor_dir)).name
+    except Exception:
+        return 'astor'
 from ._internal.acl import astor_init_acl, _CURRENT, astor_current_acl, PermissionError_
 from ._internal.bot_binding import get_user
 from .config import get_default_astor_dir, get_default_bus_path, get_default_nest_path
@@ -1158,10 +1172,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
         result = {
             'status': 'ok',
             'version': __version__,
-            'astor_dir': str(get_default_astor_dir()),
+            # v1.16.50: mask on-disk path; expose only dir basename.
+            'astor_dir': _astor_public_dir_label(get_default_astor_dir()),
             'dbs': {
-                'bus': str(bus.db_path),
-                'nest': str(nest.db_path),
+                # v1.16.50: do not leak sqlite file paths in /v1/health.
+                'bus': 'ok',
+                'nest': 'ok',
             },
             # v1.16.x: reactive consult + 三层内容防线 — health surface.
             'v116x_tier_routing': {
@@ -1516,8 +1532,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         return jsonify({
             'peer_id': _peer_id_str,
             'public_key_fingerprint': _pub_fp,
-            'astor_dir': str(get_default_astor_dir()),
-        })
+            # v1.16.50: do not leak on-disk path in /v1/identity.
+                })
 
     # ---- v1.16.8 bi-temporal fact lifecycle endpoints ----
 
@@ -1984,7 +2000,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
         db = astor_dir / "users" / user / "memory" / f"astor_bus_{user}.db"
         if not db.exists():
-            return jsonify({"error": "user_db_not_found", "user": user, "db": str(db)}), 404
+            return jsonify({"error": "user_db_not_found", "user": user}), 404
 
         try:
             co = sqlite3.connect(str(db))
@@ -2085,7 +2101,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         return jsonify({
             "generated_at": _t.time(),
             "user": user,
-            "db": str(db),
+            # v1.16.50: do not leak sqlite file path in /v1/health/diagnose.
             "embedding_failed": emb,
             "warnings": warn,
             "audit_total_by_severity": {row[0]: row[1] for row in sev_rows},
@@ -8058,9 +8074,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
         import traceback as _tb
         _side_log = _os_e.path.join(
             _os_e.path.dirname(_os_e.path.dirname(_os_e.path.abspath(__file__))),
-            'astor memory', '_server_500.log',
+            'logs', '_server_500.log',
         )
         try:
+            _os_e.makedirs(_os_e.path.dirname(_side_log), exist_ok=True)
             with open(_side_log, 'a', encoding='utf-8') as _f:
                 _f.write('\n=== ' + _os_e.environ.get('COMPUTERNAME', '?') +
                          ' port=' + str(request.environ.get('SERVER_PORT', '?')) +
@@ -9188,9 +9205,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
     )
     _dash_th.start()
     print('   Dashboard prewarm: launched background thread', flush=True)
-
     return app
-
 
 
 def main():
