@@ -605,7 +605,7 @@ class AstorNest:
 # granularity. Keep the alias module-level for backward compat with
 # tests that import _nest_singleton directly.
 _nest_singleton: dict | None = None
-_nest_lock = threading.Lock()
+_nest_lock = threading.RLock()  # 2026-10-02: RLock (reentrant) — close() and astor_reset_nest() both acquire it
 
 
 def astor_nest(
