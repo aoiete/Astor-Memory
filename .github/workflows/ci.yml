@@ -3,6 +3,12 @@ name: ci
 # Auto-test on push to main + PRs.
 # Per Plan § Week 4 step 3.4: Ubuntu 24.04 + Python 3.10/3.11/3.12/3.13 matrix.
 # Tests: pytest (functional) + import check (smoke).
+#
+# 2026-10-02 split into two jobs after CI hang at 15-min timeout:
+#   - fast: core unit + API tests (233 tests) — completes in ~5 min
+#   - slow: integration + e2e tests (548 tests) — completes in ~25 min
+# Both jobs block merge independently, so a hang in slow doesn't block
+# fast failures (and vice-versa).
 
 on:
   push:
@@ -14,10 +20,10 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: pytest (${{ matrix.python-version }})
+  fast:
+    name: pytest-fast (py${{ matrix.python-version }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30  # 2026-10-02: 781 tests + 4 Python versions need >15min; 30min covers it safely
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -47,10 +53,6 @@ jobs:
         run: |
           python -c "import astor_memory; print('OK', astor_memory.__version__)"
 
-      # 2026-09-02: ServerIntegrationTests + hermes_adapter rely on a live
-      # astor server on 127.0.0.1:7803. Start one as a background process
-      # before pytest, stop it after. Tests that need the server will fail
-      # loudly if the server is missing — better than silent skip.
       - name: Start astor server (background)
         run: |
           mkdir -p /tmp/astor-ci
@@ -58,7 +60,6 @@ jobs:
           nohup python -m astor_memory.server --host 127.0.0.1 --port 7803 \
             > /tmp/astor-server.log 2>&1 &
           echo $! > /tmp/astor-server.pid
-          # Wait for /v1/health to return 200 (max 30s)
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:7803/v1/health >/dev/null 2>&1; then
               echo "astor server ready after ${i}s"
@@ -68,10 +69,32 @@ jobs:
           done
           curl -fsS http://127.0.0.1:7803/v1/health || (cat /tmp/astor-server.log; exit 1)
 
-      - name: Run pytest
+      - name: Run pytest fast (233 core tests)
         run: |
           export ASTOR_DIR=/tmp/astor-ci
-          pytest tests/ -v --tb=short
+          pytest tests/ \
+            tests/test_basic.py \
+            tests/test_acl.py \
+            tests/test_auto_link.py \
+            tests/test_classify_rclass_guard.py \
+            tests/test_dashboard_data.py \
+            tests/test_episodes.py \
+            tests/test_hermes_adapter.py \
+            tests/test_lex_index.py \
+            tests/test_bridge_default.py \
+            tests/test_classify_data_method_separation.py \
+            tests/test_conflict_resolver.py \
+            tests/test_correction_protocol.py \
+            tests/test_decay_sweep.py \
+            tests/test_diagnose_expansion.py \
+            tests/test_l1_l2_recall.py \
+            tests/test_memory_defense_audit.py \
+            tests/test_promote_candidate_bug.py \
+            tests/test_provenance.py \
+            tests/test_reflection_server.py \
+            tests/test_topic_routing.py \
+            tests/test_v1169_asymmetry_and_tiers.py \
+            -v --tb=short -p no:cacheprovider
 
       - name: Stop astor server
         if: always()
@@ -84,7 +107,99 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pytest-report-${{ matrix.python-version }}
+          name: pytest-fast-report-py${{ matrix.python-version }}
+          path: pytest-report.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  slow:
+    name: pytest-slow (py${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Smoke import
+        run: |
+          python -c "import astor_memory; print('OK', astor_memory.__version__)"
+
+      - name: Start astor server (background)
+        run: |
+          mkdir -p /tmp/astor-ci
+          export ASTOR_DIR=/tmp/astor-ci
+          nohup python -m astor_memory.server --host 127.0.0.1 --port 7803 \
+            > /tmp/astor-server.log 2>&1 &
+          echo $! > /tmp/astor-server.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:7803/v1/health >/dev/null 2>&1; then
+              echo "astor server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:7803/v1/health || (cat /tmp/astor-server.log; exit 1)
+
+      - name: Run pytest slow (548 integration/e2e tests)
+        run: |
+          export ASTOR_DIR=/tmp/astor-ci
+          pytest tests/ \
+            --ignore=tests/test_basic.py \
+            --ignore=tests/test_acl.py \
+            --ignore=tests/test_auto_link.py \
+            --ignore=tests/test_classify_rclass_guard.py \
+            --ignore=tests/test_dashboard_data.py \
+            --ignore=tests/test_episodes.py \
+            --ignore=tests/test_hermes_adapter.py \
+            --ignore=tests/test_lex_index.py \
+            --ignore=tests/test_bridge_default.py \
+            --ignore=tests/test_classify_data_method_separation.py \
+            --ignore=tests/test_conflict_resolver.py \
+            --ignore=tests/test_correction_protocol.py \
+            --ignore=tests/test_decay_sweep.py \
+            --ignore=tests/test_diagnose_expansion.py \
+            --ignore=tests/test_l1_l2_recall.py \
+            --ignore=tests/test_memory_defense_audit.py \
+            --ignore=tests/test_promote_candidate_bug.py \
+            --ignore=tests/test_provenance.py \
+            --ignore=tests/test_reflection_server.py \
+            --ignore=tests/test_topic_routing.py \
+            --ignore=tests/test_v1169_asymmetry_and_tiers.py \
+            -v --tb=short -p no:cacheprovider
+
+      - name: Stop astor server
+        if: always()
+        run: |
+          if [ -f /tmp/astor-server.pid ]; then
+            kill "$(cat /tmp/astor-server.pid)" || true
+          fi
+
+      - name: Upload pytest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-slow-report-py${{ matrix.python-version }}
           path: pytest-report.xml
           if-no-files-found: ignore
           retention-days: 7
