@@ -1,4 +1,43 @@
 
+## v1.16.51 (2026-10-02) — README English overhaul + single-server deployment shape
+
+Rewrites `README.md` from the previous vendor-comparison frame to a single-server
+memory layer for a small trusted group (family / friends / co-admins). Adds
+sections for Muse / external agent platform binding API (POST /v1/binding/*),
+dashboard v1.16.50 features (path-leak sanitize, peer-id clipboard,
+single-card alignment, recent-capture pager), and a complete REST surface
+table covering all 30 public endpoints. No runtime behavior changes.
+
+### Changed
+
+- **`README.md`**: rewritten as deployment-shape narrative + API surface table
+- **Muse integration recipe**: documents 4-step binding flow (register
+  platform → register user → bind chat session → platform-scoped read/write)
+- **Quick start**: updated to show single-server `pip install astor-memory`
+  + `astor-server` console script flow
+
+## v1.16.52 (2026-10-02) — README.zh-CN.md rewrite aligned
+
+Chinese-prose rewrite of the README, mirroring v1.16.51 content with English
+computer terms preserved (API / ACL / REST / SQLite / HTTP / Tier / Muse...).
+No runtime behavior changes.
+
+### Changed
+
+- **`README.zh-CN.md`**: full rewrite from prior version (8KB → 14KB).
+  Pure Chinese, English terms only where they are standard vocabulary.
+
+## v1.16.53 (2026-10-02) — Fix dead links in README
+
+Lychee link-check on push caught two broken links introduced by the v1.16.51
+README rewrite. Both fixed; no runtime behavior changes.
+
+### Changed
+
+- `docs/integration-muse.md` → `docs/MUSE_INTEGRATION.md` (file already
+  existed under the original name)
+- `AUTHORS.md` → `ACKNOWLEDGEMENTS.md` (only the latter exists)
+
 ## v1.16.50 (2026-10-02) — Path-leak sanitize + dashboard alignment + peer-id clipboard
 
 Sanitizes on-disk paths out of public endpoints and brings dashboard layout
