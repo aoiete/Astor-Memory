@@ -34,7 +34,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-_DEFAULT_ASTOR_DIR = 'D:/AI/Astor-Memory-Runtime'
+_DEFAULT_ASTOR_DIR = os.path.expanduser("~/.astor")
 LOG_FILENAME = 'recall_log.jsonl'
 
 

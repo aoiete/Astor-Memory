@@ -112,7 +112,8 @@ def _make_minimal_bus_db() -> sqlite3.Connection:
     + events tables (used by FakeBus.promote_candidate).
     """
     conn = sqlite3.connect(":memory:")
-    live_db = r'D:\AI\Astor-Memory-Runtime\public\memory\astor_bus_public.db'
+    _live_dir = os.environ.get('ASTOR_DIR') or os.path.expanduser('~/.astor')
+    live_db = os.path.join(_live_dir, 'public', 'memory', 'astor_bus_public.db')
     import os
     src = None
     if os.path.exists(live_db):

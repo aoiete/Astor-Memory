@@ -4,7 +4,7 @@ GraphMemix-inspired Evidence-Chain Verifier (ECV) for astor memory recall.
 
 Source: 北大王选计算机研究所 + MemoraX AI GraphMemix paper
 (arXiv 2608.26983). Article summary in
-D:/AI/astor-memory/docs/wechat-graphmemix-paper-article.txt.
+docs/wechat-graphmemix-paper-article.txt  (in the repo).
 
 GraphMemix ablation showed:
     Embedding Top-K             49.20%

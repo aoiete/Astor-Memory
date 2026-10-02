@@ -18,7 +18,7 @@ import unittest
 import sys
 
 # Import the server module's helpers (without spinning up Flask)
-sys.path.insert(0, 'D:/AI/astor-memory')
+import os as _os_wr; sys.path.insert(0, _os_wr.environ.get('ASTOR_SOURCE_ROOT', '/opt/astor-memory'))
 from astor_memory.server import (
     _infer_provenance_kind,
     _expand_wing_to_provenance,

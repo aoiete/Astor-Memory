@@ -26,7 +26,7 @@ def _astor_has_data() -> bool:
     tests assume seeded users + facts. Skip cleanly instead of failing.
     """
     import os as _os2
-    d = _os2.environ.get('ASTOR_DIR') or 'D:/AI/Astor-Memory-Runtime' if _os2.name == 'nt' else '/tmp/astor-ci'
+    d = _os2.environ.get('ASTOR_DIR') or _os2.path.expanduser('~/.astor')
     candidates = [
         os.path.join(d, 'public/memory/astor_bus_public.db'),
         os.path.join(d, 'users/admin/memory/astor_bus_admin.db'),
@@ -36,13 +36,13 @@ def _astor_has_data() -> bool:
 
 pytestmark = pytest.mark.skipif(not _astor_has_data(), reason='ASTOR_DIR has no seeded data; dashboard endpoint tests require live runtime')
 
-# Tests run against the live Astor-Memory-Runtime at D:/AI/Astor-Memory-Runtime.
+# Tests run against the live Astor-Memory-Runtime at ~/.astor (or env ASTOR_DIR).
 # Pass ?astor_dir= override because Flask test client uses system HOME by default.
 import os as _os
 # v1.16.x: prefer CI's ASTOR_DIR (=/tmp/astor-ci), fall back to local runtime.
 TEST_ASTOR_DIR = (
     _os.environ.get('ASTOR_DIR')
-    or ('D:/AI/Astor-Memory-Runtime' if _os.name == 'nt' else '/tmp/astor-ci')
+    or _os.path.expanduser('~/.astor')
 )
 
 

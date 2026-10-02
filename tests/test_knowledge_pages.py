@@ -134,7 +134,8 @@ def _make_bus_db() -> sqlite3.Connection:
             scene TEXT NOT NULL DEFAULT 'casual'
         )
     """)
-    live_db = r'D:\AI\Astor-Memory-Runtime\public\memory\astor_bus_public.db'
+    _live_dir = os.environ.get('ASTOR_DIR') or os.path.expanduser('~/.astor')
+    live_db = os.path.join(_live_dir, 'public', 'memory', 'astor_bus_public.db')
     if os.path.exists(live_db):
         src = sqlite3.connect(live_db)
         cols = src.execute("PRAGMA table_info(memory_canonical)").fetchall()

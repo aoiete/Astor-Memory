@@ -12,11 +12,12 @@ Pure Python stdlib + sqlite3. Zero external deps. Safe to import from server.
 
 Usage:
     from astor_memory.dashboard_data import build_dashboard_payload
-    payload = build_dashboard_payload(astor_dir="D:/AI/Astor-Memory-Runtime")
+    payload = build_dashboard_payload(astor_dir=os.path.expanduser("~/.astor"))
 """
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections import Counter
 from datetime import datetime, timezone, timedelta
@@ -1251,6 +1252,6 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
 if __name__ == "__main__":
     # CLI: python -m astor_memory.dashboard_data [astor_dir]
     import sys
-    astor_dir = sys.argv[1] if len(sys.argv) > 1 else "D:/AI/Astor-Memory-Runtime"
+    astor_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/.astor")
     payload = build_dashboard_payload(astor_dir)
     print(json.dumps(payload, indent=2, ensure_ascii=False))

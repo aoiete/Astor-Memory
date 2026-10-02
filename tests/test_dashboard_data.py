@@ -9,6 +9,7 @@ Tests:
 - per_user sorted by active desc
 """
 from __future__ import annotations
+import os
 
 import json
 import sys
@@ -19,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from astor_memory.dashboard_data import build_dashboard_payload  # noqa: E402
 
-ASTOR_DIR = "D:/AI/Astor-Memory-Runtime"
+ASTOR_DIR = os.path.expanduser("~/.astor")
 
 
 def test_required_keys():
