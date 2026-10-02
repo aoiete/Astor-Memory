@@ -4049,7 +4049,7 @@ now).
 # Write to a specific repo
 am.write("bug fixed in store.py:167 promote_candidate UNIQUE",
          tier="repo",
-         repo_id=normalize_repo_id("https://github.com/me/myrepo.git"),
+         repo_id=normalize_repo_id("https://github.com/aoiete/Astor-Memory.git"),
          scope="long_term")
 
 # Read from a specific repo (only that repo's facts surface)
@@ -4417,8 +4417,8 @@ mv <mem_sys>/memory-bus <mem_sys>/memory-bus-archived-2026-08-15
 
 ---
 
-[Unreleased]: https://github.com/<repo>/compare/v0.1.0.dev0...HEAD
-[0.1.0.dev0]: https://github.com/<repo>/releases/tag/v0.1.0.dev0
+[Unreleased]: https://github.com/aoiete/Astor-Memory/blob/main/CHANGELOG.md
+[0.1.0.dev0]: https://github.com/aoiete/Astor-Memory
 
 ## v1.11.0 (2026-08-31)
 
