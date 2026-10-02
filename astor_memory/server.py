@@ -16,73 +16,77 @@ Per Plan § Memory <-> concurrency: WAL mode handles concurrent reads.
 """
 from __future__ import annotations
 
+import os
+import re
 import sqlite3
 import json
+import sys
+import time
 
 # S15 (2026-09-10): dashboard cache — keeps aggregated payload so
 # the HTML page polling /v1/dashboard doesn't re-run 16 user-db aggregates
 # on every refresh. Cache key: astor_dir. Invalidation: 30s TTL
 # (S18 2026-09-25, tightened from 5min) + write-trigger invalidate in
 # /v1/write so hero.last_event_ts / growth_30d refresh instantly after writes.
+def _astor_prewarm_dashboard_cache(astor_dir_str):
+    """v1.16.42: pre-warm dashboard cache at startup.
+    Implemented in _dashboard_prewarm.py to keep server.py lean.
+    """
+    try:
+        from . import _dashboard_prewarm
+        _dashboard_prewarm._astor_prewarm_dashboard_cache(astor_dir_str)
+    except Exception as exc:
+        print('   Dashboard prewarm failed: {}'.format(exc), flush=True)
+
+
 _DASHBOARD_CACHE: dict = {"payload": None, "ts": 0.0, "astor_dir": None}
-_DASHBOARD_TTL_SEC = 30  # 2026-09-25 S18: tighter TTL so dashboard reflects writes promptly; /v1/write also invalidates on success for instant refresh.
-
-# v1.15.17 S21 (2026-09-25): auto-meta-recall counters.
-# Tracks how many /v1/read calls triggered meta-recall and how many pattern
-# facts were injected. Dashboard reads via /v1/audit/health endpoint to prove
-# "astor is working as a proactive advisor, not just a lookup table".
-# Reset only by server restart (deliberate: cumulative since boot = uptime signal).
-_META_RECALL_STATS: dict = {
-    "triggered": 0,
-    "returned_total": 0,
-    "errors": 0,
-    # v1.15.48 S22: separate counter for trigger-aware (fetch-resource) hits
-    # so the dashboard can show how often the cold-start rule fires vs normal
-    # pattern recall. Operators watch this to verify the gate is alive.
-    "trigger_aware_triggered": 0,
-    "trigger_aware_returned_total": 0,
-}
-_meta_recall_stats = _META_RECALL_STATS  # local alias used by read() with `global`
-
-# v1.16.20: LRU read cache for /v1/read — key=(query,tier,user,top_k) -> (ts, results)
-_READ_CACHE: dict = {}
+_DASHBOARD_TTL_SEC = 30  # 2026-09-25 S18: tighter TTL
 
 
-# v1.16.x: PII gate lifetime counters (exposed via /v1/health + /v1/audit/health).
+# v1.16.x (2026-10-01): PII gate stats — lifetime counters for /v1/health
+# + /v1/audit/health. Was missing from module level after recent refactor;
+# restoring here to fix NameError on /v1/health.
 _pii_gate_stats: dict = {"block_count": 0, "redact_count": 0}
 
+# v1.16.x (2026-10-01): Read LRU+TTL cache — /v1/read checks first.
+_READ_CACHE: dict = {}  # key=(query,tier,user,top_k) -> (timestamp, results)
+import time as _rc_init_t
+_RCACHE_TTL_S = 60
 
-# S14 (2026-09-08): auto-load OPENAI_API_KEY from hermes .env file if not in env.
-# Subprocess start (memory_servers_watch, start_astor.sh) sometimes doesn't inherit
-# OPENAI_API_KEY from parent bash on Windows MSYS. Read it directly from .env file
-# as a fallback so LLM rerank + forge paths work regardless of startup method.
-import os as _os
-# S14 (2026-09-08): load OPENAI_API_KEY from .env. Path resolved from HERMES_ENV env var
-# (set by hermes wrappers / cron) with generic fallbacks. No hardcoded operator paths
-# in source — R-class privacy rule (no PII in source files).
-if not _os.environ.get("OPENAI_API_KEY"):
-    _hermes_env = _os.environ.get("HERMES_ENV")
-    _env_paths = [p for p in (_hermes_env, "~/.hermes/.env") if p]
-    for _env_path in _env_paths:
-        _env_path = _os.path.expanduser(_env_path) if _env_path.startswith("~") else _env_path
+
+# v1.16.42 (2026-10-01): meta-recall stats dict — pre-existing latent bug
+# where _meta_recall_stats (lowercase) was 'global' inside functions but
+# never declared at module level. Define it here + alias uppercase form.
+_META_RECALL_STATS: dict = {
+    'triggered': 0,
+    'returned_total': 0,
+    'errors': 0,
+    'consult_triggered': 0,
+    'peer_fanout_triggered': 0,
+}
+_meta_recall_stats = _META_RECALL_STATS
+
+# v1.16.42 (2026-10-01): bot-binding.db retry helper.
+# v1.16.42 (2026-10-01): bot-binding.db retry helper.
+# Per R-class 12485 / 100-user scale: SQLite WAL helps but binding writes still
+# hit SQLITE_BUSY under 8-thread pool contention. Retry with exponential backoff.
+import time as _bot_t
+def _astor_bot_binding_connect(retry_max: int = 3):
+    """Open bot-binding.db with retry on SQLITE_BUSY. 100-user safe."""
+    import sqlite3 as _bot_s
+    _delay = 0.05
+    for _i in range(retry_max + 1):
         try:
-            with open(_env_path, encoding="utf-8", errors="ignore") as _f:
-                for _line in _f:
-                    if _line.startswith("OPENAI_API_KEY=") or _line.startswith("OPENROUTER_API_KEY="):
-                        _key = _line.split("=", 1)[1].strip().strip('"\'')
-                        if _key and len(_key) > 15:  # not a 15-char redacted placeholder
-                            _os.environ["OPENAI_API_KEY"] = _key
-                            break
-        except OSError:
-            continue
-        if _os.environ.get("OPENAI_API_KEY"):
-            break
-import os
-import re
-import sys
-from pathlib import Path
-from typing import Any
-
+            _db = _bot_s.connect('D:\\AI\\Astor-Memory-Runtime\\bot-binding.db', timeout=10.0)
+            _db.execute('PRAGMA journal_mode=WAL')
+            _db.execute('PRAGMA busy_timeout=5000')
+            return _db
+        except _bot_s.OperationalError as _oexc:
+            if 'database is locked' not in str(_oexc).lower() and 'busy' not in str(_oexc).lower():
+                raise
+            if _i >= retry_max:
+                raise
+    return None
 
 def _safe_stderr_write(msg: str) -> None:
     """Write to sys.stderr without crashing if it is None.
@@ -7771,7 +7775,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'platform_id required'}), 400
         try:
             import sqlite3 as _sqlite3
-            _db = sqlite3.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            _db = _astor_bot_binding_connect()
             _db.execute("""
                 INSERT OR REPLACE INTO platforms
                     (platform_id, platform_kind, account_id, account_token,
@@ -7800,7 +7804,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'user_id required'}), 400
         try:
             import sqlite3 as _sqlite3
-            _db = sqlite3.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            _db = _astor_bot_binding_connect()
             _db.execute("""
                 INSERT OR REPLACE INTO user_meta
                     (user_id, short_alias, display_name, real_name, role,
@@ -7846,7 +7850,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         try:
             import sqlite3 as _sqlite3
             import uuid as _uuid
-            _db = sqlite3.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            _db = _astor_bot_binding_connect()
             # v1.16.17.1 fix: auto-inherit role from user_meta.role if not
             # explicitly provided. Avoids the cross_channel_inconsistency
             # 409 when admin's role='admin' but binding's role_inherit='user'.
@@ -7901,7 +7905,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             }), 400
         try:
             import sqlite3 as _sqlite3
-            _db = sqlite3.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            _db = _astor_bot_binding_connect()
             _db.row_factory = _sqlite3.Row
             row = _db.execute("""
                 SELECT b.platform_id, b.chat_id, b.user_id, b.scope,
@@ -7940,7 +7944,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         """List all active bindings (operator view)."""
         try:
             import sqlite3 as _sqlite3
-            _db = sqlite3.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            _db = _astor_bot_binding_connect()
             _db.row_factory = _sqlite3.Row
             rows = _db.execute("""
                 SELECT b.platform_id, b.chat_id, b.user_id, b.scope, b.bound_at,
@@ -9172,6 +9176,18 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception:
             pass  # never break the response
         return response
+
+
+    # v1.16.42: pre-warm dashboard cache in daemon thread
+    import threading as _th_dash
+    _astor_default_dir = str(get_default_astor_dir())
+    _dash_th = _th_dash.Thread(
+        target=_astor_prewarm_dashboard_cache,
+        args=(_astor_default_dir,),
+        daemon=True,
+    )
+    _dash_th.start()
+    print('   Dashboard prewarm: launched background thread', flush=True)
 
     return app
 
