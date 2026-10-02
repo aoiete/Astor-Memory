@@ -37,7 +37,6 @@ jobs:
           args: >
             --no-progress
             --exclude-loopback
-            --exclude-mail
             --exclude 'https://twitter.com/*'
             --exclude 'https://x.com/*'
             --exclude 'https://localhost:*'
