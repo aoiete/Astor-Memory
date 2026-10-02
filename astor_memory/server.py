@@ -9201,7 +9201,7 @@ def main():
     # bindings. We accept serial request handling (no parallelism) in
     # exchange for stability. A threaded server with per-thread connections
     # is the proper fix; ship that in a future version (v1.14.8+).
-    app.run(host=args.host, port=args.port, debug=args.debug, threaded=False)  # S13: enable Flask threaded mode for concurrent /v1/read requests (R-class N). Bus uses WAL mode so concurrent reads safe.
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)  # S13: enable Flask threaded mode for concurrent /v1/read requests (R-class N). Bus uses WAL mode so concurrent reads safe.
 
 
 if __name__ == '__main__':
