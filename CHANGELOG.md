@@ -4008,7 +4008,7 @@ the suspicious pre-fix entries.
 
 ### Added — `docs/api.md` full REST endpoint reference
 
-New [`docs/api.md`](../api.md) documents all 18 REST endpoints:
+New [`docs/api.md`](./docs/api.md) documents all 18 REST endpoints:
 
 - **Core write/read**: `/v1/write`, `/v1/read`
 - **opt3-6 forget + audit**: `/v1/forget` (dry-run + tombstone + audit
