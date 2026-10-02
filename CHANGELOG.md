@@ -4417,7 +4417,7 @@ mv <mem_sys>/memory-bus <mem_sys>/memory-bus-archived-2026-08-15
 
 ---
 
-[Unreleased]: https://github.com/<repo-owner>/Astor-Memory/blob/main/CHANGELOG.md
+[Unreleased]: https://github.com/<repo-owner>/Astor-Memory
 [0.1.0.dev0]: https://github.com/<repo-owner>/Astor-Memory
 
 ## v1.11.0 (2026-08-31)
