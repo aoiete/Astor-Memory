@@ -47,23 +47,27 @@ class HermesAdapterToolTest(unittest.TestCase):
         cls.provider.is_available()
 
     def test_recall_hybrid_default(self):
+        # v1.16.x: unique query to dodge /v1/read 60s LRU cache that may
+        # still hold a pre-score_kind payload.
+        import time as _t
         result = json.loads(self.provider.handle_tool_call(
-            'astor_recall', {'query': 'astor memory', 'top_k': 3},
+            'astor_recall', {'query': 'astor memory_' + str(int(_t.time()*1000)),
+                             'top_k': 3},
         ))
         self.assertIn('results', result)
         self.assertGreater(result['count'], 0)
         for r in result['results']:
             self.assertIn('score_kind', r)
-            # default hybrid=True; server may include 'session_neighbor' rows
             self.assertIn(r['score_kind'], ('hybrid', 'cosine', 'session_neighbor'))
 
     def test_recall_hybrid_false(self):
+        # v1.16.x: unique query for same LRU-bypass reason.
+        import time as _t
         result = json.loads(self.provider.handle_tool_call(
-            'astor_recall', {'query': 'astor memory', 'top_k': 3,
-                             'hybrid': False},
+            'astor_recall', {'query': 'astor memory_' + str(int(_t.time()*1000)) + '_v',
+                             'top_k': 3, 'hybrid': False},
         ))
         for r in result['results']:
-            # v1.14.x: 'grep_verify' is the new score_kind for pure-FTS path.
             self.assertIn(r['score_kind'], ('cosine', 'session_neighbor', 'grep_verify'))
 
     def test_recall_cross_tier(self):
@@ -134,23 +138,23 @@ class HermesAdapterToolTest(unittest.TestCase):
         self.assertEqual(result['forgotten'][0]['fact_id'], fid)
 
     def test_status_includes_lex(self):
-            result = json.loads(self.provider.handle_tool_call(
-                'astor_status', {},
-            ))
-            d = json.loads(result) if isinstance(result, str) else result
-            # _tool_status returns a JSON string; parse it
-            if isinstance(result, str):
-                d = json.loads(result)
-            self.assertIn('public_lex_docs', d)
-            self.assertIn('source_lex_docs', d)
-            self.assertIn('per_user_lex', d)
-            # R-class: test requires seeded lex; skip if ASTOR_DIR is fresh (no docs).
-            # The CI / dev operator ASTOR_DIR likely has data; tmp dirs created by
-            # isolated test fixtures do not. Skip rather than fail on the empty case.
-            if d['public_lex_docs'] == 0 and d['source_lex_docs'] == 0:
-                self.skipTest("ASTOR_DIR has no seeded lex docs; status invariants need data")
-            self.assertGreater(d['public_lex_docs'], 0)
-            self.assertGreater(d['source_lex_docs'], 0)
+        result = json.loads(self.provider.handle_tool_call(
+            'astor_status', {},
+        ))
+        if isinstance(result, str):
+            d = json.loads(result)
+        else:
+            d = result
+        self.assertIn('public_lex_docs', d)
+        self.assertIn('source_lex_docs', d)
+        self.assertIn('per_user_lex', d)
+        # v1.16.x: skip if ASTOR_DIR is fresh (no seeded lex docs). CI's
+        # /tmp/astor-ci is empty so /v1/status reports 0/0 — that's a
+        # valid runtime state, not a test failure.
+        if d['public_lex_docs'] == 0 and d['source_lex_docs'] == 0:
+            self.skipTest("ASTOR_DIR has no seeded lex docs; status invariants need data")
+        self.assertGreater(d['public_lex_docs'], 0)
+        self.assertGreater(d['source_lex_docs'], 0)
 
 
 class HermesToolSchemaTest(unittest.TestCase):

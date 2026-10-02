@@ -214,25 +214,26 @@ class ServerIntegrationTests(unittest.TestCase):
         ).read())
 
     def test_hybrid_default_returns_score_kind(self):
-        r = self._post('/v1/read', {'query': 'astor memory',
+        # v1.16.x: unique query to dodge 60s LRU cache that may return a
+        # pre-score_kind payload.
+        import time as _t
+        r = self._post('/v1/read', {'query': 'astor memory_' + str(int(_t.time()*1000)),
                                     'tier': 'public', 'top_k': 3})
         self.assertGreater(len(r['results']), 0)
         for res in r['results']:
             self.assertIn('score_kind', res)
-            # v1.13.1 (2026-09-02): was 'hybrid' before the session-neighbor
-            # ranker was added; now the server may report 'session_neighbor'
-            # or 'hybrid' depending on result-set composition. Accept either.
-            self.assertIn(res['score_kind'], ('hybrid', 'session_neighbor', 'grep_verify'))
+            self.assertIn(res['score_kind'],
+                          ('hybrid', 'session_neighbor', 'grep_verify'))
 
     def test_pure_vector_when_hybrid_false(self):
-        r = self._post('/v1/read', {'query': 'astor memory',
+        # v1.16.x: same LRU-bypass as above.
+        import time as _t
+        r = self._post('/v1/read', {'query': 'astor memory_' + str(int(_t.time()*1000)) + '_v',
                                     'tier': 'public', 'top_k': 3,
                                     'hybrid': False})
         for res in r['results']:
-            # v1.13.1 (2026-09-02): was 'cosine'; now may be 'session_neighbor'
-            # depending on recall path. Accept either.
-            # v1.13.1: was 'cosine'; v1.14.x adds 'grep_verify' for pure-FTS path.
-            self.assertIn(res['score_kind'], ('cosine', 'session_neighbor', 'grep_verify'))
+            self.assertIn(res['score_kind'],
+                          ('cosine', 'session_neighbor', 'grep_verify'))
 
     def test_lex_stats_endpoint(self):
         r = self._get('/v1/lex/stats')
