@@ -261,7 +261,7 @@ The full ship history is preserved in the Hermes agent project for archival purp
 
 ## 8. License note
 
-Astor-Memory is MIT-licensed. See [`LICENSE`](../LICENSE).
+Astor-Memory is MIT-licensed. See [`LICENSE`](LICENSE).
 
 The Acknowledgements above do NOT grant additional rights beyond the MIT license of Astor-Memory itself. Each project's license applies to their own code, not to Astor-Memory's code.
 
