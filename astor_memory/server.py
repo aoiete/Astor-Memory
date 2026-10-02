@@ -9176,8 +9176,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
     return app
 
 
+
 def main():
-    """Run dev server: python -m astor_memory.server"""
+    """Run server: python -m astor_memory.server
+    v1.16.41: switched from Flask dev server (threaded=False/True both bad)
+    to waitress WSGI server (production-grade, bounded threads).
+    """
     import argparse
     parser = argparse.ArgumentParser(description='Astor-Memory REST API server')
     parser.add_argument('--host', default='127.0.0.1', help='Bind host (default 127.0.0.1)')
@@ -9190,6 +9194,14 @@ def main():
     print(f'[*] Astor-Memory v{__version__} REST API')
     print(f'   Listening on http://{args.host}:{args.port}')
     print(f'   Endpoints: /v1/health /v1/dashboard /v1/write /v1/read /v1/install')
+
+    # v1.16.41: serve via waitress for true bounded concurrency.
+    import os as _os
+    import waitress as _waitress
+    _threads = int(_os.environ.get('ASTOR_SERVER_THREADS', '8'))
+    print(f'   WSGI: waitress threads={_threads} (production-grade concurrency)', flush=True)
+    _waitress.serve(app, host=args.host, port=args.port, threads=_threads,
+                    ident=None, cleanup_interval=30)
     # Note: server warmup (model load + peer_id init) is now inside
     # create_app() so it fires on both `python -m astor_memory.server`
     # and any future gunicorn entrypoint. See create_app above.
@@ -9201,14 +9213,10 @@ def main():
     # bindings. We accept serial request handling (no parallelism) in
     # exchange for stability. A threaded server with per-thread connections
     # is the proper fix; ship that in a future version (v1.14.8+).
-    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)  # S13: enable Flask threaded mode for concurrent /v1/read requests (R-class N). Bus uses WAL mode so concurrent reads safe.
+      # S13: enable Flask threaded mode for concurrent /v1/read requests (R-class N). Bus uses WAL mode so concurrent reads safe.
 
 
 if __name__ == '__main__':
-    import sys as _dbg_sys
-    print(f'[DEBUG fork-trace] __main__ entered, sys.executable={_dbg_sys.executable!r}', flush=True)
-    print(f'[DEBUG fork-trace] sys.argv={_dbg_sys.argv!r}', flush=True)
-    print(f'[DEBUG fork-trace] PYTHONHOME={_dbg_sys.prefix!r}', flush=True)
     main()
 
 
