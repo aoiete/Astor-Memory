@@ -45,6 +45,11 @@ dependencies = [
     "numpy>=1.26,<3.0",
     "fastembed>=0.3,<1.0",
     "pydantic>=2.5,<3.0",
+    # v1.16.41+ server uses waitress for production-grade bounded
+    # concurrency. server.py imports it unconditionally, so it must be
+    # a project (not optional) dependency — otherwise any user running
+    # `astor-server` hits ModuleNotFoundError.
+    "waitress>=3.0,<4.0",
 ]
 
 [project.optional-dependencies]
