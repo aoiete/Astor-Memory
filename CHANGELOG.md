@@ -1,4 +1,61 @@
 
+## v1.16.50 (2026-10-02) — Path-leak sanitize + dashboard alignment + peer-id clipboard
+
+Sanitizes on-disk paths out of public endpoints and brings dashboard layout
+into a single aligned container. No data model or schema changes.
+
+### Changed
+
+- **`/v1/health`**: `astor_dir` field now returns the dir basename instead
+  of the full on-disk path; `dbs.bus` / `dbs.nest` return `"ok"` instead of
+  sqlite file paths. Same external HTTP route, internal masking only.
+- **`/v1/identity`**: drops `astor_dir` from response. `peer_id` and
+  `public_key_fingerprint` unchanged.
+- **`/v1/health/diagnose`**: drops `db` field (sqlite path) from both
+  success and 404 responses. `user` field retained.
+- **Dashboard header**: peer-id span now shows the full id (was
+  truncated) with click-to-copy and double-click select fallback for
+  browsers without clipboard API access.
+- **Dashboard cache-bust**: bumped CSS/JS query string from previous
+  release so a hard refresh picks up the new assets without manual
+  bypass.
+- **Recent-capture panel**: backend `limit` lowered from 10 to 5 per
+  bucket; frontend renders 5 rows with chunked `bbox` controls
+  (previous / next + counter). Pagination state resets when switching
+  axes.
+- **Recall-debugger + Health card**: merged into a single card with
+  three stats stacked vertically inside, so all four panels share one
+  outer card height and align horizontally with the Recall-debug card.
+- **Footer**: explicit `max-width` + `margin: auto` + top border so the
+  footer aligns with body content cards.
+
+### Fixed
+
+- **Server startup regression**: server-side module was missing
+  `from pathlib import Path` import; HTML routes (`/`, `/dashboard/`)
+  raised `NameError` on every request. JSON `/v1/*` routes kept
+  returning 200 so monitoring looked healthy while the page itself was
+  500. Restored the import.
+- **Waitress dependency missing**: production WSGI server import was
+  added in the prior release but the runtime interpreter had not yet
+  installed the package; `pip install waitress` in the runtime venv.
+- **`/v1/identity` empty peer_id**: cryptography package missing from the
+  runtime venv; the identity init ran but `peer_id` came back empty.
+  `pip install cryptography` resolves.
+- **Side-log silent 500**: the `@app.errorhandler(500)` side-log path
+  pointed into a directory that did not exist; `open('a')` raised but
+  `except Exception: pass` swallowed the traceback, leaving only the
+  truncated HTTP `detail` payload. Now logs to `errors.log` under
+  `astor_dir/logs/` with `makedirs(exist_ok=True)`.
+
+### Notes
+
+- No public-data schema changes. No new endpoints. No new dependencies
+  in `pyproject.toml` (waitress + cryptography are runtime-only).
+- Source-tree now in sync with the deployed runtime copy
+  (runtime-server copy is the source of truth for this session's
+  changes; `.bak-pre-sync-*` files left in source for inspection).
+
 ## v1.16.37 — Bug-hunt fixes (5 bugs from post-ship audit) (2026-10-01)
 
 5 bugs found during systematic edge-case audit (per R-class 11463 + 12392,
