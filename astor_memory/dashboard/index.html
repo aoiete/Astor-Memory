@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Astor Dashboard</title>
-<link rel="stylesheet" href="style.css?v=1.16.28">
+<link rel="stylesheet" href="style.css?v=1.16.50">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -183,23 +183,21 @@
       <div class="recall-hint">Run a query to see live recall output.</div>
     </div>
   </div>
-  <div>
-    <div class="grid-3">
-      <div class="card health-card clickable" id="health-card-embed" title="Click to diagnose">
-        <div class="health-label">Embedding Failed</div>
-        <div class="health-value" id="health-embed">—</div>
-        <div class="health-hint">click for detail</div>
-      </div>
-      <div class="card health-card clickable" id="health-card-warn" title="Click to diagnose">
-        <div class="health-label">Audit Warnings</div>
-        <div class="health-value" id="health-warn">—</div>
-        <div class="health-hint">click for detail</div>
-      </div>
-      <div class="card health-card clickable" id="health-card-total" title="Click to diagnose">
-        <div class="health-label">Audit Total</div>
-        <div class="health-value" id="health-total">—</div>
-        <div class="health-hint">click for detail</div>
-      </div>
+  <div class="card health-card-grid">
+    <div class="health-stat" id="health-card-embed" title="Click to diagnose">
+      <div class="health-label">Embedding Failed</div>
+      <div class="health-value" id="health-embed">—</div>
+      <div class="health-hint">click for detail</div>
+    </div>
+    <div class="health-stat" id="health-card-warn" title="Click to diagnose">
+      <div class="health-label">Audit Warnings</div>
+      <div class="health-value" id="health-warn">—</div>
+      <div class="health-hint">click for detail</div>
+    </div>
+    <div class="health-stat" id="health-card-total" title="Click to diagnose">
+      <div class="health-label">Audit Total</div>
+      <div class="health-value" id="health-total">—</div>
+      <div class="health-hint">click for detail</div>
     </div>
   </div>
 </section>
@@ -222,6 +220,6 @@
   Auto-refresh every 60s · Cache TTL 5min · <a href="/v1/dashboard" target="_blank">raw JSON</a>
 </footer>
 
-<script src="app.js?v=1.16.28"></script>
+<script src="app.js?v=1.16.50"></script>
 </body>
 </html>

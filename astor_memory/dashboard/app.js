@@ -176,70 +176,102 @@
     }
 
     // v1.14.37 Ship N: Recent Capture panel — grouped facts by kind/tier/platform/all
-    const rc = d.recent_capture || { by_kind: {}, by_tier: {}, by_platform: {}, counts: {} };
-    function _renderRecentCapture(axis) {
-      const body = document.getElementById('recent-capture-body');
-      if (!body) return;
-      body.innerHTML = '';
-      let entries;
-      if (axis === 'kind') {
-        entries = Object.entries(rc.by_kind || {}).sort((a,b) => b[1].length - a[1].length);
-      } else if (axis === 'tier') {
-        entries = Object.entries(rc.by_tier || {}).sort((a,b) => b[1].length - a[1].length);
-      } else if (axis === 'platform') {
-        entries = Object.entries(rc.by_platform || {}).sort((a,b) => b[1].length - a[1].length);
-      } else {
-        const seen = new Set();
-        const flat = [];
-        for (const bucket of Object.values(rc.by_kind || {})) {
-          for (const f of bucket) {
-            if (!seen.has(f.id)) { seen.add(f.id); flat.push(f); }
+        const rc = d.recent_capture || { by_kind: {}, by_tier: {}, by_platform: {}, counts: {} };
+        // v1.16.43: show 5 rows per bucket, paginate
+        const RC_PAGE_SIZE = 5;
+        let _rcPage = 0;
+        let _rcAxis = 'kind';
+        function _renderRcPage(rc) {
+          const body = document.getElementById('recent-capture-body');
+          if (!body) return;
+          body.innerHTML = '';
+          let entries;
+          if (_rcAxis === 'kind') {
+            entries = Object.entries(rc.by_kind || {}).sort((a,b) => b[1].length - a[1].length);
+          } else if (_rcAxis === 'tier') {
+            entries = Object.entries(rc.by_tier || {}).sort((a,b) => b[1].length - a[1].length);
+          } else if (_rcAxis === 'platform') {
+            entries = Object.entries(rc.by_platform || {}).sort((a,b) => b[1].length - a[1].length);
+          } else {
+            const seen = new Set();
+            const flat = [];
+            for (const bucket of Object.values(rc.by_kind || {})) {
+              for (const f of bucket) {
+                if (!seen.has(f.id)) { seen.add(f.id); flat.push(f); }
+              }
+            }
+            flat.sort((a,b) => (b.ts || '').localeCompare(a.ts || ''));
+            entries = [['all facts', flat]];
+          }
+          if (entries.length === 0 || entries.every(([,v]) => v.length === 0)) {
+            body.innerHTML = '<div class="rc-empty">No facts captured yet in this view.</div>';
+            return;
+          }
+          // Flatten rows across all buckets in the current axis so user can page
+          // through a single chronological list regardless of which bucket they
+          // belong to. Each bucket gets its own header in the flattened slice.
+          const flatRows = [];
+          for (const [bucketName, rows] of entries) {
+            if (rows.length === 0) continue;
+            for (const f of rows) flatRows.push({ bucket: bucketName, fact: f });
+          }
+          const total = flatRows.length;
+          const pageCount = Math.max(1, Math.ceil(total / RC_PAGE_SIZE));
+          if (_rcPage >= pageCount) _rcPage = pageCount - 1;
+          if (_rcPage < 0) _rcPage = 0;
+          const slice = flatRows.slice(_rcPage * RC_PAGE_SIZE, (_rcPage + 1) * RC_PAGE_SIZE);
+          // pager controls
+          const pager = document.createElement('div');
+          pager.className = 'rc-pager';
+          const prev = document.createElement('button');
+          prev.className = 'rc-page-btn';
+          prev.textContent = '←';
+          prev.disabled = (_rcPage === 0);
+          prev.addEventListener('click', () => { _rcPage--; _renderRcPage(rc); });
+          const next = document.createElement('button');
+          next.className = 'rc-page-btn';
+          next.textContent = '→';
+          next.disabled = (_rcPage >= pageCount - 1);
+          next.addEventListener('click', () => { _rcPage++; _renderRcPage(rc); });
+          const counter = document.createElement('span');
+          counter.className = 'rc-page-counter';
+          counter.textContent = `${_rcPage + 1}/${pageCount} · ${total} total`;
+          pager.appendChild(prev);
+          pager.appendChild(counter);
+          pager.appendChild(next);
+          body.appendChild(pager);
+          for (const { bucket, fact: f } of slice) {
+            const li = document.createElement('li');
+            li.className = 'rc-row';
+            const tierTag = f.tier ? '<span class="rc-tag rc-tier">' + escapeHtml(f.tier) + '</span>' : '';
+            const kindTag = f.kind ? '<span class="rc-tag rc-kind">' + escapeHtml(f.kind) + '</span>' : '';
+            const platTag = f.platform ? '<span class="rc-tag rc-platform">' + escapeHtml(f.platform) + '</span>' : '';
+            const meta = '#' + f.id + ' · imp ' + fmt(f.importance) + ' · ' + (f.ts || '').slice(0, 16);
+            li.innerHTML = '<div class="rc-meta">'
+              + tierTag + kindTag + platTag
+              + '<span class="rc-meta-text">' + escapeHtml(meta) + '</span>'
+              + '<span class="rc-bucket-inline">' + escapeHtml(bucket) + '</span>'
+              + '</div>'
+              + '<div class="rc-content">' + escapeHtml(f.content || '(empty)') + '</div>';
+            const ul = document.createElement('ul');
+            ul.className = 'rc-list';
+            ul.appendChild(li);
+            body.appendChild(ul);
           }
         }
-        flat.sort((a,b) => (b.ts || '').localeCompare(a.ts || ''));
-        entries = [['all facts', flat.slice(0, (rc.limit_per_bucket || 10) * 3)]];
-      }
-      if (entries.length === 0 || entries.every(([,v]) => v.length === 0)) {
-        body.innerHTML = '<div class="rc-empty">No facts captured yet in this view.</div>';
-        return;
-      }
-      for (const [bucketName, rows] of entries) {
-        if (rows.length === 0) continue;
-        const group = document.createElement('div');
-        group.className = 'rc-group';
-        const heading = document.createElement('div');
-        heading.className = 'rc-group-heading';
-        heading.innerHTML = '<span class="rc-bucket">' + escapeHtml(bucketName) + '</span>'
-          + '<span class="rc-count">' + rows.length + '</span>';
-        group.appendChild(heading);
-        const ul = document.createElement('ul');
-        ul.className = 'rc-list';
-        rows.forEach(f => {
-          const li = document.createElement('li');
-          li.className = 'rc-row';
-          const tierTag = f.tier ? '<span class="rc-tag rc-tier">' + escapeHtml(f.tier) + '</span>' : '';
-          const kindTag = f.kind ? '<span class="rc-tag rc-kind">' + escapeHtml(f.kind) + '</span>' : '';
-          const platTag = f.platform ? '<span class="rc-tag rc-platform">' + escapeHtml(f.platform) + '</span>' : '';
-          const meta = '#' + f.id + ' · imp ' + fmt(f.importance) + ' · ' + (f.ts || '').slice(0, 16);
-          li.innerHTML = '<div class="rc-meta">'
-            + tierTag + kindTag + platTag
-            + '<span class="rc-meta-text">' + escapeHtml(meta) + '</span>'
-            + '</div>'
-            + '<div class="rc-content">' + escapeHtml(f.content || '(empty)') + '</div>';
-          ul.appendChild(li);
+        function _renderRecentCapture(axis) {
+          _rcAxis = axis;
+          _rcPage = 0;
+          _renderRcPage(rc);
+        }
+        document.querySelectorAll('.rc-tab').forEach(btn => {
+          btn.addEventListener('click', () => {
+            document.querySelectorAll('.rc-tab').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            _renderRecentCapture(btn.dataset.axis);
+          });
         });
-        group.appendChild(ul);
-        body.appendChild(group);
-      }
-    }
-    document.querySelectorAll('.rc-tab').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.rc-tab').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        _renderRecentCapture(btn.dataset.axis);
-      });
-    });
-    _renderRecentCapture('kind');
+        _renderRecentCapture('kind');
 
 
     // health
@@ -414,8 +446,8 @@ function _drawConnPage() {
     });
     html += '</div>';
 
-    html += '<div style="margin-top:8px;color:var(--text-dim);font-size:11px;">user: ' + escapeHtml(d.user) + ' · db: ' + escapeHtml(d.db) + '</div>';
-    return html;
+    html += '<div style="margin-top:8px;color:var(--text-dim);font-size:11px;">user: ' + escapeHtml(d.user) + '</div>';
+  return html;
   }
 
   function closeHealthModal() {
@@ -643,18 +675,21 @@ async function fetchPeers() {
     ]);
     let selfPeerId = null;
     if (ir && ir.ok) {
-      const id = await ir.json();
-      selfPeerId = id.peer_id || null;
-      const el = document.getElementById('self-peer-id');
-      if (el && selfPeerId) {
-        const short = selfPeerId.length > 24
-          ? selfPeerId.slice(0, 22) + '…'
-          : selfPeerId;
-        el.textContent = 'self: ' + short;
-        el.title = 'Click to copy full peer_id: ' + selfPeerId;
-        el.onclick = () => copyPeerIdToClipboard(selfPeerId);
-      }
-    }
+          const id = await ir.json();
+          selfPeerId = id.peer_id || null;
+          const el = document.getElementById('self-peer-id');
+          if (el && selfPeerId) {
+            // v1.16.43: show full peer_id (not truncated) + always include
+            // a manual select fallback so users without clipboard API access
+            // (HTTP origin in some browsers) can still copy.
+            el.textContent = selfPeerId;
+            el.title = 'Click to copy — full peer_id: ' + selfPeerId;
+            el.style.cursor = 'pointer';
+            el.style.userSelect = 'all';
+            el.onclick = () => copyPeerIdToClipboard(selfPeerId);
+            el.ondblclick = () => selectEl(el);
+          }
+        }
     if (!pr.ok) throw new Error('HTTP ' + pr.status);
     const d = await pr.json();
     renderPeerPanel(d.peers || [], selfPeerId);
@@ -695,8 +730,23 @@ async function copyPeerIdToClipboard(peerId) {
       setTimeout(() => { el.textContent = orig; }, 1200);
     }
   } else {
-    alert('peer_id: ' + peerId + '\n\n(copy failed — select manually)');
+    // Fallback: select the text + alert so user can Ctrl+C manually
+    const el = document.getElementById('self-peer-id');
+    if (el) {
+      selectEl(el);
+    }
+    alert('peer_id: ' + peerId + '\n\n(copy failed — already selected, press Ctrl+C)');
   }
+}
+
+function selectEl(el) {
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch (e) {}
 }
 
 function renderPeerPanel(peers, selfPeerId) {

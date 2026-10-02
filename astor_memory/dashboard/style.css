@@ -136,13 +136,17 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 16px;
   margin-bottom: 20px;
+  align-items: stretch;
 }
+.grid-2 > div { display: flex; flex-direction: column; }
+.grid-2 > div > .grid-3 { flex: 1; }
 .grid-3 {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 20px;
 }
+.grid-3 > .card { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100%; box-sizing: border-box; }
 
 .card {
   background: var(--panel);
@@ -393,19 +397,47 @@ body {
   margin-left: 6px;
 }
 
+/* v1.16.48 Health card grid (single card containing 3 stats stacked vertically) */
+.health-card-grid {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  gap: 8px;
+  padding: 16px 18px;
+}
+.health-card-grid .health-stat {
+  cursor: pointer;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  transition: border-color 0.15s, transform 0.15s;
+  text-align: center;
+}
+.health-card-grid .health-stat:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.health-card-grid .health-stat + .health-stat {
+  border-top: 1px dashed var(--border);
+  margin-top: 4px;
+  padding-top: 14px;
+}
 /* Footer */
 .dash-footer {
-  margin-top: 24px;
+  max-width: 1280px;
+  margin: 32px auto 0;
+  padding: 16px 20px 0;
   text-align: center;
   font-size: 11px;
   color: var(--text-dim);
+  border-top: 1px solid var(--border);
 }
 .dash-footer a {
   color: var(--accent-dim);
   text-decoration: none;
   font-family: monospace;
 }
-
 /* Recall debugger */
 .recall-form {
   display: grid;
@@ -563,6 +595,64 @@ body {
   font-weight: 500;
   font-family: inherit;
   transition: background 0.15s, color 0.15s;
+}
+/* v1.16.43 Recent Capture pager — big arrows + counter */
+.rc-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  margin-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
+}
+.rc-page-btn {
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 4px 14px;
+  border-radius: 4px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  min-width: 44px;
+}
+.rc-page-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.rc-page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.rc-page-counter {
+  color: var(--text-dim);
+  font-size: 13px;
+  font-family: var(--mono);
+}
+.rc-bucket-inline {
+  margin-left: 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+  background: var(--bg-elev);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+/* v1.16.43: full peer_id visibility in header */
+.self-peer-id {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--bg-elev);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  user-select: all;
+}
+.self-peer-id:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 .rc-tab:hover {
   color: var(--text);

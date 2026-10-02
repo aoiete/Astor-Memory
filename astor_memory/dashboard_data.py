@@ -424,7 +424,7 @@ def _top_keywords_and_recent(astor_dir: Path) -> tuple[list[tuple[str, int]], li
     return keywords.most_common(20), recent
 
 
-def _recent_capture(astor_dir, limit: int = 10) -> dict:
+def _recent_capture(astor_dir, limit: int = 5) -> dict:
     """v1.14.37 Recent Capture panel — facts grouped by 3 axes for the dashboard.
 
     Returns 3 buckets each capped at `limit` rows:
@@ -1175,7 +1175,7 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
     # v1.14.25 Ship G: entities_json coverage across all tiers.
     entities_cov = _entities_coverage(astor)
     # v1.14.37 Ship N: Recent Capture panel — facts grouped by kind/tier/platform.
-    recent_capture = _recent_capture(astor, limit=10)
+    recent_capture = _recent_capture(astor, limit=5)
     # Phase E5 (2026-09-17): LLM call spend tracking.
     llm_spend = _summarize_llm_spend(astor)
     # v1.15.40 (Ship P3.1 dashboard): Mental Models + Knowledge Pages panels.
