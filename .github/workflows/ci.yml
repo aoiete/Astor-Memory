@@ -94,7 +94,7 @@ jobs:
             tests/test_reflection_server.py \
             tests/test_topic_routing.py \
             tests/test_v1169_asymmetry_and_tiers.py \
-            -v --tb=short -p no:cacheprovider
+            -v --tb=short -p no:cacheprovider --timeout=60
 
       - name: Stop astor server
         if: always()
@@ -186,7 +186,7 @@ jobs:
             --ignore=tests/test_reflection_server.py \
             --ignore=tests/test_topic_routing.py \
             --ignore=tests/test_v1169_asymmetry_and_tiers.py \
-            -v --tb=short -p no:cacheprovider
+            -v --tb=short -p no:cacheprovider --timeout=60
 
       - name: Stop astor server
         if: always()

@@ -69,6 +69,7 @@ docs = [
 test = [
     "pytest>=7.4,<9.0",
     "pytest-cov>=4.1,<6.0",
+    "pytest-timeout>=2.3,<3.0",  # 2026-10-02: kill hanging tests in CI (per-test 60s cap)
 ]
 mcp = [
     # The MCP server sub-package has zero runtime deps beyond the stdlib
