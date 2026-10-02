@@ -1,459 +1,314 @@
-# Astor-Memory (中文)
+# Astor-Memory
 
-> **AI 智能体的自托管记忆系统。** 三个存储,三层隔离,联邦公共层,零供应商锁定。
+> **自托管的 AI agent 记忆系统。** 三库三档,联邦 public 档,零供应商锁定。
 
-> **Coming: 对等节点公共层联邦 (ADR 0008)。** 多台由可信任对等方拥有的 astor 实例将直接同步它们的 `public` 层——无中央服务器,无远程直连 RPC。每节点信任度 (0-100) + 每主题权重让策展管理员决定跟谁分享什么。Private / source 层绝不跨越边界。F1 在现有 `peer_relationships.py` schema 上加 `/v1/peer/*` REST 端点 + `am peer` CLI。
-
----
-
-## 这是给谁的
-
-**一台服务器,服务一个朋友圈**。你和家人朋友共用一个 bot,各自用
-自己的微信/Telegram/Discord DM bot,bot 给每个人回话时**只记得他们自己的事**。
-妈妈的生日提醒不会泄到朋友圈;你给哥们写的 poker 牌运分析不会污染表妹的职业建议。
-
-实际部署形态就是这样(我们自己跑、自己测的):
-
-```
-+--------------------------------------+
-|  一个 astor-memory server (7803)      |
-|                                       |
-|   first_admin    first_admin tier     |
-|   妈妈           private_mom tier     |
-|   朋友A          private_friend_a     |
-|   朋友B          private_friend_b     |
-|   表妹           private_cousin       |
-|                                       |
-|   共享记忆 = public + source         |
-|   个人记忆 = private_<user_id>       |
-+--------------------------------------+
-```
-
-每个用户独立 SQLite db、独立 ACL grant、独立八字/交易/私人事实、
-独立 bot binding。admin(你)看 source.db(agent 自己的 self-pattern + 通
-用技能)+ 任何用户显式 grant 给你看的 private。
-
-**不是 SaaS 多租户**,是**为熟人共享的小圈子设计**。隐私由 ACL 在
-matrix 层强制(见 [ACL v1.2 加固](docs/acl-v1.2-hardening.md)),
-不靠用户自觉。
+> **English:** [README.md](README.md) · **Dashboard 文档:** [docs/dashboard.md](docs/dashboard.md) · **架构:** [docs/architecture.md](docs/architecture.md) · **API:** [docs/api.md](docs/api.md)
 
 ---
 
-## 为什么我们做这个
+## 这是什么
 
-现代 AI 智能体需要记忆。现有的方案都强迫你在"能力 vs. 自主权"之间二选一:
+一个单机 SQLite 后端的记忆层,为共享同一个 bot 的可信小群体(家人、朋友、共同管理员)服务。每个用户拥有自己的 private 档可读写;运营者维护一个 `source` 档存放运营专属模式;所有人共享一个 `public` 档作为跨用户知识。
 
-| 方案 | 你得到 | 你失去 |
+同一个 server 同时充当外部 agent 平台(Muse、自定义 HTTP 客户端、Slack 适配器)接入的 spoke endpoint,提供持久记忆后端 + ACL 强制用户隔离 + 每次调用审计。
+
+```
++---------------------------------------+
+|  一个 astor-memory server (端口 7803)  |
+|                                        |
+|   first_admin    first_admin 档        |
+|   mom            private_mom 档        |
+|   friend_a       private_friend_a 档   |
+|   friend_b       private_friend_b 档   |
+|   cousin            private cousin 档    |
+|                                        |
+|   共享记忆 = public + source           |
+|   个人记忆 = private_<user_id>         |
++---------------------------------------+
+```
+
+每个用户拥有自己的 SQLite 数据库、自己的 ACL 授权、自己的 bot binding。admin 可见 `source` (运营专属模式) 加上任何用户明确授权的 `private` 档。
+
+这不是一个多租户 SaaS。它是一个单机记忆,为足够信任彼此去共用 bot 的小群体服务。隐私在矩阵级层面([ACL 加固文档](docs/acl-v1.2-hardening.md))强制执行,而不是靠信任每个用户自觉。
+
+---
+
+## 为什么做这个
+
+现代 AI agent 需要记忆。现有方案让你在能力与自主权之间二选一:
+
+| 方案 | 获得 | 失去 |
 |---|---|---|
-| **纯 RAG** (向量库) | 简单的检索 | 没有事件日志、没有事实抽取、没有用户隔离 |
-| **Letta** (Memory Blocks) | 只读保护 + 归档 | 运行时重、架构强约束 |
-| **mem0** (4级 ACL) | 多租户 + scope 标签 | 强耦合云端、默认异步 |
-| **PowerContext / PowerMem** | 搜索↔上下文包分离 | 1.0 之前、中文优先、不能自托管 |
-| **自己造** (chromadb + memu.ai SDK) | 完全控制 | 3 GB 虚拟环境、3 个服务器进程、升级脆弱 |
+| **纯 RAG**(向量库) | 简单检索 | 无事件日志、无事实抽取、无用户隔离 |
+| **Letta**(Memory Blocks) | 只读保护 + 归档 | 重 runtime,严格架构 |
+| **mem0**(4-tier ACL) | 多租户 + scope 标签 | 紧耦合云服务、默认异步 |
+| **Astor-Memory** | 三 SQLite 库 + 三档 + ACL + 事件日志 + 审计 + PII 防御 + 衰减 + dashboard + REST + 开放磁盘数据 | 单机范围(不水平分片) |
 
-**Astor-Memory** 存在是因为我们在 33 次 ship 周期和 50+ 定时任务的自托管智能体中遇到了所有四个痛点。我们学到的:
+实际获得:
 
-1. **三个存储是可行的最小分解**。一个仅追加的事件日志 (`bus`)、一个 LLM 事实抽取器 (`forge`)、一个向量库 (`nest`),清晰对应"发生了什么 → 该记住什么 → 该召回什么"。更多层会增加协调成本;更少层会混叠语义。
-2. **三层隔离匹配真实 ACL 需求**。公共知识 (skills、rules) + 管理员私有 (智能体可见,用户不可见) + 每用户私有 (N 个隔离数据库) — 不多不少。
-3. **供应商锁定是无声的杀手**。chromadb 迁移、memu.ai SDK 破坏性变更、transformers 吃掉 3 GB 虚拟环境 — 我们选的每个依赖都在 6 个月内反噬我们。教训:不拥有代码,就拥有风险。
-
-如果你对以上任何一个有共鸣,Astor-Memory 就是为你造的。
+- **Bus / Forge / Nest** 三库架构,支持跨档晋升(per-user → source / public)。
+- **ACL 矩阵** 在 per-actor × per-tier 单元格级别,任何数据库读写前强制门控。
+- **事件日志** —— 每条事实写入作为不可变事件追加,带 provenance(来源平台、agent、kind)。可重放。
+- **PII 防御** —— 44 模式扫描器(API key、email、电话、chat ID、token)接入 write endpoint,带 `redact` 和 `block` 策略。审计安全用 `sha256[:12]` 指纹。
+- **衰减 + HOT 晋升** —— 从不召回的事实衰减更快;召回命中 3+ 次的事实晋升 HOT 获得有上限的相关性加成。运营作者面(mental_model、knowledge_page)排除在衰减外。
+- **记忆召回组合** —— lexical(BM25) + vector(多语 embed) + MMR 多样性 rerank + HOT 提升 + 跨档晋升 + ECV 链提升 + meta-recall(success / failure / lesson 模式自动注入每次 read)。每个环境变量可调。
+- **Dashboard** —— 实时健康、最近捕获面板(按 kind / tier / platform 轴分页)、peer-friends 面板、Recall debugger 带实时 /v1/read 回显、Knowledge Pages 面板、Mental Models 面板、增长 + 分布聚合。
+- **公开 REST** —— `/v1/{health, identity, dashboard, write, read, consult, skill, peer, binding, episode, bitemporal, audit, staleness, forget}` 加上 dashboard HTML 在 `/dashboard/`。
 
 ---
 
-## Astor-Memory 的不同之处
+## 部署形态
 
-| 差异化点 | 含义 |
-|---|---|
-| **3-store 三元组** | `bus` (仅追加事件日志) + `forge` (LLM 事实抽取) + `nest` (向量库)。每个存储各司其职。 |
-| **3 层隔离** | `public` + `source` (管理员私有) + `private × N` (每用户私有)。一条命令开启多用户模式。 |
-| **自拥有代码** | 纯 Python + SQLite + NumPy。无 chromadb、无 memu.ai SDK、无 transformers、无 torch。安装体积 < 50 MB。 |
-| **供应商中立的 LLM** | `forge` 支持 OpenAI / Anthropic / Gemini / DeepSeek / 智谱 / Ollama。同样的召回输出,任意供应商。 |
-| **引用优先** | 每个上下文包都嵌入 `<ref memory_id revision_id>`,智能体可以验证读到的内容。 |
-| **自我演进的生命周期** | 艾宾浩斯式衰减 + 余弦合并 + 出现 3 次即晋升为规则。智能体主动遗忘、合并、把事实毕业为规则。 |
-| **仅追加 + 修订追踪** | 更新产生新修订;旧内容仍可查询以备审计。不会静默覆盖。 |
-| **跨 LLM 适配器** | 在 Qwen2.5-7B 上训练的记忆策略对 GPT-5-mini 仍然有效 (+16 pp vs RAG +4.3 pp)。来自 Mem-π 论文的洞察。 |
-| **对等节点公共层同步** | 多台 astor 实例直接同步 `public` 层——无中央服务器。每节点信任度 (0-100) + 每主题权重让管理员策展分享内容。Private / source 层绝不跨越边界。详见 [ADR 0008](docs/adr/0008-peer-public-network.md)。 |
-
-## 三个存储,三层隔离 (60 秒看懂架构)
+一个 server、一个端口(默认 7803)、磁盘上一个 `ASTOR_DIR` 目录:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      astor_memory                           │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │     bus      │  │    forge     │  │     nest     │      │
-│  │  (events)    │─→│ (extraction) │─→│   (vector)   │      │
-│  │              │  │              │  │              │      │
-│  │  SQLite WAL  │  │  cloud LLM   │  │ SQLite+numpy │      │
-│  │  append-only │  │  async       │  │ kNN brute    │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-│         │                  │                  │             │
-│         └──────────────────┴──────────────────┘             │
-│                            │                                │
-│                   ┌────────▼─────────┐                      │
-│                   │  3-tier ACL      │                      │
-│                   │ public / source  │                      │
-│                   │ / private × N    │                      │
-│                   └──────────────────┘                      │
-└─────────────────────────────────────────────────────────────┘
+<ASTOR_DIR>/
+├── public/memory/      # astor_bus_public.db + astor_nest_public.db
+├── source/memory/      # astor_bus_source.db + astor_nest_source.db
+├── users/<id>/memory/  # astor_bus_<id>.db + astor_nest_<id>.db  (每个用户)
+├── audit/              # audit_log.sqlite (跨档)
+├── logs/                 # server.log + side-log + watch logs
+└── identity/            # keypair.json (首次启动自动生成)
 ```
 
-- **`bus`** 记录发生的所有事情。仅追加 SQLite + WAL。时序存储。
-- **`forge`** 通过云端 LLM 把原始事件转为结构化事实。异步,所以写入不阻塞。
-- **`nest`** 把事实索引为向量。SQLite + NumPy 暴力 kNN — 5K 文档以内够快 (1 ms 延迟);HNSW 推迟到 v2.0。
-- **3 层 ACL** 包裹三个存储。`public` 是共享知识;`source` 是管理员私有 (智能体可见,终端用户不可见);`private × N` 是每个用户一个数据库。
+Server 默认绑定 `127.0.0.1:7803`。远程访问请用 Cloudflare Tunnel、nginx 或 peer-anything 反向代理 —— server 不会绑定 `0.0.0.0`,除非你显式传 `--host 0.0.0.0`。
 
-单用户模式 = `public + self-private`。多用户模式 = `am bot on` 按需创建 `private × N`。
+通过 `pip install astor-memory` 安装,之后 `astor-server` 成为 console script。可选 `[muse]` extra 安装 Muse 适配器包。
 
-### 3 区架构 (success / failure / lesson)
-
-除了空间层 (public/source/private × N),astor 还把每条事实归到一个
-**outcome 区域**,驱动 recall 查询语言。三个区域:
-
-- **`success_pattern`** — 可复用的方法 / 模式 / 经验,验证过有效。
-  例如 "patch tool 替换 write_file 走通了 — 不再被 indent drift 卡住",
-  "unlock_trade: 调 SDK 的 unlock_trade + .env MOOMOO_PASSWORD"。
-- **`failure_pattern`** — 走不通的路 / 已知的坏主意 / R-class 规则。
-  例如 "走不通 debug 客户端 fallback", "patch tool 加 4 空格误判 —
-  改用 write_file"。
-- **`lesson`** — 完整的失败 → 根因 → 修复三元组 (例如 "critical bug
-  — fix is null check" 或 "崩溃 + 根因是 X")。
-
-`forge/extractor.py` 的 outcome → kind 映射全链路接通:
-`astor_classify_outcome` 在每个 `/v1/write` 上跑,extractor 把 LLM 输出的
-kind 覆盖成对应的区域 kind。recall 通过 `kinds=` 参数过滤:
-
-```python
-# 自动建议 (hermes 端启发式):
-#   "失败 / 出错 / 走不通 / crash / fail / 报错" → failure_pattern + lesson
-#   "成功 / ship / verified / 接通 / working"   → success_pattern + user_preference
-#   "教训 / 记得 / 切记 / lesson"               → lesson + failure_pattern
-am recall --kinds failure_pattern "上次 patch tool 走不通"
-am recall --kinds success_pattern "verify 模式怎么配"
-```
-
-#### 区快捷方式(v1.15.1)
-
-对按"结果区"思考的 agent,`--zone` 是一词替代 `--kinds` 的快捷方式:
-
-| 区         | 覆盖内容                                                      | 何时召回                                                              |
-|------------|-----------------------------------------------------------------|------------------------------------------------------------------------|
-| `failure`  | `failure_pattern` — 失败过的路径,别重蹈覆辙                    | 碰壁了,看这招之前是否试过                                             |
-| `success`  | `success_pattern` — 验证过的做法,能 ship 的配方                  | 我要一个能用的做法                                                     |
-| `lesson`   | `postmortem,lesson` — 根因 + 修复三元组,严重度 ≥ 0.90            | 重大 bug 后 — 下次怎么做、不怎么做                                     |
-| `all-zones`| `user_preference,failure_pattern,success_pattern,postmortem,lesson` | 跨区扫(很少用;默认 zone filter 通常更准)                            |
-
-```bash
-am recall --zone failure "上次 patch tool 走不通"
-am recall --zone success "verify 模式怎么配"
-am recall --zone lesson  "OpenD Watchdog 服务挂了 怎么搞"
-am recall --zone all-zones "zone 类召回怎么用"
-```
-
-`--kinds` 与 `--zone` 同时传时,`--kinds` 优先(给高级 caller 的逃生口)。
-Agent 循环建议: **碰壁 → 先 `am recall --zone failure "<关键词>"` —
-没结果再升级到 `--zone lesson` 看 postmortem。**
-
-### Agent 的 recall 心法(v1.15.1)
-
-`--zone` 是推荐 agent 循环的一半。另一半是**到底何时才 recall** —
-recall 是后端工具,不是默认前言。下面这套纪律适用于任何调用 astor
-的 agent,任务无关:
-
-```text
-┌──────────────────────────────────────────────────────────────┐
-│ 默认:不要预热 recall。先靠 LLM 推理跑任务。                    │
-│                                                              │
-│   ↓ 碰壁(错误 / timeout / 结果不对 / 反爬)                    │
-│                                                              │
-│ am recall --zone failure "<任务域关键词>"                      │
-│   ↓ 空                                                        │
-│ am recall --zone lesson  "<任务域关键词>"                      │
-│   ↓ 空                                                        │
-│ am recall --zone success "<任务域关键词>"                      │
-│   ↓ 空                                                        │
-│ 才:回退到 web_search / 重新从第一原理推导                       │
-└──────────────────────────────────────────────────────────────┘
-```
-
-三个值得内化的规则:
-
-1. **默认关闭。** 任务跑得顺,不要 recall。recall 是失败恢复,不是
-   给 context 暖场。
-2. **一次失败一次 recall。** 不要用同一 query 循环 `--zone failure` —
-   空了就升级 zone(failure → lesson → success),而不是换关键词。
-3. **zone 优于关键词。** `--zone failure` 比 `--kinds failure_pattern`
-   信号密度更高,因为它带语义意图("我是失败才来的").` `--kinds`
-   是逃生口,不是默认。
-
-具体示例(任何任务域都行 — 只换关键词):
-
-| 任务                            | 触发信号              | Recall 调用                                              |
-|--------------------------------|-----------------------|----------------------------------------------------------|
-| 抓微信公众号文章                | 反爬 / captcha / 抓不到 | `am recall --zone failure "微信公众号 抓"`                |
-| moomoo 下单                    | EOrder / timeout      | `am recall --zone failure "opend place_order"`           |
-| 配置 cron                      | 不触发 / 静默失败     | `am recall --zone failure "hermes cron 不触发"`           |
-| patch Python 源码              | IndentationError      | `am recall --zone failure "patch tool 缩进漂移"`          |
-| 拉股票行情                     | 接口错 / 空数据       | `am recall --zone failure "akshare 接口错"`              |
-
-框架通用,关键词按任务域变。`--zone failure "X"` 是一句话心智模型,
-agent 搬进新域不用学新 skill。
-
-这是 LLM 和人类心智模型之间的桥 — 没接通的话,每条事实都是 `kind=fact`,
-3 区分类形同虚设 (Ship F v1.13.1 是死代码,直到 v1.14.21 capture_intent
-hook 接通,v1.14.36 调成 `success_pattern` 而非 `user_preference`)。
-
-### Explicit-public 原则 (管理员感知)
-
-public 层最宽松 — 部署里任何人都能读。容易成为意外泄漏的入口。原则是:
-
-> **Public 只放明确想公开的内容:方法、模式、工作流、参考信息,以及
-> 真实的"我想要公开"信号 (`workflow / 方法 / 接口 / SDK / api /
-> 步骤 / 怎么 / 如何` 关键词集)。**
-
-`server.py._astor_classify_intent` 在写入时强制:
-
-- **强信号降级** (强制 `tier=private`): 文本含人称代词 (`我 / 我的 /
-  自己 / my / i am`)、金融标记 (`$ / € / bought / sold / AAPL /
-  TSLA / NVDA / SPY`)、日常标记 (`今天 / 昨天 / today / tonight /
-  10am`)、或情绪词 (`happy / sad / 累了 / 崩溃`)。
-- **方法信号** (`_METHOD_PATTERNS`): 文本含 15+ 方法意图关键词,
-  或 `怎么 \w{2,}` how-to 模式,或 SDK 动词白名单 (`place_order`、
-  `unlock_trade`、`accinfo_query` 等)。保留 `public`。
-- **无信号**: 默认 `private` (修复前是 `public`)。
-- **管理员同样适用** (Ship v1.14.36): 修复前 R236 的 `if user == 'admin':
-  return None` 短路是泄漏入口 ("我的 TFSA 余额是 $1234" 被管理员写
-  入成 public 事实)。现在管理员和用户走同一套 classify 逻辑。
-
-这是 **explicit-public**,不是 default-public。运营者必须在写入时
-展示方法意图才能落 public;没有信号就默认 private。
-
-### Bots (多平台) 设计哲学
-
-astor 把**人** (`user_id`) 和 **bots** (`platform_id`) 当作两个独立的维度。关系是真正的多对多:
-
-- 1 个人可以有 N 个 bots (例如手机上用 TG + 桌面上用 DC + 朋友用 WX,都绑定同一个 user_id)
-- 1 个 bot 可以服务 M 个人 (例如一个微信 bot,12 个朋友各发独立私信,每个 chat_id 绑定到不同的 user_id)
-
-所以 `bot-binding.db` 有**两张独立的表**:
-
-- `platforms` — 每个 bot 的配置 (token、base_url、enabled)
-- `bindings` — 每个 chat_id → user_id 映射
-
-不是合并成一张表,因为关系是独立的。
-
-**为什么微信特殊 (1 chat = 1 user 通常情况)**:微信协议只允许 1:1 私信,所以单个微信 bot 实例通过独立的 DM 私信服务多个用户。每个 DM 的 `bindings` 绑定到一个 `user_id`。
-
-**Telegram / Discord 是 1:N (一个 bot,多个用户)**:两个平台都支持一个 bot token 下多个并行聊天。一个 TG bot 映射到多个 binding,每个 binding 一个不同的 chat_id。
-
-**bot 进程对私有数据没有特殊权限**。一旦绑定建立,bot 只是传输工具:
-
-    Telegram DM (chat_id=C, 绑定到 user_id=alice)
-      -> astor_init_acl(actor=user:alice, role=user, tier=private_alice)
-      -> acl_check_read 通过
-      -> 读/写 alice 的私有 DB
-
-如果 bob 的 chat_id D 发起对 alice 私有的读请求:
-
-      -> astor_init_acl(actor=user:bob, role=user, tier=private_alice)
-      -> acl_check_read 拒绝 (user_id 不匹配)
-      -> 401 需要 user grant (严格隐私模型 2026-08-16)
-
-参见 [`bots/README.md`](bots/README.md) 了解完整处理 (反模式、四种典型场景、为什么用两张表)。
+---
 
 ## 快速开始
 
-### 安装
-
 ```bash
+# 安装
 pip install astor-memory
+# 或带 Muse 适配器
+pip install astor-memory[muse]
+
+# 初始化全新 runtime
+export ASTOR_DIR=/var/lib/astor
+mkdir -p "$ASTOR_DIR"
+python -m astor_memory.cli.main init
+
+# 添加 admin 用户
+python -m astor_memory.cli.main user add admin --role first_admin
+
+# 启动 server
+astor-server --host 127.0.0.1 --port 7803
+
+# 健康检查
+curl http://127.0.0.1:7803/v1/health
+# { "status": "ok", "astor_dir": "<dir-name>", "dbs": {"bus":"ok","nest":"ok"}, ... }
+
+# 写一条事实 (admin)
+curl -X POST http://127.0.0.1:7803/v1/write \
+     -H 'Content-Type: application/json' \
+     -d '{"text":"my favorite color is teal","user":"admin","tier":"private"}'
+
+# 读取带召回
+curl -X POST http://127.0.0.1:7803/v1/read \
+     -H 'Content-Type: application/json' \
+     -d '{"query":"favorite color","user":"admin","tier":"private","top_k":5}'
 ```
 
-要求:Python 3.10-3.13,<50 MB 依赖。
-
-### 首次运行 (单用户模式)
-
-```bash
-am init                # 创建 ~/.astor/{public,source,private_admin}/
-am doctor              # 健康检查 — schema、计数、绑定完整性
-am write "我喜欢用中文交流" --tier private --user-id admin
-am recall "用户偏好" --top-k 5
-```
-
-### 体验多用户模式
-
-```bash
-am bot on
-am bot add-user alice
-am bot add-user bob
-am write "alice 的偏好..." --tier private --user-id alice
-am write "bob 的偏好..."   --tier private --user-id bob
-```
-
-每个用户在自己的 DB (`users/<id>/memory/astor_*_<id>.db`) 中,隔离由 3 层 ACL 强制。
-
-## 你实际得到什么
-
-```
-~/.astor/                                  # = $ASTOR_DIR (可覆盖)
-├── public/memory/                         # 3 层 × 3 store 的公共 tier
-│   ├── astor_bus_public.db
-│   ├── astor_forge_public.db
-│   └── astor_nest_public.db
-├── source/memory/                         # admin-only tier (智能体 + 管理员可见)
-│   ├── astor_bus_source.db
-│   ├── astor_forge_source.db
-│   └── astor_nest_source.db
-├── users/                                 # 每用户私有 DB
-│   ├── admin/memory/{astor_bus_admin.db, astor_forge_admin.db, astor_nest_admin.db}
-│   ├── alice/memory/...
-│   └── bob/memory/...
-├── audit/                                 # 审计 + 跨用户授权
-│   ├── astor_audit.db                    # 所有 private/source 读写的追加日志
-│   └── astor_grants.db                   # 跨用户私有访问授权 (严格隐私模型)
-├── bot-binding.db                         # bot 配置 + token + chat_id→user_id
-└── install-state.json                     # 多用户模式标记
-```
-
-**首次安装完全是空的**。没有任何种子用户、平台或绑定 — 你自己用 `am platform token-set` 和 `am bot add-user` 填入你自己的真实数据。
-
-### v1.14.36 (2026-09-16) 新增
-
-- **3 区架构** (`success_pattern` / `failure_pattern` / `lesson`):
-  outcome-driven kind 路由,见上文 "3 区架构" 段。
-- **Explicit-public 原则** (管理员感知): 见上文 "Explicit-public
-  原则" 段。修复了 admin 早期 `if user == 'admin': return None` 短路
-  导致的个人数据泄漏。
-- **按区过滤 recall**: `am recall --kinds success_pattern,failure_pattern`
-  或 `/v1/read kinds=success_pattern,failure_pattern`,以及 hermes
-  端 `auto_route_read.py` 关键词启发式自动建议。
-- **`forge/pattern_detector.py`**: +7 高信号 CJK+EN 标记
-  (`走不通 / 卡死 / 报错 / 接通 / ship 成功 / verified / working`)。
-  修复前 `走不通 debug` 类中文失败短语全部漏判。
-- **`restart.py` + `load_dotenv(.env)`**: OPENROUTER_API_KEY /
-  MINIMAX_API_KEY 现在能进 server 进程 env。修复前 `mode='llm'` 静默
-  fallback 到 regex (server.log 显示 `OPENROUTER_KEY=EMPTY`)。
-
-## 一屏看懂 CLI
-
-| 命令 | 做什么 |
-|---|---|
-| `am init` | 引导空白 ASTOR_DIR (schema + 9-DB 布局) |
-| `am doctor` | 健康检查 + 计数 + 不变量校验 |
-| `am write "<text>"` | 写入一条事实 (默认 tier=public) |
-| `am read "<query>"` | 召回 top-k 事实 |
-| `am compact` | 合并近似重复的事实 |
-| `am recall --with-citations` | 输出带 `<ref>` 标记的上下文包 |
-| `am bot on/off` | 切换多用户模式 |
-| `am bot add-user <id>` | 创建用户 + 他们的私有 DB |
-| `am platform token-set <kind> <token>` | 保存 bot token (审计行) |
-| `am platform bind <bot> <chat> <user>` | 把一个 chat 绑定到用户 |
-| `am platform verify` | 检查 6 条 bot-binding 不变量 |
-| `am version` | 打印 astor + python + 平台版本 |
-| `am recall-auto "<error>"` | 粘贴错误或通过 stdin 管道,自动在 failure → lesson → success 三个 zone 里走一遍 |
-| `am recall --zone failure/success/lesson/all-zones/none` | 按结果 zone 过滤召回 (默认 `success`) |
-| `am decay-sweep run --since-canonical-id <N>` | 只扫 id > N 的新事实 (增量 sweep) |
-| `am recall --jev-relevance on` | 可选:通过 jev 重新排序 top hits(默认 off,需单独装 jev shim) |
-
-完整列表 + 每个子命令的细节:[`docs/api.md`](docs/api.md)。
-
-## 文档导航
-
-| 文档 | 给谁看 |
-|---|---|
-| **[`docs/architecture.md`](docs/architecture.md)** | 理解 3-store × 3-tier 的"为什么"。必读。 |
-| **[`docs/api.md`](docs/api.md)** | REST 端点 + 请求/响应 schema (18 个端点) |
-| **[`docs/contributing.md`](docs/contributing.md)** | 修代码、提 PR、写 skills |
-| **[`docs/migration.md`](docs/migration.md)** | 从 mem0 / Letta / Zep / MemGPT / ChromaDB / Pinecone / Weaviate / 普通文件 迁移 |
-| **[`docs/troubleshooting.md`](docs/troubleshooting.md)** | 常见错误 + 自助调试 |
-| **[`docs/faq.md`](docs/faq.md)** | "X 和 Y 有什么不同?" |
-| **[`docs/agent-adapters.md`](docs/agent-adapters.md)** | 集成到 hermes / OpenClaw / Claude Desktop / Cursor |
-| **[`bots/README.md`](bots/README.md)** | 多平台 bot 绑定 + ACL 设计 |
-
-中文文档:`README.zh-CN.md` (本文)。架构和 API 的中文翻译版本维护在 [`docs/architecture.zh-CN.md`](docs/architecture.zh-CN.md) 和 [`docs/api.zh-CN.md`](docs/api.zh-CN.md)。
-
-## 一眼架构
-
-9-DB 布局来自两个轴的笛卡尔积:
-
-- **3 个空间层 (tier)**:public / source / private_<user_id>
-- **3 个存储 (store)**:bus (事件 + 规范事实) / forge (LLM 抽取缓存) / nest (向量 + 全文索引)
-
-= **3 × 3 = 9 个 SQLite 文件**,加 audit db 和 bot-binding db。
-
-**写路径**:
-
-```python
-from astor_memory import astor_bus
-astor_bus(user_id='alice').write(
-    text='alice 喜欢浓缩咖啡',
-    tier='private',           # 强制 ACL
-)
-# 立即返回 event_id;forge 异步抽取事实;nest 异步嵌入。
-```
-
-**读路径**:
-
-```python
-hits = astor_bus(user_id='alice').read(
-    query='咖啡偏好',
-    top_k=5,
-)
-# 返回带引用的 hit 列表:
-# [0.92] alice 喜欢浓缩咖啡
-#   ref: f_8a3b2c1d:rev_1
-#   conf: 0.94
-```
-
-详见 [`docs/architecture.md`](docs/architecture.md)。
-
-## 与现有方案对比
-
-| 维度 | Astor-Memory | mem0 | Letta | PowerContext |
-|---|---|---|---|---|
-| 自托管 | ✅ 纯本地 | ❌ 云耦合 | ✅ 自托管 | ❌ 中文优先,无 self-host |
-| 多用户 ACL | ✅ 3 层 | ✅ 4 级 | ⚠️ 单租户 | ⚠️ profile 范围 |
-| LLM 供应商中立 | ✅ 6 个供应商 | ❌ OpenAI 优先 | ✅ 多供应商 | ⚠️ 主要 GPT |
-| 事件日志 | ✅ 追加式 | ❌ 仅事实 | ⚠️ 块级 | ✅ |
-| 引用追踪 | ✅ 修订 + 血缘 | ❌ | ⚠️ 块 ID | ✅ |
-| 安装体积 | < 50 MB | ~80 MB (chroma) | ~200 MB | ~120 MB |
-| Python 版本 | 3.10-3.13 | 3.10+ | 3.11+ | 3.10+ |
-
-## 运行铁律
-
-完整的 15 条铁律在 [`docs/contributing.md`](docs/contributing.md)。最关键的 4 条:
-
-1. **P-NO-FABRICATE-026** — 找不到事实时返回"无数据",绝不编造。
-2. **P-CITATION-015** — 每个 recall() 输出必须带 `<ref memory_id:revision_id>`。
-3. **P-DEDUPE-014** — cosine ≥ 0.85 的事实合并 (revisions 保留)。
-4. **P-NOSECRET-020** — 永不把 token / 密码 / PII 写入记忆。
-
-## 贡献指南
-
-欢迎贡献!流程在 [`docs/contributing.md`](docs/contributing.md),但 TL;DR:
-
-1. Fork → 特性分支 (`feat/<scope>/<topic>`)
-2. pytest 必须全绿 (`pytest tests/`)
-3. 更新 `docs/api.md` (如果你加了端点) 或 `docs/architecture.md` (架构改动)
-4. CHANGELOG.md 加一行 (`### Added/Fixed/Changed`)
-5. PR → main;CI 通过 → review → merge
-
-## 许可证
-
-MIT — 详见 [LICENSE](LICENSE)。
-
-## 致谢
-
-- 灵感来自 Mem-π、PowerContext RFCs、CoALA 框架、A-MEM 论文、Anthropic / Google ADK 风格指南。
-- 项目维护者:**the maintainer** ([ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md))。
-- 由 33 次 ship 周期和 50+ 定时任务的生产经验驱动。
+完整 endpoint 参考: [docs/api.md](docs/api.md)
+每库 schema 和 ACL 矩阵: [docs/architecture.md](docs/architecture.md)
 
 ---
 
-如果你 fork 这份代码:
-1. `README.md` (本文) 是入口。
-2. `docs/architecture.md` 解释**为什么**每一部分存在。
-3. `bots/README.md` 解释**为什么**bot 设计成 1×N×M 多对多。
-4. 每个模块顶部的 docstring 描述模块用途,公共函数 100% 有 docstring (`pydocstyle astor_memory`)。
-5. `tests/` 是行为规范 — 任何 PR 必须保持 pytest 全绿。
+## Muse 与外部 agent 平台集成
+
+外部 agent 平台(Muse、自定义 HTTP 客户端、Slack 适配器、Discord relay bot)通过 **binding API** 接入。流程分四步 —— 都走 `POST /v1/binding/*`:
+
+### 1. 注册平台
+
+```bash
+curl -X POST http://127.0.0.1:7803/v1/binding/platform \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "platform_id": "muse_main",
+       "kind": "muse",
+       "endpoint": "https://muse.example.com",
+       "auth_token_ref": "env:MUSE_AESK"
+     }'
+```
+
+Server 在 `platform_id` 下存储平台。`auth_token_ref` 是一个指针(`env:<NAME>` 或 `vault:<path>`);真实 token 永远不进数据库。
+
+### 2. 注册平台说话的用户
+
+```bash
+curl -X POST http://127.0.0.1:7803/v1/binding/user \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "user_id": "alice",
+       "role": "user",
+       "subscription_plan": "free",
+       "platform_id": "muse_main"
+     }'
+```
+
+`role` ∈ {`first_admin`, `admin`, `vip`, `power`, `user`}。role 决定 ACL 授权范围:`first_admin` 和 `admin` 可见 `source`,`vip` 和 `power` 可见 `public` 加上自己的 `private`,`user` 可见 `public` 加上自己的 `private`。
+
+### 3. 把聊天会话绑给用户
+
+```bash
+curl -X POST http://127.0.0.1:7803/v1/binding/bind \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "platform_id": "muse_main",
+       "chat_id": "session-uuid-abc123",
+       "user_id": "alice",
+       "role_inherit": "user"
+     }'
+```
+
+返回当前激活绑定;同一个 `chat_id` 的后续调用自动解析为 `user_id=alice`。Binding 通过 `POST /v1/binding/lookup` 用 `{platform_id, chat_id}` 查询 —— 这是每一层服务的规范 "这是谁?" 解析器。
+
+### 4. 通过平台范围的 endpoint 读写
+
+```bash
+# 作为 Alice 写事实 (从 chat_id 解析)
+curl -X POST http://127.0.0.1:7803/v1/write \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "platform_id": "muse_main",
+       "chat_id": "session-uuid-abc123",
+       "text": "alice prefers dark roast coffee",
+       "kind": "fact"
+     }'
+
+# 带完整召回组合的 read
+curl -X POST http://127.0.0.1:7803/v1/read \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "platform_id": "muse_main",
+       "chat_id": "session-uuid-abc123",
+       "query": "coffee preferences",
+       "top_k": 5
+     }'
+```
+
+Server 通过 binding lookup 解析 `platform_id + chat_id` 到 `user_id`,然后对该用户强制 ACL。档路由在 server 端 —— Muse 不选档;server 把 `platform_id + user_role` 映射到合适的档组合。
+
+### Skill chaining
+
+外部平台可以通过 `POST /v1/skill/chain` 运行多 skill pipeline:
+
+```bash
+curl -X POST http://127.0.0.1:7803/v1/skill/chain \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "platform_id": "muse_main",
+       "chat_id": "session-uuid-abc123",
+       "skills": ["coref_resolve", "match_experiences", "consult"],
+       "context": {"text": "alice said she is moving to Berlin next month"}
+     }'
+```
+
+每个 skill 通过线程化 `context` dict 看到前一个 skill 的输出。结果包含每个 skill 的耗时 + 链中触发的任何 meta-recall lesson。
+
+### 平台的审计 + admin endpoint
+
+```bash
+# 列出所有 binding (仅 admin)
+curl http://127.0.0.1:7803/v1/binding/list
+
+# 每档事件审计
+curl "http://127.0.0.1:7803/v1/audit/health?user=alice"
+
+# PII gate 统计 (生命周期)
+curl http://127.0.0.1:7803/v1/audit/health
+```
+
+完整 Muse 集成方案: [docs/integration-muse.md](docs/integration-muse.md)
+
+---
+
+## Dashboard
+
+Dashboard 从同一个端口的 `/dashboard/` 服务。功能包括:
+  - 健康面板 —— embedding 失败、审计警告、审计总数
+  - 概要面板 —— 总事实数、活跃事实数、最近事件
+  - 每用户分布 —— 事实数、高重要性、最近事件、tombstoned
+  - 最近捕获 —— 分块分页、每页 5 行、可切换轴(kind / tier / platform / all-flat)
+  - 最近事实 —— 最新 5 条
+  - Knowledge pages —— 运营作者主题页
+  - Mental models —— 运营作者召回面
+  - Recall debugger —— 实时 /v1/read 带 tier / user / top_k 控制
+  - Peer friends 面板 —— list / trust / blacklist / 每 peer 复制
+  - 自动刷新每 60 秒、缓存 TTL 30 秒、原始 JSON endpoint 在 `/v1/dashboard`
+
+Dashboard HTML 在公开 repo 中作为通用模板发布;本地实例是运营者自己的。API 返回的路径字符串被遮蔽(只暴露目录 basename 在 `/v1/health`;sqlite 文件路径在任何公开 API 表面都不暴露)。
+
+---
+
+## 公开 API 表面
+
+| Endpoint | Method | 用途 |
+|---|---|---|
+| `/v1/health` | GET | Server 健康 + bus 统计 |
+| `/v1/identity` | GET | Server peer_id + fingerprint |
+| `/v1/dashboard` | GET | 完整 dashboard payload (JSON) |
+| `/v1/health/diagnose` | GET | 每用户详细健康分布 |
+| `/v1/write` | POST | 追加事实 (带 ACL + PII gate) |
+| `/v1/read` | POST | 带跨信号组合的召回 |
+| `/v1/forget` | POST | Tombstone 一条事实 |
+| `/v1/consult` | POST | 反应式 meta-recall (success / failure / lesson) |
+| `/v1/skill` | GET | 列出已注册 skill |
+| `/v1/skill/<name>` | GET | Skill 元数据 |
+| `/v1/skill/<name>/invoke` | POST | 运行一个 skill |
+| `/v1/skill/chain` | POST | 按序运行多个 skill |
+| `/v1/skill/recommend` | POST | 主动 skill + 事实推荐 |
+| `/v1/binding/platform` | POST | 注册外部平台 |
+| `/v1/binding/user` | POST | 注册用户 |
+| `/v1/binding/bind` | POST | 绑定聊天会话到用户 |
+| `/v1/binding/lookup` | GET | 解析 chat_id → user_id |
+| `/v1/binding/list` | GET | 列出所有 binding (admin) |
+| `/v1/peer/list` | GET | 列出 peer-friends (PPS) |
+| `/v1/peer/add` | POST | 添加 peer-friend |
+| `/v1/peer/trust` | POST | 调整信任分数 |
+| `/v1/peer/blacklist` | POST | 屏蔽一个 peer |
+| `/v1/episode` | POST | 追加原始 episode (L0 cone) |
+| `/v1/episode/<id>` | GET | 按 id 获取 episode |
+| `/v1/episode/list` | GET | 列出最近 episode |
+| `/v1/bitemporal/invalidate` | POST | 让一条事实失效,带原因 |
+| `/v1/bitemporal/active` | POST | 把事实重新标记为 active |
+| `/v1/audit/health` | GET | PII gate + meta-recall 计数器 |
+| `/v1/audit/orphans` | GET | 列出低信号候选用于清理 |
+| `/v1/backfill_memory_class` | POST | 一次性 backfill (admin) |
+| `/v1/staleness` | GET | 查找需要刷新的引用 |
+
+完整请求 / 响应 schema: [docs/api.md](docs/api.md)
+
+---
+
+## 联邦公开档 (P5)
+
+多个由可信 peer 拥有的 astor 实例将直接同步它们的 `public` 档 —— 没有中心 server,没有远程-direct RPC。每 peer 信任(0-100) + 每主题权重让策划 admin 决定跟谁分享什么。`private` 和 `source` 档永远不跨边界。
+
+这作为 `/v1/peer/*` REST endpoint 加上 `am peer` CLI 发布在现有 `peer_relationships.py` schema 之上。P5 在运营方 pilot 达到收敛时落地。
+
+---
+
+## 为什么是单机而不是第一天就联邦
+
+三个理由:
+
+1. **运维简单。** 一个 `astor-server` 进程、一个 `ASTOR_DIR` 目录、一个 backup cron。多 server 分片让运维表面积翻三倍,加上只在生产环境出现的事件一致性 bug 类。
+2. **ACL 是信任边界。** 强制每用户隐私的同一个 ACL 矩阵在多 server 部署中照样工作 —— 联邦只需要每 server 信任,不需要重写访问控制。
+3. **每 peer 分享对实际部署形态已经够用。** 一个家人 / 朋友 / 共同管理员群体很少需要跨组织分享。需要时,`peer_relationships.py` 里的每 peer 信任 + 每主题权重机制就是覆盖用例的最小扩展,不需要重新架构。
+
+---
+
+## 贡献
+
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 许可证
+
+MIT —— 见 [LICENSE](LICENSE)。
+
+## 维护者
+
+Astor-Memory Maintainers —— 见 [AUTHORS.md](AUTHORS.md)。
