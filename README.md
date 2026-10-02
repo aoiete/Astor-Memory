@@ -272,7 +272,7 @@ curl "http://127.0.0.1:7803/v1/audit/health?user=alice"
 curl http://127.0.0.1:7803/v1/audit/health
 ```
 
-Full Muse integration recipe: [docs/integration-muse.md](docs/integration-muse.md).
+Full Muse integration recipe: [docs/MUSE_INTEGRATION.md](docs/MUSE_INTEGRATION.md).
 
 ---
 
@@ -384,4 +384,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Maintainer
 
-Astor-Memory Maintainers — see [AUTHORS.md](AUTHORS.md).
+Astor-Memory Maintainers — see [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).

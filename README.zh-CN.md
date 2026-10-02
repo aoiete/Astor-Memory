@@ -221,7 +221,7 @@ curl "http://127.0.0.1:7803/v1/audit/health?user=alice"
 curl http://127.0.0.1:7803/v1/audit/health
 ```
 
-完整 Muse 集成方案: [docs/integration-muse.md](docs/integration-muse.md)
+完整 Muse 集成方案: [docs/MUSE_INTEGRATION.md](docs/MUSE_INTEGRATION.md)
 
 ---
 
@@ -311,4 +311,4 @@ MIT —— 见 [LICENSE](LICENSE)。
 
 ## 维护者
 
-Astor-Memory Maintainers —— 见 [AUTHORS.md](AUTHORS.md)。
+Astor-Memory Maintainers —— 见 [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md)。
