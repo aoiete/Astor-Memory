@@ -13,7 +13,7 @@ import re
 import sqlite3
 import time
 
-ASTOR_DIR = os.environ.get("ASTOR_DIR", r"<ASTOR_RUNTIME>")
+ASTOR_DIR = os.environ.get("ASTOR_DIR") or os.path.expanduser("~/.astor")
 
 JUNK_PATTERNS = [
     ("session工具记录", r"^session 中使用工具"),
