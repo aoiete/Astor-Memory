@@ -65,7 +65,7 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
 
     # PII (block by default — operator can override to redact)
     ("email", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "block"),
-    ("phone_us", re.compile(r"\b\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"), "block"),
+    ("phone_us", re.compile(r"\b\(?\d{3}\)?[-.\s]+\d{3}[-.\s]+\d{4}\b"), "block"),
     ("phone_intl", re.compile(r"\+\d{1,3}[\s-]\d{3,}[\s-]\d{3,}[\s-]\d{3,}\b"), "block"),
     ("ssn_us", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "block"),
     ("credit_card", re.compile(r"\b(?:\d[ -]*?){13,19}\b"), "block"),
@@ -73,7 +73,7 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
 
     # WeChat chat IDs — operator's specific concern (R-class 1152, 8983)
     ("wechat_chat_id", re.compile(r"\bo[A-Za-z0-9_-]{20,}@im\.wechat\b"), "block"),
-    ("telegram_chat_id", re.compile(r"\b-?\d{8,12}\b"), "redact"),  # broad — high false-positive risk; redact by default
+    ("telegram_chat_id", re.compile(r"(?<!\w)-\d{6,12}(?!\d)"), "redact"),  # v1.16.40: negative + 6-12 digits + not followed by another digit (epoch 13+ digit guard)  # broad — high false-positive risk; redact by default
 
     # Discord IDs (snowflakes)
     ("discord_snowflake", re.compile(r"\b\d{17,20}\b"), "redact"),
