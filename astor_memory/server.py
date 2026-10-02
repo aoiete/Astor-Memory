@@ -758,6 +758,9 @@ def _find_parent_fact_ids(text):
     return list(set(matches))
 
 
+
+
+
 def create_app(astor_dir: str | None = None) -> Flask:
     """Create Flask app. astor_dir override for tests."""
     app = Flask(__name__)
@@ -974,6 +977,23 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 request.environ['ASTOR_REUSE_WARNING'] = msg
         except Exception as exc:
             _safe_stderr_write(f'[astor.before_write_hook] hook error: {exc}\n')
+
+
+    import gc as _gc
+
+    @app.after_request
+    def _astor_gc_watchdog(response):
+        """v1.16.39+: Periodic GC after heavy endpoints.
+        Per R-class 12824 / DC timeout root cause: embedding model + numpy
+        buffer pool + fastembed ONNX state can grow unboundedly. Force
+        gc.collect() after /v1/read + /v1/write to keep RSS stable.
+        """
+        try:
+            if request.path in ('/v1/read', '/v1/write', '/v1/episode', '/v1/distill'):
+                _gc.collect()
+        except Exception:
+            pass
+        return response
 
 
     @app.before_request

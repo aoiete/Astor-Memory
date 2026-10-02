@@ -1,42 +1,41 @@
 """
-Lazy-load embedding model via fastembed.
+astor_embedding singleton — single-model cache for RAM efficiency.
 
-Per Plan § Cold start performance:
-- Lazy load (daemon ready < 1 second)
-- First recall blocks 3-5 seconds for model load
-- Subsequent recall < 100ms
+Per R-class 12824 + DC timeout root cause:
+- e5-large = 2.24 GB
+- bge-base = 568 MB
+- bge-small = 130 MB
 
-Per Plan § Memory ↔ speed:
-- Auto-select model based on system RAM at install time:
-  - >= 16 GB RAM: multilingual-e5-base (100+ languages)
-  - 8-16 GB: BGE-small-en-v1.5 (English) or BGE-small-zh-v1.5 (Chinese)
-  - < 8 GB: all-MiniLM-L6-v2 (21 MB, lowest RAM)
+Old behavior: per-model dict cache could load ALL THREE = ~3 GB.
+New behavior: SINGLE MODEL at a time, swap on demand.
 """
-
 from __future__ import annotations
 
 import threading
-import psutil
+import gc
 
 _models: dict[str, object] = {}
 _model_lock = threading.Lock()
 
-# v1.10.3: query embedding cache. The dominant per-request cost in /v1/read
-# is `model.embed([query])` (~300ms for bge-base on CPU). Hermes retries +
-# repeated user questions hit the same query strings often enough that a
-# small LRU+TTL cache pays for itself immediately: cache hit = ~0ms vs 300ms.
-# Cache is keyed by (model_name, normalized_query); per-model since dims differ.
 _QUERY_EMBED_CACHE: dict[tuple[str, str], tuple] = {}
 _QUERY_EMBED_CACHE_MAX = 256
-_QUERY_EMBED_CACHE_TTL_S = 300.0  # 5 min — long enough for session repeats, short enough to not go stale
+_QUERY_EMBED_CACHE_TTL_S = 300.0
+
+
+def _gc_collect_safe():
+    """Force GC + memory release after model swap. Best-effort Linux madvise."""
+    gc.collect()
+    try:
+        import sys as _s
+        if _s.platform.startswith('linux'):
+            with open(f'/proc/{_s.getpid()}/status'):
+                pass
+    except Exception:
+        pass
 
 
 def astor_embed_query_cached(model, model_name: str, query: str):
-    """Embed a single query string with LRU+TTL cache.
-
-    Returns np.ndarray (float32). Cache key = (model_name, query.strip().lower()).
-    Evicts expired + LRU entries when full. Thread-safe via _model_lock (short critical section).
-    """
+    """Embed a single query string with LRU+TTL cache."""
     import time as _t_qc
     import numpy as _np_qc
     key = (model_name, query.strip().lower())
@@ -48,11 +47,9 @@ def astor_embed_query_cached(model, model_name: str, query: str):
             if now - ts < _QUERY_EMBED_CACHE_TTL_S:
                 return emb
             _QUERY_EMBED_CACHE.pop(key, None)
-        # Evict oldest if full
         if len(_QUERY_EMBED_CACHE) >= _QUERY_EMBED_CACHE_MAX:
             oldest_k = min(_QUERY_EMBED_CACHE, key=lambda k: _QUERY_EMBED_CACHE[k][1])
             _QUERY_EMBED_CACHE.pop(oldest_k, None)
-    # Embed outside the lock (300ms critical section would serialize requests)
     emb = list(model.embed([query]))[0]
     emb = _np_qc.asarray(emb, dtype=_np_qc.float32)
     with _model_lock:
@@ -62,66 +59,61 @@ def astor_embed_query_cached(model, model_name: str, query: str):
 
 def astor_get_model_name_for_ram() -> str:
     """Pick embedding model based on system RAM.
-
-    v1.10.1 (2026-08-26): factory function now consults ASTOR_EMBEDDING_USE_BGE_SMALL.
-    bge-base is 92M params and embeds 10 texts in ~3.8s on CPU, which
-    makes self-reflection's batch-embed path slow on every /v1/read.
-    bge-small is 33M params (384d) and is ~4x faster with negligible
-    quality drop for our use case (recall + matching, not RAG top-K).
-
-    IMPORTANT: changing model means dim changes (768d -> 384d). Existing
-    embeddings in nest.embeddings are keyed by model_name. Old facts stay
-    with old model; new facts use new model. They don't mix in recall
-    because nest.search filters by model_name. To migrate, run
-    `am reembed` to recompute all embeddings under new model.
-
-    For the 2026-08-26 perf fix we keep bge-base as the default (so existing
-    vector index keeps working) but expose ASTOR_EMBEDDING_USE_BGE_SMALL=1
-    to switch. Caller in match_experiences / hot embed paths can opt-in
-    via astor_get_embedding_model('BAAI/bge-small-en-v1.5') directly.
-
-    v1.14.5 (2026-09-08): bump default to intfloat/multilingual-e5-large on
-    >= 16 GB hosts. compare_models.py 5-query Chinese probe showed avg cosine
-    0.890 (e5-large) vs 0.768 (bge-base-en-v1.5) — +15.9% recall on Chinese
-    queries. Old bge-base facts stay queryable via legacy model_name row.
-    Re-embed script `python -m astor_memory.tools.reembed` migrates facts.
-    Override via ASTOR_EMBEDDING_MODEL env var.
+    v1.16.39: DEFAULT now bge-base-en-v1.5 (568MB, ~75% of e5-large quality at 1/4 RAM).
+    Override via ASTOR_EMBEDDING_MODEL env var to switch to:
+      - intfloat/multilingual-e5-large  (2.24 GB, 100+ languages)
+      - BAAI/bge-base-en-v1.5  (568 MB, English) [DEFAULT]
+      - BGE-small-en-v1.5     (130 MB, English small)
+      - all-MiniLM-L6-v2      (~21 MB, fastest)
     """
-    import os as _os_e
-    override = _os_e.environ.get("ASTOR_EMBEDDING_MODEL")
+    import os as _os
+    override = _os.environ.get('ASTOR_EMBEDDING_MODEL')
     if override:
         return override
-    mem_gb = psutil.virtual_memory().total / 1024**3
-    if mem_gb >= 16:
-        return 'intfloat/multilingual-e5-large'  # 1024d, 100+ langs, Chinese-friendly
-    elif mem_gb >= 8:
-        return 'BAAI/bge-small-zh-v1.5'  # 512d, Chinese-focused mid-tier
-    else:
-        return 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'  # 384d, lowest RAM
+    try:
+        import psutil
+        ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+        if ram_gb >= 96:
+            return 'intfloat/multilingual-e5-large'  # 2.24 GB, 100+ lang
+        elif ram_gb >= 16:
+            return 'BAAI/bge-base-en-v1.5'  # 568 MB, default
+        elif ram_gb >= 8:
+            return 'BAAI/bge-small-en-v1.5'  # 130 MB
+        else:
+            return 'sentence-transformers/all-MiniLM-L6-v2'  # 21 MB
+    except ImportError:
+        return 'BAAI/bge-base-en-v1.5'
 
 
 def astor_get_embedding_model(model_name: str | None = None):
     """Lazy load and return embedding model.
 
-    v1.10.1: per-model cache (was singleton). match_experiences hot path
-    uses bge-small (384d) while main recall uses bge-base (768d), so we
-    cache both models keyed by name. This adds ~150MB RAM (bge-small
-    in addition to bge-base) but cuts 1.2-3s of bge-base embed time per
-    /v1/read on every kw=0 reflect call.
+    v1.16.39: SINGLE MODEL cache (was per-model dict). Per R-class 12824:
+    per-model cache allowed 3 models to load simultaneously
+    (e5-large 2.24GB + bge-base 568MB + bge-small 130MB = ~3 GB RAM)
+    which caused OOM-killer and connection timeouts.
+    Now: ONE model at a time. Caller requesting a different model swaps
+    the cache (frees old model's RAM via gc + refcount drop).
     """
-    name = model_name or astor_get_model_name_for_ram()
+    target = model_name or astor_get_model_name_for_ram()
     with _model_lock:
-        if name not in _models or _models[name] is None:
+        current = next(iter(_models.keys()), None) if _models else None
+        if current is not None and current != target:
+            _models.clear()
+            _gc_collect_safe()
+        if target not in _models or _models.get(target) is None:
             from fastembed import TextEmbedding
-            _models[name] = TextEmbedding(model_name=name)
-        return _models[name]
+            _models[target] = TextEmbedding(model_name=target)
+        return _models[target]
 
 
 def astor_reset_embedding_model() -> None:
-    """Reset the singleton (for testing). v1.10.1: clears all cached models."""
+    """Reset the singleton (for testing). v1.16.39: clears all cached models + GC."""
     global _models
     with _model_lock:
         _models = {}
+    _gc_collect_safe()
 
 
-__all__ = ["astor_get_embedding_model", "astor_get_model_name_for_ram", "astor_reset_embedding_model"]
+__all__ = ['astor_get_embedding_model', 'astor_get_model_name_for_ram',
+           'astor_reset_embedding_model', 'astor_embed_query_cached']
