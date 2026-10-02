@@ -672,9 +672,23 @@ def astor_nest_for(tier: str, user_id: str | None = None) -> AstorNest:
 
 
 def astor_reset_nest() -> None:
-    """Reset the singleton (for testing)."""
+    """Reset the singleton (for testing).
+
+    v1.16.x: also close each cached AstorNest's SQLite connection
+    before clearing the dict. Without this, test fixtures that
+    monkeypatch ASTOR_DIR to a tmpdir can't fully release the tmpdir
+    because the nest's open SQLite connection still points at the
+    tmpdir's nest.db file. Windows file-lock then blocks tmpdir
+    cleanup with PermissionError.
+    """
     global _nest_singleton
     with _nest_lock:
+        if _nest_singleton is not None:
+            for _inst in list(_nest_singleton.values()):
+                try:
+                    _inst.close()
+                except Exception:
+                    pass
         _nest_singleton = None
 
 
