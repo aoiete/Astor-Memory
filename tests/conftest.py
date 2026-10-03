@@ -52,11 +52,25 @@ def _ensure_admin_user_and_lock():
         except sqlite3.OperationalError:
             pass  # bot-binding.db has different schema; skip
 
-    # v1.16.x: NOTE: astor_init_acl is NOT seeded here because tests
-    # in tests/test_acl.py have their own _reset_acl_for_each_test_fixture
-    # and rely on a clean (uninit) state for assertions like
-    # test_acl_uninit_raises_permission. Tests that need ACL pre-init
-    # (test_auto_link, etc.) call astor_init_acl themselves; that path
-    # is documented in test_basic.py and conftest helpers.
+    # v1.16.x: Seed astor_init_acl with admin so test fixtures that
+    # call astor_bus() directly don't fail with PermissionError.
+    # tests/test_acl.py has its own _reset_acl_for_each_test_fixture
+    # (autouse) that runs AFTER this one and clears _CURRENT for the
+    # test_acl_uninit_raises_permission case. Other test modules
+    # (test_auto_link, test_basic, etc.) need the seeded ACL to
+    # call astor_bus() / astor_forge() / astor_nest() without
+    # PermissionError_. 2026-10-03: was missing, caused 11 ERROR
+    # + 3 FAILED on full pytest run.
+    # NOTE: actor MUST be 'admin:admin' (canonical form requires
+    # 'system' or 'admin:<id>' or 'user:<id>') — see astor_init_acl's
+    # _ACTOR_RE check. A bare 'admin' raises ValueError.
+    try:
+        from astor_memory._internal.acl import astor_init_acl
+        astor_init_acl(
+            actor='admin:admin', role='admin', tier='public',
+            user_id='admin', subscription_plan='power',
+        )
+    except Exception:
+        pass  # ACL already seeded; idempotent
 
     yield
