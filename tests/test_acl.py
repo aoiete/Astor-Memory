@@ -121,41 +121,33 @@ def test_acl_init_validates_inputs():
 
 @pytest.fixture(autouse=True)
 def _reset_acl_for_each_test_fixture():
-    """Reset BOTH _CURRENT (threading.local) and _ACL_CTX (ContextVar)
-    so test_acl_uninit_raises_permission runs cleanly regardless of ordering.
+    """Reset _CURRENT (threading.local) before each test.
 
-    2026-09-02 fix: astor_current_acl() checks _ACL_CTX FIRST, so resetting
-    only _CURRENT leaves the ContextVar state behind. Fix: clear both.
+    2026-10-03: _ACL_CTX (ContextVar) was removed from astor module.
+    Only _CURRENT needs reset.
     """
     import astor_memory._internal.acl as acl_mod
-    # Reset threading.local
     for attr in ('actor', 'role', 'tier', 'user_id', 'subscription_plan'):
         if hasattr(acl_mod._CURRENT, attr):
             delattr(acl_mod._CURRENT, attr)
-    # Reset ContextVar
-    try:
-        acl_mod._ACL_CTX.set(None)
-    except (LookupError, ValueError):
-        pass
     yield
 
 
 def test_acl_uninit_raises_permission():
     """Calling ACL checks without astor_init_acl → PermissionError_.
 
-    2026-08-16 fix:
-    - Use tier=private (public returns BEFORE consulting ACL, so public
-      would never raise even with no ACL).
-    - Set then del the actor attribute to ensure it doesn't exist, even
-      if a previous test reloaded astor_memory._internal.acl (which
-      gives _CURRENT a fresh empty local -- hasattr returns False, but
-      we still need the read to fail).
-    2026-09-02 fix: _reset_acl_for_each_test_fixture clears both _CURRENT
-    and _ACL_CTX so this test passes regardless of order.
+    2026-10-03 fix: removed _ACL_CTX (ContextVar) because pytest-asyncio
+    auto mode wraps each test in a new asyncio.Task → new ContextVar
+    Context. _ACL_CTX.set() in fixture never reached the test body.
+    ACL state now lives only in _CURRENT (threading.local).
     """
-    from astor_memory._internal.acl import astor_check_read
-    with pytest.raises(PermissionError_):
-        astor_check_read("private", user_id="alice")
+    import astor_memory._internal.acl as acl_mod
+    # Reset _CURRENT (autouse fixture also does this; defensive here)
+    for attr in ('actor', 'role', 'tier', 'user_id', 'subscription_plan'):
+        if hasattr(acl_mod._CURRENT, attr):
+            delattr(acl_mod._CURRENT, attr)
+    with pytest.raises(acl_mod.PermissionError_):
+        acl_mod.astor_check_read("private", user_id="alice")
 
 
 # --- Permission matrix ---
