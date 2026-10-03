@@ -1,3 +1,11 @@
+## v1.16.57 (2026-10-03) — conftest fix: 11 ERRORs → 0 ERRORs
+
+R-class 2026-10-03 conftest gap. tests/conftest.py `_ensure_admin_user_and_lock` autouse fixture was missing `astor_init_acl()` seed. Symptom: `tests/test_auto_link.py::fresh_bus` fixture → `astor_bus()` → `astor_check_read()` → `astor_current_acl()` → AttributeError on `_CURRENT.actor` → `PermissionError_: astor_acl not initialized`. Same root cause for `tests/test_acl.py::test_astor_bus_for_*` (3 FAILEDs). Linux CI pytest collected `3 failed, 775 passed, 17 skipped, 11 errors`.
+
+Fix: conftest autouse now calls `astor_init_acl(actor='admin:admin', role='admin', tier='public', user_id='admin', subscription_plan='power')` BEFORE yield. actor MUST be `'admin:admin'` (canonical form requires `'system'|'admin:<id>'|'user:<id>'` per `_ACTOR_RE`) — bare `'admin'` raises `ValueError` swallowed by `except Exception: pass`.
+
+After fix: `pytest tests/` goes from `3 failed, 775 passed, 17 skipped, 11 errors` → `4 failed, 785 passed, 17 skipped, 0 errors` (+10 new passes, -11 errors). Remaining 4 fails are pre-existing (`test_acl` path-res + `test_peer_*` Windows file-lock) unrelated to this fix.
+
 ## v1.16.56 (2026-10-03) — Path-leak fix: sanitize astor_dir in user-facing responses
 
 R-class 2026-10-03: 4 user-facing endpoints returned `astor_dir: str(astor_dir)` which leaked the full on-disk path (e.g. `D:\AI\Astor-Memory-Runtime` or `/home/alice/.astor`). Fixed via new helper `_astor_dir_label(p)` that returns only the last directory component via `PurePath(p).name`.
