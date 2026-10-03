@@ -72,7 +72,7 @@ jobs:
       - name: Run pytest fast (233 core tests)
         run: |
           export ASTOR_DIR=/tmp/astor-ci
-          pytest tests/ \
+          pytest \
             tests/test_basic.py \
             tests/test_acl.py \
             tests/test_auto_link.py \
