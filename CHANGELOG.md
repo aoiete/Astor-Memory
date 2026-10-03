@@ -1,3 +1,14 @@
+## v1.16.56 (2026-10-03) — Path-leak fix: sanitize astor_dir in user-facing responses
+
+R-class 2026-10-03: 4 user-facing endpoints returned `astor_dir: str(astor_dir)` which leaked the full on-disk path (e.g. `D:\AI\Astor-Memory-Runtime` or `/home/alice/.astor`). Fixed via new helper `_astor_dir_label(p)` that returns only the last directory component via `PurePath(p).name`.
+
+- `server.py` L1998 — `/v1/dashboard` error response uses helper
+- `server.py` L6944 — `/v1/dashboard` payload uses helper
+- `hermes_adapter.py` L698 — `astor_recall` result uses `Path(ASTOR_DIR).name`
+- `/v1/identity` already sanitized in v1.16.50 (was correct, no change)
+
+No behavior change for ops; users no longer see the full on-disk path in any response.
+
 ## v1.16.55 (2026-10-03) — Audit-fix: 4 critical issues + 1 minor
 
 **Cross-platform paths** — Removed 4 `D:\AI\Astor-Memory-Runtime` hardcodes in `astor_memory/server.py` (lines 81, 1305, 1352, 1466) + 1 in `tests/_regression_check.py`. Replaced with `ASTOR_DIR` env var or `~/.astor` fallback via `Path.home() / '.astor'`. Linux install now works for `/v1/fact/{id}/distill` + `/v1/admin/user/{user_id}/toggle_distill` endpoints.

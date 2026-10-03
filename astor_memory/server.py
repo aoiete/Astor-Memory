@@ -1492,6 +1492,26 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'distill_opt_in': bool(allow),
         })
 
+    
+    def _astor_dir_label(p):
+        """v1.16.56: 2026-10-03 path-leak fix. Return only the last
+        directory component of the astor install path. NEVER leak the
+        full on-disk path (R-class 2026-10-03 + 2026-09-30 v1.16.50
+        'do not leak the full on-disk path' comment). Server admins
+        can still infer their install dir from peer_id + identity
+        if needed; nobody else should see the host filesystem layout.
+
+        Example: 'D:\\AI\\Astor-Memory-Runtime' → 'Astor-Memory-Runtime'
+                 '/home/alice/.astor' → '.astor'
+        """
+        import os as _os_label
+        from pathlib import PurePath as _PP
+        if not p:
+            return ''
+        s = str(p).rstrip('\\/')
+        return _PP(s).name or s or 'astor'
+
+
     @app.route('/v1/identity', methods=['GET'])
     def identity():
         """v1.16.7: server self-identity (peer_id + keypair fingerprint).
@@ -1975,7 +1995,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({
                 "error": "dashboard_build_failed",
                 "detail": str(exc),
-                "astor_dir": str(astor_dir),
+                "astor_dir": _astor_dir_label(astor_dir),
             }), 500
 
         _DASHBOARD_CACHE["payload"] = payload
@@ -6921,7 +6941,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         astor_dir = get_astor_dir()
         out = {
             'version': __version__,
-            'astor_dir': str(astor_dir),
+            'astor_dir': _astor_dir_label(astor_dir),
             'generated_at': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).replace(tzinfo=None).isoformat() + 'Z',
             'dbs': {},
             'counts': {
