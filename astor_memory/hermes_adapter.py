@@ -695,7 +695,7 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
     def _tool_status(self) -> str:
         import json
         result = {
-            "astor_dir": str(ASTOR_DIR),
+            "astor_dir": Path(ASTOR_DIR).name if ASTOR_DIR else "",
             "actor": self._actor,
             "platform": self._platform,
             "session_id": self._session_id,
