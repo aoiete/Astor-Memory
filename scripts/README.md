@@ -97,9 +97,13 @@ No pytest required; the test file uses only stdlib.
 
 ## When to run
 
-After every `pip install --upgrade astor-memory`:
+After upgrading astor-memory across versions, **clone or update the
+astor-memory repo** (the `scripts/` directory is git, not part of
+the pip wheel — see `pyproject.toml` `[tool.hatch.build.targets.sdist]`
+which excludes `scripts/`). Then:
 
 ```bash
+cd path/to/astor-memory
 python scripts/astor_doctor.py repair-conn --apply
 ```
 
