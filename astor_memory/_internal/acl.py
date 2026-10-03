@@ -45,9 +45,14 @@ from typing import Literal, Optional
 from . import grants
 from .audit_logger import astor_audit
 
-_ACL_CTX: contextvars.ContextVar["_AclSnapshot | None"] = contextvars.ContextVar(
-    "astor_acl_ctx", default=None,
-)
+# 2026-10-03: removed ContextVar _ACL_CTX. Pytest-asyncio auto mode wraps
+# each test in a new asyncio.Task → new ContextVar Context, so
+# _ACL_CTX.set() in fixtures doesn't reach the test body. Since astor-
+# memory has zero async tests (verified 2026-10-03), the per-coroutine
+# ContextVar was over-engineering. ACL state now lives only in _CURRENT
+# (threading.local), which is process-wide for sync callers — same
+# behavior pre-v1.2 follow-up.
+# _ACL_CTX: _AclSnapshot | None  # removed 2026-10-03
 
 
 Role = Literal["admin", "user"]
@@ -393,31 +398,18 @@ def astor_init_acl(
     _CURRENT.tier = tier
     _CURRENT.user_id = user_id
     _CURRENT.subscription_plan = subscription_plan
-    # v1.2 follow-up: also set the asyncio ContextVar so per-coroutine
-    # callers see the correct ACL context without leaking between tasks.
-    _ACL_CTX.set(_AclSnapshot(
-        actor=actor, role=role, tier=tier, user_id=user_id,
-        subscription_plan=subscription_plan,
-    ))
+    # 2026-10-03: removed _ACL_CTX.set() — ContextVar caused fixture→test
+    # boundary issues with pytest-asyncio auto mode. _CURRENT alone is
+    # sufficient (no async tests exist in this project).
 
 
 def astor_current_acl() -> AccessContext:
     """Return the currently bound ACL context. Raises if not init'd yet.
 
-    Resolution order (v1.2 follow-up):
-      1. asyncio ContextVar (per-coroutine in async callers)
-      2. threading.local (per-thread in legacy sync callers)
-      3. raise PermissionError_ — caller forgot to call astor_init_acl
+    2026-10-03: ACL state lives in _CURRENT (threading.local). Per-
+    coroutine ContextVar fallback was removed because pytest-asyncio
+    auto mode + zero async tests made it over-engineered.
     """
-    snapshot = _ACL_CTX.get()
-    if snapshot is not None:
-        return AccessContext(
-            actor=snapshot.actor,
-            role=snapshot.role,
-            tier=snapshot.tier,
-            user_id=snapshot.user_id,
-            subscription_plan=snapshot.subscription_plan,
-        )
     try:
         return AccessContext(
             actor=_CURRENT.actor,
