@@ -23,7 +23,8 @@ jobs:
   test:
     name: pytest (py${{ matrix.python-version }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60  # 2026-10-03: bumped from 30. cold-cache e5-large model
+                          # init + bus fixture spin-up can take 10+ min per matrix leg
     strategy:
       fail-fast: false
       matrix:
@@ -77,7 +78,7 @@ jobs:
       - name: Run pytest (with 60s per-test timeout)
         run: |
           export ASTOR_DIR=/tmp/astor-ci
-          pytest tests/ -v --tb=short -p no:cacheprovider --timeout=60 --timeout-method=thread
+          pytest tests/ -v --tb=short -p no:cacheprovider --timeout=180 --timeout-method=thread
 
       - name: Stop astor server
         if: always()
