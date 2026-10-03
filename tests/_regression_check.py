@@ -141,7 +141,7 @@ def main() -> int:
                 rolled_back = True
             else:
                 msg += f"\n⚠️ detected BM25={bm25} but rollback failed (no files patched)\n"
-        msg += f"check: D:\\AI\\astor-memory\\astor\\metrics\\"
+        msg += f"check: {os.environ.get('ASTOR_DIR', '~/.astor')}/astor/metrics/"
         send_telegram(msg)
         print(f"ALERT SENT{' + ROLLBACK' if rolled_back else ''}")
     else:
