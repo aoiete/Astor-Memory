@@ -78,7 +78,7 @@ jobs:
       - name: Run pytest (with 60s per-test timeout)
         run: |
           export ASTOR_DIR=/tmp/astor-ci
-          pytest tests/ -v --tb=short -p no:cacheprovider --timeout=180 --timeout-method=thread
+          pytest tests/ -v --tb=short -p no:cacheprovider --timeout=180
 
       - name: Stop astor server
         if: always()
