@@ -3775,6 +3775,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
           query: str (required)
           user: str (optional, filter by user_id)
           top_k: int (default 5)
+          routing_strategy: str (optional, v1.16.54) — one of "auto" | "graph"
+                            | "dense" | "hybrid". "auto" (default) uses
+                            astor_memory.nest.retrieval_router.choose_route()
+                            to decide graph-first vs dense-only vs hybrid
+                            based on query features (length, multihop
+                            markers, factoid markers, proper nouns).
+                            "hybrid" is back-compat with v1.10.9 baseline.
+                            "graph" / "dense" force a strategy.
           memory_class: list[str] or comma-separated str (optional, v1.14.74)
                         — Hindsight ACL 2026 taxonomy. Each value must be one of
                           {world_fact, experience, observation, mental_model}.
@@ -3795,6 +3803,18 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if not query:
             return jsonify({'error': 'query required', 'detail': 'POST /v1/read requires JSON body with "query" field (string)'}), 400
 
+        # v1.16.54 (Ship P1): Learnable Routing dispatch. Decides whether
+        # to use graph-first expansion (cheap, finds implicit preferences)
+        # or dense-only (faster, best for explicit keyword queries) or
+        # hybrid (back-compat). Default "auto" uses astor.nest.retrieval_router
+        # heuristics. body.routing_strategy = "auto" | "graph" | "dense" | "hybrid".
+        # Computed BEFORE cache check so cache hit responses still surface
+        # the routing decision in the response.
+        from .nest.retrieval_router import (
+            choose_route as _choose_route,
+            routing_decision_to_dict as _rd_to_dict,
+        )
+        _routing_decision = _choose_route(query, body)
         # v1.16.20: LRU read cache (60s TTL). Same query+tier+user+top_k
         # within TTL returns cached results — kills redundant nest/embedding
         # work when agents hammer the same query (muse retry loops).
@@ -3812,7 +3832,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'cache_age_s': round(_rc_time.time() - _rcache_hit[0], 1),
                 'recall_controller': {'action': 'cache_hit', 'reason': 'lru60s',
                                        'elapsed_ms': 0},
+                # v1.16.54 Ship P1: surface routing decision from cache hit too.
+                'routing_decision': _rd_to_dict(_routing_decision),
             })
+        # Mutate body copy so downstream conditional logic can branch on strategy.
+        body_for_strategy = dict(body)
+        body_for_strategy.setdefault('routing_strategy', _routing_decision.strategy)
         global _meta_recall_stats
         # v1.x.x MemCon-style recall controller (rule-based). Decides whether
         # to skip, what top_k to use. Honors explicit top_k from caller.
@@ -3998,7 +4023,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # expands the query so it lands in hybrid retrieval results.
         if missing_hint and missing_hint.lower() not in query.lower():
             _query_variants.append(f"{query} {missing_hint}")
-        if os.environ.get('ASTOR_EXPANSION', '1') != '0':
+        # v1.16.54 Ship P1: routing dispatch gates expensive query rewriting.
+        # "graph" strategy skips synonym variants — graph-first expansion
+        # already produces enough variants from the entity graph.
+        _skip_synonyms = _routing_decision.strategy == 'graph'
+        if not _skip_synonyms and os.environ.get('ASTOR_EXPANSION', '1') != '0':
             try:
                 from .nest.synonym_expander import expand_query as _expq
                 _query_variants = _expq(query, max_variants=3)
@@ -4009,7 +4038,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # append decomposed sub-queries AND LoCoMo event_summary hints.
         # Vector search stays single-pass. 0 LLM tokens.
         _is_multihop = False
-        if os.environ.get('ASTOR_MULTIHOP', '1') != '0':
+        # v1.16.54 Ship P1: routing strategy gates multihop+graph expansion.
+        # "dense" strategy skips both — pure keyword lookup, no extra latency.
+        if _routing_decision.strategy != 'dense' and os.environ.get('ASTOR_MULTIHOP', '1') != '0':
             try:
                 from .nest.multihop_decomposer import is_multihop_query as _ismh, decompose as _mh
                 _is_multihop = _ismh(query)
@@ -4020,7 +4051,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     _query_variants = _query_variants[:6]
             except Exception:
                 pass
-        if _is_multihop and os.environ.get('ASTOR_GRAPH', '1') != '0':
+        # Graph expansion: skip when routing strategy is "dense".
+        if (_is_multihop or _routing_decision.strategy == 'graph') and os.environ.get('ASTOR_GRAPH', '1') != '0':
             try:
                 from .nest.conversation_graph import expand_with_graph as _graph
                 for _q in _graph(query, max_extras=3):
@@ -4035,7 +4067,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # append decomposed sub-queries AND LoCoMo event_summary hints.
         # Vector search stays single-pass. 0 LLM tokens.
         _is_multihop = False
-        if os.environ.get('ASTOR_MULTIHOP', '1') != '0':
+        # v1.16.54 Ship P1: routing strategy gates multihop+graph expansion.
+        # "dense" strategy skips both — pure keyword lookup, no extra latency.
+        if _routing_decision.strategy != 'dense' and os.environ.get('ASTOR_MULTIHOP', '1') != '0':
             try:
                 from .nest.multihop_decomposer import is_multihop_query as _ismh, decompose as _mh
                 _is_multihop = _ismh(query)
@@ -4046,7 +4080,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     _query_variants = _query_variants[:6]
             except Exception:
                 pass
-        if _is_multihop and os.environ.get('ASTOR_GRAPH', '1') != '0':
+        # Graph expansion: skip when routing strategy is "dense".
+        if (_is_multihop or _routing_decision.strategy == 'graph') and os.environ.get('ASTOR_GRAPH', '1') != '0':
             try:
                 from .nest.conversation_graph import expand_with_graph as _graph
                 for _q in _graph(query, max_extras=3):
@@ -5238,6 +5273,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
         return jsonify({
             'results': enriched,
             'count': len(enriched),
+            # v1.16.54 Ship P1: surface routing decision so callers can
+            # debug "why graph-first vs dense-only" outcomes and adjust
+            # body.routing_strategy override accordingly.
+            'routing_decision': _rd_to_dict(_routing_decision),
             'recall_aware_decay': _decay_report,
             # v1.16.34: surface decay stats so callers know if any
             # facts were touched (boosted or decayed) by this recall.
