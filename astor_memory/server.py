@@ -78,7 +78,10 @@ def _astor_bot_binding_connect(retry_max: int = 3):
     _delay = 0.05
     for _i in range(retry_max + 1):
         try:
-            _db = _bot_s.connect('D:\\AI\\Astor-Memory-Runtime\\bot-binding.db', timeout=10.0)
+            # v1.16.55: cross-platform ASTOR_DIR or ~/.astor
+            from pathlib import Path as _Path
+            _bdir = os.environ.get('ASTOR_DIR') or str(_Path.home() / '.astor')
+            _db = _bot_s.connect(os.path.join(_bdir, 'bot-binding.db'), timeout=10.0)
             _db.execute('PRAGMA journal_mode=WAL')
             _db.execute('PRAGMA busy_timeout=5000')
             return _db
@@ -1242,10 +1245,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
         src_fact = None
         src_tier = None
         import glob as _glob
-        _astor_dir = os.environ.get('ASTOR_DIR', r'D:\AI\Astor-Memory-Runtime')
+        # v1.16.55: 2026-10-03 audit-fix. Removed 'yuqi' hardcode (was
+        # treating another user's ID as a candidate for any ctx.user_id
+        # fallback — PII leak). Removed D:\AI\Astor-Memory-Runtime hardcode.
+        from pathlib import Path as _Path
+        _astor_dir = os.environ.get('ASTOR_DIR') or str(_Path.home() / '.astor')
         _tiers_to_try = ['public', 'source']
         # Try per-user paths
-        for _candidate_uid in [ctx.user_id, 'admin', 'yuqi']:
+        for _candidate_uid in [ctx.user_id, 'admin']:
             if _candidate_uid:
                 _p = os.path.join(_astor_dir, 'users', _candidate_uid, 'memory')
                 if os.path.isdir(_p):
@@ -1302,7 +1309,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 return jsonify({'error': 'can_only_distill_own_facts'}), 403
             try:
                 import sqlite3 as _sq
-                _sqdb = _sq.connect(r'D:\\AI\\Astor-Memory-Runtime\\bot-binding.db')
+                # v1.16.55: cross-platform path via _astor_dir
+                _sqdb = _sq.connect(os.path.join(_astor_dir, 'bot-binding.db'))
                 _row = _sqdb.execute(
                     "SELECT distill_opt_in FROM user_meta WHERE user_id = ?",
                     (ctx.user_id,),
@@ -1349,7 +1357,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # commons facts that reference this source via metadata.distilled_from)
         try:
             import sqlite3 as _sq_d
-            _pub_db = _sq_d.connect(r'D:\AI\Astor-Memory-Runtime\public\memory\astor_bus_public.db')
+            # v1.16.55: cross-platform path via _astor_dir
+            _pub_db = _sq_d.connect(os.path.join(_astor_dir, 'public', 'memory', 'astor_bus_public.db'))
             _existing = _pub_db.execute(
                 "SELECT id FROM memory_canonical WHERE tombstoned = 0 "
                 "AND json_extract(metadata, '$.distilled_from') = ? LIMIT 1",
@@ -1463,7 +1472,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
         allow = _v
         try:
             import sqlite3 as _sq
-            _sqdb = _sq.connect(r'D:\\AI\\Astor-Memory-Runtime\\bot-binding.db')
+            # v1.16.55: cross-platform path via ASTOR_DIR or ~/.astor
+            from pathlib import Path as _P2
+            _sq_astor_dir = os.environ.get('ASTOR_DIR') or str(_P2.home() / '.astor')
+            _sqdb = _sq.connect(os.path.join(_sq_astor_dir, 'bot-binding.db'))
             _cur = _sqdb.execute(
                 "UPDATE user_meta SET distill_opt_in = ? WHERE user_id = ?",
                 (1 if allow else 0, user_id),

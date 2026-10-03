@@ -767,10 +767,19 @@ def _tier_alias_for(db_path: Path, astor_dir: Path) -> str:
         return fname.replace("astor_bus_", "").replace(".db", "")
     if fname.startswith("astor_bus_"):
         stem = fname.replace("astor_bus_", "").replace(".db", "")
-        if stem in {"admin", "anyu", "aran", "bo-wang", "demo_external_agent",
-                    "halama", "jason", "jaydon", "nelson", "owen", "rita",
-                    "roy", "steve", "sunday", "xian-ding", "xindi", "yuqi"}:
+        # v1.16.55: 2026-10-03 audit-fix. Hardcoded real user handles
+        # removed (PII leak — R-class 2026-10-03). Now uses a deterministic
+        # prefix check: any DB name not matching public/source/users_<uid>
+        # AND not in a small set of legacy private tier aliases is bucketed
+        # as "other". Operator-side user_id allowlist lives in
+        # astor_user_allowlist (optional operator config file), not source.
+        _LEGACY_PRIVATE_STEMS = frozenset()  # emptied for public-repo hygiene
+        if stem in _LEGACY_PRIVATE_STEMS:
             return f"private_{stem}"
+        # 'admin' is the canonical private-tier alias for the operator
+        # (covered by users/admin/memory/astor_bus_admin.db schema).
+        if stem == "admin":
+            return "private_admin"
         return stem
     return "other"
 

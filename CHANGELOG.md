@@ -1,3 +1,21 @@
+## v1.16.55 (2026-10-03) — Audit-fix: 4 critical issues + 1 minor
+
+**Cross-platform paths** — Removed 4 `D:\AI\Astor-Memory-Runtime` hardcodes in `astor_memory/server.py` (lines 81, 1305, 1352, 1466) + 1 in `tests/_regression_check.py`. Replaced with `ASTOR_DIR` env var or `~/.astor` fallback via `Path.home() / '.astor'`. Linux install now works for `/v1/fact/{id}/distill` + `/v1/admin/user/{user_id}/toggle_distill` endpoints.
+
+**PII leak fix** — Removed `'yuqi'` hardcode from `/v1/fact/{id}/distill` candidate_user_id list. Was treating another user's ID as a fallback for any caller, potentially allowing cross-user fact enumeration.
+
+**PII leak fix** — Removed 13 real user handle hardcodes from `dashboard_data.py` `_LEGACY_PRIVATE_STEMS` allowlist (admin/anyu/aran/bo-wang/halama/jason/jaydon/nelson/owen/rita/roy/steve/sunday/xian-ding/xindi/yuqi). Replaced with `admin`-only legacy allowlist + comment pointing to operator-side `astor_user_allowlist` config (PII hygiene per R-class 2026-10-03).
+
+**Runtime sync** — Conftest stale-on-runtime bug: `tests/conftest.py` had autouse fixture referencing removed `_ACL_CTX` (removed in `a75d585`). All runtime tests crashed with `AttributeError: module 'astor_memory._internal.acl' has no attribute '_ACL_CTX'`. Fixed by syncing source → runtime (also: `tests/test_retrieval_router.py` was missing from runtime).
+
+**Version sync (R12381)** — Bumped 1.16.53 → 1.16.55. Source / pyproject / CHANGELOG all aligned.
+
+## v1.16.54 (2026-10-03) — Ship P1: Learnable Routing for /v1/read
+
+Heuristic dispatch (multihop marker → graph, factoid → dense, short-no-proper-noun → graph, default → hybrid). Body field `routing_strategy = "auto" | "graph" | "dense" | "hybrid"`. 25 tests pass (19 unit + 6 live integration).
+
+**Note**: Ship P1 was committed in 487fe9e as v1.16.53 without version bump. This audit-fix commit rolls both Ship P1 + audit fixes under v1.16.55 since the version was never updated for Ship P1.
+
 
 ## v1.16.51 (2026-10-02) — README English overhaul + single-server deployment shape
 
