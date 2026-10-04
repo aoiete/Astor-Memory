@@ -311,7 +311,7 @@ def astor_get_api_key(provider: str) -> str:
 def _grounding_check(text: str, raw_facts: list[dict], *, min_overlap: float = 0.5) -> list[dict]:
     """v1.13.2 (2026-09-04): Grounding gate — drop LLM-fabricated facts.
 
-    Per sunday-rejection-bug incident (2026-09-04): M3/gpt-4o-mini hallucinated
+    Per <user>-rejection-bug incident (2026-09-04): M3/gpt-4o-mini hallucinated
     reject-rule details (彩票/股票点位/生死健康/24h) into a fact about
     流天书 that the user never said. Grounding gate ensures every fact's
     `content` is grounded in the source text — at least min_overlap fraction

@@ -234,7 +234,7 @@ save_user_profile(user_id, profile)
 "Style reset to 'casual' (default)."
 ```
 
-同样的流程适用于任何用户（admin, jaydon, BO 等）— 不只是 user_a。
+同样的流程适用于任何用户（admin, <user_b>, <user_c> 等）— 不只是 user_a。
 
 ## PR / 变更流程
 

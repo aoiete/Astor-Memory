@@ -38,7 +38,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-DEFAULT_ASTOR_DIR = Path(r'D:\AI\Astor-Memory-Runtime')
+DEFAULT_ASTOR_DIR = Path(os.environ.get("ASTOR_DIR") or str(Path.home() / ".astor"))
 DEFAULT_WINDOW_DAYS = 1
 DEFAULT_HIT_THRESHOLD = 0.5
 

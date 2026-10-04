@@ -375,7 +375,7 @@ class AstorBus:
                 # near-certain fabrications (LLM very unsure about the
                 # fact). Prevents low-quality facts from ever entering
                 # canonical and propagating through auto_link / recall.
-                # Triggered by sunday-rejection-bug: fact 8608 had
+                # Triggered by <user>-rejection-bug: fact 8608 had
                 # confidence=0.7 (above any soft gate) but content
                 # was a hallucinated reject-rule list. Lower threshold
                 # to 0.5 catches the truly low-confidence fabrications

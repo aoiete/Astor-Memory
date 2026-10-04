@@ -3,10 +3,10 @@ astor_grounding_audit.py — v1.13.2 (2026-09-04)
 Daily spot-check cron that finds recent facts (last 24h) whose content is NOT
 grounded in their parent_fact_ids or event source. Flags for admin review.
 
-Trigger: sunday-rejection-bug (2026-09-04) — LLM (M3) hallucinated reject-rule
+Trigger: <user>-rejection-bug (2026-09-04) — LLM (M3) hallucinated reject-rule
 details into a fact that didn't exist in source text. Grounding gate at write
 time (llm_extract.py v1.13.2) catches NEW facts going forward, but old
-hallucinated facts (e.g. 8608, 8588) need retroactive cleanup.
+hallucinated facts need retroactive cleanup.
 
 Usage:
     python astor_grounding_audit.py [--tier private] [--user admin] [--hours 24]
@@ -100,7 +100,7 @@ def _is_ship_log_style(content: str) -> bool:
 def _is_grounded(fact: dict, parent_contents: list[str], min_overlap: float = 0.5) -> bool:
     """Check whether fact content is grounded in any of its parent fact contents.
 
-    v1.13.2 (2026-09-04): Catch the sunday-rejection-bug pattern.
+    v1.13.2 (2026-09-04): Catch the <user>-rejection-bug pattern.
     Pattern: LLM-extracted fact claims a numbered "rule list" or "reject
     category list" with 3+ concrete items that the user never actually said.
     Heuristic: if fact content contains a parenthesized / slash-separated

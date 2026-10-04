@@ -1,6 +1,7 @@
 """v1.16.33: tool result clearing regression test."""
 import sys
-sys.path.insert(0, r'D:\AI\astor-memory')
+import os
+sys.path.insert(0, os.environ.get('ASTOR_TEST_SRC', os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from astor_memory.nest.distiller import clear_tool_results
 
 

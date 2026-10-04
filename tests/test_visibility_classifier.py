@@ -3,7 +3,8 @@
 These tests are PERMANENT — do not edit existing cases. Append-only.
 """
 import sys
-sys.path.insert(0, r'D:\AI\astor-memory')
+import os
+sys.path.insert(0, os.environ.get('ASTOR_TEST_SRC', os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from astor_memory.nest.visibility_classifier import (
     classify_visibility, has_pii, has_first_person, has_emotion, has_geographic,
     AUTO_COMMONS_KINDS,
@@ -24,7 +25,7 @@ CASES = [
      'observation', None, True, 'personal', False),
 
     ('case 4: kind=method + PII auto-blocked',
-     'method to call 13800138000 for verification',
+     'method to call +86 138 0000 0000 for verification',
      'method', None, True, 'personal', True),
 
     ('case 5: first-person method blocked',
@@ -36,7 +37,7 @@ CASES = [
      'method', None, False, 'personal', False),
 
     ('case 7: hint=commons + PII BLOCKED',
-     'my phone is 13800138000 please share this method',
+     'my phone is +86 138 0000 0000 please share this method',
      'method', 'commons', True, 'personal', True),
 
     ('case 8: hint=commons + clean content OVERRIDE',

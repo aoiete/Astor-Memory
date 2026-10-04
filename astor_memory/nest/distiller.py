@@ -16,7 +16,7 @@ Algorithm (deterministic, no LLM):
      - has_first_person(text)    -> DROP (personal narrative)
      - has_emotion(text)         -> DROP (private feelings)
   4. For surviving sentences, replace specifics:
-     - Proper nouns (Yuqi, Maria, Mike)  -> [USER_A], [USER_B]
+     - Proper nouns (<NAME_A>, <NAME_B>, <NAME_C>)  -> [USER_A], [USER_B]
      - URLs (mp.weixin.qq.com/s/xxx)     -> [URL]
      - Specific dates (今天, yesterday, 2024-01-01) -> [DATE_1]
      - Specific locations (Beijing, Tokyo) -> [LOCATION_1]
@@ -153,7 +153,7 @@ def _extract_state_const(text: str) -> list[dict]:
 
     These survive distillation as a [STATE-CONST] summary block at the
     end of the cleaned text. Tokens are deduped by exact text match; PII
-    tokens (13800..., im.wechat, im.bot) get priority via redact path,
+    tokens (e.g. phone fragments, im.wechat, im.bot) get priority via redact path,
     not via this extractor.
     """
     out: list[dict] = []
@@ -207,7 +207,7 @@ def distill(
     #     sentences with method content + a phone number still survive as
     #     "method worked with [PHONE] verified". We then re-verify the
     #     redacted sentence has no remaining signals; if it does (e.g. the
-    #     whole sentence was "user phone is 13800..."), it gets dropped.
+    #     whole sentence was "user phone is <PHONE>"), it gets dropped.
     first_pass_kept: list[str] = []
     for sent in sentences:
         if has_first_person(sent):

@@ -52,7 +52,7 @@ def suggest_boost(content: str) -> tuple[float | None, str | None]:
 
 def _resolve_db(tier: str, user_id: str | None) -> Path:
     import os
-    astor_dir = os.environ.get("ASTOR_DIR", r"D:\AI\Astor-Memory-Runtime")
+    astor_dir = os.environ.get("ASTOR_DIR", (os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor')))
     base = Path(astor_dir)
     if tier == "public":
         return base / "public" / "memory" / "astor_bus_public.db"

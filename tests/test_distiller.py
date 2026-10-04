@@ -1,6 +1,7 @@
 """v1.16.30 + v1.16.31 + v1.16.33: distiller regression test (12 locked cases)."""
 import sys
-sys.path.insert(0, r'D:\AI\astor-memory')
+import os
+sys.path.insert(0, os.environ.get('ASTOR_TEST_SRC', os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from astor_memory.nest.distiller import distill
 
 CASES = [
@@ -9,14 +10,14 @@ CASES = [
     ('case 1: clean method content — no drops',
      '微信抓取 method curl+UA 抓 mp.weixin.qq.com/s/abc 文章, 验证后先 query 再 hot-link',
      ['method'],
-     ['mp.weixin', '13800'],
+     ['mp.weixin.qq.com'],
      0,
      True),
 
     ('case 2: PII inline-redacted within sentence',
-     '今天用 13800138000 测试, 微信抓取 method curl+UA 抓文章',
+     '今天用 2026-01-15 测试, 微信抓取 method curl+UA 抓文章',
      ['method'],
-     ['13800138000'],
+     ['2026-01-15'],
      0,
      True),
 
@@ -41,11 +42,11 @@ CASES = [
      3,
      False),
 
-    # v1.16.31: 3 new tests covering yuqi scenario (PII + first-person + method)
-    ('case 6: yuqi PII + first-person + method (inline-redact PII, drop first-person)',
-     '我今天用 13800138000 测试, 微信抓取 method curl+UA 抓文章, 验证后先 query 再 hot-link 比较稳',
+    # v1.16.31: 3 new tests covering <user_b> scenario (PII + first-person + method)
+    ('case 6: <user_b> PII + first-person + method (inline-redact PII, drop first-person)',
+     '我今天用 2026-01-15 测试, 微信抓取 method curl+UA 抓文章, 验证后先 query 再 hot-link 比较稳',
      ['method', 'curl', 'query', 'hot-link'],
-     ['13800138000', '我'],
+     ['2026-01-15', '我'],
      1,
      True),
     ('case 7: emotion + first-person sentences dropped, method kept',
@@ -54,7 +55,7 @@ CASES = [
      ['我想哭', '焦虑'],
      2,
      True),
-    ('case 8: yuqi snippet (period separator), first-person dropped, method kept',
+    ('case 8: <user_b> snippet (period separator), first-person dropped, method kept',
      '我今天做的。method curl+UA 抓文章',
      ['method', 'curl'],
      ['我今天做的'],

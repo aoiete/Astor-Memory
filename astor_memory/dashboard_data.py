@@ -1213,7 +1213,10 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
     bound_users_total = 0
     try:
         import sqlite3 as _b_sql
-        _b_db = _b_sql.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+        _b_dir = os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor')
+        if not os.path.exists(_b_dir):
+            _b_dir = os.getcwd()
+        _b_db = _b_sql.connect(os.path.join(_b_dir, 'bot-binding.db'))
         _b_db.row_factory = _b_sql.Row
         bound_users_total = _b_db.execute(
             "SELECT COUNT(DISTINCT user_id) FROM bindings WHERE active = 1"

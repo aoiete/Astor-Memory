@@ -31,11 +31,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DEFAULT_ASTOR_DIR = Path(r'D:\AI\Astor-Memory-Runtime')
+DEFAULT_ASTOR_DIR = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor')
 # 2026-10-03: TIER_DIRS / USER_DIR must be RELATIVE so collect_dbs can
 # rebase on a different ASTOR_DIR (Linux CI sets ASTOR_DIR=/tmp/...).
 # Previously these were absolute (joined onto DEFAULT_ASTOR_DIR), which
-# made `d.relative_to(DEFAULT_ASTOR_DIR)` return 'D:\\AI\\...' on Linux
+# made `d.relative_to(DEFAULT_ASTOR_DIR)` return the runtime path on Linux
 # and then `(base / d)` produced /tmp/.../D:/AI/... → no DBs found.
 TIER_DIRS = [
     Path('public') / 'memory',

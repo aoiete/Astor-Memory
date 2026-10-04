@@ -81,7 +81,7 @@ class AstorFact:
     # List of {type, value} extracted from content. Types: 'person', 'time',
     # 'topic'. Distinct from keywords (semantic retrieval boost) and
     # context (human-readable). Future Ship C entity_lex 3rd path uses this.
-    entities: list[dict] | None = None  # [{"type": "person", "value": "sunday"}]
+    entities: list[dict] | None = None  # [{"type": "person", "value": "<user>"}]
     # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking.
     # Optional. Regex extractor leaves them '' (no source available).
     # LLM extractor may populate evidence_quote / source_ref from a
@@ -256,7 +256,7 @@ def astor_regex_extract(text: str) -> list[AstorFact]:
     the auto_link min_confidence=0.6 gate ensures these facts aren't
     silently demoted, and above typical LLM 0.7 means they outrank
     LLM hallucinations in provenance graph traversal. Triggered by
-    sunday-rejection-bug (fact 8608): LLM-extracted fact with the same
+    <user>-rejection-bug (fact 8608): LLM-extracted fact with the same
     0.7 default propagated as authoritative and was quoted by agent
     in a user-facing refusal.
     """

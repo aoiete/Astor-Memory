@@ -21,9 +21,9 @@ No behavior change for ops; users no longer see the full on-disk path in any res
 
 **Cross-platform paths** — Removed 4 `D:\AI\Astor-Memory-Runtime` hardcodes in `astor_memory/server.py` (lines 81, 1305, 1352, 1466) + 1 in `tests/_regression_check.py`. Replaced with `ASTOR_DIR` env var or `~/.astor` fallback via `Path.home() / '.astor'`. Linux install now works for `/v1/fact/{id}/distill` + `/v1/admin/user/{user_id}/toggle_distill` endpoints.
 
-**PII leak fix** — Removed `'yuqi'` hardcode from `/v1/fact/{id}/distill` candidate_user_id list. Was treating another user's ID as a fallback for any caller, potentially allowing cross-user fact enumeration.
+**PII leak fix** — Removed `<user>` hardcode from `/v1/fact/{id}/distill` candidate_user_id list. Was treating another user's ID as a fallback for any caller, potentially allowing cross-user fact enumeration.
 
-**PII leak fix** — Removed 13 real user handle hardcodes from `dashboard_data.py` `_LEGACY_PRIVATE_STEMS` allowlist (admin/anyu/aran/bo-wang/halama/jason/jaydon/nelson/owen/rita/roy/steve/sunday/xian-ding/xindi/yuqi). Replaced with `admin`-only legacy allowlist + comment pointing to operator-side `astor_user_allowlist` config (PII hygiene per R-class 2026-10-03).
+**PII leak fix** — Removed 13 real user handle hardcodes from `dashboard_data.py` `_LEGACY_PRIVATE_STEMS` allowlist. Replaced with `admin`-only legacy allowlist + comment pointing to operator-side `astor_user_allowlist` config (PII hygiene per R-class 2026-10-03).
 
 **Runtime sync** — Conftest stale-on-runtime bug: `tests/conftest.py` had autouse fixture referencing removed `_ACL_CTX` (removed in `a75d585`). All runtime tests crashed with `AttributeError: module 'astor_memory._internal.acl' has no attribute '_ACL_CTX'`. Fixed by syncing source → runtime (also: `tests/test_retrieval_router.py` was missing from runtime).
 
@@ -347,7 +347,7 @@ should review whether `decay sweep` is too aggressive.
 
 ## v1.16.30 — Personal-to-Commons Distillation (2026-10-01)
 
-Yuqi story: yuqi did a workflow that contained private data; astor extracts
+<user_a> story: <user_a> did a workflow that contained private data; astor extracts
 the method/flow/pattern from it, strips user personal data, and writes the
 clean version to commons.
 
@@ -671,8 +671,8 @@ Default OFF because: (a) most callers don't need raw conversation stored — jus
 
 ### Live verified
 - POST /v1/health → v1.16.11
-- Wrote 3 success_pattern experiences (Maria×2 + John×1) with shared entities
-- POST /v1/experience/match "Maria Q3 发布" returns ranked list
+- Wrote 3 success_pattern experiences (<NAME_A>×2 + <NAME_B>×1) with shared entities
+- POST /v1/experience/match "<NAME_A> Q3 发布" returns ranked list
 
 ### Known limitations
 - memory_experience doesn't have entities_json column — path_score uses content+keywords only (not entity overlap directly). Less effective than it would be with a dedicated entities_json. Future v1.17.x could add entities_json to memory_experience schema.
@@ -703,10 +703,10 @@ Default OFF because: (a) most callers don't need raw conversation stored — jus
   - Pronoun-anchored sentence skip (CN + EN)
 
 ### Live verified
-- POST `/v1/write` with `coref_resolve=true` + Maria antecedent + new text "她同意那项决定" →
-  - coref_resolutions: [{pronoun: '她', replaced_with: 'Maria', ...}, {pronoun: '那项', replaced_with: '测试新发', ...}]
-  - stored content: "测试新发同意Maria决定 1790806266" (first pronoun 她→Maria correctly; second pronoun 那项 mis-resolved due to greedy CJK regex limitation)
-  - recall "Maria 同意" finds the rewritten fact
+- POST `/v1/write` with `coref_resolve=true` + <NAME_A> antecedent + new text "她同意那项决定" →
+  - coref_resolutions: [{pronoun: '她', replaced_with: '<NAME_A>', ...}, {pronoun: '那项', replaced_with: '测试新发', ...}]
+  - stored content: "测试新发同意<NAME_A>决定 <id>" (first pronoun 她→<NAME_A> correctly; second pronoun 那项 mis-resolved due to greedy CJK regex limitation)
+  - recall "<NAME_A> 同意" finds the rewritten fact
 - 18/18 unit tests pass
 - 48+18 = 66 total tests pass
 
@@ -938,7 +938,7 @@ Per wechat article 3 ("北大 GraphMemix 论文解读", archived to `docs/wechat
 
 **Eval set test-design fixes** (3 queries updated):
 
-- **M01 + M06** (用户当前时区 / 今日日柱): flagged `expected_miss: true` with reason `cross-user recall (sunday bus); ACL blocks admin from seeing sunday facts`. These queries expected to surface sunday's KST facts, but admin's `/v1/read?tier=private&user=admin` correctly can't see sunday's bus. By-design miss, not a recall bug.
+- **M01 + M06** (用户当前时区 / 今日日柱): flagged `expected_miss: true` with reason `cross-user recall (<user_a> bus); ACL blocks admin from seeing <user_a> facts`. These queries expected to surface <user_a>'s KST facts, but admin's `/v1/read?tier=private&user=admin` correctly can't see <user_a>'s bus. By-design miss, not a recall bug.
 - **Q79** (RAG 知识库 bge-reranker): moved from `tier=public` to `tier=private user=admin`. The 10 RAG/bge facts live in admin's private tier; running with `tier=public` was looking in wrong scope.
 
 **Effect**: baseline hit_rate 0.972 → **1.000** (+2.8pp), mrr 0.893 → **0.919** (+2.6pp), 0 real misses. lifestyle category stays 0.80 (Q59/Q60 already expected_miss, unchanged).
@@ -2492,11 +2492,11 @@ truthfully declare tier.
 
 Verified:
 - `admin + "my TFSA balance"` → `trusted_default admin` (Path 1)
-- `sunday + "my TFSA balance is 5000"` → `lock_rule private`
+- `<user_a> + "my TFSA balance is 5000"` → `lock_rule private`
   (rule `personal-finance-private`, priority 8)
-- `sunday + "workflow step 1 do X"` → `lock_rule public`
+- `<user_a> + "workflow step 1 do X"` → `lock_rule public`
   (rule `rule-ship-methods`, priority 3, rule_ship → public)
-- `sunday + "random chat"` → `safe_default public` (Path 3)
+- `<user_a> + "random chat"` → `safe_default public` (Path 3)
 
 Two test rules (rule_id 6232 and 6233) are seeded into the public tier
 bus DB so production can evaluate against them.
@@ -2512,15 +2512,15 @@ Bugfix: intermittent 403 on `POST /v1/reload`.
 **Root cause.** Flask's `before_request` hook only rebinds ACL when
 `request.is_json` is True. A plain `curl -X POST /v1/reload`
 (no body, no Content-Type) does not rebind, so the previous request's
-`_CURRENT.actor` carried over. After a sunday write the next reload
-saw `user:sunday`'s `role='user'` and returned 403.
+`_CURRENT.actor` carried over. After a <user_a> write the next reload
+saw `user:<user_a>`'s `role='user'` and returned 403.
 
 **Fix.** Force-bind admin at the top of the `reload()` handler before
 the role check, so reload always works regardless of prior request
 state. This is the only handler in the codebase that performs an
 admin-only operation triggered by an external POST without a body.
 
-Verified: `sunday write → reload` now returns `{reloading: true, pid: N}`
+Verified: `<user_a> write → reload` now returns `{reloading: true, pid: N}`
 and the PID switches to the new server.
 
 ---
@@ -2555,7 +2555,7 @@ Also enhanced `@app.errorhandler(500)` to write the full traceback to
 stderr.
 
 Verified: `/v1/write` returns 200 across `mode=auto`, `mode=regex`, and
-non-admin (`sunday`) callers. `/v1/read` confirms the written facts
+non-admin (`<user_a>`) callers. `/v1/read` confirms the written facts
 land in the correct tier+namespace.
 
 ---
@@ -3762,8 +3762,8 @@ in pre-existing 8 failures.
 
 - Per-write: 1 embedding + 1 nest.search (over 200 candidates) + 1
   up-to-5 UPDATE pairs. Adds ~50-200ms to a write.
-- Backfill: O(N) per fact, limit=500 default. Run as cron (e.g. weekly
-  Sun 04:00 UTC) to amortize.
+- Backfill: O(N) per fact, limit=500 default. Run as cron (e.g. weekly-Sun
+  04:00 UTC) to amortize.
 
 ---
 
@@ -3829,7 +3829,7 @@ in pre-existing 8 failures.
 
 ### When to run
 
-- **Cron**: weekly (Sun 03:00 UTC) via `am reflection run --tier=public
+- **Cron**: weekly-Sun 03:00 UTC via `am reflection run --tier=public
   --max-clusters=200` to keep the public tier tidy.
 - **Manual**: after a batch import of legacy data (e.g. fresh migration
   from memory-bus).
@@ -4399,7 +4399,7 @@ mv <mem_sys>/memory-bus <mem_sys>/memory-bus-archived-2026-08-15
 ### Migration
 - Single-tier → **3-tier × 3-store = 9 SQLite files**: `public/{bus,nest,forge}.db`, `source/{bus,nest,forge}.db`, `users/<u>/{bus,nest,forge}_<u>.db`
 - 6176 canonical facts migrated from legacy `memory-bus`, `memu.db`, `memory_user_the_nuts.db`, `mempalace/chroma.sqlite3`
-- 4 user split (Sunny/cy/user_a/Xindi) from admin db into their own 9-db layouts
+- 4 user split (<user_a>/<user_b>/<user_c>/<user_d>) from admin db into their own 9-db layouts
 
 ### bot-binding.db (new)
 - Path: `$ASTOR_DIR/bot-binding.db` (default `<runtime_dir>bot-binding.db`)
