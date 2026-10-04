@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from astor_memory._internal.test_state import astor_close_all_test_state
 
 
 class TestDispatchPeerFanoutHelper(unittest.TestCase):
@@ -101,6 +102,7 @@ class _Tmp:
         os.environ["ASTOR_DIR"] = str(self.tmpdir)
 
     def tearDown_tmp(self):
+        astor_close_all_test_state()
         try:
             from astor_memory.nest import lex_index as _lex_mod
             from astor_memory.nest.vector_store import astor_reset_nest

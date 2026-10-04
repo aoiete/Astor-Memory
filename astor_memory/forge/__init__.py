@@ -71,6 +71,25 @@ def astor_forge_for(tier: str, user_id: str | None = None) -> sqlite3.Connection
         return conn
 
 
+def astor_reset_forge() -> None:
+    """Reset the singleton (for testing).
+
+    v1.16.62: close each cached forge connection before clearing the
+    dict. Without this, test fixtures that monkeypatch ASTOR_DIR to
+    a tmpdir can't fully release the tmpdir because each cached
+    forge connection holds an open SQLite handle. Test teardown
+    then fails with OSError: [Errno 39] Directory not empty on
+    Linux CI.
+    """
+    with _forge_lock:
+        for _conn in list(_forge_conns.values()):
+            try:
+                _conn.close()
+            except Exception:
+                pass
+        _forge_conns.clear()
+
+
 def astor_forge_log_call(
     actor: str,
     user_id: str,

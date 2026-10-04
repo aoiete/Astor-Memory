@@ -745,3 +745,23 @@ def _anchor_proximity(fact_date_iso: str, anchor_iso: str) -> float | None:
     # graduation from 2 years ago, and a small negative boost would
     # evict it from top_k. Caller filters prox<=0.
     return 0.0
+
+
+def astor_reset_lex() -> None:
+    """Reset the singleton (for testing).
+
+    v1.16.62: also close each cached AstorLex's SQLite connection
+    before clearing the dict. Without this, test fixtures that
+    monkeypatch ASTOR_DIR to a tmpdir can't fully release the tmpdir
+    because each AstorLex holds an open SQLite connection that
+    file-locks the .db on Linux + Windows. Test teardown then fails
+    with OSError: [Errno 39] Directory not empty.
+    """
+    global _LEX_SINGLETONS
+    with _LEX_SINGLETONS_LOCK:
+        for _inst in list(_LEX_SINGLETONS.values()):
+            try:
+                _inst.close()
+            except Exception:
+                pass
+        _LEX_SINGLETONS.clear()

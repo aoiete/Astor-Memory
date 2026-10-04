@@ -1545,12 +1545,31 @@ def _get_or_create_singleton(path: Path) -> AstorBus:
 
 
 def astor_reset_bus() -> None:
-    """Reset the singleton (for testing)."""
-    global _astor_bus_singleton
+    """Reset the singleton (for testing).
+
+    v1.16.62: also clear the per-key _BUS_SINGLETONS dict so test
+    fixtures that monkeypatch ASTOR_DIR to a tmpdir can fully release
+    the tmpdir (each cached AstorBus holds an open SQLite connection
+    that file-locks the .db on Linux + Windows). Without this, test
+    teardown fails with OSError: [Errno 39] Directory not empty on
+    Linux CI when /tmp/<tmpdir> still has .db-wal / .db-shm files
+    open.
+    """
+    global _astor_bus_singleton, _BUS_SINGLETONS
     with _astor_bus_lock:
         if _astor_bus_singleton is not None:
-            _astor_bus_singleton.close()
+            try:
+                _astor_bus_singleton.close()
+            except Exception:
+                pass
         _astor_bus_singleton = None
+        if _BUS_SINGLETONS is not None:
+            for _inst in list(_BUS_SINGLETONS.values()):
+                try:
+                    _inst.close()
+                except Exception:
+                    pass
+            _BUS_SINGLETONS.clear()
 
 
 __all__ = ["AstorBus", "AstorEvent", "astor_bus", "astor_bus_for", "astor_reset_bus"]

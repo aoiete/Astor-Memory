@@ -34,6 +34,7 @@ from astor_memory._internal.peer_search import (
     build_search_request, select_search_targets,
     MIN_TRUST_FOR_SEARCH,
 )
+from astor_memory._internal.test_state import astor_close_all_test_state
 
 
 def _fake_peer_id(seed: str = "a") -> str:
@@ -100,6 +101,7 @@ class _Tmp:
         self.tmpdir = Path(self._tmp.name)
 
     def tearDown_tmp(self):
+        astor_close_all_test_state()
         # Close lex singletons first — on Windows an open sqlite handle 
         # blocks TemporaryDirectory.cleanup() (PermissionError WinError 32).
         try:

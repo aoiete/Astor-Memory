@@ -12,6 +12,7 @@ from astor_memory._internal.peer_relationships import (
     add_peer, get_peer, list_peers, update_endpoint,
     close_all_connections,
 )
+from astor_memory._internal.test_state import astor_close_all_test_state
 
 
 class _Tmp:
@@ -20,6 +21,7 @@ class _Tmp:
         self.tmpdir = Path(self._tmp.name)
 
     def tearDown_tmp(self):
+        astor_close_all_test_state()
         close_all_connections()
         self._tmp.cleanup()
 
