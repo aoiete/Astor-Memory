@@ -147,7 +147,7 @@ from . import __version__, astor_bus, astor_nest, astor_forge
 def _astor_public_dir_label(astor_dir):
     """Return just the basename of astor_dir for user-facing responses.
 
-    v1.16.50: do not leak the full on-disk path (Windows D:\\AI\\...) to
+    v1.16.50: do not leak the full on-disk path (the full on-disk path) to
     any user-facing endpoint. Admin-only /v1 endpoints can pass a flag
     if they need the full path; default is to mask.
     """
@@ -1315,9 +1315,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         src_fact = None
         src_tier = None
         import glob as _glob
-        # v1.16.55: 2026-10-03 audit-fix. Removed 'yuqi' hardcode (was
+        # v1.16.55: 2026-10-03 audit-fix. Removed <user> hardcode (was
         # treating another user's ID as a candidate for any ctx.user_id
-        # fallback — PII leak). Removed D:\AI\Astor-Memory-Runtime hardcode.
+        # fallback — PII leak). Removed operator-specific runtime-path hardcode (uses ASTOR_DIR / ~/.astor fallback).
         from pathlib import Path as _Path
         _astor_dir = os.environ.get('ASTOR_DIR') or str(_Path.home() / '.astor')
         _tiers_to_try = ['public', 'source']
@@ -1571,7 +1571,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         can still infer their install dir from peer_id + identity
         if needed; nobody else should see the host filesystem layout.
 
-        Example: 'D:\\AI\\Astor-Memory-Runtime' → 'Astor-Memory-Runtime'
+        Example: '<runtime_dir>/public/memory' → 'Astor-Memory-Runtime'
                  '/home/alice/.astor' → '.astor'
         """
         import os as _os_label
@@ -1951,7 +1951,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
         try:
             import sqlite3 as _sq
             import re as _re_kw
-            _fallback_db = r'D:\AI\Astor-Memory-Runtime\public\memory\astor_bus_public.db'
+            _astor_dir_local = _os.environ.get('ASTOR_DIR') or str(_os.path.expanduser('~/.astor'))
+            if not _os.path.exists(_astor_dir_local):
+                _astor_dir_local = _os.getcwd()  # fallback to caller cwd (runtime deployment)
+            _fallback_db = _os.path.join(_astor_dir_local, 'public', 'memory', 'astor_bus_public.db')
             _sq_conn = _sq.connect(_fallback_db)
             # Extract 1-3 char tokens (CJK bigrams + English words)
             _kw_tokens = set()
@@ -2304,7 +2307,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
             if _platform and _chat_id:
                 try:
                     import sqlite3 as _sq_t
-                    _sqdb = _sq_t.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+                    _astor_dir_local = _os.environ.get('ASTOR_DIR') or str(_os.path.expanduser('~/.astor'))
+                    if not _os.path.exists(_astor_dir_local):
+                        _astor_dir_local = _os.getcwd()  # fallback to caller cwd
+                    _sqdb = _sq_t.connect(_os.path.join(_astor_dir_local, 'bot-binding.db'))
                     _sqdb.row_factory = _sq_t.Row
                     _row = _sqdb.execute(
                         """SELECT b.user_id, m.role, m.default_tier, m.trusted_agent
@@ -2930,7 +2936,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
         _admin_allow = True
         try:
             import sqlite3 as _sq
-            _sqdb = _sq.connect(r'D:\AI\Astor-Memory-Runtime\bot-binding.db')
+            _astor_dir_local = _os.environ.get('ASTOR_DIR') or str(_os.path.expanduser('~/.astor'))
+            if not _os.path.exists(_astor_dir_local):
+                _astor_dir_local = _os.getcwd()  # fallback to caller cwd
+            _sqdb = _sq.connect(_os.path.join(_astor_dir_local, 'bot-binding.db'))
             _row = _sqdb.execute(
                 "SELECT allow_commons_write FROM user_meta WHERE user_id = ?",
                 (bus_user_id,),
@@ -7376,7 +7385,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # audit. v1.14.65 P4 (2026-09-17, end-to-end completeness): default
         # to PRIVATE for the user, not PUBLIC. Reasoning: any unclassified
         # text that didn't match a LOCK rule is treated as potentially
-        # personal until proven otherwise. Without this, sunday typing
+        # personal until proven otherwise. Without this, a non-admin typing
         # "my TFSA balance is 5000" (which has no matching LOCK rule)
         # gets safe_default=public, leaking private finance info.
         # Callers may opt back into public with --allow-public on
@@ -7478,7 +7487,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         2026-09-17 bugfix #3: when called as a POST with no JSON body
         (the normal curl usage), the ``before_request`` hook doesn't
         rebind ACL because ``request.is_json`` is False. The previous
-        request's ``_CURRENT`` binding (e.g. ``user:sunday`` after a
+        request's ``_CURRENT`` binding (e.g. ``user:<non_admin>`` after a
         write) carries over, and ``ctx.role != 'admin'`` returns 403.
         We now FORCE-bind admin at the top of the handler so reload
         always works regardless of prior request state.
@@ -7508,9 +7517,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # to whatever sys.executable was used at first launch. The
             # hardcoded path matches what start_server.bat / NSSM use
             # so reload never silently swaps to a different venv.
-            py_exe = r'D:\AI\PY-311\Scripts\pythonw.exe'
-            if not _os.path.exists(py_exe):
-                py_exe = sys.executable  # fallback if PY-311 not present
+            py_exe = sys.executable  # use the same Python that's running this server
             cmd = [py_exe, '-m', 'astor_memory.server'] + sys.argv[1:]
             try:
                 # NOTE: do NOT pass close_fds=True here. pythonw.exe keeps
@@ -7825,7 +7832,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'computed_at': _audit_dt.datetime.now(_audit_dt.timezone.utc).isoformat(),
         }
 
-        _astor_dir = _audit_os.environ.get('ASTOR_DIR', r'D:\AI\Astor-Memory-Runtime')
+        _astor_dir = _audit_os.environ.get('ASTOR_DIR') or str(_audit_os.path.expanduser('~/.astor'))
+        if not _audit_os.path.exists(_astor_dir):
+            _astor_dir = _audit_os.getcwd()  # fallback to caller cwd (runtime deployment)
         _bus_files = []
         _bus_files += _audit_glob.glob(_audit_os.path.join(_astor_dir, 'public', 'memory', 'astor_bus_*.db'))
         _bus_files += _audit_glob.glob(_audit_os.path.join(_astor_dir, 'source', 'memory', 'astor_bus_*.db'))

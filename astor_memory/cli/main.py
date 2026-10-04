@@ -17,6 +17,7 @@ import datetime
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -891,7 +892,14 @@ def cmd_version(args) -> int:
 
 
 def cmd_init(args) -> int:
-    """Initialize astor-memory (creates 3 DBs: astor_bus.db, astor_forge.db, astor_nest.db)."""
+    """Initialize astor-memory (creates 3 DBs: astor_bus.db, astor_forge.db, astor_nest.db).
+
+    v1.16.62: prompt operator for astor_dir on first install.
+    Reads ASTOR_DIR env first, then ~/.astor/install.json (if it exists),
+    then prompts. Writes the chosen path to install.json so subsequent
+    invocations (sync_to_runtime, server restart) find it without
+    hardcoded defaults.
+    """
     from .. import astor_bus as _astor_bus_func, astor_nest as _astor_nest_func, astor_forge as _astor_forge_func
     from .._internal.acl import astor_init_acl
 
@@ -900,8 +908,55 @@ def cmd_init(args) -> int:
     # `am init` work as a true process entry without a separate setup step.
     astor_init_acl(actor='admin:admin', role='admin', tier='public')
 
-    astor_dir = get_default_astor_dir()
+    # 1. ASTOR_DIR env wins (CI / scripted installs)
+    env_dir = os.environ.get('ASTOR_DIR')
+    if env_dir:
+        astor_dir = Path(env_dir).expanduser()
+    else:
+        # 2. ~/.astor/install.json if it exists
+        # ASTOR_HOME env var overrides Path.home() (e.g. when run from
+        # a service / kernel context where Path.home() returns a system dir).
+        home_root = Path(os.environ.get('ASTOR_HOME') or str(Path.home()))
+        install_json = home_root / '.astor' / 'install.json'
+        astor_dir = None
+        if install_json.exists():
+            try:
+                cfg = json.loads(install_json.read_text(encoding='utf-8'))
+                saved = cfg.get('astor_dir')
+                if saved:
+                    astor_dir = Path(saved).expanduser()
+                    print(f'[init] using saved install.json: {astor_dir}')
+            except Exception as _e:
+                print(f'[init] WARN: cannot read {install_json}: {_e}')
+
+        # 3. Prompt operator
+        if astor_dir is None:
+            default = str(home_root / '.astor')
+            print('astor-memory first install — choose install location.')
+            print(f'  Default: {default}')
+            print('  Examples:')
+            print('    Linux/Mac:  /var/lib/astor | ~/astor | /opt/astor')
+            print('    Windows:    C:/astor | D:/AI/Astor-Memory-Runtime | ~/astor')
+            try:
+                answer = input(f'  Path [{default}]: ').strip()
+            except (EOFError, KeyboardInterrupt):
+                answer = ''
+            if not answer:
+                answer = default
+            astor_dir = Path(answer).expanduser()
+
+            # Persist
+            install_json.parent.mkdir(parents=True, exist_ok=True)
+            install_json.write_text(
+                json.dumps({'astor_dir': str(astor_dir), 'installed_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}, indent=2),
+                encoding='utf-8'
+            )
+            print(f'[init] saved {install_json}')
+
+    # Set env so downstream code (get_default_astor_dir) sees it
+    os.environ['ASTOR_DIR'] = str(astor_dir)
     astor_dir.mkdir(parents=True, exist_ok=True)
+
     # Force creation of all 3 DB singletons (each opens + schema-inits its own file).
     bus = _astor_bus_func()
     nest = _astor_nest_func()
@@ -910,8 +965,7 @@ def cmd_init(args) -> int:
     print(f'   - {bus.db_path.name} (bus: events + canonical facts)')
     print(f'   - {nest.db_path.name} (nest: vector embeddings)')
     print(f'   - astor_forge.db (forge: LLM extraction cache, v0.2+ LLM extract)')
-    print('   v0.1 ships schema + bus + cli skeleton.')
-    print('   Next: v0.2 will add nest (vector store) + forge (LLM extract).')
+    print('   Run `astor-server` to start, or `am doctor` to verify.')
     return 0
 
 
@@ -1300,18 +1354,18 @@ def cmd_recall(args) -> int:
     # caught and the original hybrid ranking is returned unchanged.
     if getattr(args, 'jev_relevance', 'off') == 'on' and results:
         try:
-            # Lazy import — jev_client lives in /d/AI/scripts/admin/jev/, not
+            # Lazy import — jev_client lives in $ASTOR_SCRIPTS_DIR/jev/ (default: ~/astor-scripts/jev/), not
             # on the astor package path. Caller is responsible for adding
             # it to PYTHONPATH if they want live rerank.
             import importlib.util as _ilu
             import sys as _sys
             _jev_path = _sys.path
             # Try several candidate paths for the jev_client module.
+            _scripts_dir = _os.environ.get('ASTOR_SCRIPTS_DIR') or _os.path.expanduser('~/astor-scripts')
             _candidates = [
-                r'D:\AI\scripts\admin\jev',
-                r'D:\AI\scripts\admin',
-                '/d/AI/scripts/admin/jev',
-                '/d/AI/scripts/admin',
+                _os.path.join(_scripts_dir, 'jev'),
+                _scripts_dir,
+                _os.path.expanduser('~/astor-scripts'),  # legacy default
             ]
             _spec = None
             for _cand in _candidates:
@@ -1361,7 +1415,8 @@ def cmd_recall(args) -> int:
                     # the call site gives us data to design per-candidate
                     # rerank in the next pass.
                     import os as _os
-                    _log = r'D:\AI\scripts\admin\logs\jev_recall_rerank.jsonl'
+                    _scripts_dir = _os.environ.get('ASTOR_SCRIPTS_DIR') or _os.path.expanduser('~/astor-scripts')
+                    _log = _os.path.join(_scripts_dir, 'logs', 'jev_recall_rerank.jsonl')
                     try:
                         with open(_log, 'a', encoding='utf-8') as _f:
                             import json as _json, time as _t

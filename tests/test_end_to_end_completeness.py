@@ -140,7 +140,7 @@ class TestRecallHistoryParser(unittest.TestCase):
             log.write_text(
                 '{"ts": "2026-09-17T12:00:00", "tier": "public", "user_id": "admin", "qhash": "aaa", "query": "p1"}\n'
                 '{"ts": "2026-09-17T12:01:00", "tier": "private", "user_id": "admin", "qhash": "bbb", "query": "p2"}\n'
-                '{"ts": "2026-09-17T12:02:00", "tier": "public", "user_id": "sunday", "qhash": "ccc", "query": "p3"}\n'
+                '{"ts": "2026-09-17T12:02:00", "tier": "public", "user_id": "<user_a>", "qhash": "ccc", "query": "p3"}\n'
             )
             out = self._parse(log, {'tier': 'public'})
             self.assertEqual(len(out), 2)
@@ -151,11 +151,11 @@ class TestRecallHistoryParser(unittest.TestCase):
             log = Path(td) / 'recall_log.jsonl'
             log.write_text(
                 '{"ts": "2026-09-17T12:00:00", "tier": "public", "user_id": "admin", "qhash": "a", "query": ""}\n'
-                '{"ts": "2026-09-17T12:01:00", "tier": "private", "user_id": "sunday", "qhash": "b", "query": ""}\n'
+                '{"ts": "2026-09-17T12:01:00", "tier": "private", "user_id": "<user_a>", "qhash": "b", "query": ""}\n'
             )
-            out = self._parse(log, {'user': 'sunday'})
+            out = self._parse(log, {'user': '<user_a>'})
             self.assertEqual(len(out), 1)
-            self.assertEqual(out[0]['user_id'], 'sunday')
+            self.assertEqual(out[0]['user_id'], '<user_a>')
 
     def test_filter_by_contains(self):
         with tempfile.TemporaryDirectory() as td:

@@ -1,6 +1,7 @@
 """v1.16.34: recall-aware decay regression test (3 cases)."""
 import sys, os, json
-sys.path.insert(0, r'D:\AI\astor-memory')
+import os
+sys.path.insert(0, os.environ.get('ASTOR_TEST_SRC', os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 test_dir = __import__('tempfile').mkdtemp(prefix='astor_test_')
 os.environ['ASTOR_DIR'] = test_dir

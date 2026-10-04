@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-ASTOR_DIR = Path(os.environ.get('ASTOR_DIR', r'D:\AI\Astor-Memory-Runtime'))
+ASTOR_DIR = Path(os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor'))
 
 
 def _slugify(s: str) -> str:

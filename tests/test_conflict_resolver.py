@@ -1,6 +1,7 @@
 """v1.16.33 + v1.16.34: conflict resolver regression test (7 cases)."""
 import sys, os, json
-sys.path.insert(0, r'D:\AI\astor-memory')
+import os
+sys.path.insert(0, os.environ.get('ASTOR_TEST_SRC', os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # Use temp db for the resolver test
 import tempfile

@@ -123,15 +123,15 @@ Build + docs:
 | admin writes source | count=1 | ✅ |
 | admin writes private<admin> | count=1 | ✅ |
 | admin writes private<user_c> | cross_user_forbidden | ✅ |
-| anyu writes public (method content) | count=1, stays public | ✅ |
-| anyu writes public (personal content) | count=1, auto-demoted to private<anyu> | ✅ |
-| anyu writes source | permission_denied | ✅ |
+| <trial_user> writes public (method content) | count=1, stays public | ✅ |
+| <trial_user> writes public (personal content) | count=1, auto-demoted to private<trial_user> | ✅ |
+| <trial_user> writes source | permission_denied | ✅ |
 | quality gate: 1-char text | permission_denied + invalid content | ✅ |
 | quality gate: all-uppercase | permission_denied + invalid content | ✅ |
 | quality gate: spam prefix | permission_denied + invalid content | ✅ |
 | rate limit: 10 parallel writes | 5 OK + 5 permission_denied | ✅ |
-| CLI set-plan anyu vip/free | [OK] plan changed both ways | ✅ |
-| CLI audit-log --action write --limit 5 | table showing admin+anyu writes | ✅ |
+| CLI set-plan <trial_user> vip/free | [OK] plan changed both ways | ✅ |
+| CLI audit-log --action write --limit 5 | table showing admin+<trial_user> writes | ✅ |
 
 ## Reference
 

@@ -229,7 +229,7 @@ def auto_link_for_fact(
     extractions whose content isn't well-grounded, and auto-linking them
     amplifies their reach into the provenance graph. Without this gate,
     low-confidence extractions (verified root cause of the
-    sunday-rejection-bug fact 8608) propagate as if authoritative.
+    <user>-rejection-bug fact 8608) propagate as if authoritative.
 
     Returns: {'new_fact_id', 'linked_to': [fact_id, ...], 'edges_added': int}
     """

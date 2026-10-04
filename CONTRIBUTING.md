@@ -45,7 +45,7 @@ fix(acl): R354 forget ownership check
 
 The /v1/forget endpoint did not enforce fact ownership; a non-admin
 caller could delete any admin's public-tier fact. Verified pre-patch:
-yuqi successfully forgot admin's fact 4457.
+a non-admin caller successfully forgot admin's fact <id>.
 
 Refs: R354, R365
 ```
