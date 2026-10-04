@@ -32,12 +32,17 @@ import sys
 from pathlib import Path
 
 DEFAULT_ASTOR_DIR = Path(r'D:\AI\Astor-Memory-Runtime')
+# 2026-10-03: TIER_DIRS / USER_DIR must be RELATIVE so collect_dbs can
+# rebase on a different ASTOR_DIR (Linux CI sets ASTOR_DIR=/tmp/...).
+# Previously these were absolute (joined onto DEFAULT_ASTOR_DIR), which
+# made `d.relative_to(DEFAULT_ASTOR_DIR)` return 'D:\\AI\\...' on Linux
+# and then `(base / d)` produced /tmp/.../D:/AI/... → no DBs found.
 TIER_DIRS = [
-    DEFAULT_ASTOR_DIR / 'public' / 'memory',
-    DEFAULT_ASTOR_DIR / 'private' / 'memory',
-    DEFAULT_ASTOR_DIR / 'source' / 'memory',
+    Path('public') / 'memory',
+    Path('private') / 'memory',
+    Path('source') / 'memory',
 ]
-USER_DIR = DEFAULT_ASTOR_DIR / 'users'
+USER_DIR = Path('users')
 
 REQUIRED_NOT_NULL = ('candidate_id', 'event_id', 'namespace', 'content')
 PRAGMA_USER_VERSION = 1  # bump this when adding new repair paths
@@ -51,7 +56,7 @@ def collect_dbs() -> list[Path]:
     base = astor_dir()
     out: list[Path] = []
     for d in TIER_DIRS + [USER_DIR]:
-        real = (base / d.relative_to(DEFAULT_ASTOR_DIR)) if d.is_absolute() else (base / d)
+        real = base / d
         if real.exists():
             out.extend(sorted(real.glob('*.db')))
     return out
