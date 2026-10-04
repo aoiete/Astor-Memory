@@ -9428,15 +9428,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
 
     # v1.16.42: pre-warm dashboard cache in daemon thread
-    import threading as _th_dash
-    _astor_default_dir = str(get_default_astor_dir())
-    _dash_th = _th_dash.Thread(
-        target=_astor_prewarm_dashboard_cache,
-        args=(_astor_default_dir,),
-        daemon=True,
-    )
-    _dash_th.start()
-    print('   Dashboard prewarm: launched background thread', flush=True)
+    # v1.16.62: skip in tests (ASTOR_TEST_NO_PREWARM=1) to avoid the
+    # background thread holding 16+ sqlite connections on the tmpdir's
+    # .db files at tearDown time. Symptom without this: OSError
+    # [Errno 39] / PermissionError on bot-binding.db / *.db-wal /
+    # *.db-shm during shutil.rmtree(tmpdir). CI verified that
+    # build_dashboard_payload opens 16 transient sqlite3 connections
+    # that are only released when the thread exits, but the thread
+    # can still be running when the test's tearDown fires.
+    import os as _os
+    if _os.environ.get('ASTOR_TEST_NO_PREWARM', '0') != '1':
+        import threading as _th_dash
+        _astor_default_dir = str(get_default_astor_dir())
+        _dash_th = _th_dash.Thread(
+            target=_astor_prewarm_dashboard_cache,
+            args=(_astor_default_dir,),
+            daemon=True,
+        )
+        _dash_th.start()
+        print('   Dashboard prewarm: launched background thread', flush=True)
     return app
 
 

@@ -15,6 +15,7 @@ import os
 import time
 import unittest
 from unittest import mock
+from astor_memory._internal.test_state import astor_close_all_test_state
 
 
 class TestPeerRateLimitCore(unittest.TestCase):
@@ -157,6 +158,7 @@ class _Tmp:
         self.tmpdir = Path(self._tmp.name)
 
     def tearDown_tmp(self):
+        astor_close_all_test_state()
         try:
             os.environ.pop("ASTOR_PEER_RATE_LIMIT_PER_24H", None)
             from astor_memory._internal import peer_rate_limit as prl
