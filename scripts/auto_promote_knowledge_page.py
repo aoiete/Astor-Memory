@@ -232,7 +232,7 @@ def main():
     ap.add_argument('--dry-run', action='store_true', default=True)
     ap.add_argument('--execute', action='store_true')
     ap.add_argument('--bus-db',
-                    default=r'<ASTOR_RUNTIME_DIR>',
+                    default=str(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') + '/users/admin/memory/astor_bus_admin.db',
                     help='admin bus DB path for evidence queries')
     args = ap.parse_args()
 

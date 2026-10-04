@@ -441,7 +441,7 @@ am auto-link backfill [--tier=public] [--user-id=...] [--limit=N]
 - **Per-write**: +1 nest.search (200 candidates) + up to 5 UPDATE
   pairs. Adds ~50-200ms to a write.
 - **Backfill**: O(N) per fact in the limit. cron it weekly:
-  `am auto-link backfill --tier=public --limit=500` on Sun 04:00 UTC.
+  `am auto-link backfill --tier=public --limit=500` on weekly-Sun 04:00 UTC.
 
 ### When to disable
 
