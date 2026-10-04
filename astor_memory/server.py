@@ -267,6 +267,76 @@ _EMOTION_RE = re.compile("|".join(_EMOTION_PATTERNS), re.IGNORECASE)
 _METHOD_RE = re.compile("|".join(_METHOD_PATTERNS), re.IGNORECASE)
 
 
+# 2026-10-03 (v1.16.61): intent-aware read (article-driven).
+# The SimpleMem paper ("SimpleMem 高效终身记忆框架") argues that
+# recall-read-side intent classification is the third pillar of good
+# memory: same query surfaces different facts depending on whether the
+# caller wants a procedure ("how to"), a preference ("I like dark mode"),
+# a temporal context ("last week"), or a generic fact. Astor already
+# has _astor_classify_intent() for write-side auto-routing; this adds
+# a sibling for read-side intent logging + future rerank hooks.
+#
+# Six buckets. Priority: method > preference + 偏好 > pure personal >
+# temporal > procedural > factual. The "my X" / "我 X" cases classify
+# as preference when X is itself a preference-word (favors, like); as
+# personal otherwise. Without this priority order, bare "我" matches
+# before "我偏好" and we get the wrong bucket.
+_INTENT_METHOD_RE = re.compile(
+    r'(方法|规则|模式|架构|workflow|rule|pattern|architecture|framework|原理|机制)'
+)
+_INTENT_PREFERENCE_CN_RE = re.compile(
+    r'(?<![一鿿])我[^\s]*?(喜欢|讨厌|偏好|prefer|like|dislike|hate|favor|favorite)'
+)
+_INTENT_MY_PREFERENCE_RE = re.compile(
+    r'\bmy\s+(?:favorite|favour)'
+)
+_INTENT_PREFERENCE_RE = re.compile(
+    r'(喜欢|讨厌|偏好|prefer\b|like\b|dislike|hate|favor|favorite)'
+)
+_INTENT_PERSONAL_MY_RE = re.compile(
+    r'(my\s+|i\s+(?:am|was|will|did|have)\b|mine\b|(?<![一鿿])我的(?![一鿿]))'
+)
+_INTENT_PERSONAL_CN_RE = re.compile(
+    r'(?<![一鿿])我(?![一鿿])|自己'
+)
+_INTENT_TEMPORAL_RE = re.compile(
+    r'(昨天|今天|明天|上个月|last\s+(?:week|month|day|year|time)|yesterday|today|ago)'
+)
+_INTENT_PROCEDURAL_RE = re.compile(
+    r'(怎么|如何|how\s+to|how\s+(?:do|can|should)|step\s*by\s*step)'
+)
+
+
+def classify_read_intent(query: str) -> str:
+    """Classify a /v1/read query into one of 6 intents.
+
+    Returns one of: factual, procedural, temporal, personal, preference,
+    method. Caller may override by passing body.intent; this default
+    classifier is what gets used when the caller leaves it unset.
+
+    Note: this does not change retrieval today — it only logs the
+    intent to recall_log.jsonl so future ship arc (intent-aware rerank,
+    EvolveMem-style self-tuning) can use it. Cheap classifier, no DB
+    reads, no extra latency.
+    """
+    q = (query or '').strip().lower()
+    if not q:
+        return 'factual'
+    if _INTENT_METHOD_RE.search(q):
+        return 'method'
+    if _INTENT_PREFERENCE_CN_RE.search(q) or _INTENT_MY_PREFERENCE_RE.search(q):
+        return 'preference'
+    if _INTENT_PREFERENCE_RE.search(q):
+        return 'preference'
+    if _INTENT_PERSONAL_MY_RE.search(q) or _INTENT_PERSONAL_CN_RE.search(q):
+        return 'personal'
+    if _INTENT_TEMPORAL_RE.search(q):
+        return 'temporal'
+    if _INTENT_PROCEDURAL_RE.search(q):
+        return 'procedural'
+    return 'factual'
+
+
 def _astor_classify_intent(text: str, tier: str, user: str | None) -> str | None:
     """Inspect content; return new tier if content should be reclassified.
 
@@ -3888,6 +3958,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if not query:
             return jsonify({'error': 'query required', 'detail': 'POST /v1/read requires JSON body with "query" field (string)'}), 400
 
+        # 2026-10-03 (v1.16.61): intent classification (SimpleMem-inspired).
+        # Caller may pass body.intent explicitly; otherwise we classify
+        # server-side using classify_read_intent() (no DB reads, no
+        # extra latency). Logs to recall_log.jsonl so future ship arc
+        # can wire intent-aware rerank or EvolveMem-style self-tuning.
+        # Six buckets: factual / procedural / temporal / personal /
+        # preference / method. The body.intent escape hatch is per-request
+        # so callers can override (e.g. for A/B testing).
+        _intent = body.get('intent') or classify_read_intent(query)
+        if _intent not in ('factual', 'procedural', 'temporal', 'personal',
+                           'preference', 'method'):
+            _intent = 'factual'
+
         # v1.16.54 (Ship P1): Learnable Routing dispatch. Decides whether
         # to use graph-first expansion (cheap, finds implicit preferences)
         # or dense-only (faster, best for explicit keyword queries) or
@@ -5123,6 +5206,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # in docs/peer-network.md § Permissions.
                 pass
             with open(_log_path, 'a', encoding='utf-8') as _logf:
+                # v1.16.61: capture hit-rate signal. top_score is the
+                # top hit's hybrid score (0 = empty, > 0.5 = strong hit).
+                # Used by astor_self_eval to compute per-intent hit rate.
+                _top_score = float(enriched[0].get('confidence') or 0) if enriched else 0.0
+                _top_kind = str(enriched[0].get('kind') or '') if enriched else ''
                 _logf.write(_j_u.dumps({
                     'ts': _ts_now,
                     'tier': tier,
@@ -5134,6 +5222,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'q_len': len(query),
                     'top_k': top_k,
                     'n_results': len(enriched),
+                    'top_hit_score': round(_top_score, 4),
+                    'top_hit_kind': _top_kind[:32],
+                    # v1.16.61: caller-set or server-classified.
+                    'intent': _intent,
                     'used_hint': _used_hint,
                     'used_filter': _used_filter,
                     'used_time': _used_time,
@@ -5358,6 +5450,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
         return jsonify({
             'results': enriched,
             'count': len(enriched),
+            # v1.16.61: surface intent classification for caller introspection
+            # and downstream tooling (e.g. dashboard "what do I ask most?").
+            # Caller can override via body.intent; otherwise server-classified.
+            'intent': _intent,
+            # v1.16.61: top_hit_score is the score of the top hit (0 if empty).
+            # Lets the caller decide their own threshold for "useful recall".
+            'top_hit_score': round(float(enriched[0].get('confidence') or 0), 4) if enriched else 0.0,
             # v1.16.54 Ship P1: surface routing decision so callers can
             # debug "why graph-first vs dense-only" outcomes and adjust
             # body.routing_strategy override accordingly.
