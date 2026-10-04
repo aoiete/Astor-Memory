@@ -96,7 +96,7 @@ def main() -> int:
 
     # ===== Case 1: PII + public → 400 pii_blocked =====
     r = _run_case({
-        "text": "我的 moomoo 账号 13800138000 密码 abc123",
+        "text": "我的 moomoo 账号 +86 138 0000 0000 密码 <password_placeholder>",
         "user": "admin",
         "tier": "public",
     })
@@ -106,7 +106,7 @@ def main() -> int:
 
     # ===== Case 2: PII + source → 200 (source not gated) =====
     r = _run_case({
-        "text": "我的 moomoo 账号 13800138000 密码 abc123",
+        "text": "我的 moomoo 账号 +86 138 0000 0000 密码 <password_placeholder>",
         "user": "admin",
         "tier": "source",
     })
@@ -114,7 +114,7 @@ def main() -> int:
 
     # ===== Case 3: PII + public + pii_scan=False → 200 (escape hatch) =====
     r = _run_case({
-        "text": "我的 moomoo 账号 13800138000 密码 abc123",
+        "text": "我的 moomoo 账号 +86 138 0000 0000 密码 <password_placeholder>",
         "user": "admin",
         "tier": "public",
         "pii_scan": False,

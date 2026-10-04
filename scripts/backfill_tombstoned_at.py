@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-ASTOR_DIR = Path(os.environ.get('ASTOR_DIR', r'<ASTOR_RUNTIME_DIR>'))
+ASTOR_DIR = Path(os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor'))
 
 
 def _collect_bus_dbs(astor_dir: Path) -> list[tuple[str, Path]]:

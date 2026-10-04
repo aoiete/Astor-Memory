@@ -4,6 +4,8 @@ Configuration management.
 Per Plan § Config:
 - Priority: CLI flag > env > config.yaml > defaults
 - Config file: ~/.astor/config.yaml
+- v1.16.62: ASTOR_HOME env var overrides Path.home() (e.g. when run
+  from a service / kernel context where Path.home() returns a system dir).
 """
 
 from __future__ import annotations
@@ -18,9 +20,41 @@ DEFAULT_FORGE_PATH_NAME = 'astor_forge.db'
 DEFAULT_NEST_PATH_NAME = 'astor_nest.db'
 
 
+def _astor_home() -> Path:
+    """Return the operator's home dir, honoring ASTOR_HOME if set.
+
+    Why: when astor runs from a Windows service or hermes kernel context,
+    Path.home() can return a system dir (e.g. C:\\Windows\\System32\\config\\
+    systemprofile) which is not where the operator lives. ASTOR_HOME
+    is a single env var that lets a wrapper script point astor at the
+    real user home without changing source.
+    """
+    return Path(os.environ.get('ASTOR_HOME') or str(Path.home()))
+
+
 def get_default_astor_dir() -> Path:
-    """Get default astor dir (reads env at call time)."""
-    return Path(os.environ.get('ASTOR_DIR', DEFAULT_ASTOR_DIR_NAME)).expanduser()
+    """Get default astor dir (reads env at call time).
+
+    Precedence (highest first):
+    1. ASTOR_DIR env var (CI / scripted installs)
+    2. $ASTOR_HOME/.astor/install.json `astor_dir` field (operator install)
+    3. ~/.astor/install.json `astor_dir` field (legacy single-user)
+    4. ~/.astor default (cross-platform)
+    """
+    env_dir = os.environ.get('ASTOR_DIR')
+    if env_dir:
+        return Path(env_dir).expanduser()
+    install_json = _astor_home() / '.astor' / 'install.json'
+    if install_json.exists():
+        try:
+            import json
+            cfg = json.loads(install_json.read_text(encoding='utf-8'))
+            saved = cfg.get('astor_dir')
+            if saved:
+                return Path(saved).expanduser()
+        except Exception:
+            pass
+    return (_astor_home() / '.astor').expanduser()
 
 
 def get_default_config_path() -> Path:

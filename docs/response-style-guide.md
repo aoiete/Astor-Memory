@@ -217,7 +217,7 @@ save_user_profile(user_id, profile)
 "Style reset to 'casual' (default)."
 ```
 
-The same flow works for any user (admin, jaydon, BO, etc.) — not just user_a.
+The same flow works for any user (admin, <user_b>, <user_c>, etc.) — not just user_a.
 
 ## PR / change workflow
 
