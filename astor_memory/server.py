@@ -2784,6 +2784,59 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # v1.10.9: doc_timestamp anchors relative-time resolution.
             doc_timestamp=caller_event_ts,
         )
+# 2026-10-03 v1.16.60: pre-promote filter (article-driven).
+        # The 4-tier "提纯" principle from the Agent memory article
+        # (过滤 / 去重 / 纠错 / 沉淀) says: filter noise before it
+        # hits long-term storage. Without this hook, every low-signal
+        # fragment (confidence < 0.3, importance < 0.3, text < 5 chars)
+        # takes up a row in memory_canonical, dilutes future recall,
+        # and triggers per-fact side effects (lex index, nest embed,
+        # auto-link, conflict_resolver). Three cheap gates:
+        #   1. text length < 5 chars  → drop (single-token noise)
+        #   2. confidence < 0.3       → drop (extractor unsure)
+        #   3. importance < 0.3 AND kind='fact' → drop (low-signal fact;
+        #      rules/lessons/decisions stay even at low importance)
+        # Rules/lessons/decisions are kept at low importance because
+        # they have intrinsic value regardless of retrieval weight.
+        # Env ASTOR_WRITE_FILTER_ENABLED=1 (default) — set 0 to disable
+        # for backward compat with operators who expect every /v1/write
+        # call to land something, even noise.
+        _filter_enabled = (
+            body.get('filter_noise') is not False
+            and os.environ.get('ASTOR_WRITE_FILTER_ENABLED', '1') == '1'
+        )
+        _filtered_out: list[dict] = []
+        if _filter_enabled and facts:
+            _surviving = []
+            for _fx in facts:
+                _fx_text = (_fx.content or '').strip()
+                _fx_kind = _fx.kind or 'fact'
+                _fx_conf = float(_fx.confidence or 0.0)
+                _fx_imp = float(_fx.importance or 0.0)
+                _drop_reason = None
+                if len(_fx_text) < 5:
+                    _drop_reason = 'text_too_short'
+                elif _fx_conf < 0.3:
+                    _drop_reason = 'low_confidence'
+                elif _fx_imp < 0.3 and _fx_kind == 'fact':
+                    _drop_reason = 'low_importance_fact'
+                if _drop_reason is not None:
+                    _filtered_out.append({
+                        'content_preview': _fx_text[:60],
+                        'kind': _fx_kind,
+                        'confidence': _fx_conf,
+                        'importance': _fx_imp,
+                        'reason': _drop_reason,
+                    })
+                    continue
+                _surviving.append(_fx)
+            if _filtered_out:
+                _safe_stderr_write(
+                    f'[v1.16.60] pre-promote filter dropped {len(_filtered_out)}'
+                    f'/{len(facts)} low-signal facts: '
+                    f'{[(f["reason"], f["content_preview"][:30]) for f in _filtered_out]}\n'
+                )
+            facts = _surviving
         # 2026-09-16 R-class fix: client-supplied `tags` were being silently
         # dropped — forge extractor overwrites fact.tags with its own tags.
         # Merge body.tags INTO each fact's tags so post_tool_call hooks
