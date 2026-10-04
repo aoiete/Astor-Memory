@@ -9,6 +9,13 @@ name: ci
 # had collection errors on Linux that don't appear on Windows; slow
 # alone takes 25+ min and fast alone takes 15s with 4 exit-1 results).
 # Now: one job per Python, runs ALL tests with --timeout=60 per test.
+#
+# 2026-10-03: pin ACTIONS_NODE_VERSION=24. GitHub deprecated node20 on
+# 2025-09-19 and the actions/checkout@v4 / actions/cache@v4 / etc.
+# versions we use default to node20. The runner still executes them
+# (forcing node24) but logs a "Warning" line per step. Setting
+# ACTIONS_NODE_VERSION explicitly silences the warning and makes the
+# intent visible. See: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
 
 on:
   push:
@@ -18,6 +25,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  ACTIONS_NODE_VERSION: '24'
 
 jobs:
   test:
