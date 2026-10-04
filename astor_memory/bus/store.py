@@ -100,13 +100,44 @@ class AstorBus:
         self._open()
 
     def _open(self):
-        conn = sqlite3.connect(str(self.db_path), isolation_level=None, check_same_thread=False)
-        conn.execute('PRAGMA journal_mode = WAL')
-        conn.execute('PRAGMA synchronous = NORMAL')
-        conn.execute('PRAGMA foreign_keys = ON')
-        conn.execute('PRAGMA busy_timeout = 5000')
-        self._conn = conn
-        astor_init_schema(conn)
+        # v1.16.59: per-tier singleton — reuse an existing live conn if
+        # one is already cached. Hot path under concurrent /v1/forget
+        # used to call _open() on every request, opening a fresh
+        # sqlite3.Connection per thread, racing with other threads'
+        # PRAGMA writes, and triggering "Cannot operate on a closed
+        # database" once one of them was closed mid-query. Reuse-first
+        # avoids that race; cold-start still opens a new conn.
+        if self._conn is not None:
+            try:
+                # cheap liveness probe — sqlite3.ProgrammingError raised
+                # if the underlying connection was closed externally.
+                self._conn.execute("SELECT 1")
+                return
+            except (sqlite3.ProgrammingError, sqlite3.DatabaseError):
+                self._conn = None
+        try:
+            conn = sqlite3.connect(
+                str(self.db_path),
+                isolation_level=None,
+                check_same_thread=False,
+                timeout=10.0,  # wait up to 10s for WAL lock instead of failing fast
+            )
+            conn.execute('PRAGMA journal_mode = WAL')
+            conn.execute('PRAGMA synchronous = NORMAL')
+            conn.execute('PRAGMA foreign_keys = ON')
+            conn.execute('PRAGMA busy_timeout = 5000')
+            # v1.16.59: schema init failures must NOT leave a half-dead
+            # conn cached. Wrap in try so that if an exception escapes
+            # astor_init_schema (e.g. upgrade path corruption), we
+            # surface it on the next .conn access instead of returning
+            # a closed conn that raises 'Cannot operate on a closed
+            # database' on every subsequent request.
+            astor_init_schema(conn)
+            self._conn = conn
+        except Exception:
+            # Don't cache; let the next .conn access retry.
+            self._conn = None
+            raise
 
     @property
     def conn(self) -> sqlite3.Connection:
