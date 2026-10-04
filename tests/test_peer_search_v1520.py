@@ -18,6 +18,7 @@ from astor_memory._internal.peer_search import (
     PeerSearchResult, PeerSearchResponse,
 )
 from astor_memory.server import create_app
+from astor_memory._internal.test_state import astor_close_all_test_state
 
 
 class _Tmp:
@@ -26,6 +27,7 @@ class _Tmp:
         self.tmpdir = Path(self._tmp.name)
 
     def tearDown_tmp(self):
+        astor_close_all_test_state()
         try:
             from astor_memory.nest import lex_index as _lex_mod
             from astor_memory.nest.vector_store import astor_reset_nest

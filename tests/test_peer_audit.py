@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from astor_memory._internal.test_state import astor_close_all_test_state
 
 
 def _make_audit_conn_with_old_schema(path: str):
@@ -225,6 +226,7 @@ class _Tmp:
         os.environ["ASTOR_DIR"] = str(self.tmpdir)
 
     def tearDown_tmp(self):
+        astor_close_all_test_state()
         try:
             from astor_memory._internal.audit_logger import _reset_audit_conn
             _reset_audit_conn()

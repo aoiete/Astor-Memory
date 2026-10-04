@@ -3,6 +3,11 @@
 Conservative: only seed admin.lock (a simple file the CLI commands read).
 Doesn't recreate bot-binding.db (other tests need its full schema from
 real `am init`); only ensures the admin user_meta row exists.
+
+v1.16.62: also sets ASTOR_TEST_NO_PREWARM=1 to disable the dashboard
+prewarm background thread (which holds 16+ transient sqlite connections
+that file-lock tmpdir .db files at tearDown). See astor_memory/server.py
+create_app() for the gate.
 """
 import json
 import os
@@ -10,6 +15,22 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True, scope='session')
+def _disable_dashboard_prewarm_in_tests():
+    """v1.16.62: skip the dashboard prewarm background thread in tests.
+
+    The thread opens 16 transient sqlite3 connections to compute the
+    initial dashboard payload. These are only released when the thread
+    exits, but on Windows + Linux the thread is still running when the
+    test's tearDown fires shutil.rmtree(tmpdir), causing
+    PermissionError on bot-binding.db / *.db-wal / *.db-shm.
+    """
+    os.environ['ASTOR_TEST_NO_PREWARM'] = '1'
+    yield
+    # Don't unset on session teardown — other tests in the same process
+    # may still need it set.
 
 
 @pytest.fixture(autouse=True)
