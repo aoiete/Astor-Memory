@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from astor_memory._internal.test_state import astor_close_all_test_state
 
 
 if __name__ == "__main__":
@@ -19,6 +20,7 @@ class _Tmp:
         os.environ["ASTOR_DIR"] = str(self.tmpdir)
 
     def tearDown_tmp(self):
+        astor_close_all_test_state()
         try:
             from astor_memory._internal.audit_logger import _reset_audit_conn
             _reset_audit_conn()
