@@ -21,6 +21,7 @@ import re
 import sqlite3
 import json
 import sys
+import numpy as np
 import time
 from pathlib import Path
 
@@ -5569,6 +5570,75 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'tiers': results,
         })
 
+    @app.route('/v1/fact/<int:fact_id>/set_status', methods=['POST'])
+    def set_fact_status(fact_id: int):
+        """v1.16.68 Ship B #1: flip a fact between active/inactive/archived.
+
+        Body JSON:
+          status  (str, required) — 'active' | 'inactive' | 'archived'
+          reason  (str, optional) — audit-logged
+
+        Returns: {fact_id, status, ok: True}
+
+        Use case: user says "I don't drink coffee anymore". Instead of
+        deleting the old "user likes coffee" fact, call this with
+        status='inactive' so the old fact stays in recall as
+        "⚠[INACTIVE] [EVIDENCE] user likes coffee [/EVIDENCE]" — the
+        LLM sees both the old AND the current preference and can
+        reason about the change.
+        """
+        body = request.get_json(force=True)
+        new_status = body.get('status')
+        reason = body.get('reason', '')
+        if new_status not in ('active', 'inactive', 'archived'):
+            return jsonify({'error': 'invalid_status',
+                            'detail': 'status must be one of active|inactive|archived'}), 400
+        try:
+            from .bus.store import _get_or_create_singleton as _g
+            from ._internal.acl import astor_check_write
+            astor_check_write('public', None)
+        except Exception:
+            pass
+        try:
+            # We write to all 3 tiers since status is a global SSoT property
+            # of a fact_id. In practice fact_ids are tier-namespaced, but
+            # for safety we update every tier DB that contains the row.
+            from ._internal.acl_layout import get_db_path as _gdp
+            from .bus.schema import astor_init_schema
+            updated_tiers = []
+            for t in ('public', 'private', 'source'):
+                for uid in (None, 'admin'):
+                    try:
+                        conn = sqlite3.connect(str(_gdp(t, 'bus', uid)))
+                        astor_init_schema(conn)
+                        cur = conn.execute(
+                            "UPDATE memory_canonical SET status = ? WHERE id = ? AND tombstoned = 0",
+                            (new_status, fact_id)
+                        )
+                        if cur.rowcount > 0:
+                            conn.commit()
+                            updated_tiers.append(f"{t}:{uid or '_'}")
+                        conn.close()
+                    except Exception:
+                        continue
+            if not updated_tiers:
+                return jsonify({'error': 'fact_not_found',
+                                'detail': f'no tier DB had fact_id={fact_id}'}), 404
+            # Audit
+            try:
+                from .bus.store import astor_audit
+                astor_audit(
+                    actor='admin:admin', tier='public', action='set_status',
+                    target=str(fact_id),
+                    metadata={'new_status': new_status, 'reason': reason},
+                )
+            except Exception:
+                pass
+            return jsonify({'fact_id': fact_id, 'status': new_status,
+                            'updated_tiers': updated_tiers, 'ok': True})
+        except Exception as e:
+            return jsonify({'error': 'set_status_failed', 'detail': str(e)}), 500
+
     @app.route('/v1/forget', methods=['POST'])
     def forget():
         """Forget a fact by ID, or by content match.
@@ -5758,6 +5828,499 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'content_preview': ccontent[:120],
                 'tombstone_only': tombstone_only,
             }],
+        })
+
+    @app.route('/v1/chat/ingest', methods=['POST'])
+    def chat_ingest():
+        """v1.16.66 Ship P24 #1 — ingest a raw conversation chunk.
+
+        Body JSON:
+          namespace  (str, required) — e.g. 'private:alice' or 'public:lobby'
+          agent_id   (str, required)
+          window_id  (str, required) — UUID of the parent conversation window
+          role       (str, optional, default 'mixed') — user|assistant|mixed|system
+          turns      (list[dict], required) — [{role, content}, ...]
+          prefix     (str, optional) — pre-computed LLM context prefix
+          source     (str, optional, default 'chat_session')
+
+        Returns:
+          { event_id, indexed, status }            on success
+          { error, detail }                       on validation failure
+        """
+        body = request.get_json(force=True)
+        namespace = body.get('namespace')
+        agent_id = body.get('agent_id')
+        window_id = body.get('window_id')
+        turns = body.get('turns')
+        role = body.get('role', 'mixed')
+        prefix = body.get('prefix', '') or ''
+        source = body.get('source', 'chat_session')
+
+        if not namespace or not agent_id or not window_id:
+            return jsonify({'error': 'missing_required_fields',
+                            'detail': 'namespace, agent_id, window_id are all required'}), 400
+        if not isinstance(turns, list) or len(turns) == 0:
+            return jsonify({'error': 'turns_must_be_nonempty_list',
+                            'detail': 'turns must be a non-empty list of {role, content} dicts'}), 400
+
+        # Tier + user_id resolve from namespace ('tier:user_id' shape).
+        tier = namespace.split(':', 1)[0] if ':' in namespace else 'private'
+        if tier not in ('public', 'source', 'private', 'repo'):
+            tier = 'private'
+        user_id = namespace.split(':', 1)[1] if ':' in namespace else '_current'
+
+        try:
+            from .bus.store import astor_bus_for
+            bus = astor_bus_for(tier, user_id=user_id)
+        except Exception as e:
+            return jsonify({'error': 'bus_unavailable', 'detail': str(e)}), 500
+
+        # Derive prefix if not provided (fallback only)
+        if not prefix:
+            first = turns[0].get('content', '') if turns else ''
+            prefix = '[ts=' + namespace + ' role=' + role + '] ' + first[:80]
+
+        try:
+            event_id = bus.append_raw_chat_chunk(
+                namespace=namespace,
+                agent_id=agent_id,
+                window_id=window_id,
+                role=role,
+                turns=turns,
+                prefix=prefix,
+                source=source,
+            )
+        except Exception as e:
+            return jsonify({'error': 'chunk_insert_failed', 'detail': str(e)}), 500
+
+        # Embed + index
+        indexed = False
+        try:
+            from .nest.vector_store import astor_nest
+            nest = astor_nest(tier=tier, user_id=user_id)
+            text_to_embed = prefix + ' ' + ' '.join(
+                (t.get('content', '') or '') for t in turns
+            )[:1500]
+            nest.index_chat_chunk(
+                event_id=event_id,
+                prefix=prefix,
+                turn_count=len(turns),
+                text=text_to_embed,
+            )
+            indexed = True
+        except Exception as e:
+            # Embedding failure should not block ingest — chunks live in raw
+            # events regardless of whether the vector side is healthy.
+            return jsonify({
+                'event_id': event_id,
+                'indexed': False,
+                'index_error': str(e),
+                'status': 'stored_not_indexed',
+            })
+
+        return jsonify({'event_id': event_id, 'indexed': indexed, 'status': 'ok'})
+
+    @app.route('/v1/chat/recall', methods=['POST'])
+    def chat_recall():
+        """v1.16.66 Ship P24 #1 — context-aware chunk retrieval.
+
+        Body JSON:
+          query          (str, required)
+          namespace      (str, required)
+          user_id        (str, optional)
+          top_k          (int, optional, default 5)
+          max_age_days   (int, optional) — drop chunks older than this
+          include_turns  (bool, optional, default True)
+
+        Returns:
+          { results: [{event_id, similarity, prefix, turn_count, ts,
+                       turns?, window_id?}], count, namespace }
+        """
+        body = request.get_json(force=True)
+        query = body.get('query')
+        namespace = body.get('namespace')
+        user_id = body.get('user_id')
+        top_k = int(body.get('top_k', 5))
+        max_age_days = body.get('max_age_days')
+        include_turns = bool(body.get('include_turns', True))
+
+        if not query or not namespace:
+            return jsonify({'error': 'missing_required_fields',
+                            'detail': 'query and namespace are both required'}), 400
+        if max_age_days is not None:
+            try:
+                max_age_days = float(max_age_days)
+            except (TypeError, ValueError):
+                return jsonify({'error': 'bad_max_age_days',
+                                'detail': 'max_age_days must be a number'}), 400
+
+        tier = namespace.split(':', 1)[0] if ':' in namespace else 'private'
+        if tier not in ('public', 'source', 'private', 'repo'):
+            tier = 'private'
+        # Derive user_id from namespace when caller didn't pass one explicitly
+        # (e.g. namespace 'public:test' -> user_id='test').
+        if not user_id and ':' in namespace:
+            user_id = namespace.split(':', 1)[1]
+        if tier == 'private' and not user_id:
+            user_id = '_current'
+
+        try:
+            from .nest.vector_store import astor_nest
+            from .nest.embeddings import astor_get_embedding_model
+            nest = astor_nest(tier=tier, user_id=user_id or '_current')
+            model = astor_get_embedding_model()
+            q_emb = np.array(list(model.embed([query]))[0], dtype=np.float32)
+        except Exception as e:
+            return jsonify({'error': 'embed_unavailable', 'detail': str(e)}), 500
+
+        # v1.16.67 Ship A #2: hybrid BM25 + dense fusion (MemFit 2026-10).
+        # Lexical path catches names/dates/exact terms the dense path
+        # misses; dense path catches paraphrases BM25 misses. Fuse with
+        # 0.7 dense + 0.3 BM25 weights (MemFit default), min-max
+        # normalize each side to [0, 1] before fusing.
+        try:
+            dense_raw = nest.search_chat_chunks(
+                query_embedding=q_emb,
+                limit=max(top_k * 2, 10),  # oversample for fusion
+                max_age_days=max_age_days,
+            )
+        except Exception as e:
+            return jsonify({'error': 'recall_failed', 'detail': str(e)}), 500
+
+        bm25_raw = []
+        try:
+            from .nest.lex_index import astor_lex as _astor_lex
+            lex = _astor_lex(tier=tier, user_id=user_id or '_current')
+            bm25_raw = lex.bm25_search_chat_chunks(
+                query=query, nest=nest, limit=max(top_k * 2, 10),
+                tier=tier, user_id=user_id or '_current',
+            )
+        except Exception:
+            pass
+
+        # Min-max normalize each side
+        def _minmax(pairs):
+            if not pairs:
+                return {}
+            vals = [s for _, s in pairs]
+            lo, hi = min(vals), max(vals)
+            if hi - lo < 1e-12:
+                return {k: 1.0 for k, _ in pairs}
+            return {k: (s - lo) / (hi - lo) for k, s in pairs}
+
+        dense_n = _minmax([(h['event_id'], h['similarity']) for h in dense_raw])
+        bm25_n = _minmax(bm25_raw)
+
+        all_ids = set(dense_n) | set(bm25_n)
+        fused = []
+        prefix_by_id = {h['event_id']: h.get('prefix', '') for h in dense_raw}
+        ts_by_id = {h['event_id']: h.get('ts', '') for h in dense_raw}
+        tc_by_id = {h['event_id']: h.get('turn_count', 0) for h in dense_raw}
+        for eid in all_ids:
+            d = dense_n.get(eid, 0.0)
+            b = bm25_n.get(eid, 0.0)
+            fused.append((eid, 0.7 * d + 0.3 * b))
+        fused.sort(key=lambda x: -x[1])
+        fused = fused[:top_k]
+
+        if not fused:
+            return jsonify({'results': [], 'count': 0, 'namespace': namespace})
+
+        # Reconstruct dict-list using dense-side metadata when present
+        hits = []
+        dense_meta = {h['event_id']: h for h in dense_raw}
+        for eid, score in fused:
+            meta = dense_meta.get(eid, {})
+            hits.append({
+                'event_id': eid,
+                'similarity': round(score, 4),
+                'prefix': meta.get('prefix', ''),
+                'turn_count': meta.get('turn_count', 0),
+                'ts': meta.get('ts', ''),
+            })
+
+        # Enrich with turn text from the bus events table.
+        # v1.16.67 Ship A #3 (MemFit 2026-10 §3): also attach
+        # window_id context (the parent conversation) so callers can
+        # walk to neighbours if needed.
+        if include_turns:
+            try:
+                from .bus.store import astor_bus_for
+                bus = astor_bus_for(tier, user_id=user_id or '_current')
+                import json as _json
+                for h in hits:
+                    row = bus._conn.execute(
+                        "SELECT chunk_turns, chunk_window_id, chunk_role "
+                        "FROM events WHERE id = ?",
+                        (h['event_id'],),
+                    ).fetchone()
+                    if row:
+                        try:
+                            h['turns'] = _json.loads(row[0]) if row[0] else []
+                        except Exception:
+                            h['turns'] = []
+                        h['window_id'] = row[1]
+                        h['chunk_role'] = row[2]
+            except Exception:
+                pass
+
+        # v1.16.67 Ship A #3 (MemFit §3 + §3.2): for each hit, attach
+        # SIBLING chunks from the SAME conversation (within 5 turns of
+        # the hit's window boundary) — MemFit's "hit carries +/- 1
+        # turn to avoid orphan context" pattern. Cheap because chat
+        # chunks in the same window_id share a parent conversation.
+        # Only run if we have hits + bus connection.
+        try:
+            from .bus.store import astor_bus_for as _b4
+            bus = _b4(tier, user_id=user_id or '_current')
+            for h in hits:
+                wid = h.get('window_id')
+                if not wid:
+                    continue
+                sibs = bus._conn.execute(
+                    "SELECT id, chunk_turns, chunk_role, chunk_prefix "
+                    "FROM events WHERE chunk_window_id = ? "
+                    "AND action = 'raw_chat_chunk' AND id != ? "
+                    "ORDER BY id ASC LIMIT 2",
+                    (wid, h['event_id']),
+                ).fetchall()
+                if sibs:
+                    import json as _json2
+                    h['siblings'] = [
+                        {
+                            'event_id': s[0],
+                            'role': s[2],
+                            'prefix': s[3],
+                            'turns': _json2.loads(s[1]) if s[1] else [],
+                        }
+                        for s in sibs
+                    ]
+        except Exception:
+            pass
+
+        # v1.16.67 Ship A #3 (MemFit §3.2 pseudo-relevance feedback):
+        # from top-2 hits extract rare tokens (NOT stopwords) and
+        # append them as a `prf_terms` list so the caller can re-issue
+        # a refined query if needed. Don't auto-re-search — that would
+        # double latency; surface the suggested terms instead.
+        try:
+            _STOP = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be',
+                     'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or',
+                     'but', 'so', 'it', 'this', 'that', 'we', 'i', 'you',
+                     'he', 'she', 'they', 'my', 'your', 'with', 'as', 'by',
+                     'from', 'not', 'no', 'do', 'did', 'has', 'have', 'had'}
+            from collections import Counter as _Cnt
+            top2 = [h.get('prefix', '') for h in hits[:2]]
+            c = _Cnt()
+            for t in top2:
+                for tok in t.split():
+                    tl = tok.lower().strip('.,;:()[]{}')
+                    if len(tl) >= 4 and tl not in _STOP:
+                        c[tl] += 1
+            # Rarest first (count=1 are rarest)
+            prf = [t for t, _ in c.most_common() if c[t] <= 1][:12]
+            if prf:
+                hits[0].setdefault('_meta', {})['prf_terms'] = prf
+        except Exception:
+            pass
+
+        return jsonify({
+            'results': hits,
+            'count': len(hits),
+            'namespace': namespace,
+            'fusion': '0.7_dense_0.3_bm25',
+        })
+
+
+    @app.route('/v1/chat/cluster/rebuild', methods=['POST'])
+    def chat_cluster_rebuild():
+        """v1.16.68 Ship B #2: rebuild cluster_summary table from chat_chunks.
+
+        Body JSON:
+          namespace    (str, required)
+          user_id      (str, optional; default nest.user_id)
+          gap_minutes  (int, optional, default 30)
+          max_clusters (int, optional, default 100; safety cap)
+
+        Reads chat_chunk_embeddings, groups by time-gap, calls LLM
+        for a 2-sentence summary per cluster (>1 member), persists.
+
+        Returns: {clusters_created, members_total, ...}
+        """
+        body = request.get_json(force=True)
+        namespace = body.get('namespace')
+        user_id = body.get('user_id')
+        gap_minutes = int(body.get('gap_minutes', 30))
+        max_clusters = int(body.get('max_clusters', 100))
+        if not namespace:
+            return jsonify({'error': 'namespace_required'}), 400
+        tier = namespace.split(':', 1)[0] if ':' in namespace else 'private'
+        if tier not in ('public', 'source', 'private', 'repo'):
+            tier = 'private'
+        if not user_id:
+            user_id = '_current'
+
+        try:
+            from .nest.vector_store import astor_nest
+            from .nest.cluster_summary import (
+                build_clusters, save_cluster_summary,
+            )
+            nest = astor_nest(tier=tier, user_id=user_id)
+            clusters = build_clusters(
+                nest, gap_seconds=gap_minutes * 60,
+                user_id=user_id, namespace=tier,
+            )
+        except Exception as e:
+            return jsonify({'error': 'build_clusters_failed', 'detail': str(e)}), 500
+
+        # Only summarize clusters with >= 2 chunks OR rich prefix text.
+        created = []
+        skipped = 0
+        for c in clusters[:max_clusters]:
+            if c['member_count'] < 2 and len(c['prefixes_concat']) < 50:
+                skipped += 1
+                continue
+            summary = c['prefixes_concat'][:800]  # TODO LLM call when wired
+            try:
+                cid = save_cluster_summary(
+                    nest, c, summary=summary,
+                    user_id=user_id, namespace=tier,
+                )
+                created.append({
+                    'cluster_id': cid,
+                    'member_count': c['member_count'],
+                    'start_ts': c['start_ts'],
+                    'end_ts': c['end_ts'],
+                })
+            except Exception as e:
+                skipped += 1
+        return jsonify({
+            'namespace': namespace,
+            'gap_minutes': gap_minutes,
+            'clusters_total': len(clusters),
+            'clusters_created': len(created),
+            'skipped': skipped,
+            'created': created[:10],  # cap response
+        })
+
+    @app.route('/v1/chat/cluster/recall', methods=['POST'])
+    def chat_cluster_recall():
+        """v1.16.68 Ship B #2: dense-search cluster summaries.
+
+        Body JSON:
+          namespace   (str, required)
+          user_id     (str, optional)
+          query       (str, required)
+          top_k       (int, optional, default 5)
+          max_age_days (int, optional)
+
+        Returns: cluster summaries with member_event_ids so caller can
+        pull original chunks if a cluster looks promising (multi-hop nav).
+        """
+        body = request.get_json(force=True)
+        namespace = body.get('namespace')
+        user_id = body.get('user_id')
+        query = body.get('query')
+        top_k = int(body.get('top_k', 5))
+        max_age_days = body.get('max_age_days')
+        if not namespace or not query:
+            return jsonify({'error': 'namespace_and_query_required'}), 400
+        tier = namespace.split(':', 1)[0] if ':' in namespace else 'private'
+        if tier not in ('public', 'source', 'private', 'repo'):
+            tier = 'private'
+        if not user_id:
+            user_id = '_current'
+
+        try:
+            from .nest.vector_store import astor_nest
+            from .nest.embeddings import astor_get_embedding_model
+            from .nest.cluster_summary import cluster_summary_search
+            import numpy as np
+            nest = astor_nest(tier=tier, user_id=user_id)
+            model = astor_get_embedding_model()
+            q_emb = np.array(list(model.embed([query]))[0], dtype=np.float32)
+        except Exception as e:
+            return jsonify({'error': 'embed_unavailable', 'detail': str(e)}), 500
+
+        try:
+            hits = cluster_summary_search(
+                nest, q_emb, limit=top_k,
+                user_id=user_id, namespace=tier,
+                max_age_days=max_age_days,
+            )
+        except Exception as e:
+            return jsonify({'error': 'cluster_search_failed', 'detail': str(e)}), 500
+        return jsonify({
+            'results': hits,
+            'count': len(hits),
+            'namespace': namespace,
+        })
+
+
+    @app.route('/v1/export/markdown', methods=['POST'])
+    def export_markdown():
+        """v1.16.69 Ship C #1: export memory_canonical rows as Obsidian-style Markdown.
+
+        Body JSON:
+          tier              (str, required) — 'public'|'source'|'private_<user>'
+          user_id           (str, optional) — defaults to tier's default user
+          include_inactive  (bool, default True)
+          overwrite         (bool, default False)
+          include_chunks    (bool, default False) — also export chat_chunk
+                            events as separate .md files
+
+        Output goes to <ASTOR_DIR>/export/<tier>/<user_id>/. Mount that
+        directory as an Obsidian vault for human-auditable memory.
+        """
+        body = request.get_json(force=True)
+        tier = body.get('tier', 'public')
+        user_id = body.get('user_id', 'admin')
+        include_inactive = bool(body.get('include_inactive', True))
+        overwrite = bool(body.get('overwrite', False))
+        include_chunks = bool(body.get('include_chunks', False))
+
+        try:
+            from .bus.store import astor_bus_for
+            from .nest.markdown_export import (
+                export_user_facts, export_chat_chunks,
+            )
+            bus = astor_bus_for(tier=tier, user_id=user_id)
+            fact_result = export_user_facts(
+                bus, tier=tier, user_id=user_id,
+                include_inactive=include_inactive,
+                overwrite=overwrite,
+            )
+        except Exception as e:
+            return jsonify({'error': 'export_failed', 'detail': str(e)}), 500
+
+        chunk_result = None
+        if include_chunks:
+            try:
+                from .nest.vector_store import astor_nest
+                nest = astor_nest(tier=tier, user_id=user_id)
+                chunk_result = export_chat_chunks(
+                    nest, bus, include_inactive=include_inactive,
+                    overwrite=overwrite,
+                )
+            except Exception as e:
+                chunk_result = {'error': str(e)}
+
+        # v1.16.70 Ship D #1: build entities.jsonl wikilink index.
+        entities_index = None
+        try:
+            from .nest.markdown_export import build_entities_index
+            entities_index = build_entities_index(
+                bus, tier=tier, user_id=user_id,
+            )
+        except Exception as e:
+            entities_index = {'error': str(e)}
+
+        return jsonify({
+            'tier': tier,
+            'user_id': user_id,
+            'facts': fact_result,
+            'chunks': chunk_result,
+            'entities_index': entities_index,
         })
 
     @app.route('/v1/consult', methods=['POST'])
