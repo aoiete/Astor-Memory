@@ -40,9 +40,9 @@ def _fresh_db() -> str:
 
 class TestEpisodesMigration(unittest.TestCase):
     def test_schema_version_is_15(self):
-        # v1.16.x: schema bumped to 16 (visibility tier + provenance_kind).
+        # v1.16.70: schema is at 19 after Ship C #2 (events.explicit_user).
         # Keep the test name (semantic in history) but assert the current value.
-        self.assertEqual(SCHEMA_VERSION, 16)
+        self.assertEqual(SCHEMA_VERSION, 19)
 
     def test_v14_to_v15_creates_episodes_table(self):
         import sqlite3

@@ -35,7 +35,7 @@ def test_prefetch_wraps_recalled_facts_in_evidence_markers(monkeypatch):
         def execute(self, sql, params=None):
             # The first query is for fact_id=42 in Block 1.
             # Other queries (Block 2 sdk-error auto-recall) return empty.
-            return FakeRow(("user likes coffee", "preference", "[]"))
+            return FakeRow(("user likes coffee", "preference", "[]", "active"))
 
     class FakeBus:
         conn = FakeConn()
@@ -47,7 +47,7 @@ def test_prefetch_wraps_recalled_facts_in_evidence_markers(monkeypatch):
     def fake_execute(self, sql, params=None):
         fetchall_calls["n"] += 1
         if "memory_canonical WHERE id" in sql:
-            return FakeRow(("user likes coffee", "preference", "[]"))
+            return FakeRow(("user likes coffee", "preference", "[]", "active"))
         # sdk-error query
         return FakeRow([])
     FakeConn.execute = fake_execute
