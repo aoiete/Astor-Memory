@@ -14,7 +14,7 @@ Tables:
 """
 
 import sqlite3
-SCHEMA_VERSION = 16  # v1.16.29 (2026-10-01) visibility tier (commons/personal) + provenance_kind
+SCHEMA_VERSION = 19  # v1.16.69 (2026-10-05) explicit_user flag on events (Ship C #2 write-policy gate)
 
 SCHEMA_SQL = """
 -- Pragmas set at connection time (bus/store.py:connect)
@@ -333,6 +333,9 @@ def astor_init_schema(conn: sqlite3.Connection) -> None:
     _astor_upgrade_v13_to_v14(conn)
     _astor_upgrade_v14_to_v15(conn)
     _astor_upgrade_v15_to_v16(conn)
+    _astor_upgrade_v16_to_v17(conn)
+    _astor_upgrade_v17_to_v18(conn)
+    _astor_upgrade_v18_to_v19(conn)
     # Index that depends on the publishable column must be created AFTER the column exists.
     # The executescript above emits CREATE INDEX inside the same script as the table,
     # which works for fresh DBs but errors on v1 databases because the column doesn't exist yet.
@@ -896,6 +899,154 @@ def _astor_upgrade_v4_to_v5(conn: sqlite3.Connection) -> None:
             )
         except Exception:
             pass
+
+
+def _astor_upgrade_v16_to_v17(conn: sqlite3.Connection) -> None:
+    """
+    v1.16.66 (2026-10-05) Ship P24 #1 — raw_chat_chunk RAG layer (BigGuo
+    WeChat "双层记忆" article, second layer: context-aware chunk retrieval).
+
+    Adds 4 columns to `events` table so the same append-only event log
+    carries both metadata events AND raw conversation chunks. The columns
+    are NULLABLE — they only carry meaning when action='raw_chat_chunk'.
+
+      chunk_role      TEXT   ('user' | 'assistant' | 'mixed' | 'system')
+      chunk_window_id TEXT   UUID of the parent conversation window
+                              (groups turns that share a logical session)
+      chunk_turns     TEXT   JSON array of {role, content} pairs, the
+                              raw turn-by-turn content
+      chunk_prefix    TEXT   LLM-generated prefix for context-aware
+                              retrieval, e.g.
+                              "[user=alice ts=2026-10-05 14:32 topic=passport]"
+
+    Index on (action, namespace, ts DESC) makes /v1/chat/recall cheap.
+
+    Idempotent: ALTER TABLE ADD COLUMN via PRAGMA check + try/except.
+    """
+    try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(events)"
+        ).fetchall()}
+    except Exception:
+        return
+
+    alters = []
+    if "chunk_role" not in cols:
+        alters.append(("chunk_role", "TEXT"))
+    if "chunk_window_id" not in cols:
+        alters.append(("chunk_window_id", "TEXT"))
+    if "chunk_turns" not in cols:
+        alters.append(("chunk_turns", "TEXT"))
+    if "chunk_prefix" not in cols:
+        alters.append(("chunk_prefix", "TEXT"))
+
+    for col, decl in alters:
+        try:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {col} {decl}")
+        except Exception:
+            pass
+
+    # Index for /v1/chat/recall: filter by action='raw_chat_chunk' + namespace.
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_action_namespace_ts "
+            "ON events(action, namespace, ts DESC)"
+        )
+    except Exception:
+        pass
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_chunk_window "
+            "ON events(chunk_window_id) WHERE chunk_window_id IS NOT NULL"
+        )
+    except Exception:
+        pass
+
+
+def _astor_upgrade_v17_to_v18(conn: sqlite3.Connection) -> None:
+    """
+    v1.16.68 (2026-10-05) Ship B #1 — `status` column on memory_canonical.
+
+    Distinguishes "tombstoned" (= deletion; not visible) from
+    "inactive" (= temporarily disabled; still visible but flagged).
+
+    MemFit § 8 + Basic Memory 2026 §08 both call this out: when a fact
+    is superseded (user changed preference), the system should EDIT
+    the existing entry to mark it inactive, NOT delete it. Our existing
+    `verdict=forgotten` + `tombstoned=1` mixed deletion + staleness
+    semantics. Adding a separate `status` field lets recall surface
+    inactive facts with a ⚠ marker so the LLM can reason about
+    history-of-thought rather than pretend the fact never existed.
+
+    Values:
+      active    — default, fully recallable
+      inactive  — superseded/disabled; recallable but flagged ⚠
+      archived  — long-retired; recallable only via explicit user query
+
+    Idempotent: ALTER TABLE + PRAGMA guard.
+    """
+    try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(memory_canonical)"
+        ).fetchall()}
+    except Exception:
+        return
+    if "status" in cols:
+        return
+    try:
+        conn.execute(
+            "ALTER TABLE memory_canonical ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+        )
+    except Exception:
+        pass
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canonical_status "
+            "ON memory_canonical(status, tombstoned) WHERE tombstoned = 0"
+        )
+    except Exception:
+        pass
+
+
+def _astor_upgrade_v18_to_v19(conn: sqlite3.Connection) -> None:
+    """
+    v1.16.69 (2026-10-05) Ship C #2 — write-policy 3-of-3 gate.
+
+    Adds `explicit_user INTEGER NOT NULL DEFAULT 0` to events.
+    Basic Memory 2026 §06 gate: only facts matching >=2 of 3 conditions
+    should be written to long-term memory:
+      1. May be useful in the future
+      2. User explicitly expressed OR confirmed
+      3. Independently verifiable
+    Our shell_hooks auto-capture every tool result, which is too
+    permissive. Now the gate matters at PROMOTE time (events ->
+    candidate -> canonical). A new `bus.promote_candidate()` flag
+    `require_explicit_user` (default True) drops candidates whose
+    source event lacks explicit_user=1.
+
+    Idempotent ALTER TABLE ADD COLUMN.
+    """
+    try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(events)"
+        ).fetchall()}
+    except Exception:
+        return
+    if "explicit_user" in cols:
+        return
+    try:
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN explicit_user INTEGER NOT NULL DEFAULT 0"
+        )
+    except Exception:
+        pass
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_explicit_user "
+            "ON events(explicit_user) WHERE explicit_user = 1"
+        )
+    except Exception:
+        pass
 
 
 def astor_verify_schema(conn: sqlite3.Connection) -> dict:

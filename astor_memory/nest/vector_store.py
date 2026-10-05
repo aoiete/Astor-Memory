@@ -229,6 +229,120 @@ class AstorNest:
     def _cache_size_used(self) -> int:
         return sum(e.nbytes for e in self._cache.values())
 
+    # ---- v1.16.66 Ship P24 #1: raw_chat_chunk dense retrieval --------
+
+    def index_chat_chunk(
+        self,
+        event_id: int,
+        prefix: str,
+        turn_count: int,
+        text: str,
+        model_name: str | None = None,
+    ) -> np.ndarray:
+        """Compute embedding for a raw conversation chunk and persist to
+        `chat_chunk_embeddings` (nest DB).
+
+        Distinct from store(): keyed by event_id (not fact_id) and lives
+        in a separate table that mirrors the second layer of the
+        双层记忆 architecture (context-aware chunk retrieval per BigGuo
+        WeChat article, 2026-10-05).
+        """
+        if model_name is None:
+            from .embeddings import astor_get_model_name_for_ram
+            model_name = astor_get_model_name_for_ram()
+        emb = self._embed(text)
+        with self._cache_lock:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO chat_chunk_embeddings
+                   (event_id, embedding, model_name, dim, prefix,
+                    turn_count, ts, user_id, namespace)
+                   VALUES (?, ?, ?, ?, ?, ?,
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                           ?, ?)""",
+                (
+                    event_id,
+                    _pack_embedding(emb),
+                    model_name,
+                    emb.shape[0],
+                    prefix,
+                    int(turn_count),
+                    self.user_id,
+                    self.tier,
+                ),
+            )
+        return emb
+
+    def search_chat_chunks(
+        self,
+        query_embedding: np.ndarray,
+        limit: int = 5,
+        model_name: str | None = None,
+        max_age_days: float | None = None,
+    ) -> list[dict]:
+        """Dense cosine search over chat_chunk_embeddings.
+
+        v1.16.66 (Ship P24 #1): returns list of dicts with event_id,
+        similarity, prefix, turn_count, ts. No router / cluster /
+        rerank path — chunk retrieval is simpler than fact retrieval.
+        """
+        if model_name is None:
+            from .embeddings import astor_get_model_name_for_ram
+            model_name = astor_get_model_name_for_ram()
+
+        where = ["model_name = ?", "user_id = ?", "namespace = ?"]
+        params: list = [model_name, self.user_id, self.tier]
+        if max_age_days is not None and max_age_days > 0:
+            where.append(
+                "ts >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)"
+            )
+            params.append(f'-{int(max_age_days)} days')
+
+        sql = (
+            "SELECT event_id, embedding, prefix, turn_count, ts "
+            f"FROM chat_chunk_embeddings WHERE {' AND '.join(where)}"
+        )
+        rows = self._conn.execute(sql, tuple(params)).fetchall()
+        if not rows:
+            return []
+
+        event_ids, prefixes, turn_counts, timestamps, blobs = [], [], [], [], []
+        for r in rows:
+            event_ids.append(r[0])
+            prefixes.append(r[2])
+            turn_counts.append(r[3])
+            timestamps.append(r[4])
+            blobs.append(r[1])
+        first_len = len(blobs[0])
+        if first_len == 0 or first_len % 4 != 0:
+            return []
+        dim = first_len // 4
+        emb_matrix = np.frombuffer(b''.join(blobs), dtype=np.float32).reshape(len(rows), dim)
+        e_norms = np.linalg.norm(emb_matrix, axis=1)
+        q_norm = np.linalg.norm(query_embedding)
+        if q_norm == 0 or e_norms.size == 0:
+            return []
+        scores = emb_matrix @ query_embedding / (e_norms * q_norm + 1e-12)
+        top_idx = np.argsort(-scores)[:limit]
+        results = []
+        for i in top_idx:
+            results.append({
+                'event_id': int(event_ids[i]),
+                'similarity': float(scores[i]),
+                'prefix': prefixes[i],
+                'turn_count': int(turn_counts[i]),
+                'ts': timestamps[i],
+            })
+        return results
+
+    def invalidate_chat_chunk(self, event_id: int) -> None:
+        """Delete a chunk's embedding (e.g. on chunk tombstone)."""
+        with self._cache_lock:
+            self._conn.execute(
+                "DELETE FROM chat_chunk_embeddings WHERE event_id = ?",
+                (event_id,),
+            )
+
+
     def invalidate_fact(self, fact_id: int):
         """Invalidate all cached embeddings for a fact."""
         with self._cache_lock:

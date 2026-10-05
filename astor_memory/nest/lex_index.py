@@ -310,6 +310,73 @@ class AstorLex:
                 'INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)', ('avgdl', f'{avgdl:.2f}')
             )
 
+    def bm25_search_chat_chunks(
+        self,
+        query: str,
+        nest,
+        limit: int = 20,
+        tier: str | None = None,
+        user_id: str | None = None,
+    ) -> list[tuple[int, float]]:
+        """v1.16.67 Ship A #2: BM25 over chat_chunk_embeddings rows.
+
+        Mirrors MemFit 2026-10 lexical-recall path: finds names/dates/
+        exact terms the dense path may miss. Returns
+        [(event_id, bm25_score), ...] sorted desc.
+
+        Chat chunks live in a separate table keyed by event_id, not
+        fact_id, so we don't reuse bm25_search (which reads `documents`
+        keyed by fact_id). Pure-Python BM25 — cheap for ~hundreds of
+        chat chunks per user (bounded by conversation volume, not fact
+        volume). Only `prefix` is scored (turns are noisier).
+        """
+        tokens = _tokenize(query)
+        if not tokens:
+            return []
+        if tier is None:
+            tier = nest.tier
+        if user_id is None:
+            user_id = nest.user_id
+        rows = nest._conn.execute(
+            "SELECT event_id, prefix FROM chat_chunk_embeddings "
+            "WHERE namespace = ? AND user_id = ?",
+            (tier, user_id),
+        ).fetchall()
+        if not rows:
+            return []
+        doc_ids = []
+        docs = []
+        for ev_id, prefix in rows:
+            if prefix:
+                doc_ids.append(ev_id)
+                docs.append(prefix)
+        if not docs:
+            return []
+        N = len(docs)
+        avgdl = sum(len(_tokenize(d)) for d in docs) / max(N, 1) or 1.0
+        doc_tokens = [_tokenize(d) for d in docs]
+        df = Counter()
+        for toks in doc_tokens:
+            for t in set(toks):
+                df[t] += 1
+        import math
+        k1, b = 1.5, 0.75
+        scores = []
+        for toks, did in zip(doc_tokens, doc_ids):
+            s = 0.0
+            for t in tokens:
+                cnt = df.get(t, 0)
+                if not cnt:
+                    continue
+                tf = sum(1 for x in toks if x == t)
+                idf = math.log((N - cnt + 0.5) / (cnt + 0.5) + 1)
+                dl = len(toks) or 1
+                s += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avgdl))
+            if s > 0:
+                scores.append((did, s))
+        scores.sort(key=lambda x: -x[1])
+        return scores[:limit]
+
     # ---------- read path: BM25 ----------
     def bm25_search(self, query: str, limit: int = 20) -> list[tuple[int, float]]:
         """Return [(fact_id, bm25_score), ...] sorted desc by score.

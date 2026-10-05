@@ -169,13 +169,23 @@ class AstorBus:
         content: str,
         metadata: dict | None = None,
         request_id: str | None = None,
+        explicit_user: bool = False,
     ) -> int:
-        """Append an event to the bus. Returns event_id."""
+        """Append an event to the bus. Returns event_id.
+
+        v1.16.69 Ship C #2: `explicit_user=True` marks this event as
+        originating from a USER-EXPLICIT statement (Basic Memory §06
+        write-policy gate). Default False because most events are
+        auto-captured by shell_hooks (tool results, system outputs).
+        Only facts derived from explicit_user=True events should be
+        eligible for auto-promotion to memory_canonical.
+        """
         with self.transaction() as c:
             cur = c.execute(
                 """INSERT INTO events
-                   (namespace, agent_id, source, action, content, metadata, request_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (namespace, agent_id, source, action, content, metadata,
+                    request_id, explicit_user)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     namespace,
                     agent_id,
@@ -184,6 +194,75 @@ class AstorBus:
                     content,
                     json.dumps(metadata or {}),
                     request_id,
+                    int(bool(explicit_user)),
+                ),
+            )
+            event_id = cur.lastrowid
+            assert event_id is not None
+            return event_id
+
+    def append_raw_chat_chunk(
+        self,
+        namespace: str,
+        agent_id: str,
+        window_id: str,
+        role: str,
+        turns: list[dict],
+        prefix: str = '',
+        source: str = 'chat_session',
+        request_id: str | None = None,
+    ) -> int:
+        """v1.16.66 (2026-10-05 Ship P24 #1): append a raw conversation
+        chunk to the bus events log.
+
+        Distinct from append_event because it carries the chunk-only
+        columns (chunk_role, chunk_window_id, chunk_turns, chunk_prefix).
+        Used by /v1/chat/ingest to feed the second layer of the
+        双层记忆 architecture (BigGuo WeChat article).
+
+        Args:
+            namespace:  tier-namespaced session, e.g. 'private:alice'
+            agent_id:   who is recording the chunk
+            window_id:  UUID grouping turns of one logical conversation
+            role:       'user' | 'assistant' | 'mixed' | 'system'
+            turns:      list of {role, content} dicts (the raw window)
+            prefix:     LLM-generated context-aware prefix
+                        (e.g. "[user=alice ts=... topic=passport]")
+            source:     human-readable source tag (default 'chat_session')
+            request_id: optional caller request id
+
+        Returns:
+            event_id of the inserted chunk row
+
+        Schema gate: requires v17 (raw_chat_chunk columns). astor_init_schema
+        adds them on first call. Old v16 callers will hit SQLite "no such
+        column" — explicit error is the right shape.
+        """
+        import json as _json
+        turns_json = _json.dumps(turns, ensure_ascii=False)
+        with self.transaction() as c:
+            cur = c.execute(
+                """INSERT INTO events
+                   (namespace, agent_id, source, action, content, metadata,
+                    request_id, chunk_role, chunk_window_id, chunk_turns,
+                    chunk_prefix)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    namespace,
+                    agent_id,
+                    source,
+                    'raw_chat_chunk',
+                    prefix,  # content mirrors the prefix (LLM-prefixed)
+                    _json.dumps({
+                        'window_id': window_id,
+                        'turn_count': len(turns),
+                        'source': source,
+                    }),
+                    request_id,
+                    role,
+                    window_id,
+                    turns_json,
+                    prefix,
                 ),
             )
             event_id = cur.lastrowid
@@ -318,6 +397,32 @@ class AstorBus:
         After the INSERT, computes embedding via nest and stores it on the
         canonical row so recall() works (Plan § Write-time dedup).
         """
+        # v1.16.69 Ship C #2: Basic Memory §06 6-write-policy 3-of-3 gate.
+        # Default OFF to preserve backward compat with /v1/write and
+        # existing test fixtures. To opt in, set
+        # `bus.require_explicit_user_for_promote = True`. This rejects
+        # candidates whose source event has explicit_user=0
+        # (i.e. shell-hook auto-captures), forcing the agent to either
+        # confirm the user really said it, or use batch ingestion from
+        # trusted sources.
+        require_explicit_user = getattr(
+            self, 'require_explicit_user_for_promote', False
+        )
+        if require_explicit_user:
+            row = self._conn.execute(
+                "SELECT e.explicit_user FROM memory_candidates c "
+                "JOIN events e ON c.event_id = e.id WHERE c.id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"candidate_id={candidate_id} not found")
+            if row[0] != 1:
+                raise PermissionError(
+                    f"promote_candidate: source event is not explicit_user "
+                    f"(explicit_user={row[0]}); 3-of-3 gate refused. "
+                    f"Set bus.require_explicit_user_for_promote=False to override."
+                )
+
         # v1.14.21 Ship B: lazy import forge.extract_entities to avoid any
         # bus<->forge circular import risk (forgiving fallback if unavailable).
         try:

@@ -26,7 +26,7 @@ import sqlite3
 # when bge-small rows replaced bge-base rows mid-run. Fix: re-create table
 # with composite PK, migrate existing rows by INSERT OR IGNORE into new
 # table, drop old, rename.
-NEST_SCHEMA_VERSION = 4
+NEST_SCHEMA_VERSION = 6  # v1.16.68 Ship B #2: chat_chunk_clusters table
 
 NEST_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS embeddings (
@@ -104,6 +104,47 @@ def astor_init_nest_schema(conn: sqlite3.Connection) -> None:
         PRIMARY KEY (cluster_key, model_name)
     )
     """)
+    # Step 1c (v5, 2026-10-05 Ship P24 #1): chat_chunk_embeddings table —
+    # dense-only retrieval over raw conversation chunks. Distinct from the
+    # `embeddings` table which is keyed by fact_id (memory_canonical rows);
+    # this one is keyed by event_id (raw events.action='raw_chat_chunk' rows).
+    # Composite PK (event_id, model_name) follows the v3 lessons.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS chat_chunk_embeddings (
+        event_id INTEGER NOT NULL,
+        embedding BLOB NOT NULL,
+        model_name TEXT NOT NULL,
+        dim INTEGER NOT NULL,
+        prefix TEXT NOT NULL DEFAULT '',
+        turn_count INTEGER NOT NULL DEFAULT 0,
+        ts DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        user_id TEXT NOT NULL DEFAULT '_current',
+        namespace TEXT NOT NULL DEFAULT 'private',
+        PRIMARY KEY (event_id, model_name)
+    )
+    """)
+    # v1.36.68 Ship B #2 (MemFit § 摘要层): cluster_summary table —
+    # TextTiling-bounded grouping of N adjacent chat_chunk events with
+    # a 200-token LLM summary. Stores provenance (member_event_ids) so
+    # recall can navigate from summary → original chunks.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS chat_chunk_clusters (
+        cluster_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        summary TEXT NOT NULL,
+        member_event_ids TEXT NOT NULL DEFAULT '[]',
+            member_count INTEGER NOT NULL DEFAULT 0,
+            start_ts DATETIME NOT NULL,
+            end_ts DATETIME NOT NULL,
+            user_id TEXT NOT NULL DEFAULT '_current',
+            namespace TEXT NOT NULL DEFAULT 'private',
+            model_name TEXT NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_clusters_user_ns_ts "
+        "ON chat_chunk_clusters(user_id, namespace, start_ts DESC)"
+    )
     conn.execute("""
     CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)
     """)
@@ -117,6 +158,10 @@ def astor_init_nest_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_publishable ON embeddings(publishable) WHERE publishable = 1")
     # Step 3b (v4): cluster_embeddings index for L1 search
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cluster_embeddings_model ON cluster_embeddings(model_name)")
+    # Step 3c (v5): chat_chunk_embeddings indexes for /v1/chat/recall.
+    # ns_user filter + ts DESC for recency are the common access patterns.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_chunk_model ON chat_chunk_embeddings(model_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_chunk_ns_user_ts ON chat_chunk_embeddings(namespace, user_id, ts DESC)")
     # Step 4: record version
     conn.execute(
         "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
