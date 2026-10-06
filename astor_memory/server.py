@@ -4402,6 +4402,51 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     if _fid not in _bm25_seen or _s > _bm25_seen[_fid]:
                         _bm25_seen[_fid] = _s
             bm25_hits = list(_bm25_seen.items())
+            # v1.16.73 Ship F: opt-in RRF (Reciprocal Rank Fusion) path.
+            # When caller passes body.use_rrf=True, replace the weighted-sum
+            # hybrid_merge with proper RRF across the existing candidate
+            # channels. We add an explicit TIME-filter channel (4th path,
+            # "TEMPR"-style) using event_date pre-filter. Default off for
+            # backward compat — paper pattern (mp/-ula31Nw4kmDYPQooKPsGA).
+            _use_rrf = bool(body.get('use_rrf'))
+            _results_from_rrf = False
+            if _use_rrf:
+                from .recall_rrf import rrf_fusion as _rrf_f
+                _rrf_k = int(body.get('rrf_k') or 60)
+                # Channel 4: time filter (TEMPR's 4th path).
+                # Pre-filter candidates whose event_date falls in time_range.
+                _time_filtered = list(bm25_hits) + list(vector_hits)
+                if time_range:
+                    _since_iso, _until_iso = time_range
+                    _tr_kept = set()
+                    if _time_filtered:
+                        _tf_fids = [f for f, _ in _time_filtered]
+                        if _tf_fids:
+                            _ph = ','.join('?' * len(_tf_fids))
+                            _tf_rows = bus.conn.execute(
+                                f"SELECT id, event_date FROM memory_canonical "
+                                f"WHERE id IN ({_ph}) AND event_date IS NOT NULL "
+                                f"AND event_date >= ? AND event_date <= ?",
+                                _tf_fids + [_since_iso, _until_iso],
+                            ).fetchall()
+                            _tr_kept = {r[0] for r in _tf_rows}
+                    _time_hits = [(f, 1.0) for f, _ in _time_filtered
+                                   if f in _tr_kept]
+                else:
+                    _time_hits = []
+                # Run RRF across 3 channels (BM25, vector, time).
+                _rrf_merged = _rrf_f(bm25_hits, vector_hits, _time_hits, k=_rrf_k)
+                results = _rrf_merged[:top_k]
+                _hit_src = {}
+                for fid, _ in bm25_hits[:top_k]:
+                    _hit_src[int(fid)] = 'bm25'
+                for fid, _ in vector_hits[:top_k]:
+                    _hit_src.setdefault(int(fid), 'vector')
+                for fid, _ in _time_hits[:top_k]:
+                    _hit_src.setdefault(int(fid), 'time_filter')
+                _results_from_rrf = True
+            if not _results_from_rrf:
+                pass  # fall through to existing weighted-sum hybrid below
             # v1.2.0: load per-fact keywords from canonical + compute
             # Jaccard boost. O(oversample) - fine for top_k <= 50.
             candidate_fids = sorted({f for f, _ in bm25_hits}
