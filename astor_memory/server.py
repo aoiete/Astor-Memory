@@ -2284,6 +2284,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'text required', 'detail': 'POST /v1/write requires JSON body with "text" field (string, 8+ chars)'}), 400
         user = body.get('user', 'admin')
         mode = body.get('mode', 'auto')
+        # v1.16.72 (2026-10-06): per-stage write-path timing instrumentation.
+        # Six stage markers (start, classify_intent, start_extract, end_extract,
+        # promote_start, promote_done) surface in resp_body['w_stages_ms'] ONLY
+        # when caller passes debug_timing=True (default off; backward-compat).
+        import time as _w_t
+        _w_stages = {'start': _w_t.perf_counter()}
         # v1.16.37+: ASTOR_AUTO_FILLED_KIND set by before_write_hook.
         # If agent wrote no kind, we already filled in our suggestion.
         # But forge_extract_uses_acts will overwrite; below we re-apply after.
@@ -2847,6 +2853,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # landed as kind='fact' (neutral) regardless of content — Ship F
         # code was dead code until this hook was wired up.
         from .forge.extractor import astor_classify_outcome
+        _w_stages['classify_intent'] = _w_t.perf_counter()
+        _w_stages['start_extract'] = _w_t.perf_counter()
         outcome = astor_classify_outcome(text)
         why = (
             f'auto-classified outcome={outcome} (Ship L capture_intent→zone)'
@@ -2861,6 +2869,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # v1.10.9: doc_timestamp anchors relative-time resolution.
             doc_timestamp=caller_event_ts,
         )
+        _w_stages['end_extract'] = _w_t.perf_counter()
 # 2026-10-03 v1.16.60: pre-promote filter (article-driven).
         # The 4-tier "提纯" principle from the Agent memory article
         # (过滤 / 去重 / 纠错 / 沉淀) says: filter noise before it
@@ -2979,6 +2988,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # are logged but never block the write (lex is a redundant store).
         from .nest.lex_index import astor_lex as _astor_lex_for_write
         _lex = _astor_lex_for_write(tier=tier, user_id=bus_user_id)
+        _w_stages['promote_start'] = _w_t.perf_counter()
         for f in facts:
             cand_id = bus.insert_candidate(
                 event_id=event_id,
@@ -3127,6 +3137,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 )
                 _t.start()
                 _async_embed_count = _async_embed_count + 1
+            # v1.16.72: stage marker — promote loop done + counter
+            _w_stages['promote_done'] = _w_t.perf_counter()
+            _w_stages['promote_calls'] = 1  # counter of /v1/write calls
         # P2-fix 2026-08-15: optional source-tier mirror. Best-effort — if
         # mirror fails (e.g. ACL denial for non-admin caller), the
         # primary write still succeeds.
@@ -3387,6 +3400,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'scope': scope,
             'mirrored': mirrored_fact_ids,
             'success_experience_ids': _success_exp_ids,
+            # v1.16.72: per-stage write-path timing (ms). Stage names:
+            # classify_intent, start_extract, end_extract, promote_start,
+            # promote_done, promote_calls. Only surfaced when
+            # body.debug_timing=True (default off; backward-compat).
+            'w_stages_ms': {k: round((v - _w_stages['start']) * 1000.0, 2)
+                              for k, v in _w_stages.items()
+                              if k != 'start' and isinstance(v, float)}
+                              if body.get('debug_timing') else None,
             # v1.16.10: coref resolution report (empty if disabled or no pronouns)
             'coref_resolutions': _coref_meta.get('resolutions', []),
             'invalidated': invalidated,
