@@ -170,6 +170,45 @@ We considered 2 (just public/private) and 5 (PowerContext's profile/private/shor
 - **2 is too coarse.** Admins need a tier for "I see this but the end user doesn't" — for things like debugging context, internal notes, agent self-patterns. Without it, admins either leak too much (everything in `public`) or hide useful context from the agent (everything in `private`).
 - **5 is over-scoped.** PowerContext's 5 tiers mix spatial (where it lives) with temporal (how long it lives) with audience (who sees it). We separated these concerns: spatial = 3 tiers (this section), temporal = 3 scopes (next section), audience = ACL grants (later in this section).
 
+### 3-store × 3-tier matrix (v1.16.71)
+
+```mermaid
+graph TD
+    subgraph Stores [3 stores per tier]
+        BUS[bus<br/>events + canonical + audit]
+        FORGE[forge<br/>extraction cache]
+        NEST[nest<br/>vector index]
+    end
+
+    subgraph Tiers [3 tiers × 9 SQLite files]
+        PUB[public tier<br/>shared_peer]
+        SRC[source tier<br/>admin_only]
+        PRI[private tier<br/>per-user]
+    end
+
+    BUS --> PUB
+    BUS --> SRC
+    BUS --> PRI
+    FORGE --> PUB
+    FORGE --> SRC
+    FORGE --> PRI
+    NEST --> PUB
+    NEST --> SRC
+    NEST --> PRI
+
+    subgraph Users [users/&lt;u&gt;/memory/]
+        U1[admin]
+        U2[sunday]
+        U3[yuqi]
+    end
+
+    PRI --> U1
+    PRI --> U2
+    PRI --> U3
+```
+
+Per-user private DBs (`users/<u>/memory/astor_bus_<u>.db`) sit alongside the public/source DBs; the same 9-DB layout holds regardless of user count.
+
 ### ACL rules
 
 ```yaml
@@ -248,6 +287,37 @@ A `short_term` fact that gets accessed ≥ 5 times in 30 days auto-promotes to `
 ## 4. Lifecycle: decay, merge, promote
 
 Three automatic processes prevent unbounded growth. Inspired by Ebbinghaus forgetting curve + PowerContext RFC 0020 lifecycle model.
+
+### Dream-tier promotion (v1.16.71) — distinct-hit gate
+
+```mermaid
+stateDiagram-v2
+    [*] --> T0 : astor_write
+    T0: T0 raw fact
+    T0_importance_05: importance=0.5, dq=0
+
+    state T0 {
+        [*] --> T0_importance_05
+    }
+
+    T0 --> T1 : access_count >= 5
+    T1: T1 trusted
+    T1_imp_07: importance=0.7, dq>=5
+
+    T1 --> T2 : access>=10 AND importance>=0.85 AND dq>=3
+    T2: T2 promoted
+    T2_imp_085: importance=0.85, dq>=3
+
+    T2 --> T3 : cross-user share
+    T3: T3 shared_peer
+    T3_dq_10: dq>=10, public tier
+
+    note right of T2
+        T3 = 3 distinct queries hit the fact
+        (prevents 1 query recalled 100x
+        from auto-promoting noise)
+    end note
+```
 
 ### Decay (relevance decay over time)
 

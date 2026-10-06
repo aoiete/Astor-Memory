@@ -18,6 +18,22 @@ Astor-Memory adopts Tencent's 4-tier memory model (`<wiki>/entities/01-tencentdb
 
 **L2 is the gap we filled 2026-07-31** via `scripts/scenario_clustering.py`. Without L2, recall is per-fact (noisy). With L2, recall queries top-N scenarios first, then drill down to the facts within those scenarios.
 
+### Layered recall flow (L0 → L3, v1.16.71)
+
+```mermaid
+flowchart TD
+    Q[query string] --> L0
+    L0[L0 Raw bus_discrete<br/>per-turn log] -->|forge extract| L1
+    L1[L1 Fact memory_canonical<br/>4316 facts] -->|keyword cluster| L2
+    L2[L2 Scenario scenarios.db<br/>top-N clusters] -->|rank by score| L3
+    L3[L3 Profile view<br/>recency-decayed persona] --> R[ranked facts<br/>to agent]
+
+    style L0 fill:#e0e0e0
+    style L1 fill:#bbdefb
+    style L2 fill:#fff59d
+    style L3 fill:#c8e6c9
+```
+
 ### Cold-start recall flow (L2-first)
 
 ```
