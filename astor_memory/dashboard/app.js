@@ -309,13 +309,18 @@ function renderConnections(d) {
   const tbody = document.querySelector('#connections-table tbody');
   if (!tbody) return;
   const bindings = d.bindings || [];
-  // Sort: plan priority (power > vip > free) then user_id
-  const PLAN_RANK = { power: 0, vip: 1, free: 2 };
-  _connSorted = bindings.slice().sort((a, b) => {
-    const r = (PLAN_RANK[a.subscription_plan] != null ? PLAN_RANK[a.subscription_plan] : 9)
-            - (PLAN_RANK[b.subscription_plan] != null ? PLAN_RANK[b.subscription_plan] : 9);
-    if (r !== 0) return r;
-    return (a.user_id || '').localeCompare(b.user_id || '');
+    // Sort: plan priority (admin > power > vip > free) then user_id.
+    // v1.16.70: admin plan ranks 0 so the operator row surfaces at the top.
+    const PLAN_RANK = { admin: 0, power: 1, vip: 2, free: 3 };
+    _connSorted = bindings.slice().sort((a, b) => {
+      const r = (PLAN_RANK[a.subscription_plan] != null ? PLAN_RANK[a.subscription_plan] : 9)
+              - (PLAN_RANK[b.subscription_plan] != null ? PLAN_RANK[b.subscription_plan] : 9);
+      if (r !== 0) return r;
+      // Within the same plan tier: operator first, then alphabetical.
+      const aOp = a.user_id === 'admin' ? 0 : 1;
+      const bOp = b.user_id === 'admin' ? 0 : 1;
+      if (aOp !== bOp) return aOp - bOp;
+      return (a.user_id || '').localeCompare(b.user_id || '');
   });
   _connPage = 0;
   _drawConnPage();
