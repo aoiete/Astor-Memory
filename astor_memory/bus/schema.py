@@ -14,7 +14,7 @@ Tables:
 """
 
 import sqlite3
-SCHEMA_VERSION = 19  # v1.16.69 (2026-10-05) explicit_user flag on events (Ship C #2 write-policy gate)
+SCHEMA_VERSION = 20  # v1.16.71 (2026-10-06) distinct_queries_hit column on memory_canonical (Dream-tier T3 gate)
 
 SCHEMA_SQL = """
 -- Pragmas set at connection time (bus/store.py:connect)
@@ -87,7 +87,13 @@ CREATE TABLE IF NOT EXISTS memory_canonical (
     last_confirmed_at DATETIME,
     last_confirmed_session TEXT,
     access_count INTEGER NOT NULL DEFAULT 0,
-    tombstoned INTEGER NOT NULL DEFAULT 0,
+        -- v1.16.71 (2026-10-06): Dream-tier T3 distinct-hit counter. Tracks how many
+        -- DIFFERENT queries (not raw hits) have surfaced this fact. When ≥3 distinct
+        -- queries hit + importance≥0.85 + access_count≥10, the consolidate.promote
+        -- action is allowed to copy private→public. Prevents "1 query recalled 100
+        -- times" from auto-promoting low-value noise (OpenClaw dreaming-tier pattern).
+        distinct_queries_hit INTEGER NOT NULL DEFAULT 0,
+        tombstoned INTEGER NOT NULL DEFAULT 0,
     tombstoned_at DATETIME,
     expires_at DATETIME,
     scene TEXT NOT NULL DEFAULT 'casual',

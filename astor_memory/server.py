@@ -1,4 +1,4 @@
-"""
+﻿"""
 HTTP REST API server for Astor-Memory.
 
 Plan § Week 4 step 3.2: FastAPI-style endpoints with Flask (already in deps).
@@ -5156,9 +5156,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         f"AND kind NOT IN ('lock_rule', 'rule', 'mental_model', 'knowledge_page')",
                         _surfaced_fids + [_90d_iso],
                     )
-                # Always: bump surfaced facts' access_count + last_confirmed_at.
+                # Always: bump surfaced facts' access_count + last_confirmed_at +
+                # distinct_queries_hit (v1.16.71 Dream-tier T3 gate).
                 bus.conn.execute(
                     f"UPDATE memory_canonical SET access_count = access_count + 1, "
+                    f"distinct_queries_hit = distinct_queries_hit + 1, "
                     f"last_confirmed_at = ? WHERE id IN ({_ph_acc}) AND tombstoned = 0",
                     [_now_iso] + _surfaced_fids,
                 )
