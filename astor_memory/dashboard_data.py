@@ -176,6 +176,30 @@ def _entities_coverage(astor_dir: Path) -> dict:
     }
 
 
+def _is_real_user(user_id: str, astor_dir: Path) -> bool:
+    """v1.16.70: filter out system/test dirs from total_users count.
+
+    Real users have an active=1 row in bot-binding.db user_meta. System
+    dirs (hook-audit, demo_external_agent, hook-audit-test, cctest_*)
+    live on disk but should NOT count toward the operator-facing hero
+    number. bot-binding.db is in the same ASTOR_DIR; we look it up here
+    so the dashboard total reflects the same population the gateway
+    sees (per memory 12134 + R129).
+    """
+    try:
+        import sqlite3 as _s
+        _bb = astor_dir / 'bot-binding.db'
+        if not _bb.exists():
+            return True  # no SSoT — fall back to counting the dir
+        with _s.connect(str(_bb)) as _co:
+            row = _co.execute(
+                "SELECT active FROM user_meta WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return bool(row and row[0] == 1)
+    except Exception:
+        return True  # fail-open: if lookup fails, count the dir
+
+
 def _per_user_breakdown(astor_dir: Path) -> tuple[list[dict], str | None, int, int, int, int, int]:
     """Scan all users/<u>/memory/astor_bus_*.db, aggregate stats.
 
@@ -189,6 +213,14 @@ def _per_user_breakdown(astor_dir: Path) -> tuple[list[dict], str | None, int, i
 
     for user_dir in sorted(users_dir.glob("*/memory")):
         user = user_dir.parent.name
+        # 2026-10-05: skip system test/audit directories — only count real human users
+        # in `total_users`. Bot-binding.db user_meta is the SSoT for "real user",
+        # and disk dirs without a user_meta row (e.g. hook-audit, demo_external_agent,
+        # hook-audit-test) are internal test artifacts that inflated the count to 19
+        # when real active users were 16. bot-binding.db lives in the same ASTOR_DIR
+        # so a relative lookup is safe.
+        if not _is_real_user(user, astor_dir):
+            continue
         dbs = list(user_dir.glob("astor_bus_*.db"))
         if not dbs:
             continue
