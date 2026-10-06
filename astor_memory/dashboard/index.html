@@ -1,225 +1,225 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Astor Dashboard</title>
-<link rel="stylesheet" href="style.css?v=1.16.50">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-</head>
-<body>
-<!-- S18 (2026-09-10): This dashboard ships as a generic template in the
-     public astor-memory repo; the local instance is the operator's own. -->
-<header class="dash-header">
-  <h1>🧠 Astor Dashboard</h1>
-  <div class="header-meta">
-    <span id="self-peer-id" class="self-peer-id" title="this server's peer_id — copy to share with other astor nodes">self: …</span>
-    <span id="version-badge" class="version-badge" title="astor-memory server version">v…</span>
-    <span id="cache-badge" class="cache-badge">…</span>
-    <span id="last-event" class="last-event">last event: …</span>
-    <button id="refresh-btn" class="btn-refresh" title="Force refresh (bypasses 30s cache)">↻</button>
-  </div>
-</header>
-
-<!-- Hero -->
-<section class="hero">
-  <div class="hero-card">
-    <div class="hero-label">Total Users</div>
-    <div class="hero-value" id="hero-users">—</div>
-    <div class="hero-sub" id="hero-users-sub">—</div>
-  </div>
-  <div class="hero-card accent">
-    <div class="hero-label">Active Facts</div>
-    <div class="hero-value" id="hero-facts">—</div>
-  </div>
-  <div class="hero-card">
-    <div class="hero-label">Tombstoned</div>
-    <div class="hero-value" id="hero-tomb">—</div>
-  </div>
-  <div class="hero-card">
-    <div class="hero-label">High Importance</div>
-    <div class="hero-value" id="hero-high">—</div>
-  </div>
-  <div class="hero-card wide">
-    <div class="hero-label">Trend</div>
-    <div class="hero-value trend-value" id="hero-trend">—</div>
-  </div>
-</section>
-
-<!-- v1.16.25: Connections panel — which agents + users have a live binding to astor -->
-<section class="card card-wide connections-panel">
-  <div class="peer-header">
-    <h2>Connections <span class="subtitle">agents + users bound via bot-binding.db</span></h2>
-    <div class="connections-summary" id="connections-summary">loading…</div>
-  </div>
-  <table class="variants-table" id="connections-table">
-    <thead><tr>
-      <th>Platform</th><th>User</th><th>Role</th><th>Plan</th>
-      <th>Default Tier</th><th>Scope</th><th>Bound At</th>
-    </tr></thead>
-    <tbody></tbody>
-  </table>
-</section>
-
-<!-- v1.16.3 R-class: peer panel moved to top (after hero) — operator preference, friend management is the highest-ROI admin action -->
-<section class="card card-wide peer-panel">
-  <div class="peer-header">
-    <h2>Peer Friends <span class="subtitle">PPS public-search partners</span></h2>
-    <div class="peer-actions">
-      <input type="text" id="peer-add-pid" placeholder="astor:<32-hex>" autocomplete="off">
-      <input type="text" id="peer-add-alias" placeholder="alias (optional)" autocomplete="off">
-      <input type="number" id="peer-add-trust" placeholder="trust 0-100" min="0" max="100" value="30">
-      <button id="peer-add-btn" class="btn-primary" title="Add peer (requires endpoint URL set in CLI for full PPS)">+ Add Friend</button>
-      <button id="peer-refresh-btn" class="btn-refresh" title="Reload peer list">↻</button>
-    </div>
-  </div>
-  <div id="peer-panel-body" class="peer-body">
-    <div class="recall-hint">Loading peers…</div>
-  </div>
-
-  <!-- v1.16.7: empty-state replaced inline by renderPeerPanel() when list is empty.
-       Below is the JS-rendered fallback for SSR-style initial load. -->
-  <template id="peer-empty-template">
-    <div class="peer-empty-state">
-      <div class="peer-empty-icon">🔗</div>
-      <div class="peer-empty-title">No peer friends yet</div>
-      <div class="peer-empty-hint">
-        PPS (peer-to-peer search) lets other astor nodes recall from your public tier.
-        Share your <code>self: astor:&lt;32-hex&gt;</code> with another operator and ask
-        them to add you via the field above — or copy your own peer_id from the header
-        and try the public-search test below.
-      </div>
-      <div class="peer-empty-actions">
-        <button class="btn-primary btn-sm" id="peer-self-copy-btn">Copy my peer_id</button>
-      </div>
-    </div>
-  </template>
-</section>
-
-
-
-<!-- Row 1: Eval + Growth -->
-<section class="grid-2">
-  <div class="card">
-    <h2>Recall Eval Harness <span class="subtitle">last 30d baseline runs</span></h2>
-    <div class="kpi-row">
-      <div class="kpi"><div class="kpi-label">Hit Rate</div><div class="kpi-value" id="kpi-hit">—</div></div>
-      <div class="kpi"><div class="kpi-label">MRR</div><div class="kpi-value" id="kpi-mrr">—</div></div>
-      <div class="kpi"><div class="kpi-label">P95 Latency</div><div class="kpi-value" id="kpi-p95">—</div></div>
-      <div class="kpi"><div class="kpi-label">Runs</div><div class="kpi-value" id="kpi-runs">—</div></div>
-    </div>
-    <h3 class="sub-h">Variants (latest run each)</h3>
-    <table class="variants-table" id="variants-table">
-      <thead><tr><th>Variant</th><th>Hit Rate</th><th>MRR</th><th>P95 ms</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-  <div class="card">
-    <h2>30d Memory Growth <span class="subtitle">admin daily promoted</span></h2>
-    <div class="chart-wrap"><canvas id="growth-chart"></canvas></div>
-  </div>
-</section>
-
-<!-- Row 2: Per-user + Importance histogram -->
-<section class="grid-2">
-  <div class="card">
-    <h2>Per-User Facts <span class="subtitle">active count</span></h2>
-    <div class="chart-wrap"><canvas id="peruser-chart"></canvas></div>
-  </div>
-  <div class="card">
-    <h2>Importance Distribution</h2>
-    <div class="chart-wrap"><canvas id="importance-chart"></canvas></div>
-  </div>
-</section>
-
-<!-- Row 3: Keywords + Recent facts -->
-<section class="grid-2">
-  <div class="card">
-    <h2>Top Keywords</h2>
-    <div id="keywords-list" class="keywords-list"></div>
-  </div>
-  <div class="card">
-    <h2>Recent Facts <span class="subtitle">last 5</span></h2>
-    <ul id="recent-facts" class="recent-facts"></ul>
-  </div>
-</section>
-
-<!-- Row 3.5: Recent Capture — v1.14.37 Ship N (4-axis grouped view) -->
-<section class="card card-wide recent-capture-panel">
-  <div class="rc-header">
-    <h2>Recent Capture <span class="subtitle">last 10 per bucket, grouped by 4 axes</span></h2>
-    <div class="rc-tabs" id="rc-tabs">
-      <button class="rc-tab active" data-axis="kind">By Kind</button>
-      <button class="rc-tab" data-axis="tier">By Tier</button>
-      <button class="rc-tab" data-axis="platform">By Platform</button>
-      <button class="rc-tab" data-axis="all">All (flat)</button>
-    </div>
-  </div>
-  <div id="recent-capture-body" class="rc-body"></div>
-</section>
-
-<!-- Row 4: Recall debug + Health -->
-<section class="grid-2">
-  <div class="card">
-    <h2>Recall Debugger <span class="subtitle">live /v1/read</span></h2>
-    <div class="recall-form">
-      <input type="text" id="recall-q" placeholder="e.g. R132 3-store 铁律" autocomplete="off">
-      <select id="recall-tier">
-        <option value="private" selected>private</option>
-        <option value="source">source</option>
-        <option value="public">public</option>
-      </select>
-      <select id="recall-user">
-        <option value="admin" selected>admin</option>
-      </select>
-      <select id="recall-topk">
-        <option value="3">top 3</option>
-        <option value="5" selected>top 5</option>
-        <option value="10">top 10</option>
-      </select>
-      <button id="recall-run" class="btn-primary">Run</button>
-    </div>
-    <div id="recall-results" class="recall-results">
-      <div class="recall-hint">Run a query to see live recall output.</div>
-    </div>
-  </div>
-  <div class="card health-card-grid">
-    <div class="health-stat" id="health-card-embed" title="Click to diagnose">
-      <div class="health-label">Embedding Failed</div>
-      <div class="health-value" id="health-embed">—</div>
-      <div class="health-hint">click for detail</div>
-    </div>
-    <div class="health-stat" id="health-card-warn" title="Click to diagnose">
-      <div class="health-label">Audit Warnings</div>
-      <div class="health-value" id="health-warn">—</div>
-      <div class="health-hint">click for detail</div>
-    </div>
-    <div class="health-stat" id="health-card-total" title="Click to diagnose">
-      <div class="health-label">Audit Total</div>
-      <div class="health-value" id="health-total">—</div>
-      <div class="health-hint">click for detail</div>
-    </div>
-  </div>
-</section>
-
-<!-- Health diagnosis modal -->
-<div id="health-modal" class="modal" hidden>
-  <div class="modal-content">
-    <div class="modal-header">
-      <h2 id="modal-title">Health Diagnosis</h2>
-      <button class="modal-close" id="modal-close">×</button>
-    </div>
-    <div id="modal-body" class="modal-body">loading…</div>
-  </div>
-</div>
-
-<!-- v1.15.19 Ship C: Peer Friends panel (PPS Phase 4 dashboard) -->
-
-
-<footer class="dash-footer">
-  Auto-refresh every 60s · Cache TTL 5min · <a href="/v1/dashboard" target="_blank">raw JSON</a>
-</footer>
-
-<script src="app.js?v=1.16.50"></script>
-</body>
-</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Astor Dashboard</title>
+<link rel="stylesheet" href="style.css?v=1.16.50">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<!-- S18 (2026-09-10): This dashboard ships as a generic template in the
+     public astor-memory repo; the local instance is the operator's own. -->
+<header class="dash-header">
+  <h1>🧠 Astor Dashboard</h1>
+  <div class="header-meta">
+    <span id="self-peer-id" class="self-peer-id" title="this server's peer_id — copy to share with other astor nodes">self: …</span>
+    <span id="version-badge" class="version-badge" title="astor-memory server version">v…</span>
+    <span id="cache-badge" class="cache-badge">…</span>
+    <span id="last-event" class="last-event">last event: …</span>
+    <button id="refresh-btn" class="btn-refresh" title="Force refresh (bypasses 30s cache)">↻</button>
+  </div>
+</header>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="hero-card">
+    <div class="hero-label">Total Users</div>
+    <div class="hero-value" id="hero-users">—</div>
+    <div class="hero-sub" id="hero-users-sub">—</div>
+  </div>
+  <div class="hero-card accent">
+    <div class="hero-label">Active Facts</div>
+    <div class="hero-value" id="hero-facts">—</div>
+  </div>
+  <div class="hero-card">
+    <div class="hero-label">Tombstoned</div>
+    <div class="hero-value" id="hero-tomb">—</div>
+  </div>
+  <div class="hero-card">
+    <div class="hero-label">High Importance</div>
+    <div class="hero-value" id="hero-high">—</div>
+  </div>
+  <div class="hero-card wide">
+    <div class="hero-label">Trend</div>
+    <div class="hero-value trend-value" id="hero-trend">—</div>
+  </div>
+</section>
+
+<!-- v1.16.25: Connections panel — which agents + users have a live binding to astor -->
+<section class="card card-wide connections-panel">
+  <div class="peer-header">
+    <h2>Connections <span class="subtitle">agents + users bound via bot-binding.db</span></h2>
+    <div class="connections-summary" id="connections-summary">loading…</div>
+  </div>
+  <table class="variants-table" id="connections-table">
+    <thead><tr>
+      <th>Platform</th><th>User</th><th>Role</th><th>Plan</th>
+      <th>Default Tier</th><th>Scope</th><th>Bound At</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<!-- v1.16.3 R-class: peer panel moved to top (after hero) — operator preference, friend management is the highest-ROI admin action -->
+<section class="card card-wide peer-panel">
+  <div class="peer-header">
+    <h2>Peer Friends <span class="subtitle">PPS public-search partners</span></h2>
+    <div class="peer-actions">
+      <input type="text" id="peer-add-pid" placeholder="astor:<32-hex>" autocomplete="off">
+      <input type="text" id="peer-add-alias" placeholder="alias (optional)" autocomplete="off">
+      <input type="number" id="peer-add-trust" placeholder="trust 0-100" min="0" max="100" value="30">
+      <button id="peer-add-btn" class="btn-primary" title="Add peer (requires endpoint URL set in CLI for full PPS)">+ Add Friend</button>
+      <button id="peer-refresh-btn" class="btn-refresh" title="Reload peer list">↻</button>
+    </div>
+  </div>
+  <div id="peer-panel-body" class="peer-body">
+    <div class="recall-hint">Loading peers…</div>
+  </div>
+
+  <!-- v1.16.7: empty-state replaced inline by renderPeerPanel() when list is empty.
+       Below is the JS-rendered fallback for SSR-style initial load. -->
+  <template id="peer-empty-template">
+    <div class="peer-empty-state">
+      <div class="peer-empty-icon">🔗</div>
+      <div class="peer-empty-title">No peer friends yet</div>
+      <div class="peer-empty-hint">
+        PPS (peer-to-peer search) lets other astor nodes recall from your public tier.
+        Share your <code>self: astor:&lt;32-hex&gt;</code> with another operator and ask
+        them to add you via the field above — or copy your own peer_id from the header
+        and try the public-search test below.
+      </div>
+      <div class="peer-empty-actions">
+        <button class="btn-primary btn-sm" id="peer-self-copy-btn">Copy my peer_id</button>
+      </div>
+    </div>
+  </template>
+</section>
+
+
+
+<!-- Row 1: Eval + Growth -->
+<section class="grid-2">
+  <div class="card">
+    <h2>Recall Eval Harness <span class="subtitle">last 30d baseline runs</span></h2>
+    <div class="kpi-row">
+      <div class="kpi"><div class="kpi-label">Hit Rate</div><div class="kpi-value" id="kpi-hit">—</div></div>
+      <div class="kpi"><div class="kpi-label">MRR</div><div class="kpi-value" id="kpi-mrr">—</div></div>
+      <div class="kpi"><div class="kpi-label">P95 Latency</div><div class="kpi-value" id="kpi-p95">—</div></div>
+      <div class="kpi"><div class="kpi-label">Runs</div><div class="kpi-value" id="kpi-runs">—</div></div>
+    </div>
+    <h3 class="sub-h">Variants (latest run each)</h3>
+    <table class="variants-table" id="variants-table">
+      <thead><tr><th>Variant</th><th>Hit Rate</th><th>MRR</th><th>P95 ms</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h2>30d Memory Growth <span class="subtitle">admin daily promoted</span></h2>
+    <div class="chart-wrap"><canvas id="growth-chart"></canvas></div>
+  </div>
+</section>
+
+<!-- Row 2: Per-user + Importance histogram -->
+<section class="grid-2">
+  <div class="card">
+    <h2>Per-User Facts <span class="subtitle">active count</span></h2>
+    <div class="chart-wrap"><canvas id="peruser-chart"></canvas></div>
+  </div>
+  <div class="card">
+    <h2>Importance Distribution</h2>
+    <div class="chart-wrap"><canvas id="importance-chart"></canvas></div>
+  </div>
+</section>
+
+<!-- Row 3: Keywords + Recent facts -->
+<section class="grid-2">
+  <div class="card">
+    <h2>Top Keywords</h2>
+    <div id="keywords-list" class="keywords-list"></div>
+  </div>
+  <div class="card">
+    <h2>Recent Facts <span class="subtitle">last 5</span></h2>
+    <ul id="recent-facts" class="recent-facts"></ul>
+  </div>
+</section>
+
+<!-- Row 3.5: Recent Capture — v1.14.37 Ship N (4-axis grouped view) -->
+<section class="card card-wide recent-capture-panel">
+  <div class="rc-header">
+    <h2>Recent Capture <span class="subtitle">last 10 per bucket, grouped by 4 axes</span></h2>
+    <div class="rc-tabs" id="rc-tabs">
+      <button class="rc-tab active" data-axis="kind">By Kind</button>
+      <button class="rc-tab" data-axis="tier">By Tier</button>
+      <button class="rc-tab" data-axis="platform">By Platform</button>
+      <button class="rc-tab" data-axis="all">All (flat)</button>
+    </div>
+  </div>
+  <div id="recent-capture-body" class="rc-body"></div>
+</section>
+
+<!-- Row 4: Recall debug + Health -->
+<section class="grid-2">
+  <div class="card">
+    <h2>Recall Debugger <span class="subtitle">live /v1/read</span></h2>
+    <div class="recall-form">
+      <input type="text" id="recall-q" placeholder="e.g. R132 3-store 铁律" autocomplete="off">
+      <select id="recall-tier">
+        <option value="private" selected>private</option>
+        <option value="source">source</option>
+        <option value="public">public</option>
+      </select>
+      <select id="recall-user">
+        <option value="admin" selected>admin</option>
+      </select>
+      <select id="recall-topk">
+        <option value="3">top 3</option>
+        <option value="5" selected>top 5</option>
+        <option value="10">top 10</option>
+      </select>
+      <button id="recall-run" class="btn-primary">Run</button>
+    </div>
+    <div id="recall-results" class="recall-results">
+      <div class="recall-hint">Run a query to see live recall output.</div>
+    </div>
+  </div>
+  <div class="card health-card-grid">
+    <div class="health-stat" id="health-card-embed" title="Click to diagnose">
+      <div class="health-label">Embedding Failed</div>
+      <div class="health-value" id="health-embed">—</div>
+      <div class="health-hint">click for detail</div>
+    </div>
+    <div class="health-stat" id="health-card-warn" title="Click to diagnose">
+      <div class="health-label">Audit Warnings</div>
+      <div class="health-value" id="health-warn">—</div>
+      <div class="health-hint">click for detail</div>
+    </div>
+    <div class="health-stat" id="health-card-total" title="Click to diagnose">
+      <div class="health-label">Audit Total</div>
+      <div class="health-value" id="health-total">—</div>
+      <div class="health-hint">click for detail</div>
+    </div>
+  </div>
+</section>
+
+<!-- Health diagnosis modal -->
+<div id="health-modal" class="modal" hidden>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2 id="modal-title">Health Diagnosis</h2>
+      <button class="modal-close" id="modal-close">×</button>
+    </div>
+    <div id="modal-body" class="modal-body">loading…</div>
+  </div>
+</div>
+
+<!-- v1.15.19 Ship C: Peer Friends panel (PPS Phase 4 dashboard) -->
+
+
+<footer class="dash-footer">
+  Auto-refresh every 60s · Cache TTL 5min · <a href="/v1/dashboard" target="_blank">raw JSON</a>
+</footer>
+
+<script src="app.js?v=1.16.70"></script>
+</body>
+</html>
