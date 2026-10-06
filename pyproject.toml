@@ -1,183 +1,183 @@
-[build-system]
-requires = ["hatchling>=1.18"]
-build-backend = "hatchling.build"
-
-[project]
-name = "astor-memory"
-# Version unified across source, runtime, hooks, plugins.
-version = "1.16.70"
-description = "Self-owned memory system for AI agents: 3-tier × 3-store × 3-scope = 9+ SQLite layout, multi-user ACL, WeChat/Telegram/Discord token manager, MCP server"
-readme = "README.md"
-license = "MIT"
-license-files = ["LICENSE"]
-requires-python = ">=3.10,<3.14"
-authors = [
-    {name = "Astor-Memory Maintainers", email = "astor-memory@users.noreply.github.com"},
-]
-keywords = [
-    "memory",
-    "agent",
-    "agent-memory",
-    "rag",
-    "knowledge-base",
-    "context-management",
-    "ai-agent",
-    "llm",
-    "multi-agent",
-]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Typing :: Typed",
-]
-dependencies = [
-    "flask>=3.0,<4.0",
-    "requests>=2.31,<3.0",
-    "numpy>=1.26,<3.0",
-    "fastembed>=0.3,<1.0",
-    "pydantic>=2.5,<3.0",
-    # v1.16.41+ server uses waitress for production-grade bounded
-    # concurrency. server.py imports it unconditionally, so it must be
-    # a project (not optional) dependency — otherwise any user running
-    # `astor-server` hits ModuleNotFoundError.
-    "waitress>=3.0,<4.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.4,<9.0",
-    "pytest-cov>=4.1,<6.0",
-    "pytest-asyncio>=0.23,<2.0",
-    "pytest-timeout>=2.0,<3.0",  # 2026-10-02: kill hanging tests in CI (per-test 60s cap)
-    "ruff>=0.4,<1.0",
-    "psutil>=5.9,<7.0",
-    "mypy>=1.8,<2.0",
-    "hatch>=1.9,<2.0",
-]
-docs = [
-    # No SSG dependency — GitHub native .md rendering is sufficient for v1.0.
-    # See CONTRIBUTING.md for rationale.
-]
-test = [
-    "pytest>=7.4,<9.0",
-    "pytest-cov>=4.1,<6.0",
-]
-mcp = [
-    # The MCP server sub-package has zero runtime deps beyond the stdlib
-    # (``urllib`` + ``sqlite3``). It is a thin adapter to the local
-    # astor REST API. Listed here so ``pip install "astor-memory[mcp]"``
-    # installs everything an operator needs to expose astor to any
-    # MCP-compatible agent framework (EvoX, Hermes, Claude, Cursor...).
-]
-
-[project.urls]
-Homepage = "https://github.com/aoiete/Astor-Memory"
-Repository = "https://github.com/aoiete/Astor-Memory.git"
-Issues = "https://github.com/aoiete/Astor-Memory/issues"
-Discussions = "https://github.com/aoiete/Astor-Memory"
-Changelog = "https://github.com/aoiete/Astor-Memory/blob/main/CHANGELOG.md"
-
-[project.scripts]
-am = "astor_memory.cli:main"
-astor-mcp = "astor_memory_mcp.server:main"
-
-[project.entry-points."astor_memory.mcp_servers"]
-astor_memory = "astor_memory_mcp.server:main"
-
-[tool.hatch.build.targets.wheel]
-# Phase C (2026-09-15): include both the core astor_memory package and
-# the MCP server sub-package. They share version + README + git history
-# but are independent import roots: ``astor_memory`` and ``astor_memory_mcp``.
-packages = ["astor_memory", "astor_memory_mcp"]
-
-[tool.hatch.build.targets.sdist]
-include = [
-    "astor_memory/",
-    "mcp/astor_memory_mcp/",
-    "README.md",
-    "README.zh-CN.md",
-    "LICENSE",
-    "ACKNOWLEDGEMENTS.md",
-    "CHANGELOG.md",
-    "docs/",
-]
-exclude = [
-    "bots/",           # operator-internal runtime data + scripts (see .gitignore)
-    "tests/",          # pytest tree, not part of installable package
-    "scripts/",        # operator CLI helpers
-    ".github/",        # CI config
-    "backup_astor.py", # legacy operator backup script
-    ".gitignore",
-    ".pytest_cache/",
-    ".mypy_cache/",
-    "__pycache__/",
-    "dist/",
-    "build/",
-    "*.egg-info/",
-]
-
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-
-[tool.ruff.lint]
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "UP",  # pyupgrade
-    "N",   # pep8-naming
-    "SIM", # flake8-simplify
-    "PTH", # flake8-use-pathlib
-]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B", "N"]
-
-[tool.mypy]
-python_version = "3.10"
-strict = true
-warn_unused_ignores = true
-warn_redundant_casts = true
-
-[tool.pytest.ini_options]
-minversion = "7.0"
-addopts = "-ra --strict-markers --strict-config"
-testpaths = ["tests"]
-asyncio_mode = "auto"
-
-# Astor-Memory-specific config (parsed by `am config` CLI)
-[tool.astor]
-version = "1.16.3"
-config_schema_version = 2  # +1 for v0.3.0 (added platform CLI section)
-
-[tool.astor.docs]
-# See CONTRIBUTING.md "Documentation" section.
-# v1.0: GitHub native rendering + lychee link-check CI
-# v1.1+ (optional): zensical or alternative SSG if project grows > 30 docs
-generator = "github-native"
-
-[tool.astor.cron]
-# Operator role enum list (P-CRON-DATA-010 implementation detail, not exposed in docs)
-operator_types = ["data_pull", "transform", "deliver"]
-
-[tool.astor.platform]
-# bot-binding.db schema_version (each contract change → +1, run am platform migrate-to-v3)
-bot_binding_schema_version = 1
-
-[tool.astor.cli]
-# Total number of CLI subcommands shipped in this version
-subcommands = ["bot:9", "admin:2", "platform:10"]
-total = 21
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "astor-memory"
+# Version unified across source, runtime, hooks, plugins.
+version = "1.16.71"
+description = "Self-owned memory system for AI agents: 3-tier × 3-store × 3-scope = 9+ SQLite layout, multi-user ACL, WeChat/Telegram/Discord token manager, MCP server"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<3.14"
+authors = [
+    {name = "Astor-Memory Maintainers", email = "astor-memory@users.noreply.github.com"},
+]
+keywords = [
+    "memory",
+    "agent",
+    "agent-memory",
+    "rag",
+    "knowledge-base",
+    "context-management",
+    "ai-agent",
+    "llm",
+    "multi-agent",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "flask>=3.0,<4.0",
+    "requests>=2.31,<3.0",
+    "numpy>=1.26,<3.0",
+    "fastembed>=0.3,<1.0",
+    "pydantic>=2.5,<3.0",
+    # v1.16.41+ server uses waitress for production-grade bounded
+    # concurrency. server.py imports it unconditionally, so it must be
+    # a project (not optional) dependency — otherwise any user running
+    # `astor-server` hits ModuleNotFoundError.
+    "waitress>=3.0,<4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4,<9.0",
+    "pytest-cov>=4.1,<6.0",
+    "pytest-asyncio>=0.23,<2.0",
+    "pytest-timeout>=2.0,<3.0",  # 2026-10-02: kill hanging tests in CI (per-test 60s cap)
+    "ruff>=0.4,<1.0",
+    "psutil>=5.9,<7.0",
+    "mypy>=1.8,<2.0",
+    "hatch>=1.9,<2.0",
+]
+docs = [
+    # No SSG dependency — GitHub native .md rendering is sufficient for v1.0.
+    # See CONTRIBUTING.md for rationale.
+]
+test = [
+    "pytest>=7.4,<9.0",
+    "pytest-cov>=4.1,<6.0",
+]
+mcp = [
+    # The MCP server sub-package has zero runtime deps beyond the stdlib
+    # (``urllib`` + ``sqlite3``). It is a thin adapter to the local
+    # astor REST API. Listed here so ``pip install "astor-memory[mcp]"``
+    # installs everything an operator needs to expose astor to any
+    # MCP-compatible agent framework (EvoX, Hermes, Claude, Cursor...).
+]
+
+[project.urls]
+Homepage = "https://github.com/aoiete/Astor-Memory"
+Repository = "https://github.com/aoiete/Astor-Memory.git"
+Issues = "https://github.com/aoiete/Astor-Memory/issues"
+Discussions = "https://github.com/aoiete/Astor-Memory"
+Changelog = "https://github.com/aoiete/Astor-Memory/blob/main/CHANGELOG.md"
+
+[project.scripts]
+am = "astor_memory.cli:main"
+astor-mcp = "astor_memory_mcp.server:main"
+
+[project.entry-points."astor_memory.mcp_servers"]
+astor_memory = "astor_memory_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+# Phase C (2026-09-15): include both the core astor_memory package and
+# the MCP server sub-package. They share version + README + git history
+# but are independent import roots: ``astor_memory`` and ``astor_memory_mcp``.
+packages = ["astor_memory", "astor_memory_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "astor_memory/",
+    "mcp/astor_memory_mcp/",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "ACKNOWLEDGEMENTS.md",
+    "CHANGELOG.md",
+    "docs/",
+]
+exclude = [
+    "bots/",           # operator-internal runtime data + scripts (see .gitignore)
+    "tests/",          # pytest tree, not part of installable package
+    "scripts/",        # operator CLI helpers
+    ".github/",        # CI config
+    "backup_astor.py", # legacy operator backup script
+    ".gitignore",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    "__pycache__/",
+    "dist/",
+    "build/",
+    "*.egg-info/",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "SIM", # flake8-simplify
+    "PTH", # flake8-use-pathlib
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "N"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+# Astor-Memory-specific config (parsed by `am config` CLI)
+[tool.astor]
+version = "1.16.71"
+config_schema_version = 2  # +1 for v0.3.0 (added platform CLI section)
+
+[tool.astor.docs]
+# See CONTRIBUTING.md "Documentation" section.
+# v1.0: GitHub native rendering + lychee link-check CI
+# v1.1+ (optional): zensical or alternative SSG if project grows > 30 docs
+generator = "github-native"
+
+[tool.astor.cron]
+# Operator role enum list (P-CRON-DATA-010 implementation detail, not exposed in docs)
+operator_types = ["data_pull", "transform", "deliver"]
+
+[tool.astor.platform]
+# bot-binding.db schema_version (each contract change → +1, run am platform migrate-to-v3)
+bot_binding_schema_version = 1
+
+[tool.astor.cli]
+# Total number of CLI subcommands shipped in this version
+subcommands = ["bot:9", "admin:2", "platform:10"]
+total = 21
