@@ -338,9 +338,16 @@ def _action_promote(
     user_id: str | None,
     access_threshold: int = 10,
     importance_threshold: float = 0.85,
+    distinct_queries_threshold: int = 3,
 ) -> list[ConsolidateAction]:
     """Copy high-importance private facts to public tier (peer-shareable).
     Original private fact stays for cross-user reference.
+
+    v1.16.71 (2026-10-06) Dream-tier T3 gate: added distinct_queries_threshold.
+    OpenClaw dreaming-tier pattern: promotion requires ≥3 distinct queries that
+    hit this fact, not just access_count (which can be inflated by 1 query
+    being recalled 100x in a noisy session). Threshold defaults to 3; can be
+    raised per-deploy via CLI flag --promote-distinct=N.
     """
     actions: list[ConsolidateAction] = []
     public_db = _get_db_path(astor_dir, "public", None)
@@ -352,6 +359,10 @@ def _action_promote(
             if f["importance"] < importance_threshold:
                 continue
             if f["access_count"] < access_threshold:
+                continue
+            # v1.16.71 Dream-tier T3 distinct-hit gate
+            distinct = f.get("distinct_queries_hit", 0) or 0
+            if distinct < distinct_queries_threshold:
                 continue
             # Check if public copy already exists (idempotent check via
             # stable_id: copy uses same stable_id so re-runs skip).
