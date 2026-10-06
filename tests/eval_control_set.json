@@ -1,0 +1,669 @@
+{
+  "version": 5,
+  "description": "Control set for zero-flip ship gate. BUILT from current live /v1/read on 2026-10-06. All queries have first_rank=1, mrr=1.0 in the snapshot. Any future ship that drops ANY query to mrr<0.9 OR overlap<0.3 must abort. Pattern from arxiv 2609.38021 (mp/-ula31Nw4kmDYPQooKPsGA).",
+  "baseline_ts": "2026-10-06T20:00:00Z",
+  "baseline_version": "1.16.71",
+  "baseline_run": "live_run_at_baseline",
+  "baseline_hit_rate": 1.0,
+  "baseline_mrr": 1.0,
+  "pass_rule": {
+    "overlap_min": 0.3,
+    "mrr_tolerance": 0.1
+  },
+  "queries": [
+    {
+      "qid": "Q03",
+      "query": "R132 3-store 优先铁律",
+      "category": "rclass",
+      "expected_keywords": [
+        "R132",
+        "3-store",
+        "auto_route"
+      ],
+      "baseline_top3_fids": [
+        3055,
+        3180,
+        3063
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q04",
+      "query": "gateway 重启规则",
+      "category": "rclass",
+      "expected_keywords": [
+        "gateway",
+        "R218",
+        "restart"
+      ],
+      "baseline_top3_fids": [
+        3205,
+        70,
+        71
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q06",
+      "query": "moomoo 路径 Hermes mirror",
+      "category": "rclass",
+      "expected_keywords": [
+        "moomoo",
+        "Hermes",
+        "mirror"
+      ],
+      "baseline_top3_fids": [
+        1233,
+        243,
+        1236
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q16",
+      "query": "PII CHANGELOG genericize",
+      "category": "rclass",
+      "expected_keywords": [
+        "PII",
+        "CHANGELOG"
+      ],
+      "baseline_top3_fids": [
+        3212,
+        300226,
+        300162
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q39",
+      "query": "ship cadence 批量 ship",
+      "category": "rclass",
+      "expected_keywords": [
+        "ship",
+        "cadence"
+      ],
+      "baseline_top3_fids": [
+        3058,
+        1873,
+        3141
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q40",
+      "query": "R132 auto_route_write",
+      "category": "rclass",
+      "expected_keywords": [
+        "R132",
+        "auto_route"
+      ],
+      "baseline_top3_fids": [
+        3055,
+        2956,
+        300132
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q41",
+      "query": "search before inability 搜索前",
+      "category": "rclass",
+      "expected_keywords": [
+        "search",
+        "search-before"
+      ],
+      "baseline_top3_fids": [
+        3057,
+        2971,
+        3102
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q43",
+      "query": "IRON RULE NEVER fabricate",
+      "category": "rclass",
+      "expected_keywords": [
+        "IRON RULE",
+        "fabricate"
+      ],
+      "baseline_top3_fids": [
+        3056,
+        2973,
+        3180
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q44",
+      "query": "R134 outbound 平台",
+      "category": "rclass",
+      "expected_keywords": [
+        "R134",
+        "outbound"
+      ],
+      "baseline_top3_fids": [
+        3192,
+        936,
+        3066
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q81",
+      "query": "R132 astor 优先铁律",
+      "category": "rclass",
+      "expected_keywords": [
+        "R132",
+        "astor"
+      ],
+      "baseline_top3_fids": [
+        3055,
+        300244,
+        3180
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q05",
+      "query": "backup ACTIVE_ 前缀",
+      "category": "workflow",
+      "expected_keywords": [
+        "ACTIVE_",
+        "backup"
+      ],
+      "baseline_top3_fids": [
+        3067,
+        2948,
+        3049
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q07",
+      "query": "WeChat iLink token SSoT",
+      "category": "workflow",
+      "expected_keywords": [
+        "iLink",
+        "token",
+        "SSoT"
+      ],
+      "baseline_top3_fids": [
+        300011,
+        3192,
+        3193
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q08",
+      "query": "MDT 时区",
+      "category": "workflow",
+      "expected_keywords": [
+        "MDT",
+        "America/Edmonton"
+      ],
+      "baseline_top3_fids": [
+        3060,
+        3065,
+        3063
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q31",
+      "query": "ACTIVE_ prefix 备份 目录",
+      "category": "workflow",
+      "expected_keywords": [
+        "ACTIVE_",
+        "backup"
+      ],
+      "baseline_top3_fids": [
+        3067,
+        3066,
+        2354
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q32",
+      "query": "smart backup weekly 节奏",
+      "category": "workflow",
+      "expected_keywords": [
+        "weekly",
+        "smart_backup"
+      ],
+      "baseline_top3_fids": [
+        3067,
+        3049,
+        2953
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q33",
+      "query": "hermes cron 周节奏",
+      "category": "workflow",
+      "expected_keywords": [
+        "cron",
+        "weekly"
+      ],
+      "baseline_top3_fids": [
+        300233,
+        1281,
+        3159
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q34",
+      "query": "NSSM 自动重启",
+      "category": "workflow",
+      "expected_keywords": [
+        "NSSM",
+        "Restart"
+      ],
+      "baseline_top3_fids": [
+        300010,
+        3221,
+        300246
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q35",
+      "query": "scheduler-watch 1h cadence",
+      "category": "workflow",
+      "expected_keywords": [
+        "scheduler",
+        "watch",
+        "1h",
+        "CronSchedulerWatch"
+      ],
+      "baseline_top3_fids": [
+        3061,
+        489,
+        471
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q36",
+      "query": "MemoryServersWatch service",
+      "category": "workflow",
+      "expected_keywords": [
+        "MemoryServersWatch"
+      ],
+      "baseline_top3_fids": [
+        3046,
+        3154,
+        3221
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q61",
+      "query": "ship 自动化 pre-merge",
+      "category": "workflow",
+      "expected_keywords": [
+        "ship",
+        "自动化",
+        "merge"
+      ],
+      "baseline_top3_fids": [
+        3064,
+        3179,
+        3240
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "M03",
+      "query": "maker pocket backtest",
+      "category": "trading",
+      "expected_keywords": [
+        "maker",
+        "pocket",
+        "backtest"
+      ],
+      "baseline_top3_fids": [
+        3172,
+        3226,
+        300228
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "M09",
+      "query": "maker pocket RANGE",
+      "category": "trading",
+      "expected_keywords": [
+        "RANGE",
+        "maker"
+      ],
+      "baseline_top3_fids": [
+        300029,
+        3172,
+        3226
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q09",
+      "query": "pokerstats 主题色 bg",
+      "category": "project",
+      "expected_keywords": [
+        "bg",
+        "F5EAD6",
+        "warm"
+      ],
+      "baseline_top3_fids": [
+        412,
+        3230,
+        3233
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q10",
+      "query": "astor-memory 4 层架构",
+      "category": "project",
+      "expected_keywords": [
+        "astor",
+        "memory",
+        "架构"
+      ],
+      "baseline_top3_fids": [
+        300244,
+        300238,
+        300236
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q11",
+      "query": "补录 场次 pokerstats",
+      "category": "project",
+      "expected_keywords": [
+        "补录",
+        "pokerstats"
+      ],
+      "baseline_top3_fids": [
+        3230,
+        3233,
+        3231
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q14",
+      "query": "飞书 bot 推送 cron",
+      "category": "project",
+      "expected_keywords": [
+        "飞书",
+        "bot",
+        "cron"
+      ],
+      "baseline_top3_fids": [
+        300012,
+        3192,
+        300244
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q18",
+      "query": "make_exchange ccxt kraken",
+      "category": "project",
+      "expected_keywords": [
+        "ccxt",
+        "kraken"
+      ],
+      "baseline_top3_fids": [
+        1831,
+        1850,
+        703
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q19",
+      "query": "agent-fact-check audit hook",
+      "category": "project",
+      "expected_keywords": [
+        "fact-check",
+        "audit"
+      ],
+      "baseline_top3_fids": [
+        3134,
+        3241,
+        3179
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q21",
+      "query": "kraken maker pocket 状态机",
+      "category": "project",
+      "expected_keywords": [
+        "maker_pocket",
+        "ARMED"
+      ],
+      "baseline_top3_fids": [
+        300124,
+        3172,
+        300246
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q22",
+      "query": "tianshu_api 端口 7777",
+      "category": "project",
+      "expected_keywords": [
+        "tianshu_api",
+        "7777"
+      ],
+      "baseline_top3_fids": [
+        3150,
+        300152,
+        300138
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q23",
+      "query": "pokerstats 项目路径",
+      "category": "project",
+      "expected_keywords": [
+        "pokerstats",
+        "D:/AI/pokerstats"
+      ],
+      "baseline_top3_fids": [
+        3230,
+        3233,
+        3231
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q24",
+      "query": "moomoo PY-314-ml 迁移",
+      "category": "project",
+      "expected_keywords": [
+        "moomoo",
+        "PY-314-ml"
+      ],
+      "baseline_top3_fids": [
+        3216,
+        3150,
+        3223
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q30",
+      "query": "moomoo 4-env PYTHONPATH",
+      "category": "project",
+      "expected_keywords": [
+        "moomoo",
+        "PYTHONPATH"
+      ],
+      "baseline_top3_fids": [
+        41,
+        276,
+        1173
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q72",
+      "query": "kraken API limit order",
+      "category": "project",
+      "expected_keywords": [
+        "kraken",
+        "API",
+        "limit"
+      ],
+      "baseline_top3_fids": [
+        1822,
+        651,
+        1842
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q45",
+      "query": "流天书 协议 客户档案 fortune",
+      "category": "fortune",
+      "expected_keywords": [
+        "流天书",
+        "fortune"
+      ],
+      "baseline_top3_fids": [
+        2454,
+        2697,
+        2539
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q46",
+      "query": "tianshu 紫微 v18 命盘",
+      "category": "fortune",
+      "expected_keywords": [
+        "紫微",
+        "tianshu"
+      ],
+      "baseline_top3_fids": [
+        3150,
+        3049,
+        3154
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q96",
+      "query": "fortune daily push 9am",
+      "category": "fortune",
+      "expected_keywords": [
+        "fortune",
+        "daily",
+        "push"
+      ],
+      "baseline_top3_fids": [
+        3158,
+        3049,
+        3195
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q99",
+      "query": "tianshu lora v18",
+      "category": "fortune",
+      "expected_keywords": [
+        "tianshu",
+        "lora",
+        "v18"
+      ],
+      "baseline_top3_fids": [
+        3150,
+        3049,
+        3154
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "Q59",
+      "query": "fit 健身 计划",
+      "category": "lifestyle",
+      "expected_keywords": [
+        "fit",
+        "健身",
+        "计划"
+      ],
+      "baseline_top3_fids": [
+        2413,
+        2275,
+        2361
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    },
+    {
+      "qid": "M05",
+      "query": "pokerstats hand replay",
+      "category": "code",
+      "expected_keywords": [
+        "pokerstats",
+        "replay"
+      ],
+      "baseline_top3_fids": [
+        3233,
+        3232,
+        300148
+      ],
+      "baseline_first_rank": 1,
+      "baseline_mrr": 1.0
+    }
+  ]
+}
