@@ -12,9 +12,49 @@ create_app() for the gate.
 import json
 import os
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
+
+# --- PYTHONPATH scrub (2026-10-07) ----------------------------------------
+# Symptom: running pytest from a shell that inherited a Hermes PYTHONPATH
+# made 34 tests fail with
+#     ImportError: cannot import name '_imaging' from 'PIL'
+#     (<hermes>/installs/<hash>/environments/<hash2>/venv/Lib/site-packages/PIL)
+# Root cause: fastembed resolves from this venv's site-packages, but PIL
+# resolves from the inherited Hermes install venv, whose _imaging binary was
+# built for a different CPython. Any /v1/read path that touches
+# astor_get_embedding_model() then 500s. The code is fine — the environment is
+# wrong. Verified: same suite, same interpreter, scrubbed env => 867 passed.
+#
+# Why here: conftest.py is imported by pytest before collection, so anything
+# spawned from it (subprocesses, the Flask test client, fixture setups)
+# inherits the clean value. Same class of bug was fixed for the server's
+# watchdog launcher (astor_tunnel_watchdog.py spawns with a scrubbed env);
+# this closes the test-side host.
+_LEAK_MARKERS = ("hermes\\installs", "hermes_kernel", "hermes-agent")
+
+_pypath = os.environ.get("PYTHONPATH", "")
+_kept = [
+    p for p in _pypath.split(os.pathsep)
+    if p and not any(m in p for m in _LEAK_MARKERS)
+]
+# The package lives in the repo root; astor_memory resolves from there.
+_repo_root = str(Path(__file__).resolve().parent.parent)
+if _repo_root not in _kept:
+    _kept.insert(0, _repo_root)
+os.environ["PYTHONPATH"] = os.pathsep.join(_kept)
+
+# Drop already-resolved leak entries from this interpreter's sys.path too:
+# conftest runs after site initialisation, so the polluted entries are live.
+sys.path[:] = [
+    p for p in sys.path
+    if not any(m in p for m in _LEAK_MARKERS)
+]
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+# --------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True, scope='session')
