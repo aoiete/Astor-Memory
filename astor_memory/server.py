@@ -30,6 +30,25 @@ from pathlib import Path
 # on every refresh. Cache key: astor_dir. Invalidation: 30s TTL
 # (S18 2026-09-25, tightened from 5min) + write-trigger invalidate in
 # /v1/write so hero.last_event_ts / growth_30d refresh instantly after writes.
+# --- v1.16.75 (2026-10-07): fact payload ceiling for /v1/read ------------------
+# Measured: one recall of "venv launcher two-stage process" returned 31,049
+# chars (~19.4k tokens) across 7 hits — three of them whole SKILL.md documents
+# ingested as facts (14.1k / 8.9k / 5.2k chars). Those scored 0.13-0.38, i.e.
+# near the bottom of the ranking, but nothing stopped them: /v1/read had no
+# per-fact length ceiling, so one recall could eat an agent's whole context
+# budget on low-relevance rows.
+#
+# Two-part ceiling, because truncating alone still spends the tokens:
+#   * over FACT_MAX_CHARS    -> row is DROPPED (a half-skill dump is noise
+#     either way; its frontmatter description already carries the gist)
+#   * over FACT_SOFT_CHARS   -> truncated with a visible marker
+# body.max_fact_chars moves the SOFT line only; the hard drop stays fixed so
+# no caller can ask for an unbounded payload.
+FACT_SOFT_CHARS = 1200
+FACT_MAX_CHARS = 4000
+
+
+
 def _astor_prewarm_dashboard_cache(astor_dir_str):
     """v1.16.42: pre-warm dashboard cache at startup.
     Implemented in _dashboard_prewarm.py to keep server.py lean.
@@ -4719,6 +4738,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 results = sorted(_seen_l12.items(), key=lambda x: x[1], reverse=True)[:top_k]
         # Enrich with bus metadata (content, kind)
         enriched = []
+        # v1.16.75: facts dropped for exceeding FACT_MAX_CHARS, counted per
+        # request. Declared next to `enriched` so the counter is reset on
+        # every /v1/read and reported in the same response.
+        _dropped_oversize = 0
         for fact_id, sim in results:
             row = bus.conn.execute(
                 "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
@@ -4730,14 +4753,30 @@ def create_app(astor_dir: str | None = None) -> Flask:
             ).fetchone()
             if row is None:
                 continue
+            # v1.16.75: reset the oversize counter at the head of the row
+            # loop. It lives in the create_app closure because the response
+            # builder is a sibling nested function — a plain local would not
+            # be visible to both, and a module-level one would never reset.
             # v1.12.0 (2026-08-29): surface hierarchical extraction fields
             # (__topic__, __session_id__) to the API so multi-hop bridge
             # callers and human-readable displays can use them. Falls back
             # to '' for pre-v1.12 facts that lack these keys.
             _meta = _safe_json_loads_dict(row[13]) if len(row) > 13 and row[13] else {}
+            # v1.16.75: per-fact length ceiling (see FACT_SOFT_CHARS /
+            # FACT_MAX_CHARS at module level). Drops rather than truncates
+            # anything past the hard ceiling; truncates between the two.
+            _rc = row[1] or ''
+            if len(_rc) > FACT_MAX_CHARS:
+                _dropped_oversize += 1
+                continue
+            _rc_trunc = len(_rc) > FACT_SOFT_CHARS
+            if _rc_trunc:
+                _rc = _rc[:FACT_SOFT_CHARS] + (
+                    f'\n[...truncated {len(row[1]) - FACT_SOFT_CHARS} chars]')
             enriched.append({
                 'fact_id': row[0],
-                'content': row[1],
+                'content': _rc,
+                'content_truncated': _rc_trunc,
                 'kind': row[2],
                 'confidence': row[3],
                 'importance': row[4],
@@ -5528,6 +5567,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         return jsonify({
             'results': enriched,
             'count': len(enriched),
+            # v1.16.75: facts dropped for exceeding FACT_MAX_CHARS, so a caller
+            # can tell "nothing matched" from "matched but was oversized".
+            'dropped_oversize': _dropped_oversize,
             # v1.16.61: surface intent classification for caller introspection
             # and downstream tooling (e.g. dashboard "what do I ask most?").
             # Caller can override via body.intent; otherwise server-classified.
