@@ -48,6 +48,27 @@ FACT_SOFT_CHARS = 1200
 FACT_MAX_CHARS = 4000
 
 
+def _cap_fact_content(raw):
+    """Bound one fact's text for a /v1/read response.
+
+    Returns (text, truncated) or None when the fact is over the hard ceiling
+    and should be dropped outright. Truncating a 14k-char ingested SKILL.md
+    still spends 1200 tokens on noise whose frontmatter description already
+    carried the gist, so the hard drop exists to save those tokens too.
+
+    Two call paths in /v1/read build result rows independently — the ranked
+    path and the grep_verify path — and both must go through here; guarding
+    one and forgetting the other is how a 14k fact kept slipping through.
+    """
+    text = raw or ''
+    if len(text) > FACT_MAX_CHARS:
+        return None
+    if len(text) > FACT_SOFT_CHARS:
+        return (text[:FACT_SOFT_CHARS]
+                + f'\n[...truncated {len(text) - FACT_SOFT_CHARS} chars]', True)
+    return text, False
+
+
 
 def _astor_prewarm_dashboard_cache(astor_dir_str):
     """v1.16.42: pre-warm dashboard cache at startup.
@@ -4765,14 +4786,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # v1.16.75: per-fact length ceiling (see FACT_SOFT_CHARS /
             # FACT_MAX_CHARS at module level). Drops rather than truncates
             # anything past the hard ceiling; truncates between the two.
-            _rc = row[1] or ''
-            if len(_rc) > FACT_MAX_CHARS:
+            _capped = _cap_fact_content(row[1])
+            if _capped is None:
                 _dropped_oversize += 1
                 continue
-            _rc_trunc = len(_rc) > FACT_SOFT_CHARS
-            if _rc_trunc:
-                _rc = _rc[:FACT_SOFT_CHARS] + (
-                    f'\n[...truncated {len(row[1]) - FACT_SOFT_CHARS} chars]')
+            _rc, _rc_trunc = _capped
             enriched.append({
                 'fact_id': row[0],
                 'content': _rc,
@@ -4959,9 +4977,18 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         _matched = [t for t in _matched_all if _rarity.get(t.lower(), 999) <= _rare_thresh]
                         if not _matched:
                             continue
+                        # v1.16.75: same ceiling as the ranked path. Skipped
+                        # here originally, which let whole ingested SKILL.md
+                        # documents (14k / 8.9k chars) through on this channel.
+                        _gc = _cap_fact_content(_row[1])
+                        if _gc is None:
+                            _dropped_oversize += 1
+                            continue
+                        _gc_text, _gc_trunc = _gc
                         enriched.append({
                             'fact_id': _row[0],
-                            'content': _row[1],
+                            'content': _gc_text,
+                            'content_truncated': _gc_trunc,
                             'kind': _row[2],
                             'confidence': _row[3],
                             'importance': _row[4],
