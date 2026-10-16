@@ -10,7 +10,7 @@
 
 <title>Astor Dashboard</title>
 
-<link rel="stylesheet" href="style.css?v=1.16.50">
+<link rel="stylesheet" href="style.css?v=1.16.51">
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
@@ -130,7 +130,7 @@
 
   <div class="peer-header">
 
-    <h2>Peer Friends <span class="subtitle">PPS public-search partners</span></h2>
+    <h2>Peers <span class="subtitle">PPS public-search partners</span></h2>
 
     <div class="peer-actions">
 
@@ -140,11 +140,28 @@
 
       <input type="number" id="peer-add-trust" placeholder="trust 0-100" min="0" max="100" value="30">
 
-      <button id="peer-add-btn" class="btn-primary" title="Add peer (requires endpoint URL set in CLI for full PPS)">+ Add Friend</button>
+      <button id="peer-add-btn" class="btn-primary" title="Add peer (requires endpoint URL set in CLI for full PPS)">+ Add Peer</button>
 
       <button id="peer-refresh-btn" class="btn-refresh" title="Reload peer list">↻</button>
 
     </div>
+
+  </div>
+
+  <div id="peer-quarantine-strip" class="peer-quarantine-strip" hidden>
+
+    <div class="peer-quarantine-head">
+
+      <span class="peer-quarantine-title">⏸ Quarantine</span>
+
+      <span class="peer-quarantine-count" id="peer-q-count">0</span>
+
+      <span class="peer-quarantine-hint">New peers land here until you approve them.
+        Nothing is recalled from or gossiped to a quarantined peer.</span>
+
+    </div>
+
+    <div id="peer-quarantine-body" class="peer-body"></div>
 
   </div>
 
@@ -166,7 +183,7 @@
 
       <div class="peer-empty-icon">🔗</div>
 
-      <div class="peer-empty-title">No peer friends yet</div>
+      <div class="peer-empty-title">No peers yet</div>
 
       <div class="peer-empty-hint">
 
@@ -442,7 +459,7 @@
 
 
 
-<script src="app.js?v=1.16.70"></script>
+<script src="app.js?v=1.16.71"></script>
 
 </body>
 
