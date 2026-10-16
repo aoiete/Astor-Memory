@@ -61,6 +61,52 @@ am forget --fact-id=1
 am forget --query "memory system"
 ```
 
+## 7. Two nodes, 60 seconds (peer gossip)
+
+The `public` tier gossips between nodes you approve. `private` and
+`source` never leave either machine.
+
+```bash
+# Node A on :7803, node B on :7804 — separate ASTOR_DIRs
+export ASTOR_DIR=/tmp/astor-a
+astor-server --port 7803 &
+export ASTOR_DIR=/tmp/astor-b
+astor-server --port 7804 &
+
+# Each node announces itself; note the peer_id from /v1/identity
+curl -s localhost:7803/v1/identity
+curl -s localhost:7804/v1/identity
+
+# Add each as the other's peer (paste the returned peer_id)
+curl -X POST localhost:7803/v1/peer/add \
+  -H 'Content-Type: application/json' \
+  -d '{"peer_id":"<B-peer-id>","endpoint":"http://127.0.0.1:7804"}'
+
+curl -X POST localhost:7804/v1/peer/add \
+  -H 'Content-Type: application/json' \
+  -d '{"peer_id":"<A-peer-id>","endpoint":"http://127.0.0.1:7803"}'
+
+# Approve the pending peer (it sits in quarantine until you do)
+curl -X POST localhost:7803/v1/peer/unquarantine \
+  -H 'Content-Type: application/json' -d '{"peer_id":"<B-peer-id>"}'
+
+# Write a public fact on A
+curl -X POST localhost:7803/v1/write \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"hello from node A","tier":"public","kind":"fact"}'
+
+# Read it back on B
+curl -X POST localhost:7804/v1/read \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"hello from node A","tier":"public","top_k":5}'
+
+# Inspect the network
+curl -s localhost:7803/v1/peer/list
+curl -s localhost:7803/v1/peer/health
+```
+
+A private fact written on A never appears on B — only `public` gossips.
+
 ## What's next?
 
 - [README.md](README.md) — full feature list
