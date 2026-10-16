@@ -674,9 +674,13 @@ function _drawConnPage() {
 async function fetchPeers() {
   try {
     // v1.16.7: also fetch self peer_id for header + empty-state copy button
-    const [pr, ir] = await Promise.all([
+    const [pr, ir, qr] = await Promise.all([
       fetch('/v1/peer/list'),
       fetch('/v1/identity').catch(() => null),
+      // v1.16.51: quarantine is security-critical and had NO UI before.
+      // A quarantined peer neither gossips nor is recalled from, so the
+      // operator must be able to see and approve pending peers.
+      fetch('/v1/peer/quarantine/list').catch(() => null),
     ]);
     let selfPeerId = null;
     if (ir && ir.ok) {
@@ -698,10 +702,86 @@ async function fetchPeers() {
     if (!pr.ok) throw new Error('HTTP ' + pr.status);
     const d = await pr.json();
     renderPeerPanel(d.peers || [], selfPeerId);
+    // v1.16.51: render quarantine strip (silently skipped if endpoint 404s)
+    if (qr && qr.ok) {
+      try { renderPeerQuarantine(await qr.json()); } catch (_) {}
+    }
     return d;
   } catch (e) {
     document.getElementById('peer-panel-body').innerHTML =
       '<div class="recall-error">fetch peers failed: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+// ======================================================================
+// v1.16.51: peer quarantine — pending peers awaiting operator approval.
+// API: GET /v1/peer/quarantine/list, POST /v1/peer/unquarantine
+//   body: {peer_id: "astor:<32-hex>", restore_trust: bool}
+// A quarantined peer is neither recalled from nor sent gossip, so the
+// only way it becomes active is this panel.
+// ======================================================================
+async function renderPeerQuarantine(payload) {
+  const strip = document.getElementById('peer-quarantine-strip');
+  const body = document.getElementById('peer-quarantine-body');
+  const count = document.getElementById('peer-q-count');
+  if (!strip || !body) return;
+  const peers = (payload && payload.peers) || [];
+  if (!peers.length) { strip.hidden = true; return; }
+  strip.hidden = false;
+  count.textContent = String(peers.length);
+
+  let html = '<table class="peer-table"><thead><tr>'
+    + '<th>peer_id</th><th>alias</th><th>trust</th>'
+    + '<th>endpoint</th><th>seen</th><th>action</th>'
+    + '</tr></thead><tbody>';
+  for (const p of peers) {
+    const pid = p.peer_id || '';
+    const shortId = pid.length > 20 ? pid.slice(0, 10) + '\u2026' + pid.slice(-6) : pid;
+    const ep = p.endpoint ? escapeHtml(p.endpoint) : '<span style="opacity:.55">\u2014</span>';
+    const alias = p.alias ? escapeHtml(p.alias) : '<span style="opacity:.55">(none)</span>';
+    const seen = p.updated_at ? escapeHtml(String(p.updated_at).slice(0, 19)) : '\u2014';
+    html += '<tr>'
+      + '<td><code title="' + escapeHtml(pid) + '">' + escapeHtml(shortId) + '</code></td>'
+      + '<td>' + alias + '</td>'
+      + '<td>' + (p.trust ?? 0) + '</td>'
+      + '<td style="font-size:11px">' + ep + '</td>'
+      + '<td style="font-size:11px">' + seen + '</td>'
+      + '<td><button class="btn-primary btn-sm" data-q-approve="' + escapeHtml(pid) + '">Approve</button> '
+      + '<button class="btn-ghost btn-sm" data-q-block="' + escapeHtml(pid) + '">Block</button></td>'
+      + '</tr>';
+  }
+  html += '</tbody></table>';
+  body.innerHTML = html;
+
+  body.querySelectorAll('[data-q-approve]').forEach(btn => {
+    btn.onclick = () => unquarantinePeer(btn.getAttribute('data-q-approve'), true, btn);
+  });
+  body.querySelectorAll('[data-q-block]').forEach(btn => {
+    btn.onclick = () => unquarantinePeer(btn.getAttribute('data-q-block'), false, btn);
+  });
+}
+
+async function unquarantinePeer(pid, approve, btn) {
+  if (!pid) return;
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = '...';
+  try {
+    const res = await fetch('/v1/peer/unquarantine', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({peer_id: pid, restore_trust: approve}),
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + res.status));
+    }
+    btn.textContent = approve ? 'approved' : 'blocked';
+    await fetchPeers();
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = label;
+    alert('Quarantine action failed: ' + e.message);
   }
 }
 
@@ -779,7 +859,7 @@ function renderPeerPanel(peers, selfPeerId) {
   const otherPeers = peers.filter(p => !['friend','blacklist'].includes(p.kind));
   let html = '';
   if (friendPeers.length > 0) {
-    html += '<div class="peer-section-label">Friends</div>';
+    html += '<div class="peer-section-label">Peers</div>';
     html += renderPeerRows(friendPeers, 'friends');
   }
   if (otherPeers.length > 0) {
