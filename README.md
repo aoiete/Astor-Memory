@@ -109,19 +109,29 @@ front it with a Cloudflare Tunnel, nginx, or a peer-anything reverse
 proxy — the server does not bind to `0.0.0.0` unless you pass
 `--host 0.0.0.0`.
 
-Single-binary install via `pip install astor-memory` after which
-`astor-server` becomes available as a console script. Optional
-`[muse]` extra installs the Muse adapter package.
+Install from source (not yet published to PyPI) with a single
+command; `am` becomes available as a console script:
+
+```bash
+pip install "astor-memory @ git+https://github.com/<repo-owner>/Astor-Memory.git"
+```
+
+Optional `[muse]` extra installs the Muse adapter package. Once the
+project is published to PyPI this becomes plain `pip install
+astor-memory`.
+
+Requires Python 3.10–3.13 (3.14 is not yet accepted by the build
+metadata).
 
 ---
 
 ## Quick start
 
 ```bash
-# Install
-pip install astor-memory
+# Install (not yet on PyPI — install from source)
+pip install "astor-memory @ git+https://github.com/<repo-owner>/Astor-Memory.git"
 # or, with the Muse adapter
-pip install astor-memory[muse]
+pip install "astor-memory[muse] @ git+https://github.com/<repo-owner>/Astor-Memory.git"
 
 # Initialize a fresh runtime
 export ASTOR_DIR=/var/lib/astor
@@ -132,7 +142,7 @@ python -m astor_memory.cli.main init
 python -m astor_memory.cli.main user add admin --role first_admin
 
 # Start the server
-astor-server --host 127.0.0.1 --port 7803
+python -m astor_memory.server --host 127.0.0.1 --port 7803
 
 # Health
 curl http://127.0.0.1:7803/v1/health
