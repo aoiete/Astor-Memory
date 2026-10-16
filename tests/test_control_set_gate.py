@@ -34,28 +34,41 @@ USER = "admin"
 TOP_K = 10
 
 
-def _server_reachable(server: str = SERVER, timeout: float = 3.0) -> bool:
-    """True when a live astor server answers /v1/health at `server`.
+# A control set built from a real corpus can only be re-run against that
+# corpus. CI starts a server on an empty ASTOR_DIR (see .github/workflows/
+# ci.yml), so the server answers /v1/health fine while every query returns
+# nothing — that is an empty-corpus signal, not a recall regression.
+MIN_CORPUS_FACTS = 500
 
-    This gate reads a real corpus through a running server, so it cannot
-    pass anywhere a server is not listening — CI runners (ubuntu-latest)
-    and any developer machine without the service up both hit that case.
-    Reporting that as a FAIL is wrong: the gate says nothing about recall
-    quality when it never got a result back. Skip instead, and let the
-    machine-local gate run (where a server IS expected) stay authoritative.
+
+def _server_with_corpus(server: str = SERVER, timeout: float = 5.0) -> bool:
+    """True when `server` is up AND holds enough facts to answer the gate.
+
+    Reachability alone is not enough: a freshly-initialised server passes a
+    ping check and then fails every query. Require the corpus to be at least
+    MIN_CORPUS_FACTS so the gate only runs where its queries can plausibly
+    match, and skips (rather than fails) everywhere else.
     """
-    import urllib.error
+    import json
     import urllib.request
     try:
         with urllib.request.urlopen(f"{server}/v1/health", timeout=timeout) as r:
-            return 200 <= r.status < 300
+            if not (200 <= r.status < 300):
+                return False
+            health = json.loads(r.read().decode("utf-8", "replace"))
     except Exception:
         return False
+    try:
+        facts = int(health.get("facts") or 0)
+    except (TypeError, ValueError):
+        return False
+    return facts >= MIN_CORPUS_FACTS
 
 
-_SKIP_NO_SERVER = (
-    f"no astor server at {SERVER} — the control-set gate reads a live "
-    f"corpus, so it cannot run without one (expected in CI)"
+_SKIP_NO_CORPUS = (
+    f"no corpus at {SERVER} (need >= {MIN_CORPUS_FACTS} facts) — the "
+    f"control-set gate is built from a real corpus, so it only runs "
+    f"against one (expected in CI, which runs on an empty ASTOR_DIR)"
 )
 
 
@@ -68,11 +81,11 @@ class TestControlSetGate(unittest.TestCase):
 
     def setUp(self):
         self.server = SERVER
-        self._live = _server_reachable(self.server)
+        self._live = _server_with_corpus(self.server)
 
     def _run(self):
         if not self._live:
-            self.skipTest(_SKIP_NO_SERVER)
+            self.skipTest(_SKIP_NO_CORPUS)
         return _check_control_set(self.server, TOP_K, TIER, USER)
 
     def test_control_set_loads(self):
@@ -138,7 +151,7 @@ class TestControlSetGate(unittest.TestCase):
         # This one calls the gate directly (not via _run) so it needs its own
         # reachability guard for the same reason.
         if not self._live:
-            self.skipTest(_SKIP_NO_SERVER)
+            self.skipTest(_SKIP_NO_CORPUS)
         qs = [{"qid": "T1", "query": "DCA barbell", "category": "test",
                "expected_keywords": ["DCA", "barbell"],
                "baseline_top3_fids": [999999, 888888, 777777]}]
