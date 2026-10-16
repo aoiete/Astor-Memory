@@ -97,3 +97,7 @@ tests/.baseline/
 # a debug REPL). Real dbs go under <astor_dir>/*.db which the astor
 # installer puts in /var/lib/astor or ~/.astor.
 *.db
+
+# fastembed writes a literal `~` dir into CWD during tests
+# (agent-harness detection). Never belongs in the repo.
+~/.cache/
