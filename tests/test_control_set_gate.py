@@ -34,6 +34,31 @@ USER = "admin"
 TOP_K = 10
 
 
+def _server_reachable(server: str = SERVER, timeout: float = 3.0) -> bool:
+    """True when a live astor server answers /v1/health at `server`.
+
+    This gate reads a real corpus through a running server, so it cannot
+    pass anywhere a server is not listening — CI runners (ubuntu-latest)
+    and any developer machine without the service up both hit that case.
+    Reporting that as a FAIL is wrong: the gate says nothing about recall
+    quality when it never got a result back. Skip instead, and let the
+    machine-local gate run (where a server IS expected) stay authoritative.
+    """
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{server}/v1/health", timeout=timeout) as r:
+            return 200 <= r.status < 300
+    except Exception:
+        return False
+
+
+_SKIP_NO_SERVER = (
+    f"no astor server at {SERVER} — the control-set gate reads a live "
+    f"corpus, so it cannot run without one (expected in CI)"
+)
+
+
 class TestControlSetGate(unittest.TestCase):
     """Gate runner must:
     1. Run successfully against the live server
@@ -43,8 +68,11 @@ class TestControlSetGate(unittest.TestCase):
 
     def setUp(self):
         self.server = SERVER
+        self._live = _server_reachable(self.server)
 
     def _run(self):
+        if not self._live:
+            self.skipTest(_SKIP_NO_SERVER)
         return _check_control_set(self.server, TOP_K, TIER, USER)
 
     def test_control_set_loads(self):
@@ -107,6 +135,10 @@ class TestControlSetGate(unittest.TestCase):
     def test_semantic_gate_ignores_baseline_fids(self):
         """Direct unit check of the assertion itself: a query whose expected
         keywords ARE present passes even when its baseline fids are absent."""
+        # This one calls the gate directly (not via _run) so it needs its own
+        # reachability guard for the same reason.
+        if not self._live:
+            self.skipTest(_SKIP_NO_SERVER)
         qs = [{"qid": "T1", "query": "DCA barbell", "category": "test",
                "expected_keywords": ["DCA", "barbell"],
                "baseline_top3_fids": [999999, 888888, 777777]}]
