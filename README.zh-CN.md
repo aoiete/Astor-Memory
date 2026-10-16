@@ -93,6 +93,64 @@ pip install "astor-memory @ git+https://github.com/<repo-owner>/Astor-Memory.git
 
 ---
 
+## 从Claude / Cursor 使用 (MCP)
+
+三个工具，不需要 API key，不走 HTTP：
+
+```
+astor_recall   跨 public / source / private 档做语义召回
+astor_write    写入事实 → bus event → candidate → canonical
+astor_status   只返回计数，绝不返回事实内容
+```
+
+```bash
+am mcp serve          # stdio 传输，立刻启动
+```
+
+**Claude Desktop** —— 加到 `claude_desktop_config.json`
+(macOS 在 `~/Library/Application Support/Claude/`，
+Windows 在 `%APPDATA%\Claude\`)：
+
+```json
+{
+  "mcpServers": {
+    "astor-memory": {
+      "command": "am",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+**Claude Code**：
+
+```bash
+claude mcp add astor-memory -- am mcp serve
+```
+
+**Cursor** —— 项目里的 `.cursor/mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "astor-memory": {
+      "command": "am",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+如果 `am` 不在 PATH 里，用安装时生成的 console script 绝对路径
+（`python -c "import shutil; print(shutil.which('am'))"`）。
+
+`astor_recall` 会搜索调用者可读的所有档位，并给每条结果标注所属档位。
+`astor_write` 显式接受 `"tier"`，默认 `public`；传 `"tier": "private"`
+配合 `"user"` 可写入某个账号的私有库。两个方向上 ACL 都会拒绝跨用户访问，
+客户端碰不到别人的记忆。
+
+---
+
 ## 快速开始
 
 ```bash

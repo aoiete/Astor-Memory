@@ -2404,9 +2404,13 @@ def cmd_mcp_serve(args) -> int:
                 'properties': {
                     'query': {'type': 'string'},
                     'top_k': {'type': 'integer', 'default': 5},
-                    'tier': {
-                        'type': 'string', 'default': 'public',
-                        'enum': ['public', 'source', 'private', 'repo'],
+                    'user': {
+                        'type': 'string', 'default': 'admin',
+                        'description': (
+                            'Whose memory to search. Recall spans every '
+                            'tier the caller may read; results are labelled '
+                            'with their tier. Pass an explicit user to '
+                            'target one account.'),
                     },
                 },
                 'required': ['query'],
@@ -2414,18 +2418,30 @@ def cmd_mcp_serve(args) -> int:
         },
         {
             'name': 'astor_write',
-            'description': 'Write a fact to astor-memory.',
+            'description': (
+                'Write a fact to astor-memory. The fact is appended as a '
+                'bus event, extracted into candidates, and promoted to the '
+                'canonical store.'),
             'inputSchema': {
                 'type': 'object',
                 'properties': {
-                    'text': {'type': 'string'},
+                    'text': {'type': 'string',
+                             'description': 'The fact to store.'},
                     'tier': {
                         'type': 'string', 'default': 'public',
                         'enum': ['public', 'source', 'private', 'repo'],
+                        'description': (
+                            "Target tier. 'private' writes the caller's own "
+                            "store (pair with 'user'); ACL denies "
+                            "cross-user writes. 'source' is admin-only."),
                     },
                     'scope': {
                         'type': 'string', 'default': 'long_term',
                         'enum': ['long_term', 'short_term', 'profile'],
+                        'description': (
+                            'Retention scope. Currently all scopes persist '
+                            'to the same canonical store; scope is recorded '
+                            'but does not yet partition reads or writes.'),
                     },
                     'user': {
                         'type': 'string', 'default': 'admin',
@@ -2495,10 +2511,15 @@ def cmd_mcp_serve(args) -> int:
 
                 if tool_name == 'astor_recall':
                     buf = _io.StringIO()
+                    # v1.16.76: 'tier' was removed from this tool's schema.
+                    # Verified by probe: recall spans every readable tier
+                    # regardless of a tier argument, so advertising the
+                    # enum was a promise the server did not keep. 'user'
+                    # is honoured and does scope the search.
                     ns = _NS(query=args.get('query', ''),
                              user=args.get('user', 'admin'),
                              top_k=int(args.get('top_k', 5) or 5),
-                             zone='none', kinds=None, tier='public')
+                             zone='none', kinds=None)
                     with _cl.redirect_stdout(buf):
                         rc = cmd_recall(ns)
                     content = [{'type': 'text', 'text':
