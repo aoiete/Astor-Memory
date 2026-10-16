@@ -932,3 +932,55 @@ body {
   color: var(--text-dim, #888);
   margin-right: 6px;
 }
+
+/* v1.16.51: peer quarantine strip — new peers land here until operator
+   approves. API: GET /v1/peer/quarantine/list, POST /v1/peer/unquarantine */
+.peer-quarantine-strip {
+  margin: 0 0 14px 0;
+  border: 1px solid #b45309;
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: rgba(180, 83, 9, 0.07);
+  padding: 10px 12px;
+}
+.peer-quarantine-strip[hidden] { display: none; }
+.peer-quarantine-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.peer-quarantine-title { font-weight: 600; color: #b45309; }
+.peer-quarantine-count {
+  display: inline-block;
+  min-width: 20px;
+  text-align: center;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: #b45309;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+.peer-quarantine-hint {
+  color: var(--text-dim, #6b7280);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.peer-quarantine-strip .peer-body {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* v1.16.51: used by the peer quarantine panel (Block action) */
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border, #d1d5db);
+  color: var(--text-dim, #6b7280);
+  cursor: pointer;
+  border-radius: 4px;
+  font: inherit;
+}
+.btn-ghost:hover { color: var(--accent, #2563eb); }
+.btn-ghost:disabled { opacity: .5; cursor: default; }
