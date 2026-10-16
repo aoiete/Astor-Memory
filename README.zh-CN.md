@@ -1,6 +1,6 @@
 # Astor-Memory
 
-> **自托管的 AI agent 记忆系统。** 三库三档,联邦 public 档,零供应商锁定。
+> **面向 AI agent 的点对点公开记忆层。** 私有记忆留在你自己的机器上;公开知识在可信节点之间点对点流通 —— 没有中心 server,没有供应商锁定。
 
 > **English:** [README.md](README.md) · **Dashboard 文档:** [docs/dashboard.md](docs/dashboard.md) · **架构:** [docs/architecture.md](docs/architecture.md) · **API:** [docs/api.md](docs/api.md)
 
@@ -8,28 +8,35 @@
 
 ## 这是什么
 
-一个单机 SQLite 后端的记忆层,为共享同一个 bot 的可信小群体(家人、朋友、共同管理员)服务。每个用户拥有自己的 private 档可读写;运营者维护一个 `source` 档存放运营专属模式;所有人共享一个 `public` 档作为跨用户知识。
+每个 AI agent 都在孤立地重复学同一批东西。Astor-Memory 是一个自托管记忆
+server,带点对点的公开层:你 agent 的私有记忆留在自己机器上,而你选择共享
+的知识在可信 peer 网络之间 gossip 流通 —— 没有中心 server,没有一个人
+独占公共知识的所有权。
 
-同一个 server 同时充当外部 agent 平台(Muse、自定义 HTTP 客户端、Slack 适配器)接入的 spoke endpoint,提供持久记忆后端 + ACL 强制用户隔离 + 每次调用审计。
+一个人跑,或者加入网络。
 
 ```
-+---------------------------------------+
-|  一个 astor-memory server (端口 7803)  |
-|                                        |
-|   first_admin    first_admin 档        |
-|   mom            private_mom 档        |
-|   friend_a       private_friend_a 档   |
-|   friend_b       private_friend_b 档   |
-|   cousin            private cousin 档    |
-|                                        |
-|   共享记忆 = public + source           |
-|   个人记忆 = private_<user_id>         |
-+---------------------------------------+
+[node A — 你的 server] <== gossip (仅 public 档) ==> [node B — peer 的 server]
+
+private_<你>, source    private_<peer>, source
+(永不离开本机)          (永不离开本机)
 ```
 
-每个用户拥有自己的 SQLite 数据库、自己的 ACL 授权、自己的 bot binding。admin 可见 `source` (运营专属模式) 加上任何用户明确授权的 `private` 档。
+- **私有就是私有。** 每个用户独立的 SQLite 库;任何读写之前先在矩阵层做
+  ACL 检查。`private` 和 `source` 档永不跨越 peer 边界。
+- **公开就是共享。** 发布到 `public` 的 fact 会传播给你信任的 peer;
+  它们的公开 fact 也能被你的 agent 读到。每 peer 信任分(0-100,默认 30)
+  加每主题权重决定什么流向哪里。
+- **信任要显式,不靠默认。** 未知 peer 进入隔离区等待运营者审核,而不是
+  直接被拒;peer 流量按 peer 限流,避免单个吵闹节点污染公共层。
 
-这不是一个多租户 SaaS。它是一个单机记忆,为足够信任彼此去共用 bot 的小群体服务。隐私在矩阵级层面([ACL 加固文档](docs/acl-v1.2-hardening.md))强制执行,而不是靠信任每个用户自觉。
+单个节点内部,同样的三档布局依然把用户分开:每人一个 SQLite 库、一套 ACL
+授权、一个 bot 绑定。admin 能看到 `source`(运营专属模式),以及用户显式
+授权给他的任何 `private` 档。
+
+同一个 server 也作为外部 agent 平台的接入端点(Muse、自定义 HTTP 客户端、
+Slack 适配器),提供带 ACL 用户隔离和逐次调用审计的持久记忆后端。隐私靠矩阵
+层的 ACL 保证(见 [ACL 加固](docs/acl-v1.2-hardening.md)),不靠每个用户自觉。
 
 ---
 
@@ -42,7 +49,7 @@
 | **纯 RAG**(向量库) | 简单检索 | 无事件日志、无事实抽取、无用户隔离 |
 | **Letta**(Memory Blocks) | 只读保护 + 归档 | 重 runtime,严格架构 |
 | **mem0**(4-tier ACL) | 多租户 + scope 标签 | 紧耦合云服务、默认异步 |
-| **Astor-Memory** | 三 SQLite 库 + 三档 + ACL + 事件日志 + 审计 + PII 防御 + 衰减 + dashboard + REST + 开放磁盘数据 | 单机范围(不水平分片) |
+| **Astor-Memory** | 三 SQLite 库 + 三档 + ACL + 事件日志 + 审计 + PII 防御 + 衰减 + Dashboard + REST + 点对点 `public` gossip + 数据全在磁盘 | 私有档留在你自己机器上(架构保证,不是政策保证) |
 
 实际获得:
 
@@ -267,8 +274,8 @@ Dashboard HTML 在公开 repo 中作为通用模板发布;本地实例是运营�
 | `/v1/binding/list` | GET | 列出所有 binding (admin) |
 | `/v1/peer/list` | GET | 列出 peer-friends (PPS) |
 | `/v1/peer/add` | POST | 添加 peer-friend |
-| `/v1/peer/trust` | POST | 调整信任分数 |
-| `/v1/peer/blacklist` | POST | 屏蔽一个 peer |
+| `/v1/peer/<peer_id>/trust` | POST | 调整信任分数 (0-100, 默认 30) |
+| `/v1/peer/<peer_id>/blacklist` | POST | 屏蔽一个 peer |
 | `/v1/episode` | POST | 追加原始 episode (L0 cone) |
 | `/v1/episode/<id>` | GET | 按 id 获取 episode |
 | `/v1/episode/list` | GET | 列出最近 episode |
@@ -283,21 +290,42 @@ Dashboard HTML 在公开 repo 中作为通用模板发布;本地实例是运营�
 
 ---
 
-## 联邦公开档 (P5)
+## 点对点公开档
 
-多个由可信 peer 拥有的 astor 实例将直接同步它们的 `public` 档 —— 没有中心 server,没有远程-direct RPC。每 peer 信任(0-100) + 每主题权重让策划 admin 决定跟谁分享什么。`private` 和 `source` 档永远不跨边界。
+Peer gossip 是开箱即用的 —— 这不是路线图上的待办。新节点会向网络宣告自己,
+与 peer 同步 `public` 档 fact,并把未知 peer 放进隔离区等待运营者审核。
 
-这作为 `/v1/peer/*` REST endpoint 加上 `am peer` CLI 发布在现有 `peer_relationships.py` schema 之上。P5 在运营方 pilot 达到收敛时落地。
+| 操作 | 怎么做 |
+|---|---|
+| 添加 peer | `POST /v1/peer/add` |
+| 列出 peer | `GET /v1/peer/list` |
+| 调整信任 | `POST /v1/peer/<peer_id>/trust` (0-100,默认 30) |
+| 屏蔽 peer | `POST /v1/peer/<peer_id>/blacklist` |
+| 审核隔离区 | `GET /v1/peer/quarantine/list` → `POST /v1/peer/unquarantine` |
+| 接纳待定 peer | `POST /v1/peer/adopt` |
+| 观察网络 | Dashboard → peer 面板,或 `GET /v1/peer/health` |
+| 限流状态 | `GET /v1/peer/rate-limit` |
+
+硬边界:只有 `public` 会 gossip。`private` 和 `source` 永不离开本节点,
+跟信任分多高无关。进来的 peer 流量按 peer 限流,未被你批准的 peer 待在
+隔离区里,无法写入。
+
+**60 秒上手:** 本地起两个节点,互相添加为 peer,在节点 A 上 `POST /v1/write`
+一条 `"tier": "public"` 的 fact,然后在节点 B 上 `/v1/read` 出来。
 
 ---
 
-## 为什么是单机而不是第一天就联邦
+## 为什么点对点,而不是中心记忆服务
 
-三个理由:
+1. **没有需要信任或付费的中心 server。** 共享的 agent 知识不该寄居在别人
+   的 SaaS 上。自托管节点之间的 gossip 让公共知识的所有权留在参与者手里。
+2. **靠架构保证隐私,不靠政策。** 共享是一次显式的 publish 到 `public`,
+   按 peer、按主题 —— 绝不是把记忆一次性全量上传。
+3. **网络本身就是护城河。** 每加一个节点,其他所有节点的公开召回都更丰富。
+   中心化的记忆产品做不到这点,除非它变成所有人数据的托管者。
 
-1. **运维简单。** 一个 `astor-server` 进程、一个 `ASTOR_DIR` 目录、一个 backup cron。多 server 分片让运维表面积翻三倍,加上只在生产环境出现的事件一致性 bug 类。
-2. **ACL 是信任边界。** 强制每用户隐私的同一个 ACL 矩阵在多 server 部署中照样工作 —— 联邦只需要每 server 信任,不需要重写访问控制。
-3. **每 peer 分享对实际部署形态已经够用。** 一个家人 / 朋友 / 共同管理员群体很少需要跨组织分享。需要时,`peer_relationships.py` 里的每 peer 信任 + 每主题权重机制就是覆盖用例的最小扩展,不需要重新架构。
+单个节点内部的运维面刻意保持很小:一个 server 进程、一个 `ASTOR_DIR`、
+一份备份。跑多节点是可选的,而且每个节点都独立完整。
 
 ---
 
