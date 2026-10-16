@@ -105,6 +105,12 @@ _META_RECALL_STATS: dict = {
     'errors': 0,
     'consult_triggered': 0,
     'peer_fanout_triggered': 0,
+    # 2026-10-13 fix: 下面两个 key 在 /v1/read 里被 += 读写但从未初始化,
+    # 导致每次 trigger-aware 命中都抛 KeyError 并被 except Exception 吞掉,
+    # 结果 prepend 那一步从未执行 —— "先查后做"类的 fact 永远注不进来。
+    'trigger_aware_triggered': 0,
+    'trigger_aware_returned_total': 0,
+    'peer_fanout_returned_total': 0,
 }
 _meta_recall_stats = _META_RECALL_STATS
 
@@ -5505,8 +5511,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     enriched = _trigger + enriched
                     _meta_recall_stats['triggered'] += 1
                     _meta_recall_stats['returned_total'] += len(_trigger)
-                    _meta_recall_stats['trigger_aware_triggered'] += 1
-                    _meta_recall_stats['trigger_aware_returned_total'] += len(_trigger)
+                    # 2026-10-13: += 在 key 缺失时抛 KeyError, 改用 .get 防御,
+                    # 这样以后再加新统计项也不会静默炸掉整个 prepend。
+                    _meta_recall_stats['trigger_aware_triggered'] = (
+                        _meta_recall_stats.get('trigger_aware_triggered', 0) + 1)
+                    _meta_recall_stats['trigger_aware_returned_total'] = (
+                        _meta_recall_stats.get('trigger_aware_returned_total', 0)
+                        + len(_trigger))
             except Exception as _tr_exc:
                 _safe_stderr_write(f'[astor.server] trigger-aware prepend failed: {_tr_exc}\n')
                 _meta_recall_stats['errors'] += 1
