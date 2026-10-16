@@ -125,6 +125,65 @@ metadata).
 
 ---
 
+## Use it from Claude / Cursor (MCP)
+
+Three tools, no API key, no HTTP:
+
+```
+astor_recall   semantic recall across the public / source / private tiers
+astor_write    append a fact -> bus event -> candidate -> canonical
+astor_status   counts only, never fact content
+```
+
+```bash
+am mcp serve          # stdio transport, starts immediately
+```
+
+**Claude Desktop** — add to `claude_desktop_config.json`
+(`~/Library/Application Support/Claude/` on macOS,
+`%APPDATA%\Claude\` on Windows):
+
+```json
+{
+  "mcpServers": {
+    "astor-memory": {
+      "command": "am",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+**Claude Code**:
+
+```bash
+claude mcp add astor-memory -- am mcp serve
+```
+
+**Cursor** — `.cursor/mcp.json` in your project:
+
+```json
+{
+  "mcpServers": {
+    "astor-memory": {
+      "command": "am",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+If `am` is not on PATH, use the absolute path to the console script
+your install produced (`python -c "import shutil; print(shutil.which('am'))"`).
+
+`astor_recall` searches every tier the caller may read and labels each
+result with its tier. `astor_write` takes `"tier"` explicitly and
+defaults to `public`; pass `"tier": "private"` with `"user"` to write
+one account's private store. ACL denies cross-user access in both
+directions, so a client cannot reach another user's memory.
+
+---
+
 ## Quick start
 
 ```bash

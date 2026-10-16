@@ -146,6 +146,24 @@ class TestMcpStdioServer(unittest.TestCase):
         self.assertNotIn("cannot import name", text,
                          f"handler hit the missing-API bug: {text}")
 
+    def test_recall_schema_does_not_advertise_dead_tier_arg(self):
+        """Regression: astor_recall advertised a tier enum it ignored.
+
+        A probe with three distinguishable facts showed recall returned
+        the same results for no tier, tier=public and tier=private --
+        `am recall` has no --tier flag, so the argument was dropped on
+        the floor. The schema promised tier routing that did not exist.
+        """
+        r = self._rpc("tools/list", {}, rid=6)
+        tools = {t["name"]: t for t in r["result"]["tools"]}
+        recall_props = tools["astor_recall"]["inputSchema"]["properties"]
+        self.assertNotIn(
+            "tier", recall_props,
+            "astor_recall still advertises a tier argument that does "
+            "nothing")
+        self.assertIn("user", recall_props,
+                      "astor_recall should still accept a user argument")
+
     def test_status_tool_returns_json(self):
         """Regression: astor_status built a Flask app per call, printing
         to stdout and corrupting the stream."""
