@@ -2314,83 +2314,81 @@ def cmd_mcp_serve(args) -> int:
     import sys as _sys
     import json as _json
     import threading as _threading
+    from types import SimpleNamespace
     import time as _time
     import ctypes as _ctypes
 
     def _send(obj):
-        body = _json.dumps(obj, ensure_ascii=False).encode('utf-8')
-        header = ("Content-Length: " + str(len(body)) + "\r\n\r\n").encode("ascii")
-        _sys.stdout.buffer.write(header + body)
+        """Emit one JSON-RPC response.
+
+        The MCP stdio spec is newline-delimited JSON: one complete JSON
+        object per line. The previous implementation wrapped every
+        response in LSP-style "Content-Length: N\r\n\r\n" headers,
+        which is a different protocol -- hosts that follow the spec parse
+        one line and fail on a header. stderr stays clean because a host
+        treats any non-JSON stdout byte as a protocol error.
+        """
+        line = _json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\n"
+        _sys.stdout.buffer.write(line)
         _sys.stdout.buffer.flush()
 
-    def _pipe_ready(stream):
-        """Return True if stream has data available to read.
-
-        Tries PeekNamedPipe first (works for both pipes and some files
-        where fstat is unreliable). Falls back to non-blocking read attempt.
-        Per P2-fix 2026-08-16: GetFileType on Python's wrapped pipe fd
-        returns FILE_TYPE_UNKNOWN=0, not FILE_TYPE_PIPE=3, so we cannot
-        use that to gate the strategy.
-        """
-        try:
-            inner = stream.buffer
-        except AttributeError:
-            inner = stream
-        try:
-            h = inner.fileno()
-        except Exception:
-            return True
-
-        # Try PeekNamedPipe — works for both real pipes AND for some
-        # file handles. If it succeeds, avail>0 means data ready.
-        avail = _ctypes.c_ulong(0)
-        left = _ctypes.c_ulong(0)
-        ok = _ctypes.windll.kernel32.PeekNamedPipe(
-            h, None, 0, None,
-            _ctypes.byref(avail), _ctypes.byref(left),
-        )
-        if ok:
-            return avail.value > 0
-
-        # PeekNamedPipe failed — assume regular file. Use file size + pos.
-        try:
-            import os as _os
-            pos = inner.tell()
-            size = _os.fstat(h).st_size
-            return pos < size
-        except Exception:
-            return True
-
     def _read_message():
-        """Block until a full MCP message arrives, then parse it."""
+        """Read one MCP message from stdin.
+
+        v1.16.76 (2026-10-16): the previous implementation polled
+        `_pipe_ready()`, which called PeekNamedPipe on sys.stdin's fd.
+        On Windows that call returns ok=0 for a pipe Python created, the
+        fallback compared tell() against fstat().st_size (both 0 for a
+        pipe, which has no size), so `_pipe_ready` returned False forever
+        and the server sat in its 60s deadline loop then exited silently.
+        Verified: no response to either LSP-style Content-Length framing
+        or the newline-delimited framing the MCP spec actually uses.
+
+        Blocking readline() is correct here and needs no readiness probe:
+        an MCP host writes one complete request and waits, and the
+        process lifetime belongs to the host. `initialized` and other
+        notifications legitimately have no `id`, so they are skipped
+        rather than answered.
+
+        Both framings are accepted, because hosts differ: newline-JSON is
+        what the MCP spec specifies, while Content-Length headers are
+        what some clients still emit.
+        """
         import re as _re
-        # Wait for any byte to be available
-        deadline = _time.time() + 60.0
-        while not _pipe_ready(_sys.stdin):
-            if _time.time() > deadline:
+
+        deadline = _time.time() + 300.0
+        while _time.time() < deadline:
+            try:
+                raw = _sys.stdin.buffer.readline()
+            except Exception:
                 return None
-            _time.sleep(0.01)
-        # Read headers (until empty line)
-        content_length = 0
-        for _ in range(20):
-            line = _sys.stdin.buffer.readline()
-            if not line:
-                return None  # EOF
-            stripped = line.strip()
+            if not raw:
+                return None# EOF: host closed the pipe
+            stripped = raw.strip()
             if not stripped:
-                break
+                continue
+
+            # LSP-style: "Content-Length: N"
             m = _re.match(rb'Content-Length:\s*(\d+)', stripped, _re.I)
             if m:
-                content_length = int(m.group(1))
-        if content_length <= 0:
-            return None
-        body = _sys.stdin.buffer.read(content_length)
-        if not body:
-            return None
-        try:
-            return _json.loads(body)
-        except Exception:
-            return None
+                body = b""
+                want = int(m.group(1))
+                while len(body) < want:
+                    chunk = _sys.stdin.buffer.read(want - len(body))
+                    if not chunk:
+                        break
+                    body += chunk
+                try:
+                    return _json.loads(body.decode('utf-8'))
+                except Exception:
+                    continue
+
+            # MCP spec: one JSON object per line
+            try:
+                return _json.loads(stripped.decode('utf-8'))
+            except Exception:
+                continue
+        return None
 
     SERVER_INFO = {'name': 'astor-memory', 'version': '0.3.0'}
     CAPABILITIES = {'tools': {}}
@@ -2474,32 +2472,52 @@ def cmd_mcp_serve(args) -> int:
             tool_name = params.get('name')
             args = params.get('arguments') or {}
             try:
+                # v1.16.76 (2026-10-16): all three handlers called
+                # functions that do not exist. `from .. import astor_read`
+                # and `astor_write` resolve to nothing in
+                # astor_memory/__init__.py (it exports only bus/nest/forge),
+                # so every tools/call returned
+                #   "cannot import name 'astor_write' from 'astor_memory'".
+                # astor_status built a whole Flask app per call, which
+                # also printed to stdout and broke the JSON stream.
+                # All three now reuse the CLI's own cmd_* entry points, so
+                # MCP and `am` exercise one code path.
+                import argparse as _ap
+                import contextlib as _cl
+                import io as _io
+
+                class _NS(SimpleNamespace):
+                    # cmd_recall/cmd_write read a wide spread of flags
+                    # depending on the code path; anything not supplied
+                    # must read as None rather than raise AttributeError.
+                    def __getattr__(self, _k):
+                        return None
+
                 if tool_name == 'astor_recall':
-                    from .. import astor_read as _astor_read
-                    text = _astor_read(
-                        args.get('query', ''),
-                        top_k=args.get('top_k', 5),
-                        tier=args.get('tier', 'public'),
-                    )
-                    content = [{'type': 'text', 'text': text}]
+                    buf = _io.StringIO()
+                    ns = _NS(query=args.get('query', ''),
+                             user=args.get('user', 'admin'),
+                             top_k=int(args.get('top_k', 5) or 5),
+                             zone='none', kinds=None, tier='public')
+                    with _cl.redirect_stdout(buf):
+                        rc = cmd_recall(ns)
+                    content = [{'type': 'text', 'text':
+                                buf.getvalue().strip() or 'No results found.'}]
                 elif tool_name == 'astor_write':
-                    from .. import astor_write as _astor_write
-                    text_out = _astor_write(
-                        args.get('text', ''),
-                        tier=args.get('tier', 'public'),
-                        scope=args.get('scope', 'long_term'),
-                        user=args.get('user', 'admin'),
-                    )
-                    content = [{'type': 'text', 'text': text_out}]
+                    buf = _io.StringIO()
+                    ns = _NS(text=args.get('text', ''),
+                             user=args.get('user', 'admin'),
+                             tier=args.get('tier', 'public'), mode=None)
+                    with _cl.redirect_stdout(buf):
+                        rc = cmd_write(ns)
+                    content = [{'type': 'text',
+                                'text': buf.getvalue().strip() or 'ok'}]
                 elif tool_name == 'astor_status':
-                    from ..server import create_app as _ca
-                    app = _ca()
-                    with app.test_client() as c:
-                        resp = c.get('/v1/viewer/stats')
-                        content = [{
-                            'type': 'text',
-                            'text': resp.get_data(as_text=True),
-                        }]
+                    buf = _io.StringIO()
+                    with _cl.redirect_stdout(buf):
+                        rc = cmd_doctor(_NS())
+                    content = [{'type': 'text',
+                                'text': buf.getvalue().strip() or '{}'}]
                 else:
                     _send({
                         'jsonrpc': '2.0', 'id': req_id,
