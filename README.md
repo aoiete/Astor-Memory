@@ -1,6 +1,6 @@
 # Astor-Memory
 
-> **Self-hosted memory system for AI agents.** Three stores, three tiers, federated public tier, zero vendor lock-in.
+> **The peer-to-peer public memory layer for AI agents.** Your private memory stays on your machine; public knowledge is shared peer-to-peer — no central server, no vendor lock-in.
 
 > **中文文档:** [README.zh-CN.md](README.zh-CN.md) · **Dashboard:** [docs/dashboard.md](docs/dashboard.md) · **Architecture:** [docs/architecture.md](docs/architecture.md) · **API:** [docs/api.md](docs/api.md)
 
@@ -8,39 +8,42 @@
 
 ## What this is
 
-A single-server SQLite-backed memory layer for a small group of trusted
-people (your family, your friends, your co-admins) who share one bot.
-Each user gets a private tier they can read and write; the operator
-maintains a `source` tier of operator-only patterns; everyone shares a
-`public` tier of cross-user knowledge.
+Every AI agent relearns the same things in isolation. Astor-Memory is a
+self-hosted memory server with a peer-to-peer public layer: your agents'
+private memory stays on your machine, while knowledge you choose to
+share gossips across a network of trusted peers — no central server, no
+single custodian of the commons.
+
+Run one node for yourself, or join the network.
+
+```
+[node A — your server] <== gossip (public tier only) ==> [node B — peer's server]
+
+private_<you>, source    private_<peer>, source
+(never leave this machine) (never leave this machine)
+```
+
+- **Private stays private.** Per-user SQLite databases; ACL enforced at
+  the matrix level before any read or write. `private` and `source`
+  tiers never cross the peer boundary.
+- **Public becomes shared.** Facts published to `public` propagate to
+  peers you trust; their public facts become readable by your agents.
+  Per-peer trust (0–100, default 30) plus per-topic weights decide what
+  flows where.
+- **Trust is explicit, not assumed.** Unknown peers land in quarantine
+  for operator review instead of being rejected outright, and peer
+  traffic is rate-limited per peer so one noisy node cannot flood the
+  commons.
+
+Inside a single node the same three-tier layout still separates users:
+each user gets their own SQLite database, their own ACL grants, and
+their own bot binding. The admin sees `source` (operator-only patterns)
+plus any `private` tier a user has explicitly granted.
 
 The same server also acts as the spoke endpoint for external agent
 platforms (Muse, custom HTTP clients, Slack adapters) that need a
-persistent memory backend with ACL-enforced user isolation and
-per-call audit logging.
-
-```
-+---------------------------------------+
-|  One astor-memory server (port 7803)   |
-|                                        |
-|   first_admin    first_admin tier      |
-|   mom            private_mom tier      |
-|   friend_a       private_friend_a      |
-|   friend_b       private_friend_b      |
-|   cousin            private cousin       |
-|                                        |
-|   shared memory = public + source      |
-|   per-user memory = private_<user_id>  |
-+---------------------------------------+
-```
-
-Each user has their own SQLite database, their own ACL grants, and their
-own bot binding. The admin sees `source` (operator-only patterns) plus
-any `private` tier a user has explicitly granted.
-
-This is not a multi-tenant SaaS. It is a single-server memory for a
-small group of people who trust each other enough to share the bot.
-Privacy is enforced by ACL at the matrix level
+persistent memory backend with ACL-enforced user isolation and per-call
+audit logging. Privacy is enforced by ACL at the matrix level
 (see [ACL hardening](docs/acl-v1.2-hardening.md)), not by trusting
 each user to behave.
 
@@ -56,7 +59,7 @@ between capability and autonomy:
 | **Pure RAG** (vector store) | Simple retrieval | No event log, no fact extraction, no user isolation |
 | **Letta** (Memory Blocks) | Read-only protection + archival | Heavy runtime, strict architecture |
 | **mem0** (4-tier ACL) | Multi-tenant + scope labels | Tight cloud coupling, async by default |
-| **Astor-Memory** | Three SQLite stores + three tiers + ACL + event log + audit + PII defense + decay + dashboard + REST + open data on disk | Single-server scope (not horizontally sharded) |
+| **Astor-Memory** | Three SQLite stores + three tiers + ACL + event log + audit + PII defense + decay + dashboard + REST + peer-to-peer `public` gossip + open data on disk | Your private tiers stay on your machine (by design, not by policy) |
 
 What you actually get:
 
@@ -325,8 +328,11 @@ public API surface).
 | `/v1/binding/list` | GET | List all bindings (admin) |
 | `/v1/peer/list` | GET | List peer-friends (PPS) |
 | `/v1/peer/add` | POST | Add peer-friend |
-| `/v1/peer/trust` | POST | Adjust trust score |
-| `/v1/peer/blacklist` | POST | Block a peer |
+| `/v1/peer/<peer_id>/trust` | POST | Adjust trust score (0–100, default 30) |
+| `/v1/peer/<peer_id>/blacklist` | POST | Block a peer |
+| `/v1/peer/quarantine/list` | GET | Unknown peers awaiting operator review |
+| `/v1/peer/unquarantine` | POST | Approve a quarantined peer |
+| `/v1/peer/health` | GET | Peer network health |
 | `/v1/episode` | POST | Append raw episode (L0 cone) |
 | `/v1/episode/<id>` | GET | Get episode by id |
 | `/v1/episode/list` | GET | List recent episodes |
@@ -341,36 +347,49 @@ Full request / response schema: [docs/api.md](docs/api.md).
 
 ---
 
-## Peer-to-peer public tier federation (Phase 5)
+## Peer-to-peer public tier
 
-Multiple astor instances owned by trusted peers will sync their
-`public` tier directly — no central server, no remote-direct RPC.
-Per-peer trust (0-100) + per-topic weights let curating admins decide
-what to share with whom. `private` and `source` tiers never cross
-the boundary.
+Peer gossip ships in the box — this is not a roadmap item. A node
+announces itself to the network, syncs `public`-tier facts with peers,
+and holds unknown peers in quarantine pending operator review.
 
-This ships as `/v1/peer/*` REST endpoints plus an `am peer` CLI on
-top of the existing `peer_relationships.py` schema. Phase 5 lands
-when the operator-facing pilot reaches convergence.
+| Control | How |
+|---|---|
+| Add a peer | `POST /v1/peer/add` |
+| List peers | `GET /v1/peer/list` |
+| Tune trust | `POST /v1/peer/<peer_id>/trust` (0–100, default 30) |
+| Block a peer | `POST /v1/peer/<peer_id>/blacklist` |
+| Review quarantine | `GET /v1/peer/quarantine/list` → `POST /v1/peer/unquarantine` |
+| Adopt a pending peer | `POST /v1/peer/adopt` |
+| Watch the network | Dashboard → peer panel, or `GET /v1/peer/health` |
+| Rate limits | `GET /v1/peer/rate-limit` |
+
+The hard boundary: only `public` gossips. `private` and `source` never
+leave the node, regardless of trust level. Incoming peer traffic is
+rate-limited per peer, and peers you have not approved sit in
+quarantine instead of being able to write.
+
+**Try it in 60 seconds:** start two nodes locally, add each as the
+other's peer, `POST /v1/write` a fact with `"tier": "public"` on node A,
+then `/v1/read` it from node B.
 
 ---
 
-## Why a single server, not federated from day one
+## Why peer-to-peer, not a central memory service
 
-Three reasons:
+1. **No central server to trust — or pay.** Shared agent knowledge
+   shouldn't live on someone else's SaaS. Gossip between self-hosted
+   nodes keeps the commons owned by its participants.
+2. **Privacy by architecture, not by policy.** Sharing is an explicit
+   publish to `public`, per peer, per topic — never an all-or-nothing
+   upload of your memory.
+3. **The network is the moat.** Every new node makes every other node's
+   public recall richer. A centralized memory product can't offer that
+   without becoming the custodian of everyone's data.
 
-1. **Operational simplicity.** One `astor-server` process, one
-   `ASTOR_DIR` directory, one backup cron. Multi-server sharding
-   triples the operational surface area and adds eventual-consistency
-   bug classes that show up only in production.
-2. **ACL is the trust boundary.** The same ACL matrix that enforces
-   per-user privacy works in a multi-server deployment — federation
-   only requires per-server trust, not a rewrite of access control.
-3. **Per-peer sharing is enough for the actual deployment shape.** A
-   family / friends / co-admin group rarely needs cross-organization
-   sharing. When they do, the per-peer trust + per-topic weight
-   mechanism in `peer_relationships.py` is the minimal extension that
-   covers the use case without re-architecting.
+Within one node the operational surface stays small on purpose: one
+server process, one `ASTOR_DIR`, one backup. Running a fleet of nodes is
+opt-in, and each node is independently complete.
 
 ---
 
