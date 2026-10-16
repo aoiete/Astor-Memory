@@ -80,17 +80,26 @@ Slack 适配器),提供带 ACL 用户隔离和逐次调用审计的持久记忆�
 
 Server 默认绑定 `127.0.0.1:7803`。远程访问请用 Cloudflare Tunnel、nginx 或 peer-anything 反向代理 —— server 不会绑定 `0.0.0.0`,除非你显式传 `--host 0.0.0.0`。
 
-通过 `pip install astor-memory` 安装,之后 `astor-server` 成为 console script。可选 `[muse]` extra 安装 Muse 适配器包。
+尚未发布到 PyPI,从源码安装(一条命令),之后 `am` 成为 console script:
+
+```bash
+pip install "astor-memory @ git+https://github.com/aoiete/Astor-Memory.git"
+```
+
+可选 `[muse]` extra 安装 Muse 适配器包。发布到 PyPI 后会改成
+`pip install astor-memory`。
+
+需要 Python 3.10–3.13（3.14 暂时不被构建元数据接受）。
 
 ---
 
 ## 快速开始
 
 ```bash
-# 安装
-pip install astor-memory
+# 安装(尚未发布到 PyPI,从源码装)
+pip install "astor-memory @ git+https://github.com/aoiete/Astor-Memory.git"
 # 或带 Muse 适配器
-pip install astor-memory[muse]
+pip install "astor-memory[muse] @ git+https://github.com/aoiete/Astor-Memory.git"
 
 # 初始化全新 runtime
 export ASTOR_DIR=/var/lib/astor
@@ -101,7 +110,7 @@ python -m astor_memory.cli.main init
 python -m astor_memory.cli.main user add admin --role first_admin
 
 # 启动 server
-astor-server --host 127.0.0.1 --port 7803
+python -m astor_memory.server --host 127.0.0.1 --port 7803
 
 # 健康检查
 curl http://127.0.0.1:7803/v1/health

@@ -1,25 +1,33 @@
 # Quickstart
 
-5-minute end-to-end demo.
+5-minute end-to-end demo. Requires Python 3.10–3.13.
 
 ## 1. Install
 
 ```bash
-pip install astor-memory
+pip install "astor-memory @ git+https://github.com/aoiete/Astor-Memory.git"
 am init
-am admin lock --user-id=admin
+
+# Optional: populate demo data so the dashboard isn't empty
+am seed
+```
+
+`am init` creates the three stores and binds the first admin. Verify:
+
+```bash
+am doctor
 ```
 
 ## 2. Write a fact
 
 ```bash
-am write --text "Astor-Memory is a self-owned memory system for AI agents."
+am write "Astor-Memory is a self-owned memory system for AI agents."
 ```
 
 ## 3. Read it back
 
 ```bash
-am read --query "memory system agents"
+am recall "memory system agents" --zone none
 ```
 
 You should see your fact with score ~1.0 (exact match) or close to it.
@@ -28,13 +36,13 @@ You should see your fact with score ~1.0 (exact match) or close to it.
 
 ```bash
 # Add a non-admin user
-am bot add-user --user-id=alice --role=user --plan=vip --active=1
+am bot add-user --user-id=alice --role=user
 
 # Write to alice's private tier
-am write --text "alice's secret recipe" --tier=private --user-id=alice
+am write "alice's secret recipe" --tier=private --user=alice
 
 # Try to read alice's private fact as admin (you should be denied by ACL)
-am read --query "secret recipe" --tier=private --user-id=alice
+am recall "secret recipe" --zone none --tier=private --user=alice
 # Returns: 403 cross_user_forbidden
 ```
 
@@ -45,7 +53,7 @@ If you have an OpenAI-compatible API key, set it:
 ```bash
 export OPENROUTER_API_KEY=<your-key>
 export ASTOR_RERANK=1
-am read --query "memory system"
+am recall "memory system" --zone none
 ```
 
 Rerank re-orders the top-K results via LLM judgment. Disable with
@@ -69,9 +77,9 @@ The `public` tier gossips between nodes you approve. `private` and
 ```bash
 # Node A on :7803, node B on :7804 — separate ASTOR_DIRs
 export ASTOR_DIR=/tmp/astor-a
-astor-server --port 7803 &
+python -m astor_memory.server --port 7803 &
 export ASTOR_DIR=/tmp/astor-b
-astor-server --port 7804 &
+python -m astor_memory.server --port 7804 &
 
 # Each node announces itself; note the peer_id from /v1/identity
 curl -s localhost:7803/v1/identity
