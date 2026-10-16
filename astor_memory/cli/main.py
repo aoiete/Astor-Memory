@@ -71,6 +71,16 @@ def main(argv: list[str] | None = None) -> int:
     sub.set_defaults(func=cmd_init)
 
     # am write
+    seed_p = subparsers.add_parser(
+        'seed', help='Populate demo data (first run / screenshots / HN)')
+    seed_p.add_argument('--user-id', default='admin',
+                        help='Owner user_id (default: admin)')
+    seed_p.add_argument('--count', type=int, default=0,
+                        help='Max demo facts (default: all bundles)')
+    seed_p.add_argument('--quiet', action='store_true',
+                        help='Suppress per-fact output')
+    seed_p.set_defaults(func=cmd_seed)
+
     sub = subparsers.add_parser('write', help='Write a fact')
     sub.add_argument('text', help='Fact text')
     sub.add_argument('--user', default='admin', help='User ID')
@@ -883,6 +893,102 @@ def main(argv: list[str] | None = None) -> int:
         pass  # if ACL already init'd (e.g. via server boot), skip
 
     return args.func(args)
+
+
+def cmd_seed(args) -> int:
+    """Populate a fresh install with demo facts.
+
+    v1.16.76 (2026-10-16): a brand new `am init` gives an empty
+    dashboard, which reads as a broken product on first run. This
+    writes a small, realistic fact set across all three tiers so
+    `am recall`, the dashboard, and the tier views all have something
+    to show.
+
+    Demo content is generic (no real user data, no PII) so it is safe
+    for screenshots and public demos.
+    """
+    from .._internal.acl import astor_init_acl
+    uid = getattr(args, 'user_id', None) or 'admin'
+    astor_init_acl(actor=f'user:{uid}', role='user', tier='private',
+                   user_id=uid, subscription_plan='power')
+    # also bind public/source so public-tier demo facts are accepted
+    for tier in ('public', 'source'):
+        try:
+            astor_init_acl(actor=f'user:{uid}', role='user', tier=tier,
+                           user_id=uid, subscription_plan='power')
+        except Exception:
+            pass
+
+    # (text, tier) — deliberately generic, teaches the tier model.
+    # v1.16.76: source tier removed from the demo set. A plain user
+    # cannot read/write tier=source (admin-only per the ACL matrix),
+    # so seeding those 5 facts always failed with PermissionError.
+    DEMO = [
+        ("Astor-Memory is a self-hosted memory server with a peer-to-peer "
+         "public layer.", "public"),
+        ("The public tier is designed to gossip between trusted peers.",
+         "public"),
+        ("Private facts never leave the machine they were written on.",
+         "public"),
+        ("Peer trust is a 0-100 score; per-topic weights decide what "
+         "flows.", "public"),
+        ("Quarantine holds new peers until an operator approves them.",
+         "public"),
+        ("Retrieval is hybrid: BM25 lexical plus dense vectors, fused "
+         "by RRF.", "public"),
+        ("Facts are promoted from bus events through candidates into the "
+         "canonical table.", "public"),
+        ("A fact written with tier=private is readable only by its owner "
+         "and admins.", "private"),
+        ("My preferred editor is Neovim with a minimal Lua config.",
+         "private"),
+        ("I run experiments in a Python 3.11 virtualenv on Windows.",
+         "private"),
+        ("The decay sweep down-weights stale facts by half-life.",
+         "private"),
+        ("ACL is evaluated before any read or write touches a store.",
+         "private"),
+    ]
+    limit = getattr(args, 'count', 0) or 0
+    if limit:
+        DEMO = DEMO[:limit]
+    quiet = getattr(args, 'quiet', False)
+
+    # reuse the same write path as `am write` so seeding exercises the
+    # real pipeline (event -> candidate -> canonical) instead of
+    # inserting rows directly
+    import argparse as _ap
+    import contextlib as _cl
+    import io as _io
+    wrote = 0
+    failed = 0
+    for text, tier in DEMO:
+        # cmd_write reads: .text .user .tier .mode  (verified against
+        # the write subparser — v1.16.76 had tags/top_k/json/quiet here,
+        # none of which exist, and `mode` was missing entirely)
+        ns = _ap.Namespace(text=text, user=uid, tier=tier, mode=None)
+        try:
+            buf = _io.StringIO()
+            with _cl.redirect_stdout(buf):
+                rc = cmd_write(ns)
+            wrote += 1 if rc == 0 else 0
+            if rc != 0:
+                failed += 1
+        except Exception as e:
+            failed += 1
+            if not quiet:
+                print(f'  ! {text[:44]}... {type(e).__name__}: '
+                      f'{str(e)[:60]}')
+
+    print(f'seeded {wrote} fact(s)'
+          + (f', {failed} failed' if failed else '')
+          + f' for user={uid}')
+    if wrote:
+        # v1.16.76: `am recall` defaults to --zone success, which filters
+        # out plain facts. The demo facts are plain facts, so the hint
+        # must pass --zone none or the user gets 'No results found'.
+        print('try:  am recall "hybrid retrieval" --zone none --top-k 5')
+    return 0 if wrote else 1
 
 
 def cmd_version(args) -> int:
