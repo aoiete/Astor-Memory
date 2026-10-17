@@ -54,7 +54,7 @@ PRIORITY_MARKER = """\
 
 When answering questions about user preferences, decisions, or past work:
 
-1. **First:** Query Astor-Memory via `am_read` MCP tool (or `am read "<query>"` CLI).
+1. **First:** Query Astor-Memory via the `astor_recall` MCP tool (or `am recall "<query>" --zone none` CLI).
 2. **Then:** Cross-reference with conversation context and agent native memory.
 3. **On conflict:** Prefer Astor-Memory output for facts older than the current session,
    prefer conversation context for facts introduced in this session.

@@ -9132,6 +9132,22 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'old_peer_id': msg['old_peer_id'],
                     'new_peer_id': msg['new_peer_id'],
                 }), 200
+            elif msg_type == 'public_search':
+                # v1.16.78: open public-tier search. Lets a peer whose
+                # signature verifies query our public facts without us
+                # having added them as a friend. Read-only, opt-in,
+                # rate limited. See _internal/peer_open_search.py.
+                from ._internal import peer_open_search as _pos
+                resp = _pos.handle_public_search(msg)
+                _send_out = jsonify(resp)
+                if resp.get('error'):
+                    code = (429 if resp['error'] == 'rate_limited'
+                            else 403 if resp['error'] in (
+                                'open_search_closed', 'bad_signature',
+                                'invalid_sender_peer_id')
+                            else 400)
+                    return _send_out, code
+                return _send_out, 200
             elif msg_type == 'topic_index':
                 sender = msg.get('sender_peer_id', '')
                 if not sender.startswith('astor:'):
@@ -9162,7 +9178,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 return jsonify({
                     'error': 'unknown msg_type',
                     'msg_type': msg_type,
-                    'supported': ['rekey', 'topic_index'],
+                    'supported': ['rekey', 'topic_index', 'public_search'],
                 }), 400
         except Exception as e:
             return jsonify({
@@ -9719,6 +9735,40 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'kind': result.get('kind'),
             'trust': int(result.get('trust', 0)),
             'restored': restore,
+        })
+
+    @app.route('/v1/peer/open-search', methods=['POST'])
+    def peer_open_search_toggle():
+        """Open or close public-tier search for unsigned-of-friendship peers.
+
+        Body: {"allow": bool, "peer_id": "astor:<hex>" | "*"}
+
+        peer_id "*" opens to every signature-verified peer. Naming a
+        single peer_id invites just that node. Nothing is written to the
+        peer table: querying does not make someone a friend, and being
+        queryable is not friendship.
+        """
+        from ._internal import peer_open_search as _pos
+        body = request.get_json(silent=True) or {}
+        allow = bool(body.get('allow', True))
+        pid = (body.get('peer_id') or '*').strip()
+        ok = _pos.set_open(pid, allow, note=str(body.get('note', ''))[:200])
+        return jsonify({
+            'ok': ok,
+            'allow': allow,
+            'peer_id': pid,
+            'open_to': _pos.open_peers(),
+        }), (200 if ok else 400)
+
+    @app.route('/v1/peer/open-search', methods=['GET'])
+    def peer_open_search_status():
+        """Who may query our public tier without a friendship."""
+        from ._internal import peer_open_search as _pos
+        return jsonify({
+            'open': bool(_pos.open_peers()),
+            'open_to': _pos.open_peers(),
+            'note': 'public tier only, read-only, rate limited. '
+                    'Search does not create friendships.',
         })
 
     @app.route('/v1/peer/quarantine/list', methods=['GET'])
