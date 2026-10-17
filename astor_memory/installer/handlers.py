@@ -11,6 +11,7 @@ dry-run-able and testable without filesystem side-effects.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from .registry import (
     PRIORITY_MARKER,
@@ -84,7 +85,10 @@ def astor_install_opencode(agent_dir: Path, mode: str) -> dict:
     snippet = (
         "{\n"
         "  \"instructions\": [\n"
-        f"    \"# Memory source priority\\n{PRIORITY_MARKER}\"\n"
+        # PRIORITY_MARKER already starts with "## Memory source priority";
+        # prefixing another heading produced "# Memory source
+        # priority\n## Memory source priority" in opencode.json.
+        f"    {json.dumps(PRIORITY_MARKER)}\n"
         "  ]\n"
         "}\n"
     )
@@ -94,19 +98,91 @@ def astor_install_opencode(agent_dir: Path, mode: str) -> dict:
 
 
 def astor_install_hermes(agent_dir: Path, mode: str) -> dict:
-    """Hermes 0.20: Tier B — patch system_prompt.py to put _memory_manager before _memory_store.
+    """Hermes 0.20+: Tier B -- select astor_memory as the memory provider.
 
-    Per Plan: 5-line patch in `agent/_memory_manager` priority fix.
+    v1.16.77 (2026-10-16): this handler used to emit "patch
+    system_prompt.py lines 483-499 (5-line change)" and write no files
+    at all. That instruction is wrong: docs/agent-adapters.md recorded on
+    2026-08-15 that it does not match hermes-agent 0.20.0 source
+    (checked against commit 1649a4d7e) and removed it. Following the old
+    note left the user with an install that wrote nothing and pointed at
+    the wrong file.
+
+    What actually takes effect is `memory.provider: astor_memory` in
+    config.yaml. The hook entries under the same file are per-user
+    wiring and are not safe to generate blindly, so they stay manual.
+
+    Rewrites config.yaml in place (surgical, idempotent) and reports
+    what it changed. Does not touch anything else in the file.
     """
+    import re as _re
+
     if mode == 'replace':
-        return _result('hermes', mode, [], ['Hermes 0.20 does not support replace mode (memory_store is hardcoded). Use priority mode instead.'])
-    changes = []
-    notes = []
-    # Plan the patch (do not write directly in v0.2)
-    target = agent_dir / 'hermes-agent' / '.venv' / 'Lib' / 'site-packages' / 'agent' / 'system_prompt.py'
-    notes.append(f'Hermes priority: patch {target} line 483-499 to swap _memory_store / _memory_manager order.')
-    notes.append('Patch: 5-line change. Requires `pip install -e` or copy source to .venv.')
-    notes.append('Verify after restart: `hermes_verify.py` reads PID CreationDate to confirm reload.')
+        return _result(
+            'hermes', mode, [],
+            ['Hermes does not support replace mode -- its own '
+             'memory_store is hardcoded. Use priority mode instead.'])
+
+    notes: list[str] = []
+    changes: list[dict] = []
+
+    cfg = agent_dir / 'config.yaml'
+    if not cfg.exists():
+        cfg = Path.home() / '.hermes' / 'config.yaml'
+    if not cfg.exists():
+        return _result('hermes', mode, [], [
+            f'Could not find config.yaml (looked in {agent_dir} and '
+            f'~/.hermes). Set memory.provider: astor_memory manually, '
+            f'and make sure astor_memory is importable by the hermes '
+            f'venv (pip install -e . or PYTHONPATH).',
+            'Do NOT patch agent/system_prompt.py -- that recipe was '
+            'removed in docs/agent-adapters.md (2026-08-15) after being '
+            'found not to match hermes-agent 0.20.0.',
+        ])
+
+    text = cfg.read_text(encoding='utf-8')
+    m = _re.search(r'^(memory:\s*\n(?:[ \t]+\S.*\n)*)', text, _re.M)
+    if not m:
+        return _result('hermes', mode, [], [
+            f'No top-level `memory:` block found in {cfg}. Add one '
+            f'containing `provider: astor_memory`, or run with an agent '
+            f'config that has a memory section.',
+            'Do NOT patch agent/system_prompt.py -- that recipe was '
+            'removed in docs/agent-adapters.md (2026-08-15).',
+        ])
+
+    block = m.group(1)
+    pm = _re.search(r'^([ \t]+)provider:[ \t]*\S+', block, _re.M)
+    if pm and pm.group(0).split(':', 1)[1].strip() == 'astor_memory':
+        notes.append(f'{cfg} already selects provider: astor_memory '
+                     '-- nothing to change.')
+    elif pm:
+        indent = pm.group(1)
+        new_block = block[:pm.start()] + f'{indent}provider: astor_memory'
+        new_block += block[pm.end():]
+        changes.append({
+            'path': str(cfg), 'action': 'patch',
+            'content': text[:m.start(1)] + new_block + text[m.end(1):],
+        })
+        notes.append(f'{cfg}: provider switched from '
+                     f'{pm.group(0).split(":", 1)[1].strip()} to '
+                     f'astor_memory.')
+    else:
+        indent = _re.match(r'^(memory:\s*\n)([ \t]+)', block, _re.M)
+        pad = indent.group(2) if indent else '  '
+        new_block = block + f'{pad}provider: astor_memory\n'
+        changes.append({
+            'path': str(cfg), 'action': 'patch',
+            'content': text[:m.start(1)] + new_block + text[m.end(1):],
+        })
+        notes.append(f'{cfg}: added `provider: astor_memory` to the '
+                     f'memory block.')
+
+    notes.append('Restart the hermes gateway afterwards (R218: never '
+                 'restart it for the user).')
+    notes.append('Autorecord hooks (config.yaml hooks:) are per-user '
+                 'wiring and are NOT generated here -- add them by hand '
+                 'if you want conversation capture.')
     return _result('hermes', mode, changes, notes)
 
 

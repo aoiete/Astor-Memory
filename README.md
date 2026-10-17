@@ -425,6 +425,29 @@ and holds unknown peers in quarantine pending operator review.
 | Control | How |
 |---|---|
 | Add a peer | `POST /v1/peer/add` |
+| Open the public tier to signed queries | `POST /v1/peer/open-search` |
+| Who is open | `GET /v1/peer/open-search` |
+
+Peer search needs a relationship on both sides. Open search is the
+other mode: publish your `public` tier to any peer whose signature
+verifies, without adding anyone. Off by default.
+
+```bash
+# open to every signature-verified peer
+curl -X POST localhost:7803/v1/peer/open-search \
+     -H 'Content-Type: application/json' \
+     -d '{"allow": true, "peer_id": "*"}'
+
+# or invite exactly one node
+curl -X POST localhost:7803/v1/peer/open-search \
+     -H 'Content-Type: application/json' \
+     -d '{"allow": true, "peer_id": "astor:<32-hex>"}'
+```
+
+What it deliberately is not: `public` tier only, read-only, rate
+limited per caller, and it creates no friendships. `source` and
+`private` are unreachable — the public store is the only file opened,
+so the boundary is structural rather than a filter.
 | List peers | `GET /v1/peer/list` |
 | Tune trust | `POST /v1/peer/<peer_id>/trust` (0–100, default 30) |
 | Block a peer | `POST /v1/peer/<peer_id>/blacklist` |
