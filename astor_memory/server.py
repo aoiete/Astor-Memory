@@ -10224,41 +10224,99 @@ def main():
     parser.add_argument('--astor-dir', help='Override ASTOR_DIR (for testing)')
     args = parser.parse_args()
 
-    # v1.16.76: preflight the native ONNX runtime before anything else.
+    # v1.16.77: preflight the Visual C++ runtime, then onnxruntime.
     #
-    # Reported on Windows 11 x64 / Python 3.11.17 against v1.16.75: with
-    # onnxruntime 1.31.0 installed, `import onnxruntime` faults inside
-    # onnxruntime.capi._pybind_state while loading onnxruntime_pybind11_state,
-    # killing the process with a Windows access violation (exit 139) before
-    # the port is ever bound. A native fault raises nothing Python can catch,
-    # so from the outside it is indistinguishable from a segfault in astor's
-    # own code — and the operator's only evidence is that 7803 never listened.
+    # The v1.16.76 version of this block wrapped `import onnxruntime` in
+    # try/except and pointed at the <1.31 pin. Both halves of that were
+    # wrong, and the second half mattered more:
     #
-    # Importing it here, first, turns that into a named failure with the
-    # version and the fix. pyproject.toml now caps onnxruntime below 1.31 so a
-    # clean install does not reach this state; the check stays for anyone
-    # upgrading an environment that was created before the cap existed.
-    _ort_note = "ok"
+    #   - The pin was a guess generalised from one machine. A second install on
+    #     Python 3.11.17 resolved 1.30.0 — inside the pin — and crashed the
+    #     same way, which is what corrected the diagnosis.
+    #   - try/except cannot catch this at all. The fault is native (access
+    #     violation, exit 139) inside onnxruntime_pybind11_state, so control
+    #     never returns to the interpreter. On every host where this actually
+    #     happens, the v1.16.76 block was skipped entirely and the process died
+    #     silently, exactly as before. The error message it contained was never
+    #     seen by anyone it was written for.
+    #
+    # The real variable is the Visual C++ runtime. onnxruntime >= 1.21 needs
+    # vcruntime140_1.dll from the VS2022 toolchain; a VS2019-era 14.2x DLL
+    # resolves the entry point to garbage and the process dies on import.
+    # Upstream: microsoft/onnxruntime#16116 (Python 3.8 - 3.13 alike).
+    #
+    # So: check the DLL version first, while Python is still alive and can
+    # print something. Only then attempt the import, which is a confirmation
+    # rather than the diagnosis.
+    # v1.16.77: probe the native embedding stack, then decide — do not exit.
+    #
+    # The history of this block is worth keeping in mind. v1.16.76 wrapped
+    # `import onnxruntime` in try/except, which could never fire: the fault is
+    # native (access violation, exit 139), so control does not return to the
+    # interpreter at all. The guard was dead code on exactly the failures it
+    # was written for. v1.16.77 checks the VC++ runtime FIRST, while Python is
+    # still alive and can print — and then, rather than refusing to start,
+    # brings the server up in a reduced mode.
+    #
+    # Degrading beats exiting because the embedding stack is not what astor is
+    # for. It powers semantic recall; the bus, the ACL, exact recall, every
+    # SQLite tier and the whole REST surface work without it. An operator whose
+    # VC++ runtime needs updating should still be able to run `am doctor`, read
+    # /v1/health, and write facts while they sort it out — and should get a
+    # server that tells them semantic recall is off rather than no server at all.
+    _degraded_reason = None
     try:
-        import onnxruntime as _ort_pre
-        _ort_note = _ort_pre.__version__
-    except Exception as _v1676_ort:
+        from ._vcruntime import _read_vcruntime_version, _VCRUNTIME_BACKLINK
+        _vcr_ver, _vcr_old = _read_vcruntime_version()
+        if _vcr_ver is None or _vcr_old:
+            _degraded_reason = (
+                f"vcruntime140_1.dll is {'missing from System32' if _vcr_ver is None else _vcr_ver}"
+                f"; onnxruntime >= 1.21 needs 14.31+ (VS2022 generation)")
+            _EMBEDDING_BACKLINK = _VCRUNTIME_BACKLINK
+        else:
+            _EMBEDDING_BACKLINK = None
+    except Exception as _v1677_probe:
+        # The probe itself failed (non-Windows, or PowerShell unavailable).
+        # Not a reason to degrade — assume the host is fine and let the real
+        # import decide.
+        _degraded_reason = None
+        _EMBEDDING_BACKLINK = None
+        _vcr_ver = None
+
+    if _degraded_reason:
         sys.stderr.write(
-            "\n" + "=" * 68 + "\n"
-            "Astor-Memory: onnxruntime failed to import — the embedding stack\n"
-            "cannot start. This is almost always a bad native build.\n\n"
-            f"  error: {_v1676_ort}\n"
-            "  fix  : pip install 'onnxruntime<1.31'\n"
-            "          (v1.16.76 pins onnxruntime>=1.16,<1.31 for exactly this)\n"
-            "=" * 68 + "\n\n")
+            "\n" + "=" * 70 + "\n"
+            "[DEGRADED] the native embedding stack is unavailable on this host.\n\n"
+            f"  reason   : {_degraded_reason}\n"
+            "  effect   : semantic recall (/v1/read with a natural-language\n"
+            "             query) is disabled. Everything else works — the bus,\n"
+            "             exact lookup, the ACL, all SQLite tiers, the REST API.\n\n"
+            "  to fix   : install the x64 Visual C++ redistributable and restart\n"
+            "             Windows, then restart astor\n"
+            f"             {_EMBEDDING_BACKLINK}\n"
+            "             then verify with: am preflight\n"
+            + "=" * 70 + "\n\n")
         sys.stderr.flush()
-        sys.exit(70)
-    print(f'   onnxruntime: {_ort_note}', flush=True)
+    elif _vcr_ver:
+        print(f'   Visual C++ runtime: {_vcr_ver}  [ok]', flush=True)
 
     app = create_app(astor_dir=args.astor_dir)
     print(f'[*] Astor-Memory v{__version__} REST API')
     print(f'   Listening on http://{args.host}:{args.port}')
     print(f'   Endpoints: /v1/health /v1/dashboard /v1/write /v1/read /v1/install')
+    if _degraded_reason:
+        # Repeat it here, after the banner: this is the line an operator sees
+        # when they scroll back to ask "why is semantic recall empty?". The
+        # warning above goes to stderr before the app exists; this one is part
+        # of the startup output proper.
+        print(f'   SEMANTIC RECALL: DISABLED — {_degraded_reason}', flush=True)
+    else:
+        try:
+            import onnxruntime as _ort_ok
+            print(f'   onnxruntime: {_ort_ok.__version__}', flush=True)
+        except Exception:
+            print('   onnxruntime: import failed — semantic recall disabled',
+                  flush=True)
 
     # v1.16.41: serve via waitress for true bounded concurrency.
     import os as _os

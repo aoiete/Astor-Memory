@@ -133,6 +133,26 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument('value', nargs='?', help='Value to set')
     sub.set_defaults(func=cmd_config)
 
+    # v1.16.77: preflight — verify the host can run astor BEFORE anything
+    # tries. `am doctor` answers "is it healthy", this answers "will it even
+    # start", which is a different question on Windows where the native
+    # embedding stack can hard-crash the interpreter.
+    sub = subparsers.add_parser(
+        'preflight',
+        help='Check that this host can run astor (run this right after install)')
+    sub.add_argument(
+        '--simulate-vcruntime', metavar='X.Y',
+        help='Pretend vcruntime140_1.dll reports this version. Exercises the '
+             'blocked path so the failure output can be verified without '
+             'downgrading anything. Windows only.')
+    sub.add_argument(
+        '--fix', action='store_true',
+        help='Attempt to repair what can be repaired automatically. Currently: '
+             'download and install the Visual C++ redistributable when it is '
+             'too old for onnxruntime. Requires administrator rights; will '
+             'prompt via UAC.')
+    sub.set_defaults(func=cmd_preflight)
+
     # am install
     sub = subparsers.add_parser('install', help='Install Astor-Memory into another agent')
     sub.add_argument('--ide', required=True,
@@ -1705,6 +1725,40 @@ def cmd_doctor(args) -> int:
     # v1.16.76: process may be None when psutil is unavailable — report the
     # check we can still make rather than dereferencing it.
     mem_mb = (process.memory_info().rss / 1024 / 1024) if process else None
+
+    # v1.16.77: check the Visual C++ runtime BEFORE anything can crash on it.
+    #
+    # onnxruntime >= 1.21 will not import on a host whose vcruntime140_1.dll
+    # predates the VS2022 toolchain, and the failure is a native fault
+    # (exit 139) that Python cannot raise, catch, or trace — the process is
+    # simply gone and the only visible symptom is a port that never listens.
+    # Known upstream as microsoft/onnxruntime#16116, reported against Python
+    # 3.8 through 3.13.
+    #
+    # Putting the check here means an operator finds out from `am doctor` —
+    # which runs, unlike the server — instead of from a dead server.
+    from .._vcruntime import _read_vcruntime_version, _VCRUNTIME_BACKLINK
+    _v1677_ver, _v1677_old = _read_vcruntime_version()
+    if _v1677_ver is None:
+        print('   Visual C++ runtime: NOT FOUND in System32')
+        print('      -> onnxruntime will not import; the server cannot start.')
+        print(f'      -> install the x64 redistributable: {_VCRUNTIME_BACKLINK}')
+    elif _v1677_old:
+        print(f'   Visual C++ runtime: {_v1677_ver}  [TOO OLD for onnxruntime >= 1.21]')
+        print('      -> the server will die with exit 139 at import, before it')
+        print('         binds its port. This looks like a crash with no cause.')
+        print(f'      -> fix: install the x64 redistributable: {_VCRUNTIME_BACKLINK}')
+        print('         (the currently installed one is VS2019-era; onnxruntime')
+        print('          needs VS2022-era 14.3x or newer)')
+    else:
+        print(f'   Visual C++ runtime: {_v1677_ver}  [ok]')
+
+    # v1.16.77: a stale VC++ runtime is the one condition that makes the server
+    # unstartable rather than merely unhealthy, so it gets its own exit code.
+    # 2 is distinct from the 1 that means "installed but something's wrong",
+    # which lets an installer or CI gate on it directly.
+    _v1677_fatal = (_v1677_ver is None) or _v1677_old
+
     print(f'[astor] astor-memory v{__version__} health check')
     if process:
         print(f'   PID: {process.pid}  Memory RSS: {mem_mb:.1f} MB')
@@ -1817,6 +1871,135 @@ def cmd_config(args) -> int:
     else:
         print(f'Unknown action: {args.action}')
         return 1
+    return 0
+
+
+def _recheck_after_fix() -> bool:
+    """Re-test the native stack after an automatic repair. Returns still_blocked.
+
+    The installer's own exit code is not taken at face value: it can report
+    success while the running process is still mapped against the previous
+    DLLs, and onnxruntime's import is the only thing that settles it. That
+    import is safe to attempt here precisely because the VC++ runtime is now
+    known to be current — that was the crash precondition.
+    """
+    import platform
+    if platform.system() != 'Windows':
+        return False
+    try:
+        import onnxruntime as _ort
+        print(f'       re-check: onnxruntime {_ort.__version__} imports successfully')
+        return False
+    except Exception as _e:
+        print(f'       re-check: onnxruntime still fails ({_e})')
+        if 'vcruntime140_1.dll' in str(_e) or 'DLL load failed' in str(_e):
+            print('       This process is still running against the old DLL.')
+            print('       Restart Windows, then re-run `am preflight`.')
+        return True
+
+
+def cmd_preflight(args) -> int:
+    """v1.16.77: host-capability check, safe to run anywhere.
+
+    Deliberately narrow and dependency-free. It answers exactly one question
+    — "will the server start on this machine?" — before any of the moving
+    parts (databases, models, agents) are involved. Everything it prints is
+    actionable, and it never guesses: an unreadable value is reported as
+    unreadable rather than assumed good.
+
+    Exit codes, chosen so a script can branch on them:
+        0  ready
+        2  blocked — astor cannot start, and the reason is printed
+    """
+    import platform
+    import sys as _sys
+
+    print('[astor] host preflight')
+    print(f'   python     : {platform.python_version()}  ({sys.executable})')
+    print(f'   platform   : {platform.system()} {platform.release()} {platform.machine()}')
+    blocked = False
+
+    # --- native embedding stack ------------------------------------------------
+    # The one that kills installs silently. onnxruntime >= 1.21 needs a
+    # VS2022-generation VC++ runtime; on a VS2019-era one the import is a
+    # native fault (exit 139) with no traceback, and the server dies before it
+    # binds a port. Upstream microsoft/onnxruntime#16116.
+    from .._vcruntime import _read_vcruntime_version, _VCRUNTIME_BACKLINK
+    _ver, _old = _read_vcruntime_version()
+    if getattr(args, 'simulate_vcruntime', None):
+        # Used by the test suite and by anyone who wants to see what the
+        # blocked path actually prints. Without it, verifying the message means
+        # downgrading a working machine's VC++ runtime, which is not a test
+        # anyone should run on their production host.
+        _ver = str(args.simulate_vcruntime)
+        _old = tuple(int(x) for x in _ver.split('.')[:2]) < (14, 31)
+        print(f'   (simulating vcruntime140_1.dll = {_ver})')
+    if _ver is None:
+        print('   VC++ runtime: MISSING')
+        print('      BLOCKER — onnxruntime cannot import. Install the x64')
+        print(f'      redistributable: {_VCRUNTIME_BACKLINK}')
+        blocked = True
+    elif _old:
+        print(f'   VC++ runtime: {_ver}  [TOO OLD]')
+        print('      BLOCKER — onnxruntime >= 1.21 needs 14.31+ (VS2022). With this')
+        print('      DLL the server dies at import with exit 139 and no traceback.')
+        print(f'      fix: {_VCRUNTIME_BACKLINK}')
+        blocked = True
+    else:
+        print(f'   VC++ runtime: {_ver}  [ok]')
+
+    # Only attempted once the runtime is known good — the import can still hard
+    # crash, so it is the confirmation step, never the diagnosis.
+    try:
+        import onnxruntime as _ort
+        print(f'   onnxruntime : {_ort.__version__}  [ok]')
+    except Exception as _e:
+        print(f'   onnxruntime : FAILED TO IMPORT — {_e}')
+        print('      BLOCKER — reinstall the wheel:')
+        print('      pip install --force-reinstall --no-cache-dir onnxruntime')
+        blocked = True
+
+    try:
+        import numpy as _np
+        print(f'   numpy       : {_np.__version__}  [ok]')
+    except Exception as _e:
+        print(f'   numpy       : FAILED — {_e}')
+        blocked = True
+
+    # v1.16.78: offer the repair rather than only describing it. The whole
+    # point is that an operator staring at a dead server should not have to
+    # know that a system DLL is the cause.
+    if blocked and getattr(args, 'fix', False):
+        from .._vcruntime import install_vcredist
+        print()
+        print('[fix] attempting automatic repair...')
+        result = install_vcredist(dry_run=False)
+        status = result.get('status')
+        detail = result.get('detail', '')
+        print(f'       status: {status}')
+        if detail:
+            print(f'       {detail}')
+        if status in ('installed', 'needs_reboot'):
+            print()
+            print('[fix] the Visual C++ redistributable is now current.')
+            print('       Re-run `am preflight` after restarting Windows; this')
+            print('       process is still mapped against the previous DLL.')
+            return 2
+        if status == 'already_current':
+            blocked = _recheck_after_fix()
+        else:
+            print()
+            print('[fix] automatic repair did not complete. Manual fallback:')
+            print(f'       {_VCRUNTIME_BACKLINK}')
+            print('       Download the x64 package, install it, restart Windows,')
+            print('       then re-run `am preflight`.')
+
+    print()
+    if blocked:
+        print('[BLOCKED] astor cannot start on this host yet. Fix the item(s)')
+        print('           marked BLOCKER above, then re-run `am preflight`.')
+        return 2
+    print('[READY] the host can run astor. Next: `am doctor` for full health.')
     return 0
 
 
@@ -2042,6 +2225,12 @@ def cmd_mm_list(args):
     _items = _mm_list(_bus, tier=_tier, user_id=_user)
     if not _items:
         print(f"   no mental_models for tier={getattr(args, 'tier', 'public')} user={getattr(args, 'user_id', None)}")
+        if _v1677_fatal:
+            print()
+            print('[FATAL] the Visual C++ runtime is the blocker above — the')
+            print('        server cannot start until it is updated. Everything')
+            print('        else in this report is moot until then.')
+            return 2
         return 0
     print(f"   {len(_items)} mental_model(s):")
     for _mm in _items:

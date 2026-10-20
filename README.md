@@ -192,6 +192,11 @@ pip install "astor-memory @ git+https://github.com/<repo-owner>/Astor-Memory.git
 # or, with the Muse adapter
 pip install "astor-memory[muse] @ git+https://github.com/<repo-owner>/Astor-Memory.git"
 
+# Windows: check the host can run astor BEFORE starting anything.
+# Takes a second. If the Visual C++ runtime is too old for onnxruntime,
+# `am preflight --fix` downloads and installs it for you.
+am preflight --fix
+
 # Initialize a fresh runtime
 export ASTOR_DIR=/var/lib/astor
 mkdir -p "$ASTOR_DIR"
@@ -496,3 +501,14 @@ MIT — see [LICENSE](LICENSE).
 ## Maintainer
 
 Astor-Memory Maintainers — see [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
+
+## Installation troubleshooting
+
+Windows installs can fail in a way that produces no error message at all —
+onnxruntime needs the Visual C++ 2015-2022 redistributable (x64), and without
+it the import is a native fault rather than an exception, so the process dies
+before Python can report anything.
+
+`am preflight` diagnoses this in one second and `am preflight --fix` repairs it.
+See **[INSTALL.md](INSTALL.md)** for the full guide, including the degraded
+mode astor falls back to when the runtime cannot be updated.
