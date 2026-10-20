@@ -19,7 +19,7 @@ name = "astor-memory"
 # Version unified across source, runtime, hooks, plugins.
 
 
-version = "1.16.76"
+version = "1.16.78"
 
 
 description = "Self-owned memory system for AI agents: 3-tier × 3-store × 3-scope = 9+ SQLite layout, multi-user ACL, WeChat/Telegram/Discord token manager, MCP server"
@@ -146,26 +146,33 @@ dependencies = [
 
 
     "fastembed>=0.3,<1.0",
-    # v1.16.76: pin onnxruntime below the 1.31 line.
+    # onnxruntime — pulled in transitively by fastembed, pinned here so the
+    # version is visible in the project's own dependency set rather than an
+    # accident of the resolver.
     #
-    # onnxruntime is pulled in transitively by fastembed and was previously
-    # unpinned, so `uv pip install -e .` resolved 1.31.0. On Windows 11 x64 /
-    # Python 3.11.17 that build faults on import:
+    # v1.16.76 shipped a WRONG explanation for a real Windows failure and is
+    # corrected here in v1.16.77. What was written: "1.31.0 faults, 1.29.0 is
+    # verified good, therefore cap at <1.31." That was one machine generalised
+    # into a rule. A second machine on Python 3.11.17 then resolved 1.30.0 —
+    # inside the cap — and crashed identically. The cap was never the fix; it
+    # only moved the failure to a version that had not been disproven yet.
     #
-    #     import onnxruntime
-    #     -> onnxruntime.capi._pybind_state
-    #     -> onnxruntime_pybind11_state
-    #     -> Windows access violation (exit 139)
+    # The actual variable is the Visual C++ runtime, not the ORT version:
     #
-    # Reported against v1.16.75. It is a NATIVE fault, not a Python exception:
-    # nothing in astor can try/except around it, and `python -m
-    # astor_memory.server` dies before it can bind its port. Downgrading to
-    # 1.22.0 did not help on the reporter's machine, so the working
-    # configuration is the ceiling rather than a floor — 1.29.0 is verified
-    # good here (the reference install), 1.31.0 is verified fatal there.
+    #   vcruntime140_1.dll   working install   failing install
+    #   14.51.36247.0        14.28.29325.2
     #
-    # Constrain the transitive dependency explicitly rather than relying on the
-    # resolver, because the failure mode is a dead server with no traceback.
+    # onnxruntime wheels from 1.21 onward are built against a newer MSVC
+    # runtime than 14.28 ships, so the DLL's entry point resolves to garbage
+    # and the process dies during onnxruntime.capi._pybind_state import —
+    # exit 139 on Windows, which is a hard fault no Python try/except can
+    # catch. Known upstream as microsoft/onnxruntime#16116, reported against
+    # Python 3.8 through 3.13 alike, so it tracks the runtime rather than the
+    # interpreter.
+    #
+    # So the pin is kept for reproducibility, but it is NOT the remedy, and
+    # the README install steps now lead with the VC++ redistributable check.
+    # `am doctor` reports the runtime version for the same reason.
     "onnxruntime>=1.16,<1.31",
 
 

@@ -45,8 +45,73 @@ def _gc_collect_safe():
         pass
 
 
+def _embedding_stack_available() -> tuple[bool, str]:
+    """Can we load an embedding model on this host at all?
+
+    Returns (ok, reason). reason is empty when ok.
+
+    v1.16.77: the native embedding stack is the single hardest dependency in
+    astor to install, because its failure mode is a hard process fault rather
+    than an exception. onnxruntime >= 1.21 will not import on a host whose
+    vcruntime140_1.dll predates the VS2022 generation — the import dies with
+    an access violation (exit 139) and control never returns to the
+    interpreter, so no try/except anywhere in this process can intercept it.
+
+    That made an embedding-stack problem indistinguishable from astor being
+    broken: the server died before binding its port with no traceback, and
+    even the v1.16.76 preflight could not run because it tried the very
+    import it was meant to guard.
+
+    So astor is taught to run without it. Keyword search, exact recall, the
+    bus, the ACL and every SQLite path keep working; only semantic recall is
+    unavailable, and callers get an explicit, catchable error naming the
+    remedy instead of a dead process.
+    """
+    try:
+        from . import _vcruntime
+        ver, too_old = _vcruntime._read_vcruntime_version()
+        if ver is None or too_old:
+            return False, (
+                f"Visual C++ runtime is {'missing' if ver is None else ver} "
+                f"(onnxruntime needs 14.31+, VS2022 generation). "
+                f"Install: {_vcruntime._VCRUNTIME_BACKLINK}"
+            )
+    except Exception:
+        pass  # non-Windows, or the probe itself unavailable — fall through
+    return True, ""
+
+
+_EMBEDDING_UNAVAILABLE_REASON: str | None = None
+
+
 def _make_model(model_name: str):
-    from fastembed import TextEmbedding
+    """Load a fastembed model, or raise a clear, catchable error.
+
+    Import is deferred into the call so a missing/broken native stack surfaces
+    here — as an exception astor can handle — rather than at module import
+    time, where it would take the whole server down before it can even report
+    what is wrong.
+    """
+    global _EMBEDDING_UNAVAILABLE_REASON
+    ok, reason = _embedding_stack_available()
+    if not ok:
+        _EMBEDDING_UNAVAILABLE_REASON = reason
+        raise RuntimeError(
+            "Embedding stack unavailable: " + reason
+            + " | astor runs without it: exact recall, the bus, the ACL and all "
+              "SQLite paths keep working; semantic /v1/read is disabled until "
+              "this is fixed. See INSTALL.md#windows-read-this-before-you-install"
+        )
+    try:
+        from fastembed import TextEmbedding
+    except Exception as e:
+        _EMBEDDING_UNAVAILABLE_REASON = str(e)
+        raise RuntimeError(
+            f"Embedding stack unavailable: fastembed/onnxruntime import failed ({e}). "
+            "astor runs without it; semantic recall is disabled. "
+            "Fix: pip install --force-reinstall --no-cache-dir onnxruntime"
+        ) from e
+    _EMBEDDING_UNAVAILABLE_REASON = None
     return TextEmbedding(model_name=model_name)
 
 
