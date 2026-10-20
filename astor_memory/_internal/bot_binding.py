@@ -275,6 +275,9 @@ VALID_ROLES = frozenset({"admin", "user", "first_admin", "system"})
 VALID_SUBSCRIPTION_PLANS = frozenset({"admin", "free", "trial", "vip", "power", "pro"})
 # 'admin' is a real default_tier: it means "the operator's own private
 # bucket", and every consumer resolves it to private_<user_id>.
+# 'repo' was retired in v1.16.79 — the tier stays in acl.Tier so existing
+# repos/<id>/ databases keep resolving, but it is no longer something a user
+# should be routed to, so it is not accepted as a new default_tier.
 VALID_DEFAULT_TIERS = frozenset({"admin", "public", "private", "source"})
 
 

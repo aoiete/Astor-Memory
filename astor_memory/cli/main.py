@@ -891,11 +891,11 @@ def main(argv: list[str] | None = None) -> int:
     plat_user.add_argument('short_alias')
     plat_user.add_argument('--real-name', default=None)
     plat_user.add_argument('--role', default='user', choices=['user', 'admin'])
-    plat_user.add_argument('--plan', default='free', choices=['free', 'vip', 'power'])
+    plat_user.add_argument('--plan', default='free', choices=['admin', 'free', 'vip', 'power'])
     plat_user.set_defaults(func=cmd_platform_add_user)
     plat_setplan = plat_sub.add_parser('set-plan', help='Update a user\'s subscription_plan (admin only)')
     plat_setplan.add_argument('user_id', help='Target user_id (must exist)')
-    plat_setplan.add_argument('plan', choices=['free', 'vip', 'power'],
+    plat_setplan.add_argument('plan', choices=['admin', 'free', 'vip', 'power'],
                               help='New plan: free | vip | power')
     plat_setplan.add_argument('--reason', default=None, help='Why this plan change (logged)')
     plat_setplan.set_defaults(func=cmd_platform_set_plan)
@@ -1103,6 +1103,53 @@ def cmd_init(args) -> int:
     nest = _astor_nest_func()
     _forge_module = _astor_forge_func()  # forge is pure module; ensures it's importable
     print(f'[OK] Astor-Memory initialized at {astor_dir}')
+
+    # v1.16.79: identity and owner row.
+    #
+    # Neither existed after `am init` until the operator happened to run
+    # `am peer init` / `am peer status`, which is the only thing that calls
+    # init_identity(). So a fresh install had no peer id — and no way to sign,
+    # no way to be found by a peer, and nothing on disk identifying this
+    # install as itself. init_identity() is idempotent and DB-bound, so calling
+    # it here costs one file read on an install that already has one.
+    try:
+        from .._internal.peer_identity import init_identity
+        _v1679_ident = init_identity()
+        print(f'[OK]    peer id: {_v1679_ident["peer_id"]}')
+    except Exception as _v1679_pid:
+        print(f'[WARN]  could not initialize peer identity: {_v1679_pid}')
+
+    # The owner row. `am init` created the databases and stopped, so user_meta
+    # stayed empty and the dashboard counted zero users — matching the operator
+    # report of "no admin". Nothing else creates this row either: `am bot
+    # add-user` and `am platform add-user` both take an explicit user_id.
+    #
+    # All three columns are 'admin' per the operator's stated intent that admin
+    # is one consistent value across role / plan / tier. Both are legal in
+    # VALID_ROLES and VALID_SUBSCRIPTION_PLANS, and 'admin' resolves to the
+    # operator's own private bucket on the write path.
+    #
+    # This is not a privilege grant: an admin row with no platform binding
+    # cannot be reached by an agent, because binding is what authorises a
+    # caller. It makes the install self-describing rather than empty.
+    try:
+        from .._internal.bot_binding import upsert_user, set_user_default_tier
+        upsert_user(
+            user_id='admin',
+            short_alias='admin',
+            role='admin',
+            subscription_plan='admin',
+            source='cli:init',
+        )
+        # upsert_user does not take default_tier — it is a separate setter,
+        # because tier is the column the routing layer reads and changing it
+        # mid-life moves an existing user's facts between databases.
+        set_user_default_tier('admin', 'admin')
+        print('[OK]    owner row: user_meta admin (role=admin plan=admin '
+              'tier=admin)')
+    except Exception as _v1679_owner:
+        print(f'[WARN]  could not create owner row: {_v1679_owner}')
+
     # v1.16.79: point at the next step. `am init` creates the databases and
     # stops, leaving a dashboard that shows zeroes with no indication of how to
     # change that — the operator has to already know that users live in
