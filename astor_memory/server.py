@@ -10224,6 +10224,37 @@ def main():
     parser.add_argument('--astor-dir', help='Override ASTOR_DIR (for testing)')
     args = parser.parse_args()
 
+    # v1.16.76: preflight the native ONNX runtime before anything else.
+    #
+    # Reported on Windows 11 x64 / Python 3.11.17 against v1.16.75: with
+    # onnxruntime 1.31.0 installed, `import onnxruntime` faults inside
+    # onnxruntime.capi._pybind_state while loading onnxruntime_pybind11_state,
+    # killing the process with a Windows access violation (exit 139) before
+    # the port is ever bound. A native fault raises nothing Python can catch,
+    # so from the outside it is indistinguishable from a segfault in astor's
+    # own code — and the operator's only evidence is that 7803 never listened.
+    #
+    # Importing it here, first, turns that into a named failure with the
+    # version and the fix. pyproject.toml now caps onnxruntime below 1.31 so a
+    # clean install does not reach this state; the check stays for anyone
+    # upgrading an environment that was created before the cap existed.
+    _ort_note = "ok"
+    try:
+        import onnxruntime as _ort_pre
+        _ort_note = _ort_pre.__version__
+    except Exception as _v1676_ort:
+        sys.stderr.write(
+            "\n" + "=" * 68 + "\n"
+            "Astor-Memory: onnxruntime failed to import — the embedding stack\n"
+            "cannot start. This is almost always a bad native build.\n\n"
+            f"  error: {_v1676_ort}\n"
+            "  fix  : pip install 'onnxruntime<1.31'\n"
+            "          (v1.16.76 pins onnxruntime>=1.16,<1.31 for exactly this)\n"
+            "=" * 68 + "\n\n")
+        sys.stderr.flush()
+        sys.exit(70)
+    print(f'   onnxruntime: {_ort_note}', flush=True)
+
     app = create_app(astor_dir=args.astor_dir)
     print(f'[*] Astor-Memory v{__version__} REST API')
     print(f'   Listening on http://{args.host}:{args.port}')
