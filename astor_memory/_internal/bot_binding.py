@@ -254,6 +254,53 @@ def get_user(user_id_or_alias: str) -> dict | None:
     return dict(row) if row else None
 
 
+# v1.16.79: the legal value sets for user_meta's two routing columns.
+#
+# Both columns were free TEXT with a DEFAULT and no CHECK, so anything could
+# be written into them — and `admin` is exactly what an operator would write
+# when asked to "make this user an admin", which is a ROLE, not a tier and not
+# a plan. Once written, the value had to be papered over downstream: the /v1
+# write path grew a branch mapping default_tier == 'admin' to the private tier,
+# and the dashboard grew an 'admin' entry in its plan ranking. Both existed only
+# to tolerate data that should never have been storable.
+#
+# Constrained here at the single write path every caller funnels through, so
+# the downstream compatibility branches can be deleted rather than maintained
+# forever. Existing rows are not rewritten by this change — `am doctor
+# --migrate-user-meta` reports and repairs them.
+VALID_ROLES = frozenset({"admin", "user", "first_admin", "system"})
+# 'admin' is a real plan: it is what the operator's own account carries, and
+# the dashboard sorts it to the top (PLAN_RANK admin:0) so the operator row is
+# always visible above every other user.
+VALID_SUBSCRIPTION_PLANS = frozenset({"admin", "free", "trial", "vip", "power", "pro"})
+# 'admin' is a real default_tier: it means "the operator's own private
+# bucket", and every consumer resolves it to private_<user_id>.
+VALID_DEFAULT_TIERS = frozenset({"admin", "public", "private", "source"})
+
+
+def _validate_user_meta_values(role=None, subscription_plan=None,
+                              default_tier=None) -> None:
+    """Reject values that cannot be routed. Raises ValueError naming the legal set.
+
+    v1.16.79: rejecting here rather than defaulting is deliberate. Silently
+    coercing a bad tier to 'public' would send a private write to the public
+    bucket — an isolation failure, not a cosmetic one — so the caller is told
+    instead.
+    """
+    if role is not None and role not in VALID_ROLES:
+        raise ValueError(
+            f"invalid role {role!r}; expected one of {sorted(VALID_ROLES)}")
+    if (subscription_plan is not None
+            and subscription_plan not in VALID_SUBSCRIPTION_PLANS):
+        raise ValueError(
+            f"invalid subscription_plan {subscription_plan!r}; expected one of "
+            f"{sorted(VALID_SUBSCRIPTION_PLANS)}")
+    if default_tier is not None and default_tier not in VALID_DEFAULT_TIERS:
+        raise ValueError(
+            f"invalid default_tier {default_tier!r}; expected one of "
+            f"{sorted(VALID_DEFAULT_TIERS)}")
+
+
 def upsert_user(
     user_id: str,
     short_alias: str,
@@ -265,7 +312,14 @@ def upsert_user(
     active: bool = True,
     source: str = "manual",
 ) -> None:
-    """Insert or update a user_meta row. Returns user_id."""
+    """Insert or update a user_meta row. Returns user_id
+
+    v1.16.79: role / subscription_plan are validated before the write. A caller
+    that passes role="admin" alongside subscription_plan="admin" — the shape a
+    "make me an admin" flag tends to produce — now fails loudly at the write
+    instead of producing a row the routing layer has to special-case forever.
+    """
+    _validate_user_meta_values(role=role, subscription_plan=subscription_plan)
     con = _connect()
     now = _now_iso()
     con.execute("""
@@ -301,6 +355,24 @@ def upsert_user(
 # trusting the caller. Both columns are audited on change because they escalate
 # privilege (a trusted_agent's writes default to admin-visible tiers).
 
+# v1.16.79: 'admin' STAYS. It is a legitimate value, not corruption.
+#
+# An earlier pass in this same change removed 'admin' on the reasoning that it
+# is a role rather than a tier, and proposed to migrate existing rows away
+# from it. That was wrong on the evidence: the operator's own intent is that a
+# first_admin row carries admin in BOTH columns, and the rest of the codebase
+# already treats it as first-class — the dashboard ranks subscription_plan
+# 'admin' at 0 so the operator surfaces above every user, and
+# dashboard_data._LEGACY_PRIVATE_STEMS maps the 'admin' stem to the private
+# tier. Scrubbing the value would have made the operator's own account
+# invisible in their own UI.
+#
+# The real defect was never the value. It was that the tier was undeclared:
+# nothing said which strings were routable, so nothing could reject a
+# genuinely wrong one. That is fixed by VALID_DEFAULT_TIERS /
+# VALID_SUBSCRIPTION_PLANS below, which accept admin and reject everything
+# else. `am doctor --migrate-user-meta` now only reports values outside those
+# sets, so an admin row is never reported and never touched.
 _VALID_TIERS = ("public", "source", "private", "admin")
 
 
@@ -605,3 +677,111 @@ def check_cross_channel_consistency() -> list[dict]:
                 "issues": issues,
             })
     return inconsistencies
+
+# ============================================================
+# v1.16.79: repair rows written before the value sets were enforced
+# ============================================================
+
+def scan_user_meta_values() -> dict:
+    """Report user_meta rows whose routing columns hold unroutable values.
+
+    Returns {"bad_tier": [(user_id, value), ...], "bad_plan": [(user_id, value), ...],
+             "checked": int}. Read-only; repairs nothing.
+
+    The two columns had no CHECK constraint, so 'admin' — a role, not a tier
+    and not a plan — could be stored in either. The write path now refuses to
+    create such a row; this finds the ones that already exist.
+    """
+    con = _connect()
+    try:
+        tiers = list(con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_meta'"))
+        if not tiers:
+            return {"bad_tier": [], "bad_plan": [], "checked": 0}
+        total = con.execute("SELECT COUNT(*) FROM user_meta").fetchone()[0]
+        bad_tier = [
+            (r[0], r[1]) for r in con.execute(
+                "SELECT user_id, default_tier FROM user_meta "
+                "WHERE default_tier NOT IN "
+                "('admin','public','source','private') OR default_tier IS NULL")
+        ]
+        bad_plan = [
+            (r[0], r[1]) for r in con.execute(
+                "SELECT user_id, subscription_plan FROM user_meta "
+                "WHERE subscription_plan NOT IN "
+                "('admin','free','trial','vip','power','pro') "
+                "OR subscription_plan IS NULL")
+        ]
+        return {"bad_tier": bad_tier, "bad_plan": bad_plan, "checked": total}
+    finally:
+        con.close()
+
+
+def migrate_user_meta_values(dry_run=True) -> dict:
+    """Repair unroutable default_tier / subscription_plan values.
+
+    v1.16.79. The mapping is not arbitrary:
+
+      default_tier  'admin' -> 'private'
+        Only reached for a tier outside VALID_DEFAULT_TIERS. 'admin' is in
+        that set and is therefore never touched here — it is the operator's
+        own bucket and stays as written.
+
+      subscription_plan  -> 'trial'
+        Only reached for a plan outside VALID_SUBSCRIPTION_PLANS. 'admin' is
+        in that set too, so the operator's own plan is never rewritten.
+
+      So in practice this only repairs typos and values written by code that
+      bypassed the setter: 'Admin', 'ADMIN', 'vip ', 'premium', ''. Facts are
+      NOT re-scoped or deleted — only the mislabelled column is corrected.
+
+    Returns a dict with the rows changed (or that would change, under dry_run).
+    """
+    # Read the offenders and close the connection BEFORE auditing.
+    #
+    # _audit() opens its own connection to the audit database, and doing that
+    # while holding this one left the module-level connection in a state where
+    # the following statements raised "Cannot operate on a closed database" —
+    # the same class of error as astor R-class 12953, where two handles to one
+    # SQLite file fight. Sequence the work instead of nesting it.
+    con = _connect()
+    try:
+        tier_rows = list(con.execute(
+            "SELECT user_id, default_tier FROM user_meta "
+            "WHERE default_tier NOT IN ('public','source','private') "
+            "OR default_tier IS NULL"))
+        plan_rows = list(con.execute(
+            "SELECT user_id, subscription_plan FROM user_meta "
+            "WHERE subscription_plan NOT IN "
+            "('free','trial','vip','power','pro') OR subscription_plan IS NULL"))
+        if not dry_run and (tier_rows or plan_rows):
+            stamp = _now_iso()
+            for user_id, value in tier_rows:
+                con.execute(
+                    "UPDATE user_meta SET default_tier = ?, updated_at = ? "
+                    "WHERE user_id = ?",
+                    ('private' if value.lower() == 'admin' else 'public', stamp, user_id))
+            for user_id, _value in plan_rows:
+                con.execute(
+                    "UPDATE user_meta SET subscription_plan = ?, updated_at = ? "
+                    "WHERE user_id = ?",
+                    ('power', stamp, user_id))
+            con.commit()
+    finally:
+        con.close()
+
+    # Auditing after the write, on its own connections, one per changed row.
+    if not dry_run:
+        for user_id, value in tier_rows:
+            _audit(action="admin_op", target=f"user_meta/{user_id}",
+                   metadata={"field": "default_tier", "old": value,
+                             "new": 'private' if value == 'admin' else 'public'},
+                   reason="v1.16.79 migrate unroutable default_tier")
+        for user_id, value in plan_rows:
+            _audit(action="admin_op", target=f"user_meta/{user_id}",
+                   metadata={"field": "subscription_plan", "old": value,
+                             "new": "power"},
+                   reason="v1.16.79 migrate unroutable subscription_plan")
+
+    return {"dry_run": dry_run,
+            "default_tier": [(u, v) for u, v in tier_rows],
+            "subscription_plan": [(u, v) for u, v in plan_rows]}
