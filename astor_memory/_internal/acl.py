@@ -85,9 +85,21 @@ _USER_ID_RE = _re_.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 # User (any plan): own private + (with grant) cross private. Public write
 # requires plan in ('permanent','lifetime','paid').
 _MATRIX = {
-    # Source (SSoT): admin only.
-    ("read", "source"): {"admin"},
-    ("write", "source"): {"admin"},
+    # Source (SSoT): admin + this machine's own agent.
+    #
+    # 'system' was missing here, which meant the local agent could not record
+    # anything it learned about its own host. Its only writable tier was
+    # public — so every operational fact it captured (watchdog bugfixes, host
+    # paths, PYTHONPATH leakage, port conflicts) landed in the layer every
+    # user can read. 4,700-odd facts in the public bus are exactly that.
+    #
+    # Granting 'system' write access to source does not widen exposure: source
+    # is not a shared-readable layer, and the hooks and crons that act as
+    # 'system' already run on this machine, where admin can read everything
+    # they see anyway. The alternative — leaving 'system' out — means the only
+    # way to persist host knowledge is to publish it to every user.
+    ("read", "source"): {"admin", "system"},
+    ("write", "source"): {"admin", "system"},
     # Public: everyone reads. Writing allowed for admin + user (user needs
     # non-trial plan — endpoint gate enforces).
     ("read", "public"): {"admin", "user", "system"},

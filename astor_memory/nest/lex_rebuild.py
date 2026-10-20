@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from .lex_index import astor_lex, _lex_db_path
-from .._internal.acl_layout import get_db_path, list_user_ids, list_repo_ids
+from .._internal.acl_layout import get_db_path, list_user_ids, list_repo_ids  # noqa: F401
 
 
 def _bus_db_path(tier: str, user_id: str | None) -> Path:
@@ -112,8 +112,10 @@ def main() -> int:
         results.append(rebuild('source', None, drop))
         for u in list_user_ids():
             results.append(rebuild('private', u, drop))
-        for r in list_repo_ids():
-            results.append(rebuild('repo', r, drop))
+        # v1.16.79: repo is no longer included in --tier all. Recall does not
+        # read the repo tier, so rebuilding its index is work nothing queries.
+        # The explicit `--tier repo` branch below still works, for anyone who
+        # still holds a repos/<id>/ database and wants it maintained.
     elif args.tier == 'private':
         if not args.user:
             print('private tier needs --user', file=sys.stderr)

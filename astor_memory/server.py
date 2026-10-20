@@ -7835,7 +7835,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         """
         import sqlite3 as _sqlite3
         from ._internal.acl_layout import (
-            get_astor_dir, get_db_path, Tier, Store, list_user_ids, list_repo_ids
+            get_astor_dir, get_db_path, Tier, Store, list_user_ids
         )
 
         astor_dir = get_astor_dir()
@@ -7865,9 +7865,18 @@ def create_app(astor_dir: str | None = None) -> Flask:
             (Tier.SOURCE, None),
         ]
         tier_user_map += [(Tier.PRIVATE, u) for u in list_user_ids()]
-        # v1.1: fanout across all registered repos (MemoraX-style per-repo
-        # memory). Repo facts live under ~/.astor/repos/<repo_id>/memory/.
-        tier_user_map += [(Tier.REPO, r) for r in list_repo_ids()]
+        # v1.16.79: the repo tier is no longer fanned out.
+        #
+        # Per-repo memory was a v1.1 experiment. It never took on real content —
+        # six facts across two repositories after several months — while costing
+        # one SQLite open per registered repo on every recall, which is a hot
+        # path. Six facts do not pay for that.
+        #
+        # Tier.REPO stays in the enum and the ACL matrix: existing repos/<id>/
+        # databases must keep resolving, or any code path that still carries a
+        # repo tier would raise ValueError on a value it used to accept. The
+        # directories are left on disk too — dropping the fanout stops them
+        # being read; it does not delete anything.
 
         for tier, user_id in tier_user_map:
             for store in (Store.BUS, Store.NEST, Store.FORGE):

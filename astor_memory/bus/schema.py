@@ -278,14 +278,15 @@ def astor_upgrade_all_tier_dbs() -> None:
     of crashing on 'no such column'.
     """
     from .._internal.acl_layout import (
-        list_user_ids, list_repo_ids, Tier, get_db_path,
+        list_user_ids, Tier, get_db_path,
     )
     scopes: list[tuple[str, str | None]] = [
         (Tier.PUBLIC.value, None),
         (Tier.SOURCE.value, None),
     ]
     scopes += [(Tier.PRIVATE.value, u) for u in list_user_ids()]
-    scopes += [(Tier.REPO.value, r) for r in list_repo_ids()]
+    # v1.16.79: repo tier retired from the scan — see server.py for why the
+    # tier itself is kept while its fanout is not.
     for tier, user_id in scopes:
         try:
             p = get_db_path(tier, 'bus', user_id)
