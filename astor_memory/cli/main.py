@@ -1689,12 +1689,27 @@ def cmd_doctor(args) -> int:
     Checks: schema, canonical counts, embedding coverage, bot-binding.db,
     6 invariants, version.
     """
-    import psutil, os
+    import os
     from pathlib import Path
-    process = psutil.Process()
-    mem_mb = process.memory_info().rss / 1024 / 1024
+    # v1.16.76: psutil moved to [project.dependencies] (it is imported here
+    # unconditionally, so it was always a runtime dep, not a dev extra). The
+    # guard stays anyway: a health check that dies with a bare
+    # ModuleNotFoundError tells the operator nothing about the thing they
+    # asked it to check, and the memory/RSS lines are a nicety, not the point.
+    try:
+        import psutil
+        process = psutil.Process()
+    except Exception as _v1676_ps:
+        process = None
+        log(f"[doctor] process metrics unavailable ({_v1676_ps}); continuing")
+    # v1.16.76: process may be None when psutil is unavailable — report the
+    # check we can still make rather than dereferencing it.
+    mem_mb = (process.memory_info().rss / 1024 / 1024) if process else None
     print(f'[astor] astor-memory v{__version__} health check')
-    print(f'   PID: {process.pid}  Memory RSS: {mem_mb:.1f} MB')
+    if process:
+        print(f'   PID: {process.pid}  Memory RSS: {mem_mb:.1f} MB')
+    else:
+        print(f'   PID: {os.getpid()}  Memory RSS: n/a (psutil unavailable)')
 
     astor_dir = os.environ.get('ASTOR_DIR') or str(_P.home() / '.astor')
     print(f'   ASTOR_DIR: {astor_dir}')
