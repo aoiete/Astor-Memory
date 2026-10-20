@@ -26,6 +26,12 @@ python -m astor_memory.server --host 127.0.0.1 --port 7803
 **Run `am preflight` before anything else.** It takes about a second and it
 catches the one failure that otherwise looks like astor being broken.
 
+> **Windows:** if `am preflight` reports the Visual C++ runtime as too old,
+> fix it before anything else — `am preflight --fix` does it for you. On that
+> host astor cannot start at all, and the failure is silent (see
+> [below](#why-this-section-exists)). On Linux and macOS there is no such
+> prerequisite.
+
 From PyPI instead of source:
 
 ```bash
@@ -33,6 +39,19 @@ pip install astor-memory
 am init
 am admin lock --user-id=admin
 ```
+
+## Prerequisites
+
+| | |
+|---|---|
+| Python | 3.11 recommended (3.10 and 3.12 work; 3.13 untested) |
+| sqlite3 | stdlib, included |
+| **Windows** | **Visual C++ 2015-2022 Redistributable (x64)** — see below |
+| LLM features | an OpenAI-compatible key (`OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `MINIMAX_API_KEY`) |
+
+The Windows requirement is the one that bites: it is a system component pip
+cannot install, it is not optional, and without it astor does not start — with
+no error message. Check it first.
 
 ---
 

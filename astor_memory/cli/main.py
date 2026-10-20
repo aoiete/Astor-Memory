@@ -124,6 +124,15 @@ def main(argv: list[str] | None = None) -> int:
     sub = subparsers.add_parser('doctor', help='Health check')
     sub.add_argument('--memory', action='store_true', help='Memory stats')
     sub.add_argument('--schema', action='store_true', help='Schema check')
+    # v1.16.79: report — and optionally repair — user_meta rows whose
+    # default_tier / subscription_plan hold values the router cannot use.
+    # 'admin' is a role; stored in either column it was unroutable and had to
+    # be special-cased downstream.
+    sub.add_argument('--migrate-user-meta', action='store_true',
+                     help='Report user_meta rows with unroutable '
+                          'default_tier / subscription_plan')
+    sub.add_argument('--apply', action='store_true',
+                     help='With --migrate-user-meta, apply the repair')
     sub.set_defaults(func=cmd_doctor)
 
     # am config
@@ -421,6 +430,12 @@ def main(argv: list[str] | None = None) -> int:
     bot_add = bot_sub.add_parser('add-user', help='Create empty 9-db layout for a new user')
     bot_add.add_argument('user_id', help='User id (regex [a-zA-Z0-9_-]{1,64})')
     bot_add.add_argument('--role', default='user', choices=['user', 'admin'], help='Role for new user')
+    # v1.16.79: short_alias is required by upsert_user, and it is what the
+    # operator will actually type later. Defaulting it to the user_id keeps the
+    # command usable without it while making the alias explicit when it matters.
+    bot_add.add_argument('--short-alias', default=None,
+                         help='Human-facing alias shown in the dashboard '
+                              '(defaults to the user id)')
     bot_add.set_defaults(func=cmd_bot_add_user)
     bot_sub.add_parser('list-users', help='List users on disk + their roles').set_defaults(func=cmd_bot_list_users)
     bot_promote = bot_sub.add_parser('promote', help='Promote user to admin')
@@ -1088,6 +1103,17 @@ def cmd_init(args) -> int:
     nest = _astor_nest_func()
     _forge_module = _astor_forge_func()  # forge is pure module; ensures it's importable
     print(f'[OK] Astor-Memory initialized at {astor_dir}')
+    # v1.16.79: point at the next step. `am init` creates the databases and
+    # stops, leaving a dashboard that shows zeroes with no indication of how to
+    # change that — the operator has to already know that users live in
+    # bot-binding.db user_meta, that the dashboard counts only active ones, and
+    # that a binding is what makes an agent able to reach astor at all.
+    print()
+    print('[next] to make the dashboard show something:')
+    print('   am bot add-user <user_id> --role user   # per-user layout + user_meta')
+    print('   am seed --user-id admin                 # optional demo facts')
+    print('   am dashboard                            # then open the dashboard')
+    print('  verify with: am doctor')
     print(f'   - {bus.db_path.name} (bus: events + canonical facts)')
     print(f'   - {nest.db_path.name} (nest: vector embeddings)')
     print(f'   - astor_forge.db (forge: LLM extraction cache, v0.2+ LLM extract)')
@@ -1839,6 +1865,43 @@ def cmd_doctor(args) -> int:
     print()
     print(f'   astor-memory version: {__version__}')
 
+    # v1.16.79: unroutable user_meta values — ONLY when explicitly asked.
+    #
+    # This ran unconditionally at first, which meant every `am doctor` opened a
+    # second SQLite handle to bot-binding.db that the rest of the command had
+    # no reason to touch. Two handles to one file is the precondition for the
+    # "database is locked" / "Cannot operate on a closed database" family of
+    # errors (astor R-class 12953), and it broke two tests in the full suite
+    # that pass in isolation — a check nobody asked for should not be able to
+    # destabilise the command they did ask for.
+    if getattr(args, 'migrate_user_meta', False):
+        try:
+            from .._internal.bot_binding import (
+                scan_user_meta_values, migrate_user_meta_values,
+            )
+            _v1679_scan = scan_user_meta_values()
+            if _v1679_scan['bad_tier'] or _v1679_scan['bad_plan']:
+                print(f'[WARN]  user_meta: {_v1679_scan["checked"]} users checked, '
+                      f'{len(_v1679_scan["bad_tier"])} with an unroutable '
+                      f'default_tier and {len(_v1679_scan["bad_plan"])} with '
+                      f'an unroutable subscription_plan.')
+                for u, v in _v1679_scan['bad_tier']:
+                    print(f'         default_tier={v!r} for user {u!r}')
+                for u, v in _v1679_scan['bad_plan']:
+                    print(f'         subscription_plan={v!r} for user {u!r}')
+                if getattr(args, 'apply', False):
+                    _v1679_mig = migrate_user_meta_values(dry_run=False)
+                    print(f'[OK]    repaired {_v1679_mig["default_tier"]} '
+                          f'default_tier and {_v1679_mig["subscription_plan"]} '
+                          f'subscription_plan values.')
+                else:
+                    print('         (dry run — re-run with --apply to write)')
+            else:
+                print(f'[OK]    user_meta: all routing values valid '
+                      f'({_v1679_scan["checked"]} users)')
+        except Exception as _v1679_umeta:
+            print(f'[WARN]  user_meta check failed: {_v1679_umeta}')
+
     return 0
 
 
@@ -1898,6 +1961,37 @@ def _recheck_after_fix() -> bool:
         return True
 
 
+def _probe_subprocess(code: str, timeout: int = 60):
+    """Run an import probe in a child process. Returns (ok, detail).
+
+    v1.16.79: on a host with a stale Visual C++ runtime, importing numpy or
+    onnxruntime is a NATIVE fault (access violation). A native fault cannot be
+    caught, so an in-process try/except around it protects nothing — the
+    parent dies at exit 139 with no output, which is exactly the failure this
+    command exists to prevent.
+
+    A child process can die safely. Its exit code is readable, and the parent
+    survives to print a diagnosis and continue to the repair path.
+    """
+    import subprocess
+    import sys as _sys
+    try:
+        p = subprocess.run([_sys.executable, "-c", code],
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"probe timed out after {timeout}s"
+    except Exception as _e:
+        return False, f"probe could not run: {_e}"
+    if p.returncode == 0:
+        return True, (p.stdout or "").strip().splitlines()[-1] if p.stdout else "ok"
+    detail = (p.stderr or "").strip().splitlines()
+    # Windows reports 0xC0000005 as a negative return code under CPython.
+    if p.returncode in (-1073741819, 139):
+        return False, ("native access violation in the child probe "
+                       "(exit 139) — the Visual C++ runtime above is the cause")
+    return False, detail[-1] if detail else f"exit {p.returncode}"
+
+
 def cmd_preflight(args) -> int:
     """v1.16.77: host-capability check, safe to run anywhere.
 
@@ -1948,22 +2042,48 @@ def cmd_preflight(args) -> int:
     else:
         print(f'   VC++ runtime: {_ver}  [ok]')
 
-    # Only attempted once the runtime is known good — the import can still hard
-    # crash, so it is the confirmation step, never the diagnosis.
-    try:
-        import onnxruntime as _ort
-        print(f'   onnxruntime : {_ort.__version__}  [ok]')
-    except Exception as _e:
-        print(f'   onnxruntime : FAILED TO IMPORT — {_e}')
-        print('      BLOCKER — reinstall the wheel:')
-        print('      pip install --force-reinstall --no-cache-dir onnxruntime')
-        blocked = True
+    # v1.16.79: DO NOT import onnxruntime here while the runtime is unverified.
+    #
+    # v1.16.78 had this block before the repair step, guarded by a comment
+    # that said the import must only happen "once the runtime is known good" —
+    # and then performed it unconditionally. On exactly the machine it was
+    # written for, `import onnxruntime` is a native access violation: control
+    # never returns to the interpreter, the try/except never fires, and the
+    # process is gone at exit 139 before reaching the --fix branch below. The
+    # repair code was unreachable on every host that needed it.
+    #
+    # The ordering is the whole point: repair the runtime FIRST, then let the
+    # import act as the confirmation that the repair worked.
+    _v1679_verified_runtime = (_ver is not None) and not _old
+    if _v1679_verified_runtime:
+        # Safe now: a current runtime means the crash precondition is absent,
+        # so this import raises a catchable exception if anything is still
+        # wrong rather than killing the process.
+        # Probed out-of-process for the same reason as numpy: even with a
+        # current runtime, a broken wheel can still fault natively, and this
+        # command must survive that in order to report it.
+        _v1679_ort = _probe_subprocess("import onnxruntime; print(onnxruntime.__version__)")
+        if _v1679_ort[0]:
+            print(f'   onnxruntime : {_v1679_ort[1]}  [ok]')
+        else:
+            print(f'   onnxruntime : FAILED TO IMPORT — {_v1679_ort[1]}')
+            print('      The VC++ runtime is current, so this is the wheel.')
+            print('      pip install --force-reinstall --no-cache-dir onnxruntime')
+            blocked = True
+    else:
+        print('   onnxruntime : not tested — the Visual C++ runtime above is the blocker')
+        print('                  (importing it now would crash this process)')
 
-    try:
-        import numpy as _np
-        print(f'   numpy       : {_np.__version__}  [ok]')
-    except Exception as _e:
-        print(f'   numpy       : FAILED — {_e}')
+    # numpy ships its own compiled extensions but depends on the same
+    # redistributable, so it is subject to the same crash precondition. Probe
+    # it in a subprocess rather than in-process: if it does fault natively,
+    # losing this process is survivable (the operator has already been told
+    # what is wrong above), whereas taking it down loses the fix path.
+    _v1679_np = _probe_subprocess("import numpy; print(numpy.__version__)")
+    if _v1679_np[0] is True:
+        print(f'   numpy       : {_v1679_np[1]}  [ok]')
+    else:
+        print(f'   numpy       : FAILED — {_v1679_np[1]}')
         blocked = True
 
     # v1.16.78: offer the repair rather than only describing it. The whole
@@ -2033,6 +2153,7 @@ def cmd_install(args) -> int:
 
     if 'fallback' in result:
         print(f"[WARN]  {result['note']}")
+
 
     final = result.get('result', result)
     print(f"Agent: {final['agent']}")
@@ -2847,6 +2968,16 @@ def cmd_bot_off(args) -> int:
     return 0
 
 
+def _astor_root() -> Path:
+    """The active data directory (ASTOR_DIR, else ~/.astor).
+
+    Used for reporting paths relative to the data root rather than to the
+    process working directory, which is wherever the operator happened to be.
+    """
+    import os as _os
+    return Path(_os.environ.get('ASTOR_DIR') or (Path.home() / '.astor'))
+
+
 def cmd_bot_add_user(args) -> int:
     """Create empty 9-db layout for a new user."""
     _require_admin()
@@ -2861,7 +2992,23 @@ def cmd_bot_add_user(args) -> int:
     paths = []
     for store in Store:
         p = ensure_layout(Tier.PRIVATE, store, args.user_id)
-        paths.append(str(p.relative_to(ensure_layout.__module__ and Path.cwd())))
+        # v1.16.79: report paths relative to the data directory.
+        #
+        # This was `p.relative_to(ensure_layout.__module__ and Path.cwd())`.
+        # `ensure_layout.__module__` is a non-empty string, so `X and Y`
+        # evaluates to Y and the expression happened to reduce to
+        # `Path.cwd()` — it "worked" only by accident, and it would raise
+        # ValueError outright the moment the layout lived outside the current
+        # working directory, which is the normal case for a real install
+        # (ASTOR_DIR=/var/lib/astor while cwd is wherever the operator typed
+        # the command). The `and` chain reads as an intent to guard against a
+        # None module name; it guarded nothing.
+        try:
+            paths.append(str(p.relative_to(_astor_root())))
+        except ValueError:
+            # Outside ASTOR_DIR — show the path as-is rather than failing a
+            # command whose real job is to create the layout.
+            paths.append(str(p))
     # Apply schemas via dedupe store
     from ..bus.schema import astor_init_schema
     from ..nest.schema import astor_init_nest_schema
@@ -2886,7 +3033,39 @@ def cmd_bot_add_user(args) -> int:
     roles = state.setdefault("roles", {})
     roles[args.user_id] = args.role
     _write_install_state(state)
+
+    # v1.16.79: also register the user in bot-binding.db user_meta.
+    #
+    # `am bot add-user` reported success while creating only the per-user
+    # SQLite layout and an install-state.json entry. The dashboard's
+    # _is_real_user() counts a user as real only when user_meta.active = 1 in
+    # bot-binding.db, so a user added this way was invisible: the CLI printed
+    # OK, total_users stayed 0, and the operator had no way to see the
+    # discrepancy except by comparing two commands that were supposed to mean
+    # the same thing.
+    #
+    # `am platform add-user` was the command that wrote user_meta. Two
+    # commands with the same name and different effects is the actual defect,
+    # so this one does both.
+    _v1679_meta_ok = False
+    try:
+        from .._internal.bot_binding import upsert_user
+        upsert_user(args.user_id, short_alias=args.short_alias or args.user_id,
+                    role=args.role)
+        _v1679_meta_ok = True
+    except Exception as _v1679_meta_err:
+        print(f'[WARN] per-user layout created, but user_meta registration '
+              f'failed: {_v1679_meta_err}')
+        print(f'       the dashboard will not count this user until it exists '
+              f'in bot-binding.db. Register it with:')
+        print(f'         am platform add-user {args.user_id} --role {args.role}')
     print(f'[OK] Added user {args.user_id!r} as {args.role}. 9-db layout created at users/{args.user_id}/memory/')
+    if _v1679_meta_ok:
+        # Say the thing the operator will want to check next. The bug this
+        # fixes was invisible precisely because the old message implied the
+        # user was fully registered.
+        print(f'     user_meta registered — the dashboard now counts this user '
+              f'(alias={args.short_alias or args.user_id})')
     return 0
 
 

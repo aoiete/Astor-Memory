@@ -2379,14 +2379,42 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         # 'admin' is a ROLE not a bus tier: admin writes go
                         # to private_<user_id> (their private bucket) with
                         # source mirror per P2-fix policy.
+                        # v1.16.79: 'admin' is resolved explicitly, not as a
+                        # fallback for an unknown value.
+                        #
+                        # An earlier pass in this change removed the admin
+                        # branch and let unknown tiers fall through to public.
+                        # That was wrong: admin is the operator's own bucket
+                        # (private_<user_id>), it is what the operator's account
+                        # carries in this very column, and the dashboard already
+                        # ranks an 'admin' plan at the top. Treating it as
+                        # unrecognised would have silently redirected the
+                        # operator's own writes to the public tier.
+                        #
+                        # The defect being fixed is not the value — it is that
+                        # the set of routable values was never declared, so
+                        # nothing could reject a genuinely wrong one. bot_binding
+                        # now declares VALID_DEFAULT_TIERS (admin, public,
+                        # private, source) and upsert_user validates against it.
+                        # 'vip'/'user' are mapped to public here for backwards
+                        # compatibility with rows predating the tier column.
                         _raw_tier = _row['default_tier'] or 'public'
                         if _raw_tier == 'admin':
-                            # admin role → private tier (owner-only bucket)
+                            # The operator's own bucket: private_<user_id>.
                             body['tier'] = 'private'
                         elif _raw_tier in ('vip', 'user'):
                             body['tier'] = 'public'
-                        else:
+                        elif _raw_tier in ('public', 'source', 'private'):
                             body['tier'] = _raw_tier
+                        else:
+                            # Genuinely unroutable — say so rather than guessing.
+                            _safe_stderr_write(
+                                f'[astor.server] user_meta.default_tier='
+                                f'{_raw_tier!r} is not a known bus tier; '
+                                f'using public. Inspect and repair with: '
+                                f'am doctor --migrate-user-meta\n'
+                            )
+                            body['tier'] = 'public'
                         body.setdefault('user_id', _row['user_id'] or 'admin')
                         _server_resolved_tier = body['tier']
                 except Exception as _tier_exc:
@@ -9035,12 +9063,46 @@ def create_app(astor_dir: str | None = None) -> Flask:
     # both have zero warmup latency. Bounded with try/except so a
     # missing model doesn't block server start. Must run BEFORE return
     # app (Python doesn't execute code after return in a function).
+    # v1.16.79: the warmup runs in a SUBPROCESS.
+    #
+    # This try/except is decorative for the failure it appears to handle.
+    # Loading the model reaches `import onnxruntime`, which on a host with a
+    # stale Visual C++ runtime is a native access violation: the process is
+    # killed at exit 139, the except clause never executes, and none of the
+    # lines below ever run. v1.16.78 claimed the server would come up
+    # degraded with the embedding stack disabled, and this warmup is where
+    # that promise was broken — main() degraded, then create_app re-crashed on
+    # the way in.
+    #
+    # A child process can die safely. Its exit code is readable and the parent
+    # continues, which is what "degraded" has to mean in practice.
     try:
-        from .nest.embeddings import astor_get_embedding_model
-        _warm_model = astor_get_embedding_model()
-        _warm_vec = _warm_model.encode(['astor warmup probe'])
-        if hasattr(_warm_vec, 'shape') and len(_warm_vec.shape) >= 2:
-            print(f'   Warmup: embedding model ready (dim={_warm_vec.shape[1]})')
+        import subprocess as _v1679_sp
+        import sys as _v1679_sys
+        _v1679_probe = (
+            "import sys;"
+            "sys.path.insert(0, %r);"
+            "from astor_memory.nest.embeddings import astor_get_embedding_model as g;"
+            "m=g();"
+            "v=m.encode(['astor warmup probe']);"
+            "print(getattr(v,'shape',(0,0))[1])" % str(Path(__file__).resolve().parent.parent)
+        )
+        _v1679_p = _v1679_sp.run(
+            [_v1679_sys.executable, "-c", _v1679_probe],
+            capture_output=True, text=True, timeout=300)
+        if _v1679_p.returncode == 0:
+            print(f'   Warmup: embedding model ready (dim={_v1679_p.stdout.strip()})')
+        else:
+            # Surface the real cause rather than a generic "skipped": the child
+            # died for a reason the operator needs to see.
+            _v1679_tail = (_v1679_p.stderr or '').strip().splitlines()
+            if _v1679_p.returncode in (-1073741819, 139):
+                print('   Warmup: SKIPPED — the embedding model hard-faulted '
+                      '(native access violation).')
+                print('            This is the stale-Visual-C++-runtime fault; '
+                      'see INSTALL.md and `am preflight --fix`.')
+            else:
+                print(f'   Warmup skipped: {_v1679_tail[-1] if _v1679_tail else "exit %s" % _v1679_p.returncode}')
     except Exception as _warm_exc:
         print(f'   Warmup skipped: {_warm_exc}')
     try:

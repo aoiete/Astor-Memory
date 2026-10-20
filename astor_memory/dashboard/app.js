@@ -343,7 +343,13 @@ function _drawConnPage() {
     tr.innerHTML = '<td>' + escapeHtml(b.platform_id || '—') + '</td>'
       + '<td>' + escapeHtml(b.user_id || '—') + '</td>'
       + '<td class="' + roleClass + '">' + escapeHtml(b.role || '—') + '</td>'
-      + '<td>' + escapeHtml(b.subscription_plan || '—') + '</td>'
+      // v1.16.79: 'admin' is an owner identity, not a subscription tier, so
+      // showing it in the Plan column reads as though the operator is on some
+      // plan they could be compared against other users on. It still SORTS by
+      // PLAN_RANK above (admin first) — only the cell changes.
+      + '<td>' + escapeHtml(
+            b.subscription_plan === 'admin' ? 'n/a'
+                                           : (b.subscription_plan || '—')) + '</td>'
       + '<td>' + escapeHtml(b.default_tier || '—') + '</td>'
       + '<td>' + escapeHtml(b.scope || '—') + '</td>'
       + '<td>' + escapeHtml((b.bound_at || '').slice(0, 16) || '—') + '</td>';
