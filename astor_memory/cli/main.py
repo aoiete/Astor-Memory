@@ -602,7 +602,34 @@ def main(argv: list[str] | None = None) -> int:
         help='Trust score 0-100 (default 30 = new peer default)')
     friend_add.add_argument('--pubkey', help='Base64 public key for verify')
     friend_add.add_argument('--endpoint', help='HTTP endpoint URL (Phase 3)')
+    friend_add.add_argument('--note', default='',
+        help='Short message shown to the other party when they get the '
+             'friend request prompt')
+    friend_add.add_argument('--send', action='store_true',
+        help='After adding locally, send a signed friend request to the '
+             "peer's endpoint so it appears on their prompt (v1.16.83)")
     friend_add.set_defaults(func=cmd_peer_friend_add)
+
+    # v1.16.83: operator-facing request queue
+    friend_requests = friend_sub.add_parser('requests',
+        help='List inbound friend requests (pending by default)')
+    friend_requests.add_argument('--all', action='store_true',
+        help='Include accepted/rejected rows')
+    friend_requests.set_defaults(func=cmd_peer_friend_requests)
+
+    friend_accept = friend_sub.add_parser('accept',
+        help='Accept a pending inbound friend request by id')
+    friend_accept.add_argument('request_id', type=int)
+    friend_accept.add_argument('--trust', type=int, default=30,
+        help='Trust score to assign on accept (0-100, default 30)')
+    friend_accept.add_argument('--alias', help='Override the alias '
+        'displayed in the friend list')
+    friend_accept.set_defaults(func=cmd_peer_friend_accept)
+
+    friend_reject = friend_sub.add_parser('reject',
+        help='Reject a pending inbound friend request by id')
+    friend_reject.add_argument('request_id', type=int)
+    friend_reject.set_defaults(func=cmd_peer_friend_reject)
 
     friend_list = friend_sub.add_parser('list',
         help='List friends and other relationships')
@@ -3954,10 +3981,79 @@ def cmd_peer_friend_add(args) -> int:
         ep_str = f' endpoint={result.get("endpoint")}' if result.get('endpoint') else ''
         print(f'[OK] added friend: {args.peer_id} trust={args.trust}'
               f'{alias_str}{ep_str}')
+        if args.send:
+            from .._internal.peer_relationships import send_friend_request
+            target = args.endpoint or result.get('endpoint')
+            if not target:
+                print(f'[WARN] --send given but no endpoint known for '
+                      f'{args.peer_id}; local add only. Set one with '
+                      'am peer endpoint set', file=sys.stderr)
+                return 1
+            sent = send_friend_request(
+                args.peer_id, target,
+                alias=args.alias or '', note=args.note,
+            )
+            if sent.get('sent'):
+                st = sent.get('status')
+                print(f'[OK] friend request sent to {target}'
+                      + (f' -> {st}' if st else ''))
+            else:
+                print(f'[WARN] friend request not delivered: '
+                      f'{sent.get("error")}', file=sys.stderr)
         return 0
     except (ValueError, Exception) as e:
         print(f'[ERR] {e}', file=sys.stderr)
         return 1
+
+
+def cmd_peer_friend_requests(args) -> int:
+    """v1.16.83: list inbound friend requests awaiting the operator."""
+    from .._internal.peer_relationships import list_friend_requests
+    status = None if args.all else "pending"
+    rows = list_friend_requests(status)
+    if not rows:
+        print(f'(no friend requests{"" if args.all else " pending"})')
+        return 0
+    label = 'PENDING' if status else 'ALL'
+    print(f'[{label}] {len(rows)} friend request(s):')
+    for r in rows:
+        who = r.get('alias') or r.get('from_peer_id')
+        note = f' - {r["note"]}' if r.get('note') else ''
+        print(f'  #{r["id"]}  from {who!r}{note}  '
+              f'since {r.get("received_at", "?")}')
+    print('accept: am peer friend accept <id>   '
+          'reject: am peer friend reject <id>')
+    return 0
+
+
+def cmd_peer_friend_accept(args) -> int:
+    """v1.16.83: accept a pending friend request by id."""
+    from .._internal.peer_relationships import resolve_friend_request
+    try:
+        out = resolve_friend_request(
+            args.request_id, accept=True,
+            trust=args.trust, alias=args.alias,
+        )
+    except ValueError as e:
+        print(f'[ERR] {e}', file=sys.stderr)
+        return 1
+    print(f'[OK] accepted friend request #{args.request_id} -> '
+          f'{out["peer_id"]}')
+    print('Run am peer endpoint set <peer-id> <url> so the two instances '
+          'can actually reach each other.')
+    return 0
+
+
+def cmd_peer_friend_reject(args) -> int:
+    """v1.16.83: reject a pending friend request by id."""
+    from .._internal.peer_relationships import resolve_friend_request
+    try:
+        out = resolve_friend_request(args.request_id, accept=False)
+    except ValueError as e:
+        print(f'[ERR] {e}', file=sys.stderr)
+        return 1
+    print(f'[OK] rejected friend request #{args.request_id}')
+    return 0
 
 
 def cmd_peer_friend_list(args) -> int:

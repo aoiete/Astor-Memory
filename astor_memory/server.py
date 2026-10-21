@@ -9215,9 +9215,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
     @app.route('/v1/peer/recv', methods=['POST'])
     def peer_recv():
         """Phase 3: receive a signed peer message."""
-        from ._internal.peer_identity import verify_rekey_message
+        from ._internal.peer_identity import (
+            verify_rekey_message,
+            verify_friend_request,
+        )
         from ._internal.peer_relationships import (
             record_rekey, get_peer, set_topic, add_peer,
+            record_friend_request,
         )
         import datetime as _dt_recv
         body = request.get_json(silent=True) or {}
@@ -9277,6 +9281,33 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'rekey_id': rid,
                     'old_peer_id': msg['old_peer_id'],
                     'new_peer_id': msg['new_peer_id'],
+                }), 200
+            elif msg_type == 'friend_request':
+                # v1.16.83: inbound friend request. Verification is what
+                # makes the alias/note safe to show the operator — see
+                # peer_identity.build_friend_request. Unverifiable
+                # requests are recorded as rejected (audit), never queued
+                # as pending.
+                if not verify_friend_request(msg):
+                    record_friend_request(
+                        msg, status='rejected',
+                        note='signature_invalid (recv endpoint)',
+                    )
+                    return jsonify({
+                        'received': True,
+                        'msg_type': 'friend_request',
+                        'stored': True,
+                        'status': 'rejected',
+                    }), 200
+                row = record_friend_request(msg, status='pending')
+                return jsonify({
+                    'received': True,
+                    'msg_type': 'friend_request',
+                    'stored': True,
+                    'request_id': row['id'],
+                    'status': 'pending',
+                    'alias': row.get('alias', ''),
+                    'note': row.get('note', ''),
                 }), 200
             elif msg_type == 'public_search':
                 # v1.16.78: open public-tier search. Lets a peer whose
@@ -9377,6 +9408,53 @@ def create_app(astor_dir: str | None = None) -> Flask:
     # schema + attack model (all preventive: construct-time validation,
     # opt-in default-off, trust>=50, timestamp freshness, sig check).
     # ------------------------------------------------------------------
+    @app.route('/v1/peer/friend-requests', methods=['GET'])
+    def peer_friend_requests():
+        """List inbound friend requests. ?status=pending (default) | all.
+
+        v1.16.83. The dashboard renders this as the prompt the operator is
+        asked about — one row per request, with the alias and note the
+        sender signed into it, plus accept/reject actions.
+        """
+        from ._internal.peer_relationships import list_friend_requests
+        status = request.args.get('status', 'pending') or 'pending'
+        rows = (list_friend_requests(None) if status == 'all'
+                else list_friend_requests(status))
+        return jsonify({'requests': [
+            {k: r.get(k) for k in
+             ('id', 'from_peer_id', 'alias', 'note', 'received_at',
+              'status', 'resolved_at')}
+            for r in rows
+        ]})
+
+    @app.route('/v1/peer/friend-requests/<int:request_id>/resolve',
+               methods=['POST'])
+    def peer_friend_request_resolve(request_id):
+        """Accept or reject one pending friend request.
+
+        v1.16.83. Body: {"accept": true, "trust": 30, "alias": "..."}.
+        Accepting creates the peer_relationships row bound to the public
+        key the request was verified against — the same binding the CLI
+        accept path uses.
+        """
+        from ._internal.peer_relationships import resolve_friend_request
+        body = request.get_json(silent=True) or {}
+        accept = bool(body.get('accept', False))
+        trust = int(body.get('trust', 30))
+        alias = body.get('alias') or None
+        try:
+            out = resolve_friend_request(
+                request_id, accept, trust=trust, alias=alias)
+        except ValueError as e:
+            return jsonify({'ok': False, 'error': str(e)}), 400
+        return jsonify({
+            'ok': True,
+            'request_id': request_id,
+            'status': out['status'],
+            'peer_id': out['peer_id'],
+            'friend': bool(out['friend']),
+        })
+
     @app.route('/v1/peer/public_search', methods=['GET'])
     def peer_public_search():
         import base64 as _b64_pps

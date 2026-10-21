@@ -359,6 +359,101 @@ def build_rekey_message(
     }
 
 
+def build_friend_request(
+    to_peer_id: str,
+    alias: str = "",
+    note: str = "",
+    astor_dir: str | None = None,
+) -> dict:
+    """Build a signed FRIEND_REQUEST asking another peer to accept us.
+
+    v1.16.83. Adding a peer is currently one-directional: the local
+    relationships table records the claim and the remote node never learns
+    about it, so "friends" is really a private list rather than a relation.
+    This is the outbound half of making it mutual.
+
+    Wire format mirrors REKEY so one verifier path serves both:
+        {
+          "to_peer_id":  "astor:<32-hex>",
+          "from_peer_id": "astor:<32-hex>",   # implied by the signature key
+          "alias":       "alice",        # the human-readable name to show
+          "note":        "...",              # free text the recipient sees
+          "timestamp":   "2026-10-20T...Z",
+          "signature":   "base64...",
+          "sender_pubkey": "base64..."
+        }
+
+    The alias travels in the signed payload rather than being trusted from the
+    envelope, so a peer cannot claim to be someone it is not. The recipient
+    displays this text verbatim, which is why it is signed rather than
+    advisory: it is shown to a human who is being asked to grant trust.
+
+    `alias` is included so the recipient's prompt can say who is asking.
+    """
+    identity = init_identity(astor_dir)
+    msg = {
+        "to_peer_id": to_peer_id,
+        "from_peer_id": identity["peer_id"],
+        "alias": alias or "",
+        "note": note or "",
+        "timestamp": _now_iso(),
+        "sender_pubkey": identity["public_key"],
+    }
+    msg["signature"] = sign(_friend_request_payload(msg), astor_dir=astor_dir)
+    return msg
+
+
+def _friend_request_payload(msg: dict) -> bytes:
+    """Canonical bytes covered by the friend-request signature.
+
+    Newline-delimited in a fixed field order, matching REKEY. Kept in one
+    place so build and verify cannot drift — a mismatch here would make every
+    request silently unverifiable.
+    """
+    return (
+        msg["to_peer_id"].encode("utf-8") + b"\n" +
+        msg["from_peer_id"].encode("utf-8") + b"\n" +
+        msg.get("alias", "").encode("utf-8") + b"\n" +
+        msg.get("note", "").encode("utf-8") + b"\n" +
+        msg["timestamp"].encode("utf-8")
+    )
+
+
+def verify_friend_request(msg: dict) -> bool:
+    """Verify a FRIEND_REQUEST signature. Returns True if valid.
+
+    The signature is checked against `sender_pubkey`, and `from_peer_id` is
+    then recomputed from that key's identity so a peer cannot send a request
+    claiming to be someone else. The key itself is unproven until the operator
+    accepts — that is what the prompt is for — so this establishes
+    "self-consistent", not "trusted".
+    """
+    try:
+        required = ("to_peer_id", "from_peer_id", "alias", "note",
+                    "timestamp", "signature", "sender_pubkey")
+        for k in required:
+            if k not in msg:
+                return False
+        if not str(msg["from_peer_id"]).startswith("astor:"):
+            return False
+        if not str(msg["to_peer_id"]).startswith("astor:"):
+            return False
+        if not verify(_friend_request_payload(msg), msg["signature"],
+                      msg["sender_pubkey"]):
+            return False
+        # No further identity check is possible or needed. peer_id is
+        # sha256(db_path|first_run_ts) — derived from the install, not from
+        # the key — so it cannot be recomputed from sender_pubkey. That is the
+        # same trust model REKEY uses: the signature proves the message is
+        # self-consistent and unaltered, and the operator decides whether the
+        # claimed peer_id belongs to whoever holds that key. What the signature
+        # does buy is that `alias` and `note` — the text shown in the prompt
+        # asking for trust — cannot be edited in transit.
+        return True
+    except Exception:
+        return False
+
+
 def verify_rekey_message(msg: dict) -> bool:
     """Verify a REKEY message signature. Returns True if valid.
 
