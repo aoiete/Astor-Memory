@@ -707,19 +707,21 @@ async function fetchPeers() {
             el.onclick = () => copyPeerIdToClipboard(selfPeerId);
             el.ondblclick = () => selectEl(el);
           }
-          // v1.16.83: also show where others should send requests. A peer_id
-          // identifies this node; without the address nobody can deliver a
-          // friend request to it.
-          const ep = document.getElementById('self-endpoint');
-          if (ep) {
-            const addr = id.public_endpoint || '';
-            ep.textContent = addr ? ('endpoint: ' + addr) : 'endpoint: (not set)';
-            ep.title = addr
-              ? 'Share this with peers so they can reach you — ' + addr
-              : 'Set ASTOR_PUBLIC_ENDPOINT on the server to publish the ' +
-                'address other peers should send to. Without it, a peer ' +
-                'cannot deliver a friend request to you.';
-            if (addr) { ep.style.cursor = 'pointer'; ep.style.userSelect = 'all'; }
+          // v1.16.83: show the friend code — one string the other person
+          // pastes into their dashboard. It carries the address along with
+          // the identity, so adding someone is one paste and not a pair of
+          // fields to transcribe by hand.
+          const fc = document.getElementById('self-friend-code');
+          if (fc) {
+            const code = id.friend_code || selfPeerId;
+            fc.textContent = 'code: ' + code;
+            fc.title = 'Click to copy — send this to someone so they can add ' +
+              'you with one paste. It is your peer_id plus the address other ' +
+              'peers should send to.';
+            fc.style.cursor = 'pointer';
+            fc.style.userSelect = 'all';
+            fc.onclick = () => copyPeerIdToClipboard(code);
+            fc.ondblclick = () => selectEl(fc);
           }
         }
     if (!pr.ok) throw new Error('HTTP ' + pr.status);
@@ -1116,27 +1118,50 @@ async function onPeerTrustEdit(ev) {
   }
 }
 
+// v1.16.83: a friend code is "<peer_id>[@host:port]" — the address rides
+// along with the identity so one paste is enough. A bare peer_id is still
+// accepted; it just cannot deliver a request.
+function parseFriendCode(raw) {
+  const text = (raw || '').trim();
+  if (!text) return {error: 'paste a friend code'};
+  const at = text.indexOf('@');
+  const pid = (at >= 0 ? text.slice(0, at) : text).trim();
+  const addr = at >= 0 ? text.slice(at + 1).trim() : '';
+  if (!/^astor:[0-9a-f]{32}$/i.test(pid)) {
+    return {error: 'not a friend code — expected astor:<32-hex>[@host:port]'};
+  }
+  if (at >= 0 && !addr) {
+    return {error: 'the friend code has an empty address after @'};
+  }
+  return {peer_id: pid, endpoint: addr ? addr : null};
+}
+
 async function onPeerAdd() {
-  const pid = document.getElementById('peer-add-pid').value.trim();
+  const parsed = parseFriendCode(document.getElementById('peer-add-pid').value);
+  if (parsed.error) {
+    alert(parsed.error);
+    return;
+  }
+  const pid = parsed.peer_id;
   const alias = document.getElementById('peer-add-alias').value.trim();
   const trustRaw = document.getElementById('peer-add-trust').value;
   const trust = parseInt(trustRaw, 10);
-  if (!/^astor:[0-9a-f]{32}$/i.test(pid)) {
-    alert('peer_id must be astor:<32-hex chars>');
-    return;
-  }
   if (isNaN(trust) || trust < 0 || trust > 100) {
     alert('trust must be 0-100');
     return;
   }
-  const endpoint = document.getElementById('peer-add-endpoint').value.trim();
+  const endpoint = parsed.endpoint || '';
   const note = document.getElementById('peer-add-note').value.trim();
   const body = {peer_id: pid, trust: trust};
   if (alias) body.alias = alias;
   // v1.16.83: the endpoint is what makes the peer reachable. Without it the
   // row is a local claim nobody can act on, which is why "added but nothing
   // happened" was the symptom — so it is stored, and reported when missing.
-  if (endpoint) body.endpoint = endpoint;
+  if (endpoint) {
+    body.endpoint = /^https?:\/\//i.test(endpoint)
+      ? endpoint
+      : 'http://' + endpoint;
+  }
   const r = await fetch('/v1/peer/add', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -1166,11 +1191,9 @@ async function onPeerAdd() {
   document.getElementById('peer-add-trust').value = '30';
   await fetchPeers();
   if (!endpoint) {
-    alert('Added locally, but no endpoint was given.\n\n' +
-      'Without http://host:port they cannot reach you and no friend ' +
-      'request was sent.\n\n' +
-      'Get their endpoint from their dashboard (it is shown next to ' +
-      'their peer_id) and add it here.');
+    alert('Added locally, but their friend code had no address.\n\n' +
+      'Ask them for the full code — it looks like\n' +
+      'astor:<32-hex>@host:port — and they will get a prompt.');
   } else if (sent && !sent.ok) {
     const t = await sent.text().catch(() => '');
     alert('Peer added, but the friend request was NOT delivered: HTTP ' +

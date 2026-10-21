@@ -292,3 +292,65 @@ def test_send_uses_the_senders_own_key(local_dir, remote_dir):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# --- friend code: one string instead of two fields -------------------------
+
+
+def test_friend_code_round_trips():
+    """The code must survive a copy-paste unchanged."""
+    pid = "astor:" + "1" * 32
+    code = PI.format_friend_code(pid, "1.2.3.4:7803")
+    assert code == pid + "@1.2.3.4:7803"
+    assert PI.parse_friend_code(code) == (pid, "1.2.3.4:7803")
+
+
+def test_bare_peer_id_parses_with_no_address():
+    """Still valid — it records the relationship locally."""
+    pid = "astor:" + "2" * 32
+    assert PI.parse_friend_code(pid) == (pid, None)
+
+
+def test_friend_code_rejects_junk_with_a_readable_message():
+    for bad, frag in [
+        ("", "empty"),
+        ("astor:abc", "32 hex"),
+        ("not-a-code", "expected"),
+        ("astor:" + "3" * 32 + "@", "empty address"),
+    ]:
+        with pytest.raises(ValueError) as ei:
+            PI.parse_friend_code(bad)
+        assert frag in str(ei.value), (bad, str(ei.value))
+
+
+def test_friend_code_with_a_url_keeps_the_scheme():
+    """A peer behind a TLS tunnel may only serve https, so the scheme is
+    not something the code is allowed to throw away."""
+    pid = "astor:" + "4" * 32
+    code = PI.format_friend_code(pid, "https://peer.example.com:8443")
+    got_pid, got_ep = PI.parse_friend_code(code)
+    assert got_pid == pid
+    assert got_ep == "https://peer.example.com:8443"
+
+
+def test_address_is_routing_only_and_does_not_change_identity():
+    """The identity in a friend code is the peer_id, and that is what gets
+    signed. A wrong address costs a failed delivery, never a wrong
+    identity — which is what makes carrying the address in the code safe."""
+    pid = "astor:" + "5" * 32
+    a = PI.parse_friend_code(PI.format_friend_code(pid, "1.1.1.1:1"))
+    b = PI.parse_friend_code(PI.format_friend_code(pid, "2.2.2.2:2"))
+    assert a[0] == b[0] == pid
+    assert a[1] != b[1]
+
+
+def test_local_friend_code_carries_this_install_id():
+    """The code shown in the dashboard must be about THIS install."""
+    from tempfile import mkdtemp
+    d = mkdtemp()
+    try:
+        code = PI.local_friend_code(d)
+        pid, _ = PI.parse_friend_code(code)
+        assert pid == PI.init_identity(d)["peer_id"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)

@@ -359,6 +359,105 @@ def build_rekey_message(
     }
 
 
+
+# ---------------------------------------------------------------------------
+# Friend code
+#
+# Chat apps hide the address behind a central directory: you type a username,
+# their server looks up where to reach it. A P2P network has no directory, so
+# without help the address becomes something the user has to copy out of one
+# dashboard and paste into another — two fields, easy to get wrong, and if
+# either side is behind NAT the address may not even work.
+#
+# A friend code collapses that into one string. It is the same peer_id the
+# protocol already uses, plus the address, joined with "@":
+#
+#     astor:ea1c7c3110128ee1b828c54269341a98@127.0.0.1:7803
+#
+# One copy, one paste, done. The peer_id part is still the identity that gets
+# signed — the address is only routing information, so a wrong or stale
+# address costs a failed delivery, never a wrong identity. That separation is
+# why the code can carry an address at all without weakening the crypto.
+# ---------------------------------------------------------------------------
+
+
+def format_friend_code(peer_id: str, endpoint: str | None = None) -> str:
+    """Render peer_id (+ optional address) as a single pasteable string.
+
+    The endpoint may be given as a bare host:port or a full URL. The scheme
+    is kept in the output when known, because a peer behind a tunnel may
+    only serve https while the local base URL is plain http.
+    """
+    code = peer_id.strip()
+    if not code:
+        return ""
+    ep = (endpoint or "").strip().rstrip("/")
+    if not ep:
+        return code
+    return f"{code}@{ep}"
+
+
+def parse_friend_code(text: str) -> tuple[str, str | None]:
+    """Split a friend code into (peer_id, endpoint).
+
+    Accepts a bare peer_id (endpoint is None) as well as the combined form,
+    so the same paste box works for both. A bare peer_id is still valid and
+    still useful — it records the relationship locally, it just cannot
+    deliver a request until the address is known.
+
+    Raises ValueError with a readable message when the input is neither.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        raise ValueError("empty friend code")
+    if "@" in raw:
+        pid, _, ep = raw.partition("@")
+        pid, ep = pid.strip(), ep.strip()
+        if not pid:
+            raise ValueError("friend code has no peer_id")
+        if not ep:
+            raise ValueError("friend code has an empty address")
+        if not pid.startswith("astor:") or len(pid) != len("astor:") + 32:
+            raise ValueError(
+                "friend code peer_id must be astor:<32-hex>, got "
+                f"{pid!r}")
+        return pid, ep
+    if not raw.startswith("astor:"):
+        raise ValueError(
+            "not a friend code: expected astor:<32-hex>[@host:port], got "
+            f"{raw[:40]!r}")
+    if len(raw) != len("astor:") + 32:
+        raise ValueError(
+            f"peer_id must be astor:<32-hex> (32 hex chars), got "
+            f"{len(raw) - len('astor:')} chars")
+    return raw, None
+
+
+def local_friend_code(astor_dir: str | None = None) -> str:
+    """This install's own friend code, ready to share.
+
+    Reads the public endpoint from ASTOR_PUBLIC_ENDPOINT or ASTOR_BASE_URL —
+    the same values /v1/identity publishes — so the code shown in the
+    dashboard and the code the CLI prints always agree.
+    """
+    import os as _os
+    identity = init_identity(astor_dir)
+    endpoint = (
+        _os.environ.get("ASTOR_PUBLIC_ENDPOINT")
+        or _os.environ.get("ASTOR_BASE_URL")
+        or ""
+    ).strip().rstrip("/")
+    # Strip the scheme for the code: "astor:xxx@host:port" is what people
+    # read off a screen, and http is the default the sender applies.
+    if endpoint.startswith("http://"):
+        endpoint = endpoint[len("http://"):]
+    elif endpoint.startswith("https://"):
+        # Keep https — a tunnel peer may only serve TLS.
+        endpoint = endpoint[len("https://"):]
+        endpoint = "https://" + endpoint
+    return format_friend_code(identity["peer_id"], endpoint)
+
+
 def build_friend_request(
     to_peer_id: str,
     alias: str = "",
