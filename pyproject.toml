@@ -19,7 +19,7 @@ name = "astor-memory"
 # Version unified across source, runtime, hooks, plugins.
 
 
-version = "1.16.80"
+version = "1.16.81"
 
 
 description = "Self-owned memory system for AI agents: 3-tier × 3-store × 3-scope = 9+ SQLite layout, multi-user ACL, WeChat/Telegram/Discord token manager, MCP server"
@@ -143,6 +143,15 @@ dependencies = [
     # install` does not pull. Same class as waitress below: imported
     # unconditionally by shipped code, therefore a project dependency.
     "psutil>=5.9,<7.0",
+    # peer_identity signs with Ed25519 and has two backends: PyNaCl when
+    # present, cryptography otherwise. Neither was declared, so a clean
+    # install had neither and both import lines failed — `am peer init`
+    # raised ImportError on a fresh machine. The fallback's own comment
+    # claimed cryptography was "already in pyproject deps", which is what
+    # made the omission hard to spot. Both are declared now so the
+    # try/except actually has a backend to fall through to.
+    "cryptography>=41.0,<47.0",
+    "pynacl>=1.5,<2.0",
 
 
     "fastembed>=0.3,<1.0",

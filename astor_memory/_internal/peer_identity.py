@@ -266,14 +266,25 @@ def sign(data: bytes, astor_dir: str | None = None) -> str:
     if not identity:
         identity = init_identity(astor_dir)
     priv_raw = base64.b64decode(identity["private_key"])
+    # v1.16.81: coerce at the boundary instead of trusting the caller.
+    #
+    # Only the PyNaCl branch accepted a str — it hashes whatever it is given —
+    # while cryptography's Ed25519PrivateKey.sign() requires a buffer and
+    # raises TypeError. So the same call worked or failed depending on which
+    # backend happened to be installed, and neither branch advertised that
+    # requirement. Every in-tree caller already passed bytes, which is why this
+    # sat unnoticed while the dependency was missing: on the affected machine
+    # init_identity() itself raised before sign() could be reached.
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+
     if _NACL_AVAILABLE:
         sk = SigningKey(priv_raw)
         sig = sk.sign(data).signature
     else:
         ed_sk = Ed25519PrivateKey.from_private_bytes(priv_raw)
-        # cryptography 40+ returns full 64-byte signature directly (sig
-        # starts with raw sig); older versions return same. Ed25519.sign
-        # returns 64 bytes always.
+        # Ed25519.sign returns the full 64-byte signature on every
+        # cryptography version in the declared range.
         sig = ed_sk.sign(data)
     return base64.b64encode(sig).decode("ascii")
 
@@ -281,6 +292,8 @@ def sign(data: bytes, astor_dir: str | None = None) -> str:
 def verify(data: bytes, signature_b64: str, public_key_b64: str) -> bool:
     """Verify a signature against a public key. Returns True if valid."""
     try:
+        if isinstance(data, str):
+            data = data.encode("utf-8")
         pub_raw = base64.b64decode(public_key_b64)
         sig_raw = base64.b64decode(signature_b64)
         if _NACL_AVAILABLE:
