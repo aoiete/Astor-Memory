@@ -707,6 +707,20 @@ async function fetchPeers() {
             el.onclick = () => copyPeerIdToClipboard(selfPeerId);
             el.ondblclick = () => selectEl(el);
           }
+          // v1.16.83: also show where others should send requests. A peer_id
+          // identifies this node; without the address nobody can deliver a
+          // friend request to it.
+          const ep = document.getElementById('self-endpoint');
+          if (ep) {
+            const addr = id.public_endpoint || '';
+            ep.textContent = addr ? ('endpoint: ' + addr) : 'endpoint: (not set)';
+            ep.title = addr
+              ? 'Share this with peers so they can reach you — ' + addr
+              : 'Set ASTOR_PUBLIC_ENDPOINT on the server to publish the ' +
+                'address other peers should send to. Without it, a peer ' +
+                'cannot deliver a friend request to you.';
+            if (addr) { ep.style.cursor = 'pointer'; ep.style.userSelect = 'all'; }
+          }
         }
     if (!pr.ok) throw new Error('HTTP ' + pr.status);
     const d = await pr.json();
@@ -1115,8 +1129,14 @@ async function onPeerAdd() {
     alert('trust must be 0-100');
     return;
   }
+  const endpoint = document.getElementById('peer-add-endpoint').value.trim();
+  const note = document.getElementById('peer-add-note').value.trim();
   const body = {peer_id: pid, trust: trust};
   if (alias) body.alias = alias;
+  // v1.16.83: the endpoint is what makes the peer reachable. Without it the
+  // row is a local claim nobody can act on, which is why "added but nothing
+  // happened" was the symptom — so it is stored, and reported when missing.
+  if (endpoint) body.endpoint = endpoint;
   const r = await fetch('/v1/peer/add', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -1127,10 +1147,41 @@ async function onPeerAdd() {
     alert('add failed: HTTP ' + r.status + ' ' + t.slice(0, 160));
     return;
   }
+  let sent = null;
+  if (endpoint) {
+    // Ask the other side to add us back. Their dashboard then shows the
+    // prompt. A failure here is not fatal — the local record stands and
+    // they can add us manually — but it must be visible, not silent.
+    sent = await fetch('/v1/peer/friend-request', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        peer_id: pid, endpoint: endpoint, alias: alias, note: note,
+      })
+    });
+  }
   document.getElementById('peer-add-pid').value = '';
   document.getElementById('peer-add-alias').value = '';
+  document.getElementById('peer-add-note').value = '';
   document.getElementById('peer-add-trust').value = '30';
   await fetchPeers();
+  if (!endpoint) {
+    alert('Added locally, but no endpoint was given.\n\n' +
+      'Without http://host:port they cannot reach you and no friend ' +
+      'request was sent.\n\n' +
+      'Get their endpoint from their dashboard (it is shown next to ' +
+      'their peer_id) and add it here.');
+  } else if (sent && !sent.ok) {
+    const t = await sent.text().catch(() => '');
+    alert('Peer added, but the friend request was NOT delivered: HTTP ' +
+      sent.status + ' ' + t.slice(0, 200) + '\n\n' +
+      'They will not see a prompt. Check that the endpoint is correct and ' +
+      'their server is reachable.');
+  } else {
+    alert('Peer added and friend request sent.\n' +
+      'They should see a prompt in their dashboard. If they do not, their ' +
+      'server may not be reachable at that address.');
+  }
 }
 
 document.getElementById('peer-add-btn').addEventListener('click', onPeerAdd);

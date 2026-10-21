@@ -607,7 +607,10 @@ def main(argv: list[str] | None = None) -> int:
              'friend request prompt')
     friend_add.add_argument('--send', action='store_true',
         help='After adding locally, send a signed friend request to the '
-             "peer's endpoint so it appears on their prompt (v1.16.83)")
+             "peer's endpoint so it appears on their prompt (v1.16.83). "
+             'Implied when --endpoint is given unless --no-send is passed.')
+    friend_add.add_argument('--no-send', action='store_true',
+        help='Never send the request, even when an endpoint is known')
     friend_add.set_defaults(func=cmd_peer_friend_add)
 
     # v1.16.83: operator-facing request queue
@@ -3981,13 +3984,26 @@ def cmd_peer_friend_add(args) -> int:
         ep_str = f' endpoint={result.get("endpoint")}' if result.get('endpoint') else ''
         print(f'[OK] added friend: {args.peer_id} trust={args.trust}'
               f'{alias_str}{ep_str}')
-        if args.send:
+        if not (args.endpoint or result.get('endpoint')) and not args.no_send:
+            print(f'[WARN] {args.peer_id} has no endpoint, so no friend '
+                  f'request was sent and they will not see a prompt. '
+                  f'Re-run with --endpoint http://host:port (or set it '
+                  f'with am peer endpoint set).', file=sys.stderr)
+        # v1.16.83: sending is the default when the peer is reachable.
+        # Requiring an extra --send flag is what made 'I added them and
+        # nothing happened' reproducible: the flag was off, the request was
+        # never sent, and the failure looked like a broken feature rather
+        # than an unset option. --no-send opts out.
+        want_send = args.send or (bool(args.endpoint or result.get('endpoint'))
+                                  and not args.no_send)
+        if want_send:
             from .._internal.peer_relationships import send_friend_request
             target = args.endpoint or result.get('endpoint')
             if not target:
-                print(f'[WARN] --send given but no endpoint known for '
-                      f'{args.peer_id}; local add only. Set one with '
-                      'am peer endpoint set', file=sys.stderr)
+                print(f'[ERR] no endpoint known for {args.peer_id}, so no '
+                      f'friend request can be sent. Pass --endpoint '
+                      f'http://host:port or set it with '
+                      f'am peer endpoint set', file=sys.stderr)
                 return 1
             sent = send_friend_request(
                 args.peer_id, target,

@@ -163,3 +163,132 @@ def test_trust_must_stay_within_range(remote_dir):
             PR.add_peer("astor:" + "b" * 32, trust=500, astor_dir=d)
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+# --- delivery: the part that made "added but nothing happened" -----------
+
+
+def test_send_requires_an_endpoint():
+    """No endpoint means nowhere to send — and the caller must be told.
+
+    A peer row with a null endpoint is a local claim the other node can
+    never see. The original UX was a --send flag that was off by default,
+    so adding a peer silently produced no request and the feature looked
+    broken rather than unconfigured.
+    """
+    from tempfile import mkdtemp
+    d = mkdtemp()
+    try:
+        out = PR.send_friend_request("astor:" + "c" * 32, "",
+                                     astor_dir=d)
+        assert out["sent"] is False
+        assert "http" in out["error"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_send_reports_an_unreachable_endpoint():
+    """A refused connection is reported, not swallowed."""
+    from tempfile import mkdtemp
+    d = mkdtemp()
+    try:
+        # Port 1 on loopback is not listening anywhere.
+        out = PR.send_friend_request(
+            "astor:" + "d" * 32, "http://127.0.0.1:1", timeout=2,
+            astor_dir=d)
+        assert out["sent"] is False
+        assert out["error"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_send_delivers_to_a_receiving_peer(local_dir, remote_dir):
+    """End to end: the signed request lands in the receiver's queue.
+
+    Runs a real HTTP server on loopback so the wire format, the signature
+    verification and the queue insert are all exercised together. A mocked
+    transport would pass while the actual payload was malformed.
+    """
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length)
+            received.append(json.loads(body))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"received":true,"status":"pending"}')
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        msg = _msg(remote_dir)
+        out = PR.send_friend_request(
+            msg["from_peer_id"], f"http://127.0.0.1:{port}",
+            alias=msg["alias"], note=msg["note"], astor_dir=str(local_dir),
+        )
+        assert out["sent"] is True
+        assert len(received) == 1
+        payload = received[0]
+        assert payload["msg_type"] == "friend_request"
+        # The wire payload must verify with the receiver's public key.
+        assert PI.verify_friend_request(payload["msg"]) is True
+        assert payload["msg"]["alias"] == msg["alias"]
+        assert payload["msg"]["note"] == msg["note"]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_send_uses_the_senders_own_key(local_dir, remote_dir):
+    """The request must be signed by the sender, not the receiver.
+
+    If the sender's key were used, the receiver would be verifying its own
+    signature and the peer_id in the request would prove nothing about who
+    sent it.
+    """
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    captured = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            captured.update(json.loads(self.rfile.read(length)))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"received":true}')
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        out = PR.send_friend_request(
+            "astor:" + "e" * 32, f"http://127.0.0.1:{port}",
+            alias="alice", note="hi", astor_dir=str(local_dir),
+        )
+        assert out["sent"] is True
+        sent = captured["msg"]
+        # from_peer_id is the LOCAL install's id, not the target's.
+        local_id = PI.init_identity(str(local_dir))["peer_id"]
+        assert sent["from_peer_id"] == local_id
+        assert sent["from_peer_id"] != "astor:" + "e" * 32
+    finally:
+        srv.shutdown()
+        srv.server_close()
