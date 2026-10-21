@@ -30,7 +30,7 @@
 
     <span id="self-peer-id" class="self-peer-id" title="this server's peer_id — copy to share with other astor nodes">self: …</span>
 
-    <span id="self-endpoint" class="self-peer-id" title="the address other peers should send friend requests to — share this together with your peer_id">endpoint: …</span>
+    <span id="self-friend-code" class="self-peer-id" title="your friend code — send this to someone and they can add you with one paste" style="cursor:pointer">code: …</span>
 
     <span id="version-badge" class="version-badge" title="astor-memory server version">v…</span>
 
@@ -136,17 +136,15 @@
 
     <div class="peer-actions">
 
-      <input type="text" id="peer-add-pid" placeholder="astor:<32-hex>" autocomplete="off">
+      <input type="text" id="peer-add-pid" placeholder="paste their friend code" autocomplete="off" style="min-width:340px">
 
       <input type="text" id="peer-add-alias" placeholder="alias (optional)" autocomplete="off">
 
       <input type="number" id="peer-add-trust" placeholder="trust 0-100" min="0" max="100" value="30">
 
-      <input type="text" id="peer-add-endpoint" placeholder="http://host:7803 (needed to reach them)" autocomplete="off" style="min-width:190px">
-
       <input type="text" id="peer-add-note" placeholder="note (shown in their prompt)" autocomplete="off" style="min-width:170px">
 
-      <button id="peer-add-btn" class="btn-primary" title="Add peer. With an endpoint, a friend request is sent to them right away so it shows up in their prompt.">+ Add Peer</button>
+      <button id="peer-add-btn" class="btn-primary" title="Paste the friend code they shared (astor:...@host:port) and they get a prompt right away.">+ Add Peer</button>
 
       <button id="peer-refresh-btn" class="btn-refresh" title="Reload peer list">↻</button>
 

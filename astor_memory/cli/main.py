@@ -614,6 +614,10 @@ def main(argv: list[str] | None = None) -> int:
     friend_add.set_defaults(func=cmd_peer_friend_add)
 
     # v1.16.83: operator-facing request queue
+    friend_code = friend_sub.add_parser('code',
+        help="Print this install's friend code to share with others")
+    friend_code.set_defaults(func=cmd_peer_friend_code)
+
     friend_requests = friend_sub.add_parser('requests',
         help='List inbound friend requests (pending by default)')
     friend_requests.add_argument('--all', action='store_true',
@@ -3969,44 +3973,59 @@ def cmd_peer_verify(args) -> int:
 
 
 def cmd_peer_friend_add(args) -> int:
-    """v1.14.68 (Phase 2): add or update a friend."""
+    """v1.14.68 (Phase 2): add or update a friend.
+
+    v1.16.83: accepts a friend code ("astor:<32hex>[@host:port]") as well as
+    a bare peer_id. The code carries the address, so one pasted string is
+    enough to both record the peer and reach them.
+    """
     from .._internal.peer_relationships import add_peer
+    from .._internal.peer_identity import parse_friend_code
+    peer_id = args.peer_id
+    code_endpoint = None
+    try:
+        peer_id, code_endpoint = parse_friend_code(args.peer_id)
+    except ValueError as e:
+        print(f'[ERR] {e}', file=sys.stderr)
+        return 1
+    # An explicit --endpoint wins over the one carried by the code.
+    endpoint = args.endpoint or code_endpoint
     try:
         result = add_peer(
-            args.peer_id,
+            peer_id,
             alias=args.alias,
             trust=args.trust,
             public_key=args.pubkey,
-            endpoint=args.endpoint,
+            endpoint=endpoint,
             kind='friend',
         )
         alias_str = f' alias={result.get("alias")!r}' if result.get('alias') else ''
         ep_str = f' endpoint={result.get("endpoint")}' if result.get('endpoint') else ''
-        print(f'[OK] added friend: {args.peer_id} trust={args.trust}'
+        print(f'[OK] added friend: {peer_id} trust={args.trust}'
               f'{alias_str}{ep_str}')
-        if not (args.endpoint or result.get('endpoint')) and not args.no_send:
-            print(f'[WARN] {args.peer_id} has no endpoint, so no friend '
-                  f'request was sent and they will not see a prompt. '
-                  f'Re-run with --endpoint http://host:port (or set it '
-                  f'with am peer endpoint set).', file=sys.stderr)
+        if not (endpoint or result.get('endpoint')) and not args.no_send:
+            print(f'[WARN] {peer_id} has no address, so no friend request '
+                  f'was sent and they will not see a prompt. Their friend '
+                  f'code carries the address — ask them for the full code '
+                  f'(astor:<32-hex>@host:port), or pass --endpoint.', file=sys.stderr)
         # v1.16.83: sending is the default when the peer is reachable.
         # Requiring an extra --send flag is what made 'I added them and
         # nothing happened' reproducible: the flag was off, the request was
         # never sent, and the failure looked like a broken feature rather
         # than an unset option. --no-send opts out.
-        want_send = args.send or (bool(args.endpoint or result.get('endpoint'))
+        want_send = args.send or (bool(endpoint or result.get('endpoint'))
                                   and not args.no_send)
         if want_send:
             from .._internal.peer_relationships import send_friend_request
-            target = args.endpoint or result.get('endpoint')
+            target = endpoint or result.get('endpoint')
             if not target:
-                print(f'[ERR] no endpoint known for {args.peer_id}, so no '
-                      f'friend request can be sent. Pass --endpoint '
-                      f'http://host:port or set it with '
-                      f'am peer endpoint set', file=sys.stderr)
+                print(f'[ERR] no address known for {peer_id}, so no friend '
+                      f'request can be sent. Their friend code carries the '
+                      f'address — ask for the full code, or pass '
+                      f'--endpoint http://host:port', file=sys.stderr)
                 return 1
             sent = send_friend_request(
-                args.peer_id, target,
+                peer_id, target,
                 alias=args.alias or '', note=args.note,
             )
             if sent.get('sent'):
@@ -4020,6 +4039,23 @@ def cmd_peer_friend_add(args) -> int:
     except (ValueError, Exception) as e:
         print(f'[ERR] {e}', file=sys.stderr)
         return 1
+
+
+def cmd_peer_friend_code(args) -> int:
+    """v1.16.83: print this install's friend code.
+
+    One string the other person pastes into their dashboard. It carries the
+    peer_id (identity, which is what gets signed) and the address (routing),
+    so a single paste is enough to both record the peer and reach them.
+    """
+    from .._internal.peer_identity import local_friend_code
+    try:
+        code = local_friend_code()
+    except Exception as e:
+        print(f'[ERR] could not build the friend code: {e}', file=sys.stderr)
+        return 1
+    print(code)
+    return 0
 
 
 def cmd_peer_friend_requests(args) -> int:

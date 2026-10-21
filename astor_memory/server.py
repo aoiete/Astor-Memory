@@ -1716,6 +1716,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # concept for the same fact. ASTOR_PUBLIC_ENDPOINT is accepted as
         # an explicit override for deployments where the two differ (a
         # tunnel URL for peers while the local base stays on loopback).
+        # v1.16.83: the friend code is peer_id + address in one string,
+        # so a person can paste it into the other dashboard and be done.
+        # The address is routing only — identity stays the peer_id that
+        # gets signed.
+        try:
+            from ._internal.peer_identity import local_friend_code
+            _friend_code = local_friend_code()
+        except Exception:
+            _friend_code = _peer_id_str
         _public_endpoint = (
             os.environ.get('ASTOR_PUBLIC_ENDPOINT')
             or os.environ.get('ASTOR_BASE_URL')
@@ -1725,6 +1734,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'peer_id': _peer_id_str,
             'public_key_fingerprint': _pub_fp,
             'public_endpoint': _public_endpoint,
+            'friend_code': _friend_code,
             # v1.16.50: do not leak on-disk path in /v1/identity.
                 })
 
