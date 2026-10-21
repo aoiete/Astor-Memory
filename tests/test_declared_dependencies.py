@@ -26,12 +26,23 @@ Two layers, cheapest first:
      cannot be created (no network, no uv), and marked slow because it
      installs the world.
 """
+
 from __future__ import annotations
+
+# v1.16.83: pyproject declares requires-python >=3.10, so this module has to
+# import a TOML parser that exists on 3.10 too. tomllib is stdlib only from
+# 3.11; tomli is its exact backport and is declared in the dev extra with a
+# python_version < '3.11' marker. Importing tomllib unconditionally at module
+# scope broke collection on the 3.10 CI leg, and a collection error aborts the
+# whole run rather than failing one test.
+try:
+    import tomllib as _toml
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as _toml
 
 import ast as pyast
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -41,7 +52,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def _manifest() -> dict:
     with (REPO_ROOT / "pyproject.toml").open("rb") as fh:
-        return tomllib.load(fh)
+        return _toml.load(fh)
 
 
 def _entry_point_targets() -> list[tuple[str, str]]:
@@ -284,7 +295,6 @@ def test_version_is_consistent_across_every_declaration():
     behind a 1.16.83 install, with nothing failing until someone looks.
     """
     import re
-    import tomllib
     from pathlib import Path
 
     import astor_memory
@@ -294,7 +304,7 @@ def test_version_is_consistent_across_every_declaration():
     # tomllib rejects a BOM outright ("Invalid statement"), so strip it
     # rather than asserting its absence — a BOM here is a hard install
     # failure, but that is a different test's concern.
-    data = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+    data = _toml.loads(pyproject.read_text(encoding="utf-8-sig"))
 
     project_version = data["project"]["version"]
     astor_version = data["tool"]["astor"]["version"]

@@ -226,6 +226,13 @@ dev = [
 
     "pytest-timeout>=2.0,<3.0",  # 2026-10-02: kill hanging tests in CI (per-test 60s cap)
 
+    # test_declared_dependencies reads pyproject.toml to verify the packaging
+    # metadata against the tree. tomllib is stdlib only from Python 3.11 and
+    # this project supports >=3.10 (and CI matrixes 3.10), so the test needs
+    # the backport there. It is a test-only dependency on purpose: no shipped
+    # code parses TOML.
+    "tomli>=2.0,<3.0; python_version < '3.11'",
+
 
     "ruff>=0.4,<1.0",
 
