@@ -680,13 +680,16 @@ function _drawConnPage() {
 async function fetchPeers() {
   try {
     // v1.16.7: also fetch self peer_id for header + empty-state copy button
-    const [pr, ir, qr] = await Promise.all([
+    const [pr, ir, qr, fr] = await Promise.all([
       fetch('/v1/peer/list'),
       fetch('/v1/identity').catch(() => null),
       // v1.16.51: quarantine is security-critical and had NO UI before.
       // A quarantined peer neither gossips nor is recalled from, so the
       // operator must be able to see and approve pending peers.
       fetch('/v1/peer/quarantine/list').catch(() => null),
+      // v1.16.83: inbound friend requests — the prompt the operator is
+      // asked about. Silently 404s on older servers.
+      fetch('/v1/peer/friend-requests').catch(() => null),
     ]);
     let selfPeerId = null;
     if (ir && ir.ok) {
@@ -712,6 +715,10 @@ async function fetchPeers() {
     if (qr && qr.ok) {
       try { renderPeerQuarantine(await qr.json()); } catch (_) {}
     }
+    // v1.16.83: render friend-requests prompt
+    if (fr && fr.ok) {
+      try { renderPeerFriendRequests(await fr.json()); } catch (_) {}
+    }
     return d;
   } catch (e) {
     document.getElementById('peer-panel-body').innerHTML =
@@ -726,6 +733,72 @@ async function fetchPeers() {
 // A quarantined peer is neither recalled from nor sent gossip, so the
 // only way it becomes active is this panel.
 // ======================================================================
+// v1.16.83: the friend-requests prompt. Each row is one signed request —
+// the alias and note were covered by the sender's signature, so what is
+// displayed here is exactly what the sender vouched for.
+async function renderPeerFriendRequests(payload) {
+  const strip = document.getElementById('peer-friend-requests');
+  const body = document.getElementById('peer-friend-requests-body');
+  const rows = (payload && payload.requests) || [];
+  const pending = rows.filter(r => r.status === 'pending');
+  if (!pending.length) {
+    strip.hidden = true;
+    if (body) body.innerHTML = '';
+    return;
+  }
+  strip.hidden = false;
+  const count = document.getElementById('peer-fr-count');
+  if (count) count.textContent = String(pending.length);
+  body.innerHTML = '';
+  for (const r of pending) {
+    const row = document.createElement('div');
+    row.className = 'peer-fr-row';
+    row.dataset.id = r.id;
+
+    const who = document.createElement('span');
+    who.className = 'peer-fr-who';
+    who.textContent = r.alias || r.from_peer_id;
+    who.title = r.from_peer_id;
+
+    const note = document.createElement('span');
+    note.className = 'peer-fr-note';
+    note.textContent = r.note ? ('— ' + r.note) : '';
+    note.title = r.note || '';
+
+    const since = document.createElement('span');
+    since.className = 'peer-fr-since';
+    since.textContent = 'since ' + (r.received_at || '?');
+
+    const ok = document.createElement('button');
+    ok.className = 'peer-fr-accept';
+    ok.textContent = 'Accept';
+    ok.onclick = () => resolveFriendRequest(r.id, true);
+
+    const no = document.createElement('button');
+    no.className = 'peer-fr-reject';
+    no.textContent = 'Reject';
+    no.onclick = () => resolveFriendRequest(r.id, false);
+
+    row.append(who, note, since, ok, no);
+    body.appendChild(row);
+  }
+}
+
+async function resolveFriendRequest(id, accept) {
+  const res = await fetch('/v1/peer/friend-requests/' + id + '/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accept: accept, trust: 30 }),
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok || !d.ok) {
+    alert('Could not ' + (accept ? 'accept' : 'reject') + ' request #' +
+      id + ': ' + (d.error || ('HTTP ' + res.status)));
+    return;
+  }
+  fetchPeers();  // refresh — the row disappears once resolved
+}
+
 async function renderPeerQuarantine(payload) {
   const strip = document.getElementById('peer-quarantine-strip');
   const body = document.getElementById('peer-quarantine-body');

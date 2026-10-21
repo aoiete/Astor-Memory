@@ -984,3 +984,29 @@ body {
 }
 .btn-ghost:hover { color: var(--accent, #2563eb); }
 .btn-ghost:disabled { opacity: .5; cursor: default; }
+
+/* v1.16.83: friend-requests prompt strip */
+.peer-friend-requests {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid #3a5a3a;
+  border-radius: 8px;
+  background: rgba(64, 128, 64, 0.08);
+}
+.peer-friend-requests-head { display: flex; gap: 10px; align-items: baseline; }
+.peer-friend-requests-title { font-weight: 600; }
+.peer-friend-requests-count { font-weight: 600; }
+.peer-friend-requests-hint { color: #888; font-size: 0.85em; }
+.peer-fr-row {
+  display: flex; gap: 10px; align-items: center;
+  padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.08);
+}
+.peer-fr-who { font-weight: 600; min-width: 120px; }
+.peer-fr-note { color: #bbb; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.peer-fr-since { color: #777; font-size: 0.8em; }
+.peer-fr-accept, .peer-fr-reject {
+  cursor: pointer; border: none; border-radius: 5px;
+  padding: 4px 10px; font-size: 0.85em;
+}
+.peer-fr-accept { background: #2e7d32; color: #fff; }
+.peer-fr-reject { background: #555; color: #eee; }

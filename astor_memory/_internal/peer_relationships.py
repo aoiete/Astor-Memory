@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading as _threading
 import threading
 import datetime as _dt
 from datetime import timezone
@@ -56,6 +57,31 @@ CREATE TABLE IF NOT EXISTS peer_relationships (
     last_topic_seen TEXT,
     metadata       TEXT
 );
+
+-- v1.16.83: inbound friend requests. A peer that wants to connect sends a
+-- signed FRIEND_REQUEST; it lands here as 'pending' and the operator accepts
+-- or rejects it. Nothing becomes a friend without that decision — the request
+-- row is a queue, not a relationship.
+--
+-- from_pubkey is kept separate from from_peer_id because the key is what the
+-- signature was verified against, and peer_id cannot be recomputed from it
+-- (it hashes the install path, not the key). Recording both lets the accept
+-- path bind the friend to the exact key that was proven.
+CREATE TABLE IF NOT EXISTS friend_requests (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_peer_id  TEXT NOT NULL,
+    from_pubkey   TEXT NOT NULL,
+    alias         TEXT,
+    note          TEXT,
+    received_at   TEXT NOT NULL,
+    resolved_at   TEXT,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    resolver      TEXT,
+    raw_message   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_friend_requests_status
+    ON friend_requests(status);
 
 CREATE TABLE IF NOT EXISTS rekey_log (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,16 +130,31 @@ def _get_db_path(astor_dir: str | None = None) -> str:
 
 
 def _get_conn(astor_dir: str | None = None) -> sqlite3.Connection:
-    """Per-thread/per-astor-dir singleton connection.
+    """Per-thread AND per-astor-dir connection.
 
-    SQLite + threading: we use check_same_thread=False but serialize via
-    _RELATIONSHIPS_LOCK for writes. Same pattern as memory bus.
+    v1.16.83 — crash fix. The previous version cached one connection per
+    db_path and shared it across every thread via check_same_thread=False.
+    That flag only stops SQLite from *raising*; it does not make concurrent
+    use of one Connection safe. A writer thread (holding _RELATIONSHIPS_LOCK,
+    running INSERT/UPDATE) and a reader thread (list_peers, no lock) touching
+    the same Connection object at once can corrupt the sqlite3 handle: in the
+    best case Python raises a recursive-use/ProgrammingError, in the worst the
+    C layer segfaults and the whole process dies. The operator symptom was
+    "add a peer and the service crashes" — a peer add interleaving with any
+    peer list read.
+
+    Now each thread keeps its own connection, keyed by
+    (db_path, thread id). Writers still serialize on _RELATIONSHIPS_LOCK so
+    only one write transaction is active at a time; each writer uses its own
+    connection, so there is no shared handle. Threads are cheap enough that
+    per-thread conns stay bounded in practice, and close_all_connections()
+    still reaps every cached handle for tests and shutdown.
 
     Test isolation: when astor_dir is given, callers should call
     close_all_connections() in tearDown to release file locks on Windows.
     """
     db_path = _get_db_path(astor_dir)
-    key = db_path
+    key = (db_path, _threading.get_ident())
     if key not in _RELATIONSHIPS_CONN:
         conn = sqlite3.connect(db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
@@ -141,6 +182,211 @@ def _now_iso() -> str:
     return (_dt.datetime.now(_dt.timezone.utc)
             .isoformat(timespec="seconds")
             .replace("+00:00", "Z"))
+
+
+
+# ---------------------------------------------------------------------------
+# Friend requests (v1.16.83)
+#
+# Stored separately from peer_relationships on purpose. A relationship says
+# "I trust this peer"; a request says "this peer would like to be trusted".
+# Collapsing them would make an unanswered request indistinguishable from a
+# friendship, which is the one distinction the operator is being asked to make.
+# ---------------------------------------------------------------------------
+
+
+def record_friend_request(
+    msg: dict,
+    status: str = "pending",
+    note: str = "",
+    astor_dir: str | None = None,
+) -> dict:
+    """Persist an inbound friend request.
+
+    `status` defaults to "pending" (a verified request awaiting the operator's
+    decision). The server's recv endpoint also records requests that FAILED
+    signature verification as status='rejected' with `note` explaining why —
+    so there is an audit trail of attempts even when the signer is a stranger.
+    Rejected rows are terminal: a resend from the same peer does not refresh
+    them, because re-verifying a bad signature is pointless and would let a
+    spammer re-open their row.
+
+    Returns the stored row.
+    """
+    con = _get_conn(astor_dir)
+    now = _now_iso()
+    from_id = msg.get("from_peer_id", "")
+    stored_alias = msg.get("alias") or ""
+    stored_note = note or msg.get("note") or ""
+    raw = json.dumps(msg, ensure_ascii=False)
+    with _RELATIONSHIPS_LOCK:
+        if status == "rejected":
+            cur = con.execute(
+                "INSERT INTO friend_requests "
+                "(from_peer_id, from_pubkey, alias, note, received_at, "
+                "status, resolver, raw_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (from_id, msg.get("sender_pubkey") or "", stored_alias,
+                 stored_note, now, "rejected", "signature", raw),
+            )
+            row_id = cur.lastrowid
+        else:
+            existing = con.execute(
+                "SELECT id FROM friend_requests "
+                "WHERE from_peer_id = ? AND status = 'pending'",
+                (from_id,),
+            ).fetchone()
+            if existing:
+                con.execute(
+                    "UPDATE friend_requests SET alias = ?, note = ?, "
+                    "from_pubkey = ?, raw_message = ?, received_at = ? "
+                    "WHERE id = ?",
+                    (stored_alias, stored_note,
+                     msg.get("sender_pubkey") or "", raw, now, existing["id"]),
+                )
+                row_id = existing["id"]
+            else:
+                cur = con.execute(
+                    "INSERT INTO friend_requests "
+                    "(from_peer_id, from_pubkey, alias, note, received_at, "
+                    "raw_message) VALUES (?, ?, ?, ?, ?, ?)",
+                    (from_id, msg.get("sender_pubkey") or "", stored_alias,
+                     stored_note, now, raw),
+                )
+                row_id = cur.lastrowid
+        con.commit()
+    return dict(con.execute(
+        "SELECT * FROM friend_requests WHERE id = ?", (row_id,)
+    ).fetchone())
+
+
+def list_friend_requests(
+    status: str | None = "pending",
+    astor_dir: str | None = None,
+) -> list[dict]:
+    """List friend requests, newest first. Defaults to unresolved only."""
+    con = _get_conn(astor_dir)
+    if status:
+        rows = con.execute(
+            "SELECT * FROM friend_requests WHERE status = ? "
+            "ORDER BY received_at DESC", (status,),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM friend_requests ORDER BY received_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def resolve_friend_request(
+    request_id: int,
+    accept: bool,
+    *,
+    trust: int = 30,
+    alias: str | None = None,
+    endpoint: str | None = None,
+    astor_dir: str | None = None,
+) -> dict:
+    """Accept or reject a pending friend request.
+
+    Accepting writes the peer_relationships row bound to the public key the
+    request was verified against — not to a peer_id supplied later — so the
+    friendship cannot be pointed at a different key than the one that proved
+    the request was authentic.
+
+    Returns {status, peer_id, friend}.
+    """
+    con = _get_conn(astor_dir)
+    now = _now_iso()
+    # Validate and mark the request resolved inside the lock, then create
+    # the relationship OUTSIDE it. add_peer takes the same (non-reentrant)
+    # lock via _get_conn; nesting the two deadlocks the thread, which is
+    # exactly the failure the first shipped version of this function hit.
+    with _RELATIONSHIPS_LOCK:
+        row = con.execute(
+            "SELECT * FROM friend_requests WHERE id = ?", (request_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"no friend_request with id={request_id}")
+        if row["status"] != "pending":
+            raise ValueError(
+                f"friend_request {request_id} already {row['status']}")
+        new_status = "accepted" if accept else "rejected"
+        con.execute(
+            "UPDATE friend_requests SET status = ?, resolved_at = ?, "
+            "resolver = 'operator' WHERE id = ?",
+            (new_status, now, request_id),
+        )
+        con.commit()
+
+    friend = None
+    if accept:
+        add_peer(
+            row["from_peer_id"],
+            kind="friend",
+            trust=trust,
+            alias=alias or row["alias"],
+            public_key=row["from_pubkey"],
+            endpoint=endpoint,
+            astor_dir=astor_dir,
+        )
+        friend = dict(con.execute(
+            "SELECT * FROM peer_relationships WHERE peer_id = ?",
+            (row["from_peer_id"],),
+        ).fetchone())
+    return {
+        "status": new_status,
+        "peer_id": row["from_peer_id"],
+        "alias": row["alias"],
+        "friend": friend,
+    }
+
+
+
+def send_friend_request(
+    peer_id: str,
+    endpoint: str,
+    *,
+    alias: str = "",
+    note: str = "",
+    timeout: int = 10,
+    astor_dir: str | None = None,
+) -> dict:
+    """Push a signed friend request to a peer's /v1/peer/recv endpoint.
+
+    This is the outbound half of making "friend" mutual: the local add_peer
+    call records our claim, and this call asks the remote operator to make
+    their claim. A failure to reach the remote node is not an error — the
+    request may still be delivered later, and the local friendship record is
+    independent of whether the remote accepts it.
+
+    Returns {sent, url, response} or {sent: False, error}.
+    """
+    from astor_memory._internal.peer_identity import build_friend_request
+    import json as _json
+    import urllib.request
+
+    endpoint = (endpoint or "").rstrip("/")
+    if not endpoint.startswith(("http://", "https://")):
+        return {"sent": False, "error": "endpoint must start with http:// or https://"}
+
+    msg = build_friend_request(peer_id, alias=alias, note=note, astor_dir=astor_dir)
+    body = _json.dumps({"msg_type": "friend_request", "msg": msg},
+                       ensure_ascii=False).encode("utf-8")
+    url = endpoint + "/v1/peer/recv"
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp_body = resp.read(4096)
+            data = _json.loads(resp_body) if resp_body else {}
+        return {"sent": True, "url": url,
+                "status": data.get("status"),
+                "response": data}
+    except Exception as e:
+        return {"sent": False, "error": f"{type(e).__name__}: {e}"}
 
 
 def add_peer(
