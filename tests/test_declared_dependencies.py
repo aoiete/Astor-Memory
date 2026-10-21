@@ -271,3 +271,45 @@ def test_clean_install_provides_every_imported_third_party_module(tmp_path: Path
         + "\n  (each needs to be in [project.dependencies], not an extra — "
         "conditional imports hide this from manifest review)"
     )
+
+
+def test_version_is_consistent_across_every_declaration():
+    """`version` appears in three places and `am` reads different ones.
+
+    pyproject [project].version is what pip installs,
+    [tool.astor].version is what `am config` reports, and
+    astor_memory.__version__ is what the server logs. When these drift the
+    symptom is a support report that says one thing while the running code
+    says another — e.g. `am --version` claiming 1.16.75 eight releases
+    behind a 1.16.83 install, with nothing failing until someone looks.
+    """
+    import re
+    import tomllib
+    from pathlib import Path
+
+    import astor_memory
+
+    root = Path(__file__).resolve().parents[1]
+    pyproject = root / "pyproject.toml"
+    # tomllib rejects a BOM outright ("Invalid statement"), so strip it
+    # rather than asserting its absence — a BOM here is a hard install
+    # failure, but that is a different test's concern.
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+
+    project_version = data["project"]["version"]
+    astor_version = data["tool"]["astor"]["version"]
+
+    assert project_version == astor_version, (
+        f"pyproject [project].version={project_version} but "
+        f"[tool.astor].version={astor_version}"
+    )
+    assert astor_memory.__version__ == project_version, (
+        f"astor_memory.__version__={astor_memory.__version__} but "
+        f"pyproject version={project_version}"
+    )
+
+    # No stale major.minor.patch left behind anywhere in the file.
+    stale = re.findall(r"version = \"(\d+\.\d+\.\d+)\"", pyproject.read_text(encoding="utf-8-sig"))
+    assert len(set(stale)) == 1, (
+        f"pyproject declares multiple versions: {sorted(set(stale))}"
+    )
