@@ -19,7 +19,7 @@ name = "astor-memory"
 # Version unified across source, runtime, hooks, plugins.
 
 
-version = "1.16.81"
+version = "1.16.82"
 
 
 description = "Self-owned memory system for AI agents: 3-tier × 3-store × 3-scope = 9+ SQLite layout, multi-user ACL, WeChat/Telegram/Discord token manager, MCP server"
@@ -314,7 +314,6 @@ Changelog = "https://github.com/<repo-owner>/Astor-Memory/blob/main/CHANGELOG.md
 am = "astor_memory.cli:main"
 
 
-astor-mcp = "astor_memory_mcp.server:main"
 
 
 
@@ -341,7 +340,7 @@ astor_memory = "astor_memory_mcp.server:main"
 # but are independent import roots: ``astor_memory`` and ``astor_memory_mcp``.
 
 
-packages = ["astor_memory", "astor_memory_mcp"]
+packages = ["astor_memory"]
 
 
 
@@ -519,6 +518,10 @@ testpaths = ["tests"]
 
 
 asyncio_mode = "auto"
+
+markers = [
+    "slow: builds a clean virtualenv and installs the project; minutes, not seconds",
+]
 
 
 
