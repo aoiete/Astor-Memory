@@ -1174,6 +1174,38 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # non-admin caller to invoke admin-only paths because ctx.role was
             # still 'admin' from a prior request.
             tier = body.get('tier')
+
+            # v1.16.81: 'admin' is accepted as a request tier.
+            #
+            # 'admin' has been a legal default_tier in user_meta since v1.16.79,
+            # but this whitelist below did not list it, so an explicit
+            # `tier=admin` fell through to the else-branch, never bound ACL,
+            # and came out as a 403 — private reads with user_id=None read as
+            # a cross-user read. A value that is legal in storage has to be
+            # legal on the wire, or the two definitions disagree.
+            #
+            # 'admin' means the operator's own private bucket, so it is
+            # normalised to private here — with user_id filled in from the
+            # actor. Normalising the tier WITHOUT carrying the user across is
+            # what produced the original denial: private + user_id=None is
+            # precisely the shape astor_check_read refuses.
+            if tier == 'admin':
+                body_user = body.get('user') or body.get('user_id')
+                if not body_user:
+                    # No target given, so this is the caller's own bucket.
+                    # Resolve it from the actor rather than leaving it None.
+                    body_user = _astor_resolve_actor(None)[0].split(':', 1)[-1]
+                body['user'] = body_user
+                body['user_id'] = body_user
+                # Write the normalised tier back into the body. Flask caches
+                # the parsed body, so views see this same dict — without the
+                # write-back each endpoint re-read body['tier'] and got
+                # 'admin' again, then opened a bus with user_id=None. That is
+                # what produced the 403 on /v1/read even though the ACL hook
+                # above had resolved everything correctly.
+                body['tier'] = 'private'
+                tier = 'private'
+
             if tier is None or tier in ('public', 'source', 'private', 'repo'):
                 # v1.1: tier=repo uses repo_id (explicit field) or 'user' as repo_id.
                 repo_id = body.get('repo_id')
@@ -2494,6 +2526,21 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _safe_stderr_write(
                     f'[astor.server] coref failed (non-fatal): {type(_coref_exc).__name__}: {_coref_exc}\n'
                 )
+        # v1.16.81: normalise 'admin' here, not only in before_request.
+        #
+        # before_request rewrites its own local `tier`, but Flask hands each
+        # view the parsed body and this function re-reads it, so the endpoint
+        # was still seeing tier='admin' and user_id=None — which is the exact
+        # shape astor_check_read refuses. Normalising once, at the top of the
+        # endpoint, and writing it back to `body` makes every downstream read
+        # agree: astor_nest, astor_bus, the cache key, and the graph path.
+        _req_tier = body.get('tier', 'public')
+        if _req_tier == 'admin':
+            _req_target = (body.get('user_id') or body.get('user')
+                           or 'admin')
+            body['tier'] = 'private'
+            body['user_id'] = _req_target
+            body['user'] = _req_target
         tier = body.get('tier', 'public')
         # v1.16+ (Plan "public tier 共享方法/流程/教训"): public tier hard gate.
         # Any write to tier='public' must pass through Memory Defense first.
@@ -6041,6 +6088,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
         # Tier + user_id resolve from namespace ('tier:user_id' shape).
         tier = namespace.split(':', 1)[0] if ':' in namespace else 'private'
+        # v1.16.81: 'admin' is a legal request tier (the operator's own
+        # private bucket) and normalises to private with the caller's user_id.
+        # These validators used to reject it outright, which surfaced as a 403
+        # on an endpoint that was otherwise fine.
+        if tier == 'admin':
+            tier = 'private'
+            user_id = user_id or _astor_resolve_actor(None)[0].split(':', 1)[-1]
         if tier not in ('public', 'source', 'private', 'repo'):
             tier = 'private'
         user_id = namespace.split(':', 1)[1] if ':' in namespace else '_current'
@@ -6131,6 +6185,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
                                 'detail': 'max_age_days must be a number'}), 400
 
         tier = namespace.split(':', 1)[0] if ':' in namespace else 'private'
+        # v1.16.81: 'admin' is a legal request tier (the operator's own
+        # private bucket) and normalises to private with the caller's user_id.
+        # These validators used to reject it outright, which surfaced as a 403
+        # on an endpoint that was otherwise fine.
+        if tier == 'admin':
+            tier = 'private'
+            user_id = user_id or _astor_resolve_actor(None)[0].split(':', 1)[-1]
         if tier not in ('public', 'source', 'private', 'repo'):
             tier = 'private'
         # Derive user_id from namespace when caller didn't pass one explicitly
@@ -6331,6 +6392,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if not namespace:
             return jsonify({'error': 'namespace_required'}), 400
         tier = namespace.split(':', 1)[0] if ':' in namespace else 'private'
+        # v1.16.81: 'admin' is a legal request tier (the operator's own
+        # private bucket) and normalises to private with the caller's user_id.
+        # These validators used to reject it outright, which surfaced as a 403
+        # on an endpoint that was otherwise fine.
+        if tier == 'admin':
+            tier = 'private'
+            user_id = user_id or _astor_resolve_actor(None)[0].split(':', 1)[-1]
         if tier not in ('public', 'source', 'private', 'repo'):
             tier = 'private'
         if not user_id:
@@ -6402,6 +6470,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if not namespace or not query:
             return jsonify({'error': 'namespace_and_query_required'}), 400
         tier = namespace.split(':', 1)[0] if ':' in namespace else 'private'
+        # v1.16.81: 'admin' is a legal request tier (the operator's own
+        # private bucket) and normalises to private with the caller's user_id.
+        # These validators used to reject it outright, which surfaced as a 403
+        # on an endpoint that was otherwise fine.
+        if tier == 'admin':
+            tier = 'private'
+            user_id = user_id or _astor_resolve_actor(None)[0].split(':', 1)[-1]
         if tier not in ('public', 'source', 'private', 'repo'):
             tier = 'private'
         if not user_id:
