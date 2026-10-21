@@ -1710,9 +1710,21 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _peer_id_str = _peer_id
         except Exception:
             pass
+        # ASTOR_BASE_URL is the established name for 'the address this
+        # astor instance is reachable at' (hermes_adapter and
+        # forge/extractor already read it). Reusing it avoids a second
+        # concept for the same fact. ASTOR_PUBLIC_ENDPOINT is accepted as
+        # an explicit override for deployments where the two differ (a
+        # tunnel URL for peers while the local base stays on loopback).
+        _public_endpoint = (
+            os.environ.get('ASTOR_PUBLIC_ENDPOINT')
+            or os.environ.get('ASTOR_BASE_URL')
+            or ''
+        ).strip()
         return jsonify({
             'peer_id': _peer_id_str,
             'public_key_fingerprint': _pub_fp,
+            'public_endpoint': _public_endpoint,
             # v1.16.50: do not leak on-disk path in /v1/identity.
                 })
 
@@ -9408,6 +9420,56 @@ def create_app(astor_dir: str | None = None) -> Flask:
     # schema + attack model (all preventive: construct-time validation,
     # opt-in default-off, trust>=50, timestamp freshness, sig check).
     # ------------------------------------------------------------------
+    @app.route('/v1/peer/friend-request', methods=['POST'])
+    def peer_friend_request():
+        """Send a signed friend request to a peer.
+
+        v1.16.83. Body: {peer_id (required), endpoint (required), alias?,
+        note?}. Stores the peer locally and pushes the request so the other
+        side's dashboard shows a prompt.
+
+        The endpoint is required because without it there is nowhere to send
+        the request — a peer row with no endpoint is a local claim that the
+        other node can never see, which is why "I added them and nothing
+        happened" was the original symptom. Failing loudly here is the fix.
+        """
+        from ._internal.peer_relationships import (
+            add_peer, send_friend_request,
+        )
+        body = request.get_json(silent=True) or {}
+        pid = body.get('peer_id') or ''
+        endpoint = (body.get('endpoint') or '').strip()
+        if not pid.startswith('astor:') or len(pid) != len('astor:') + 32:
+            return jsonify({'ok': False,
+                            'error': 'invalid_peer_id',
+                            'detail': 'must be astor:<32-hex>'}), 400
+        if not endpoint:
+            return jsonify({'ok': False,
+                            'error': 'missing_endpoint',
+                            'detail': 'the peer endpoint URL is required to '
+                                      'deliver a friend request'}), 400
+        trust = int(body.get('trust', 30))
+        alias = body.get('alias') or None
+        note = body.get('note') or ''
+        try:
+            add_peer(pid, kind='friend', trust=trust, alias=alias,
+                     endpoint=endpoint)
+        except Exception as e:
+            return jsonify({'ok': False, 'error': 'add_failed',
+                            'detail': str(e)}), 400
+        sent = send_friend_request(pid, endpoint, alias=alias or '',
+                                   note=note)
+        if not sent.get('sent'):
+            return jsonify({'ok': False, 'error': 'delivery_failed',
+                            'detail': sent.get('error'),
+                            'peer_id': pid}), 502
+        return jsonify({
+            'ok': True,
+            'peer_id': pid,
+            'sent': True,
+            'status': sent.get('status'),
+        })
+
     @app.route('/v1/peer/friend-requests', methods=['GET'])
     def peer_friend_requests():
         """List inbound friend requests. ?status=pending (default) | all.
