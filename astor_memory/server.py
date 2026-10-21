@@ -1716,20 +1716,54 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # concept for the same fact. ASTOR_PUBLIC_ENDPOINT is accepted as
         # an explicit override for deployments where the two differ (a
         # tunnel URL for peers while the local base stays on loopback).
-        # v1.16.83: the friend code is peer_id + address in one string,
-        # so a person can paste it into the other dashboard and be done.
-        # The address is routing only — identity stays the peer_id that
-        # gets signed.
+        # Which address should other peers use to reach this node?
+        # Priority matters here, because the locally-bound address and
+        # the publicly-reachable one are usually different:
+        #
+        #   1. ASTOR_PUBLIC_ENDPOINT — explicit operator override.
+        #   2. The proxy's own headers — a tunnel or reverse proxy
+        #      already knows the public hostname, so it is the most
+        #      reliable source and needs no configuration.
+        #   3. ASTOR_BASE_URL — the established local base URL. Useful
+        #      when there is no proxy at all.
+        #   4. The request's own host — the last resort, and correct
+        #      for a directly-reachable node.
+        #
+        # The proxy headers outrank ASTOR_BASE_URL because the base URL
+        # is usually loopback (the server binds 127.0.0.1) while the
+        # proxy's hostname is what the outside world can actually dial.
+        # Publishing the loopback one would hand peers an address that
+        # can never work.
+        _public_endpoint = ''
         try:
-            from ._internal.peer_identity import local_friend_code
-            _friend_code = local_friend_code()
+            _host = (request.headers.get('X-Forwarded-Host')
+                     or request.host or '').split(',')[0].strip()
         except Exception:
-            _friend_code = _peer_id_str
+            _host = ''
+        if _host:
+            try:
+                _scheme = (request.headers.get('X-Forwarded-Proto')
+                           or request.scheme or 'http').strip()
+            except Exception:
+                _scheme = 'http'
+            _public_endpoint = f'{_scheme}://{_host}'
         _public_endpoint = (
             os.environ.get('ASTOR_PUBLIC_ENDPOINT')
+            or _public_endpoint
             or os.environ.get('ASTOR_BASE_URL')
             or ''
         ).strip()
+        # Build the friend code from the address we just resolved, so the
+        # code a peer receives carries a reachable address rather than
+        # the loopback one the server happens to bind.
+        try:
+            from ._internal.peer_identity import format_friend_code
+            _fc_addr = _public_endpoint
+            if _fc_addr.startswith('http://'):
+                _fc_addr = _fc_addr[len('http://'):]
+            _friend_code = format_friend_code(_peer_id_str, _fc_addr)
+        except Exception:
+            _friend_code = _peer_id_str
         return jsonify({
             'peer_id': _peer_id_str,
             'public_key_fingerprint': _pub_fp,
@@ -1785,6 +1819,22 @@ def create_app(astor_dir: str | None = None) -> Flask:
             user_id=body.get('user_id'),
             namespace=body.get('namespace'),
         )
+        # Behind a tunnel or reverse proxy the request's own Host
+        # header is the public address — the proxy already told us
+        # how we are reachable. Falling back to it means a node
+        # behind a tunnel publishes its public hostname without
+        # anyone having to configure it, and the friend code it
+        # hands out is actually usable by the other side.
+        if not _public_endpoint:
+            try:
+                _host = (request.headers.get('X-Forwarded-Host')
+                         or request.host or '').split(',')[0].strip()
+                if _host:
+                    _scheme = (request.headers.get('X-Forwarded-Proto')
+                               or request.scheme or 'http').strip()
+                    _public_endpoint = f'{_scheme}://{_host}'
+            except Exception:
+                pass
         return jsonify({'count': len(results), 'facts': results, 'query': q})
 
     @app.route('/v1/bitemporal/cascade_forget', methods=['POST'])

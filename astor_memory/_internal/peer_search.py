@@ -413,7 +413,13 @@ def dispatch_search_to_peers(
         )
         req = urllib.request.Request(
             url,
-            headers={"Accept": "application/json"},
+            # v1.16.83: a real User-Agent. urllib's default
+            # "Python-urllib/3.x" is rejected by Cloudflare with error
+            # 1010 (browser integrity check), so a peer search across
+            # the public internet fails with a 403 that never reaches
+            # the origin — no server log, no explanation.
+            headers={"Accept": "application/json",
+                     "User-Agent": "astor-memory/peer-search"},
             method='GET',
         )
         try:
