@@ -354,3 +354,52 @@ def test_local_friend_code_carries_this_install_id():
         assert pid == PI.init_identity(d)["peer_id"]
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+# --- crossing networks: what actually breaks -------------------------------
+
+
+def test_outbound_request_sends_a_real_user_agent(local_dir, remote_dir):
+    """The default urllib User-Agent is "Python-urllib/3.x".
+
+    Cloudflare rejects that with error 1010 (browser integrity check). The
+    request never reaches the origin, so the peer sees a bare 403 with no
+    server log entry and no error page — it looks like the network is down
+    rather than like a header was wrong. Sending a real UA is the fix, and
+    naming the client is also honest: the receiving operator can see who
+    is calling.
+    """
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            self.rfile.read(length)
+            seen["ua"] = self.headers.get("User-Agent", "")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"received":true}')
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        PR.send_friend_request(
+            "astor:" + "6" * 32, f"http://127.0.0.1:{port}",
+            alias="alice", note="hi", astor_dir=str(local_dir),
+        )
+        ua = seen.get("ua", "")
+        assert ua, "no User-Agent header was sent"
+        assert "Python-urllib" not in ua, (
+            "the default urllib UA gets blocked by Cloudflare error 1010")
+        assert "astor-memory" in ua
+    finally:
+        srv.shutdown()
+        srv.server_close()

@@ -47,6 +47,16 @@ from typing import Any, Iterable, Literal
 
 # --- Data classes ---
 
+
+def _client_version() -> str:
+    """Version string for the outbound User-Agent."""
+    try:
+        from astor_memory import __version__
+        return str(__version__)
+    except Exception:
+        return "unknown"
+
+
 @dataclass
 class Fact:
     id: int
@@ -204,6 +214,14 @@ class AstorClient:
             headers["X-Astor-Key"] = self.api_key
         if extra_headers:
             headers.update(extra_headers)
+        # v1.16.83: a real User-Agent. urllib's default
+        # "Python-urllib/3.x" is rejected by Cloudflare with error 1010
+        # (browser integrity check), so any client pointed at an instance
+        # behind a tunnel gets a 403 that never reaches the server.
+        headers = dict(headers or {})
+        headers.setdefault(
+            "User-Agent",
+            "astor-memory/client (%s)" % _client_version())
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:

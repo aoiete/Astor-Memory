@@ -342,6 +342,15 @@ def resolve_friend_request(
 
 
 
+def _peer_ua_version() -> str:
+    """Version string for the outbound User-Agent."""
+    try:
+        from astor_memory import __version__
+        return str(__version__)
+    except Exception:
+        return "unknown"
+
+
 def send_friend_request(
     peer_id: str,
     endpoint: str,
@@ -373,9 +382,18 @@ def send_friend_request(
     body = _json.dumps({"msg_type": "friend_request", "msg": msg},
                        ensure_ascii=False).encode("utf-8")
     url = endpoint + "/v1/peer/recv"
+    # v1.16.83: send a real User-Agent. urllib's default is
+    # "Python-urllib/3.x", and Cloudflare rejects that with error 1010
+    # (browser integrity check) — the request never reaches the origin, so
+    # the peer sees a 403 with no server log and no error page to explain
+    # it. Naming the client is also the honest thing to do: the receiving
+    # operator can see who is calling.
     req = urllib.request.Request(
         url, data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "astor-memory/peer (%s)" % _peer_ua_version(),
+        },
         method="POST",
     )
     try:
