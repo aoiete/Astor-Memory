@@ -210,7 +210,7 @@ export ASTOR_HYDE_MODEL=minimax/minimax-m2  # default; override if you want diff
 
 ```bash
 cd <SCRIPTS_DIR>
-<PYTHON_ML>/Scripts/python.exe tests/eval_runner.py --all
+<python> tests/eval_runner.py --all
 # inspect astor/metrics/eval_history.jsonl for per-variant mrr
 ```
 
@@ -219,7 +219,7 @@ cd <SCRIPTS_DIR>
 ```bash
 # Add lifestyle + fortune queries in Chinese to tests/eval_set.jsonl
 # (already mostly CN; ship K tests cover CJK variants)
-<PYTHON_ML>/Scripts/python.exe tests/test_synonym_expander_chinese.py
+<python> tests/test_synonym_expander_chinese.py
 ```
 
 ---

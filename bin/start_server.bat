@@ -2,11 +2,29 @@
 
 setlocal enabledelayedexpansion
 
-rem 2026-09-01: removed hardcoded <ASTOR_RUNTIME_DIR> — use env var or default ~/.astor
+rem 2026-09-01: removed a hardcoded runtime path — use env var or default ~/.astor
 
 rem This script is for local admin/dev use. For users, astor installs to %USERPROFILE%/.astor by default.
 
 if "%ASTOR_DIR%"=="" set "ASTOR_DIR=%USERPROFILE%\.astor"
+
+rem Interpreter: honour an operator override, else take the first
+rem Python on PATH. No absolute interpreter path belongs in source.
+if "%PYTHON%"=="" (
+    for %%P in (pythonw.exe) do if not "%%~$PATH:P"=="" (
+        set "PYTHON=%%~$PATH:P"
+        goto :python_ready
+    )
+    for %%P in (python.exe) do if not "%%~$PATH:P"=="" (
+        set "PYTHON=%%~$PATH:P"
+        goto :python_ready
+    )
+)
+:python_ready
+if "%PYTHON%"=="" (
+    echo ERROR: no Python interpreter found on PATH. Set PYTHON to a full path and retry.
+    exit /b 1
+)
 
 set PYTHONPATH=%ASTOR_DIR%
 
@@ -56,4 +74,4 @@ echo ASTOR_DUAL_MODEL: !ASTOR_DUAL_MODEL!
 rem v1.15.36 (Ship P1.1): enable Hindsight-style mental_models read endpoint by default.
 if "%ASTOR_MENTAL_MODELS%"=="" set "ASTOR_MENTAL_MODELS=1"
 echo ASTOR_MENTAL_MODELS: !ASTOR_MENTAL_MODELS!
-"<ASTOR_RUNTIME_DIR>" -u -m astor_memory.server --host 127.0.0.1 --port 7803
+"%PYTHON%" -u -m astor_memory.server --host 127.0.0.1 --port 7803

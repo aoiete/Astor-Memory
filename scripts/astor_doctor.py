@@ -21,7 +21,7 @@ USAGE:
   python astor_doctor.py stats
 
 ENV:
-  ASTOR_DIR  override the runtime dir (default <ASTOR_RUNTIME>)
+  ASTOR_DIR  override the runtime dir (default: the shared resolver)
 
 v1.16.58 — 2026-10-03
 """
@@ -36,7 +36,7 @@ DEFAULT_ASTOR_DIR = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor')
 # rebase on a different ASTOR_DIR (Linux CI sets ASTOR_DIR=/tmp/...).
 # Previously these were absolute (joined onto DEFAULT_ASTOR_DIR), which
 # made `d.relative_to(DEFAULT_ASTOR_DIR)` return the runtime path on Linux
-# and then `(base / d)` produced /tmp/.../<ASTOR_RUNTIME_DIR> → no DBs found.
+# and then `(base / d)` produced /tmp/.../<abs-path>/... → no DBs found.
 TIER_DIRS = [
     Path('public') / 'memory',
     Path('private') / 'memory',

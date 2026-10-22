@@ -419,7 +419,7 @@ curl -X POST 'http://127.0.0.1:7803/v1/peer/rate-limit/reset' \
 # peer_decay.sh:
 #   #!/bin/bash
 #   export ASTOR_DIR=<ASTOR_RUNTIME_DIR>
-#   <PYTHON>/Scripts/python.exe -m astor_memory.cli.main peer trust decay
+#   <python> -m astor_memory.cli.main peer trust decay
 # Result: prints 'decayed N peer(s)'. Stale friends (>30d, trust>30) get -5.
 ```
 

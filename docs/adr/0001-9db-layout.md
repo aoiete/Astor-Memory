@@ -46,7 +46,7 @@ shape that fits the multi-tenant model.
 ### Concrete shape
 
 ```
-<ASTOR_RUNTIME>/
+<runtime-dir>/
 ├── public/memory/
 │   ├── astor_bus_public.db
 │   ├── astor_forge_public.db

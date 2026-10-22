@@ -1,14 +1,14 @@
 """sync_to_runtime.py — Sync source tree changes to local runtime deployment.
 
-Compares the source tree (default: <REPO_ROOT>/) against the
-runtime tree (default: <ASTOR_RUNTIME>/) and copies files
-that differ. Optionally restarts the astor server via NSSM so the
+Compares the source tree (default: the repository this script lives in)
+against the runtime tree (default: $ASTOR_DIR, else ~/.astor) and copies
+files that differ. Optionally restarts the astor server via NSSM so the
 runtime picks up the new code.
 
 Why this script exists:
-- Astor source SSoT = <REPO_ROOT>/ (git-tracked, public)
-- Astor runtime SSoT = <ASTOR_RUNTIME>/ (deployment, not git)
-- Server.py imports resolve via PYTHONPATH=<ASTOR_RUNTIME>,
+- Astor source SSoT = the git-tracked repository
+- Astor runtime SSoT = the deployment tree (not git)
+- Server.py imports resolve via PYTHONPATH pointing at the runtime tree,
   so runtime must mirror source for the server to see the latest code.
 - Without this helper, the operator must manually copy each changed file
   AND restart the NSSM-wrapped server, which is error-prone (missed
@@ -48,8 +48,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-DEFAULT_SRC = Path(r'<REPO_ROOT>')
-DEFAULT_RUNTIME = Path(r'<ASTOR_RUNTIME>')
+# No absolute operator path may live in source (portability rule):
+# the source tree is the repository this script lives in, and the runtime
+# tree comes from $ASTOR_DIR, else the shared resolver.
+DEFAULT_SRC = Path(__file__).resolve().parent.parent
+DEFAULT_RUNTIME = Path(os.environ.get('ASTOR_DIR') or (Path.home() / '.astor'))
 # v1.16.62: when --src/--runtime not given, prefer paths from
 # ~/.astor/install.json if it exists (written by `am init` on first install).
 # ASTOR_HOME env var overrides Path.home() (e.g. when run from a service
