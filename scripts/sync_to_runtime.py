@@ -87,7 +87,11 @@ def _load_install_paths() -> tuple[Path, Path]:
         return None, None
 
 # Skip patterns (relative path globs)
-SKIP_GLOBS = ['.git', '__pycache__', '.test_workspace']
+# 'tests' and 'docs' are deliberately excluded: the deployment tree is
+# the code that runs, not the test suite and the design notes. They used
+# to be copied in, which is why a full sync reported 18 files that the
+# runtime legitimately does not have.
+SKIP_GLOBS = ['.git', '__pycache__', '.test_workspace', 'tests', 'docs']
 SKIP_SUFFIXES = ('.pyc', '.pyo')
 
 
@@ -105,7 +109,42 @@ def _is_skipped(rel: Path) -> bool:
 
 
 def _walk_tracked_files(root: Path) -> list[Path]:
-    """Return all files under root, skipping patterns."""
+    """Return the files under root that git actually tracks.
+
+    This used to walk the whole tree with rglob() and skip a short list of
+    names, which meant anything git ignores still got copied into the
+    deployment tree: the tests/ directory, docs/, the generated
+    astor/metrics/ eval snapshots, and the .bak-pre-* backup files. A
+    plain `sync_to_runtime.py --execute` reported 36 such files as
+    "missing in runtime" and would have copied them in.
+
+    git ls-files is the accurate answer to "what belongs in a release":
+    it already encodes .gitignore, and the deployment tree should mirror
+    the repository, not the developer's working copy.
+    """
+    tracked = set()
+    try:
+        import subprocess as _sp
+        out = _sp.run(["git", "ls-files", "-z"], cwd=str(root),
+                      capture_output=True, timeout=120)
+        if out.returncode == 0:
+            tracked = {p for p in out.stdout.decode("utf-8").split("\0") if p}
+    except Exception:
+        tracked = set()
+
+    if tracked:
+        result = []
+        for rel_str in sorted(tracked):
+            p = root / rel_str
+            if not p.is_file():
+                continue
+            rel = p.relative_to(root)
+            if _is_skipped(rel):
+                continue
+            result.append(p)
+        return result
+
+    # Fallback for a tree that is not a git checkout.
     out = []
     for p in root.rglob('*'):
         if not p.is_file():
