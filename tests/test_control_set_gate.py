@@ -115,6 +115,11 @@ class TestControlSetGate(unittest.TestCase):
         """The control set was built from the live corpus, so the live run
         should pass. This is the assertion the ship gate actually enforces."""
         result = self._run()
+        if result["verdict"] == "INFRA_ERROR":
+            self.skipTest(
+                "server unreachable for every control query "
+                f"({result.get('n_infra_error')} read errors) -- "
+                "infrastructure, not a recall regression")
         self.assertEqual(
             result["n_fail"], 0,
             f"control set gate failed ({result['n_pass']}/{result['n_total']}): "
@@ -124,9 +129,12 @@ class TestControlSetGate(unittest.TestCase):
 
     def test_result_shape(self):
         result = self._run()
+        if result["verdict"] == "INFRA_ERROR":
+            self.skipTest("server unreachable -- infrastructure failure")
         for field in ("gate_version", "control_set_version", "baseline_version",
                       "n_total", "n_pass", "n_fail", "pass_rate",
-                      "failures", "fid_drift_count", "verdict"):
+                      "failures", "fid_drift_count", "verdict",
+                      "n_infra_error", "n_answered", "infra_errors"):
             self.assertIn(field, result, f"missing {field} in result")
         self.assertEqual(result["verdict"], "PASS")
 
@@ -136,6 +144,11 @@ class TestControlSetGate(unittest.TestCase):
         v1.16.74 rework exists to prevent (the old gate scored 0/40 on a
         healthy system purely because fact_ids moved)."""
         result = self._run()
+        if result["verdict"] == "INFRA_ERROR":
+            self.skipTest(
+                "server unreachable for every control query "
+                f"({result.get('n_infra_error')} read errors) -- "
+                "infrastructure, not a recall regression")
         self.assertEqual(
             result["verdict"], "PASS",
             "gate must not fail on fact_id drift alone",

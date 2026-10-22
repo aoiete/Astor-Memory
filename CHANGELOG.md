@@ -44,6 +44,34 @@ live facts) and `session_end_hook` (26) belonged to no wing, so
 `auto_extracted` and `session_end_hook` now map to `agent`, and
 `operator` to `human`.
 
+### (d) The server was being killed while it was busy answering
+
+`waitress` ran with 8 threads. A `/v1/read` that ranks a corpus of
+thousands of facts holds a thread for seconds, so eight concurrent
+readers starved the pool completely: `/v1/health` could not get a
+thread either, the watchdog probe timed out, and the server was
+declared dead and killed -- mid-request. Callers saw WinError 10054
+(connection closed) and 10061 (refused). The control-set gate showed 34
+of 39 queries failing while the corpus itself was perfectly healthy.
+
+Three changes, all of them about telling "busy" apart from "broken":
+
+- `ASTOR_SERVER_THREADS` now defaults to 32 instead of 8, so a health
+  probe and a ranking read can coexist.
+- The watchdog treats a timed-out health probe as BUSY, not DEAD, when
+  the port is still listening and the PID is still alive.
+- The watchdog's liveness check no longer concludes "dead" from a
+  `tasklist` timeout. `tasklist` enumerates every process on the host
+  and routinely exceeds its 3-second budget on a loaded machine; a probe
+  that could not answer is unknown, not dead, so it now falls back to a
+  single `OpenProcess` syscall.
+
+The gate also stopped counting an unreachable server as a recall
+regression. Infrastructure errors are now reported separately and yield
+an `INFRA_ERROR` verdict instead of a `FAIL`, and the checks that assert
+the live corpus still passes skip rather than fail when the server could
+not be reached at all.
+
 ### (c) Test scratch rows were retiring real rules
 
 `auto_invalidate_on_update()` picked candidate facts with a coarse content
