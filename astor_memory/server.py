@@ -10899,7 +10899,14 @@ def main():
     # v1.16.41: serve via waitress for true bounded concurrency.
     import os as _os
     import waitress as _waitress
-    _threads = int(_os.environ.get('ASTOR_SERVER_THREADS', '8'))
+    # 2026-10-22: 8 threads was too few. A read that ranks a corpus of
+    # thousands of facts takes seconds, so 8 concurrent readers starved
+    # the pool: /v1/health could not get a thread, the watchdog probe
+    # timed out, and the server was killed mid-flight. That surfaced as
+    # WinError 10054 (connection closed) and 10061 (refused) in the
+    # control-set gate -- 34 of 39 queries failed while the corpus was
+    # fine. 32 threads lets a health probe and a ranking read coexist.
+    _threads = int(_os.environ.get('ASTOR_SERVER_THREADS', '32'))
     print(f'   WSGI: waitress threads={_threads} (production-grade concurrency)', flush=True)
     _waitress.serve(app, host=args.host, port=args.port, threads=_threads,
                     ident=None, cleanup_interval=30)
