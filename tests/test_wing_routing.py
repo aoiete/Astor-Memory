@@ -64,15 +64,24 @@ class TestExpandWingToProvenance(unittest.TestCase):
         self.assertIsNone(_expand_wing_to_provenance("   "))
 
     def test_human_wing_maps_to_manual(self):
-        self.assertEqual(_expand_wing_to_provenance("human"), {"manual"})
+        # v1.16.86: 'operator' joined the human wing. An operator action
+        # is a person acting, so it belongs with 'manual'.
+        self.assertEqual(
+            _expand_wing_to_provenance("human"), {"manual", "operator"})
         # Case-insensitive
-        self.assertEqual(_expand_wing_to_provenance("Human"), {"manual"})
-        self.assertEqual(_expand_wing_to_provenance("HUMAN"), {"manual"})
+        self.assertEqual(
+            _expand_wing_to_provenance("Human"), {"manual", "operator"})
+        self.assertEqual(
+            _expand_wing_to_provenance("HUMAN"), {"manual", "operator"})
 
     def test_agent_wing_maps_to_extracted_inferred_merged(self):
+        # v1.16.86: 'auto_extracted' and 'session_end_hook' joined the
+        # agent wing. They are what the agent produced, and leaving them
+        # out meant wing=agent silently dropped 483 live facts.
         self.assertEqual(
             _expand_wing_to_provenance("agent"),
-            {"extracted", "inferred", "merged"},
+            {"extracted", "auto_extracted", "inferred", "merged",
+             "session_end_hook"},
         )
 
     def test_rule_wing_maps_to_rule(self):
@@ -101,8 +110,9 @@ class TestWingToProvenanceMapping(unittest.TestCase):
             self.assertIsInstance(prov_set, set, wing)
 
     def test_mapping_disjoint_except_agent_includes_extracted(self):
-        # human and rule are singletons; agent covers the rest
-        self.assertEqual(WING_TO_PROVENANCE["human"], {"manual"})
+        # rule is a singleton; human and agent cover the rest
+        # (v1.16.86: human also holds 'operator'.)
+        self.assertEqual(WING_TO_PROVENANCE["human"], {"manual", "operator"})
         self.assertEqual(WING_TO_PROVENANCE["rule"], {"rule"})
         # agent should NOT include manual or rule (those are human/system)
         self.assertNotIn("manual", WING_TO_PROVENANCE["agent"])

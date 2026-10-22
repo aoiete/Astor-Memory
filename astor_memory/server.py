@@ -1,4 +1,4 @@
-﻿"""
+"""
 HTTP REST API server for Astor-Memory.
 
 Plan § Week 4 step 3.2: FastAPI-style endpoints with Flask (already in deps).
@@ -728,8 +728,14 @@ def _extract_entities_for_fact(bus, canon_id):
 # keep physical storage shared (9-DB layout is per-tier, not per-wing)
 # but route recall by wing via the wing alias below.
 WING_TO_PROVENANCE = {
-    "human": {"manual"},
-    "agent": {"extracted", "inferred", "merged"},
+    # A fact written by a person: typed by hand, or by an operator action.
+    "human": {"manual", "operator"},
+    # A fact the agent produced: extracted, auto-extracted, inferred,
+    # merged, or captured by a session-end hook. auto_extracted and
+    # session_end_hook were missing here, so wing=agent silently dropped
+    # 483 of the 4929 live facts in the admin store.
+    "agent": {"extracted", "auto_extracted", "inferred", "merged",
+              "session_end_hook"},
     "rule": {"rule"},
 }
 
@@ -758,6 +764,18 @@ def _infer_provenance_kind(origin_session_id: str | None) -> str | None:
     if sid.startswith(("auto_link:", "auto_observe:", "merge:")):
         return "inferred"
     return None
+
+
+def _v186_now_iso() -> str:
+    """Current UTC time in the format memory_canonical.valid_until uses.
+
+    The column stores ISO 8601 UTC text ('2026-09-30T20:10:04.910480Z'),
+    so a plain string comparison is an accurate timestamp comparison for
+    the values the write path writes.
+    """
+    import datetime as _v186_dt
+    return _v186_dt.datetime.now(_v186_dt.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def _expand_wing_to_provenance(wing: str | None) -> set[str] | None:
@@ -3776,7 +3794,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     rows = b.conn.execute(
                         f"SELECT id, content, kind, importance, memory_class "
                         f"FROM memory_canonical "
-                        f"WHERE tombstoned = 0 AND kind IN ('success_pattern', 'failure_pattern') "
+                        f"WHERE tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND kind IN ('success_pattern', 'failure_pattern') "
                         f"AND ({like_clauses}) "
                         f"ORDER BY importance DESC, created_at DESC LIMIT 2",
                         tuple(like_params)
@@ -3848,7 +3866,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     rows = b.conn.execute(
                         f"SELECT id, content, kind, importance, memory_class "
                         f"FROM memory_canonical "
-                        f"WHERE tombstoned = 0 AND kind = 'lesson' "
+                        f"WHERE tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND kind = 'lesson' "
                         f"AND ({like_clauses}) "
                         f"ORDER BY importance DESC, created_at DESC LIMIT 2",
                         tuple(like_params)
@@ -4031,7 +4049,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     rows = b.conn.execute(
                         f"SELECT id, content, kind, importance, memory_class "
                         f"FROM memory_canonical "
-                        f"WHERE tombstoned = 0 "
+                        f"WHERE tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
                         f"AND kind IN ('success_pattern', 'failure_pattern', 'lesson') "
                         f"AND ({like_clauses}) "
                         f"ORDER BY importance DESC, created_at DESC LIMIT 5",
@@ -4099,7 +4117,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     rows = b.conn.execute(
                         f"SELECT id, content, importance, confidence "
                         f"FROM memory_canonical "
-                        f"WHERE tombstoned = 0 AND kind = 'mental_model' "
+                        f"WHERE tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND kind = 'mental_model' "
                         f"AND ({like_clauses}) "
                         f"ORDER BY confidence DESC, importance DESC, id DESC LIMIT 3",
                         tuple(like_params),
@@ -4173,7 +4191,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     rows = b.conn.execute(
                         f"SELECT id, content, importance, confidence, metadata "
                         f"FROM memory_canonical "
-                        f"WHERE tombstoned = 0 AND kind = 'knowledge_page' "
+                        f"WHERE tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND kind = 'knowledge_page' "
                         f"AND ({like_clauses}) "
                         f"ORDER BY confidence DESC, importance DESC, id DESC LIMIT 3",
                         tuple(like_params),
@@ -5024,12 +5042,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
                 "event_date, event_date_precision, origin_session_id, metadata, entities_json, created_at, memory_class, "
                 # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking
-                "evidence_quote, source_ref, source_hash "
+                "evidence_quote, source_ref, source_hash, provenance_kind, valid_until "
                 # tombstoned 过滤。索引侧 (nest embeddings / lex documents)
                 # 只在部分 tombstone 路径上同步, 索引里会残留已删事实 ——
                 # 实测召回结果里大部分是已 tombstone 的行 (污染率 ~78%)。
                 # 读路径必须自己守住, 不能指望索引干净。
-                "FROM memory_canonical WHERE id = ? AND tombstoned = 0",
+                "FROM memory_canonical WHERE id = ? AND tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
                 (fact_id,),
             ).fetchone()
             if row is None:
@@ -5061,6 +5079,18 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'tags': row[5],
                 'namespace': row[6],
                 'user_id': row[7],
+                # v1.16.86: surface provenance_kind on the read path. The
+                # wing filter (wing=human/agent/rule) matches on this field,
+                # but the read path never populated it, so EVERY wing query
+                # filtered its way to zero results. Appended as the last
+                # column so the positional indexes above stay valid.
+                'provenance_kind': (row[-2] if row and len(row) > 20 else None),
+                # v1.16.86: valid_until travels with the fact so a caller
+                # can see when this version stops being valid. A fact with a
+                # valid_until in the past is the OLD version of something
+                # (replaced or explicitly invalidated) and must not be
+                # served as current.
+                'valid_until': (row[-1] if row and len(row) > 21 else None),
                 'similarity': round(sim, 4),
                 # 'score_kind' tells the caller whether similarity is
                 # pure-cosine ('cosine') or hybrid ('hybrid'). Hermes
@@ -5225,8 +5255,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             continue
                         _row = bus.conn.execute(
                             "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
-                            "event_date, event_date_precision, origin_session_id "
-                            "FROM memory_canonical WHERE id = ? AND tombstoned = 0", (_fid,),
+                            "event_date, event_date_precision, origin_session_id, provenance_kind, valid_until "
+                            "FROM memory_canonical WHERE id = ? AND tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                            (_fid,),
                         ).fetchone()
                         if _row is None:
                             continue
@@ -5255,6 +5286,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             'tags': _row[5],
                             'namespace': _row[6],
                             'user_id': _row[7],
+                            # v1.16.86: see the ranked path -- the wing
+                            # filter matches on provenance_kind, so this
+                            # channel has to carry it too.
+                            'provenance_kind': (_row[-2] if len(_row) > 13 else None),
+                            'valid_until': (_row[-1] if len(_row) > 14 else None),
                             'similarity': round(min(max(s for _, s in _tok_scores) / 10.0, 1.0), 4),
                             'score_kind': 'grep_verify',
                             'hit_source': 'grep_verify',
@@ -5283,8 +5319,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     if not _sid:
                         continue
                     _rows = bus.conn.execute(
-                        "SELECT id, content, kind, origin_session_id, event_date FROM memory_canonical "
-                        "WHERE origin_session_id = ? AND id != ? AND tombstoned = 0 "
+                        "SELECT id, content, kind, origin_session_id, event_date, provenance_kind, valid_until "
+                        "FROM memory_canonical "
+                        "WHERE origin_session_id = ? AND id != ? AND tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
                         "ORDER BY ABS(id - ?) LIMIT 2",
                         (_sid, int(_r['fact_id']), int(_r['fact_id'])),
                     ).fetchall()
@@ -5298,6 +5335,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             'kind': _row[2],
                             'session_id': _row[3],
                             'event_date': _row[4],
+                            # v1.16.86: the wing filter matches on this.
+                            'provenance_kind': (_row[5] if len(_row) > 5 else None),
+                            'valid_until': (_row[6] if len(_row) > 6 else None),
                             'similarity': 0.0,
                             'score_kind': 'session_neighbor',
                             'hit_source': 'session_neighbor',
@@ -5864,6 +5904,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
                              if (r.get('session_id') == _session_filter
                                  or r.get('origin_session_id') == _session_filter)
                             ][:top_k]
+
+        # v1.16.86: valid_until backstop. The main channels filter on it in
+        # SQL, but a few auxiliary queries (the date-range and keyword
+        # scoping passes) build enriched rows from their own SELECTs, and
+        # the injection channels have no such column at all. A fact whose
+        # valid_until has passed is the OLD version of something -- it was
+        # replaced or explicitly invalidated -- so serving it as current is
+        # exactly the pollution the write path was trying to prevent.
+        if enriched:
+            enriched = [r for r in enriched
+                         if not (r.get("valid_until")
+                                 and str(r["valid_until"]) <=
+                                 _v186_now_iso())]
 
         # v1.16.20: cache store (before return).
         try:

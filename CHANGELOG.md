@@ -1,3 +1,88 @@
+## v1.16.86 — Invalidated facts were still being served, and the wing filter matched nothing
+
+Two more read-path defects, both found by auditing which columns the read
+path returns versus which ones the write path maintains. The first is a
+live recall-pollution bug of the same family as v1.16.84; the second makes
+one of the documented query parameters inert.
+
+### (a) `valid_until` was never filtered — 14% of recall hits were superseded facts
+
+A fact that gets replaced, or is explicitly invalidated, keeps its row and
+gets `valid_until` set (the write path does this at `server.py:3006` when
+a newer fact of the same kind supersedes it, and at `server.py:1785` for
+an explicit invalidation). The comment at `server.py:3592` promised
+"valid_until=now() so they no longer pollute recall" — but no read path
+ever filtered on the column.
+
+Measured on the public tier: **178 of 1268 visible facts (14%) were
+already-invalidated old versions**, and 28 more on the source tier. Both
+tiers are shared, so every user was seeing them. What came back were the
+old text of rules that had since been replaced.
+
+Every channel that returns facts now filters on it in SQL —
+`valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')`
+— across the ranked read, the grep-verify and session-neighbour channels
+and all five auto-injection channels. A final backstop drops any expired
+row for the auxiliary channels that build results from their own queries,
+and the fact now carries its `valid_until` so a caller can see when the
+version stops being valid.
+
+The write path's "does this fact already exist" lookups are deliberately
+left alone: treating an invalidated fact as absent would let the same
+content be written again.
+
+### (b) The `wing` filter matched nothing, and two provenance kinds had no wing
+
+`wing=human|agent|rule` filters on `provenance_kind`, but the read path
+never populated that field, so every wing query filtered its way to zero
+results — `wing=human` returned nothing at all.
+
+The read path now selects `provenance_kind` on the three channels that
+build result rows. The mapping was also incomplete: `auto_extracted` (457
+live facts) and `session_end_hook` (26) belonged to no wing, so
+`wing=agent` would have dropped them even once the field was populated.
+`auto_extracted` and `session_end_hook` now map to `agent`, and
+`operator` to `human`.
+
+### (c) Test scratch rows were retiring real rules
+
+`auto_invalidate_on_update()` picked candidate facts with a coarse content
+LIKE pre-filter and then invalidated anything above a 0.6 embedding
+similarity, with no check on kind, no check on importance, and with
+`success_pattern` counted as an update kind. The auto-fork hook writes
+success_pattern rows, and two of its test rows did this:
+
+    id 6535  kind=fact  importance 0.5
+        "TEST_FACT_DELETE_ME -- scratch write to see what /v1/write accepts"
+    id 6469  kind=success_pattern  importance 0.85
+        "v1.16.9 success auto-fork verified test"
+
+They retired **128 current facts** across the shared source and public tiers --
+including the gateway-restart rule, the astor-memory provider rule and the
+watchdog rules -- while the scratch rows themselves stayed alive, so recall
+served the garbage and hid the rules. The two rows carried no entities, so
+the candidate pre-filter fell through to its content-LIKE branch, and a
+0.78 embedding similarity was enough.
+
+Three guards now apply: a fact may only supersede a fact of the **same
+kind**; the new fact may not be **less important** than the one it retires;
+and `success_pattern` is no longer an update kind at all -- a record of
+what worked is not an update to anything. The similarity threshold moved
+from 0.6 to 0.85.
+
+The 128 facts that had been retired by a misfire were restored and the
+scratch rows were tombstoned. A fact whose invalidation looks like a real
+supersede -- same kind, no scratch row involved -- was left alone.
+
+### Also in this release
+
+- The `sync_to_runtime.py` walk now uses `git ls-files` instead of
+  `rglob('*')`, so the deployment tree mirrors the repository rather than
+  the developer's working copy. A full sync used to copy `tests/`,
+  `docs/`, the generated `astor/metrics/` snapshots and every `.bak-pre-*`
+  file into the deployment tree, and it reported 36 legitimate omissions
+  as "missing in runtime".
+
 ## v1.16.85 — The kinds filter is a hard constraint, and an explicit kind survives the write
 
 Two server-side correctness bugs, both measured on 1.16.84 before the fix.

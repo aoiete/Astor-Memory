@@ -66,12 +66,19 @@ from typing import Any
 # fact is too different from existing facts to be a "replacement" — it might
 # be a parallel/related fact (e.g. "I have a sister" vs "I live in Shanghai"
 # share entity=person but are unrelated).
-_AUTO_INVALIDATE_SIM_THRESHOLD = 0.6
+_AUTO_INVALIDATE_SIM_THRESHOLD = 0.85
 
 # Kinds that trigger auto-invalidation scan when written.
+# v1.16.86: 'success_pattern' was in this set. A success pattern is a
+# record of what WORKED -- it is not an update to anything, so it must
+# never be allowed to invalidate an existing fact. The auto-fork hook
+# writes success_pattern rows, and one of its test rows
+# ("TEST_FACT_DELETE_ME -- scratch write to see what /v1/write accepts")
+# invalidated SEVEN user_preference rules in the public tier, including
+# the gateway-restart rule, on a 0.78 similarity.
 _UPDATE_KINDS = frozenset({
     'correction', 'update', 'fact_update', 'user_correction',
-    'pushback', 'success_pattern',
+    'pushback',
 })
 
 
@@ -294,11 +301,17 @@ def auto_invalidate_on_update(
     for subj in entity_subjects:
         like_pat = f'%{subj}%'
         cands = bus.conn.execute(
-            "SELECT id, content, entities_json FROM memory_canonical "
+            "SELECT id, content, entities_json, kind, importance "
+            "FROM memory_canonical "
             "WHERE tombstoned = 0 AND valid_until IS NULL "
             "  AND id != ? AND (entities_json LIKE ? OR content LIKE ?) "
+            # v1.16.86: a fact may only supersede a fact of the SAME
+            # kind. Without this a kind=fact scratch row invalidated
+            # kind=user_preference rules, and a kind=rule iron rule
+            # was invalidated by a kind=fact auto-fork test row.
+            "  AND kind = ? "
             "ORDER BY importance DESC LIMIT 20",
-            (new_fact_id, like_pat, like_pat),
+            (new_fact_id, like_pat, like_pat, kind),
         ).fetchall()
         for r in cands:
             if r not in rows:
@@ -316,16 +329,31 @@ def auto_invalidate_on_update(
         model_name = astor_get_model_name_for_ram()
         model = astor_get_embedding_model(model_name=model_name)
         new_emb = astor_embed_query_cached(model, model_name, content[:500])
-        cand_texts = [(int(r[0]), (r[1] or '')[:500]) for r in rows]
-        cand_embs = list(model.embed([t for _, t in cand_texts]))
+        cand_texts = [(int(r[0]), (r[1] or '')[:500], r[2], r[3], r[4])
+                      for r in rows]
+        cand_embs = list(model.embed(
+            [t for _, t, _e, _k, _i in cand_texts]))
         import numpy as _np
         new_norm = float(_np.linalg.norm(new_emb))
+        # v1.16.86: the new fact may not be LESS important than the one it
+        # supersedes. A scratch row written with importance 0.5 must not be
+        # able to retire a rule stored at 0.85. The auto-fork path writes
+        # success_pattern rows at 0.7, which is below the rules it used to
+        # invalidate.
+        try:
+            _new_imp_row = bus.conn.execute(
+                "SELECT importance FROM memory_canonical WHERE id = ?",
+                (new_fact_id,)).fetchone()
+            new_importance = float((_new_imp_row or (0.0,))[0] or 0.0)
+        except Exception:
+            new_importance = 0.0
         results = []
-        for (fid, _txt), emb in zip(cand_texts, cand_embs):
+        for (fid, _txt, _ent, _ckind, _cimp), emb in zip(cands, cand_embs):
             en = float(_np.linalg.norm(emb))
             if new_norm > 0 and en > 0:
                 sim = float(_np.dot(new_emb, emb) / (new_norm * en))
-                if sim >= _AUTO_INVALIDATE_SIM_THRESHOLD:
+                if sim >= _AUTO_INVALIDATE_SIM_THRESHOLD and \
+                        new_importance >= float(_cimp or 0.0):
                     r = invalidate_fact(
                         bus, fact_id=fid,
                         replaced_by_fact_id=new_fact_id,
