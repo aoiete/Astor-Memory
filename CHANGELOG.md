@@ -1,3 +1,67 @@
+## v1.16.84 — Three silent-data-loss defects in the read and write paths
+
+Found by auditing the memory system against the "keep the original evidence"
+principle. All three shared one shape: the operation reported success while
+discarding or hiding real data, with no error signal to the caller.
+
+### (a) Recall pollution — most recall hits were deleted facts
+
+Six fetch paths omitted `AND tombstoned = 0`: the three `/v1/read` row-lookup
+paths and the three rerank / multi-hop-bridge helper paths that pull candidate
+text. Because the derived indexes (vector embeddings, lexical documents) only
+propagate tombstones on some of the code paths that delete a row, a deleted
+fact could still be selected as a candidate and then returned verbatim —
+roughly 78% of recall hits on an affected store.
+
+Fixed the SQL on all six paths, added a response-level final guard that
+re-checks every returned `fact_id` against the canonical table, drops the
+dead ones, and reports the count as `dropped_tombstoned` so a caller can tell
+"nothing matched" from "matched but was deleted". Purged the dead embeddings
+and lex documents the earlier cleanup left behind in the derived indexes.
+
+### (b) The 90-day decay scan deleted brand-new facts
+
+The decay sweep runs on every recall. Its predicate treated a NULL
+`last_confirmed_at` as "confirmed 90+ days ago":
+
+```sql
+AND (last_confirmed_at IS NULL OR last_confirmed_at < cutoff)
+```
+
+A fact that had never been surfaced has `last_confirmed_at = NULL`, so it
+matched the delete condition from the second it was written. A newly written
+fact that had not yet been indexed — and therefore could not yet be recalled —
+was destroyed by the next read.
+
+The canonical table's own importance decay already carried the correct
+semantics (`NULL` means "never confirmed", only decay when the field was set
+AND is older than the cutoff); the server's delete path had never been
+aligned with it. Fixed to `last_confirmed_at IS NOT NULL AND last_confirmed_at
+< cutoff`, then restored the affected facts and rebuilt their indexes.
+
+### (c) Writing a long fact was silently dropped
+
+The fact extractor declines to extract from input over 1000 characters, so
+the write handler received an empty fact list and short-circuited to
+`{"event_id": N, "facts": [], "count": 0}` — HTTP 200, no error, and no
+candidate row either. A caller asking to store a long fact got a success
+response and no fact.
+
+The write handler now keeps the whole text as one fact when the extractor
+yields nothing and the caller explicitly asked for it. An explicit
+`mode='none'` still means "store the raw event, don't extract" and is
+unchanged.
+
+### Control-set gate
+
+The recall-quality gate was failing on five queries. The cause was not
+retrieval: those queries' expected facts live in the admin private tier,
+while the gate read the source tier for everything. The per-query tier
+override the gate already supports was not set on those queries. Filled it
+in for the queries whose facts live in the private tier.
+
+`control_set_gate`: 0.6923 -> 1.000 (39/39). Test suite: 3 failed -> 924 passed.
+
 ## v1.16.70 (2026-10-05) — Ship D + Pre-upgrade inventory snapshot
 
 ### Ship D #1 — cross-vault wikilink index (`entities.jsonl`)

@@ -335,7 +335,8 @@
         3240
       ],
       "baseline_first_rank": 1,
-      "baseline_mrr": 1.0
+      "baseline_mrr": 1.0,
+      "tier": "private"
     },
     {
       "qid": "M03",
@@ -420,7 +421,8 @@
         3231
       ],
       "baseline_first_rank": 1,
-      "baseline_mrr": 1.0
+      "baseline_mrr": 1.0,
+      "tier": "private"
     },
     {
       "qid": "Q14",
@@ -453,7 +455,8 @@
         703
       ],
       "baseline_first_rank": 1,
-      "baseline_mrr": 1.0
+      "baseline_mrr": 1.0,
+      "tier": "private"
     },
     {
       "qid": "Q19",
@@ -518,7 +521,8 @@
       ],
       "baseline_first_rank": 1,
       "baseline_mrr": 1.0,
-      "note": "expected_keywords deliberately exclude the absolute path the stored fact contains: pinning an operator-specific drive layout in a shipped fixture leaks host layout, and the semantic assertion only needs the subject to prove the right fact came back."
+      "note": "expected_keywords deliberately exclude the absolute path the stored fact contains: pinning an operator-specific drive layout in a shipped fixture leaks host layout, and the semantic assertion only needs the subject to prove the right fact came back.",
+      "tier": "private"
     },
     {
       "qid": "Q24",
@@ -649,7 +653,8 @@
         300148
       ],
       "baseline_first_rank": 1,
-      "baseline_mrr": 1.0
+      "baseline_mrr": 1.0,
+      "tier": "private"
     }
   ]
 }
