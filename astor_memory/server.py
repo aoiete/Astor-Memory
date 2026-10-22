@@ -4290,17 +4290,24 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # within TTL returns cached results — kills redundant nest/embedding
         # work when agents hammer the same query (muse retry loops).
         global _READ_CACHE
+        # v1.16.85 (2026-10-22, bug fix): the cache key must cover every
+        # input that changes the RESULT. kinds / wing / session_id /
+        # consult were missing, so a kinds=rule request could be served
+        # the cached rows of an earlier unfiltered (or consult=True)
+        # request for the same query -- measured, the auto-injection rows
+        # came back to a consult=False caller that way.
+        # `kinds` accepts a comma-separated string OR a list, and a list is
+        # unhashable, so normalise every key part to a hashable form.
+        _kinds_key = body.get('kinds')
+        if isinstance(_kinds_key, (list, tuple, set)):
+            _kinds_key = tuple(sorted(str(_k) for _k in _kinds_key))
+        elif _kinds_key is not None:
+            _kinds_key = str(_kinds_key)
         _rcache_key = (
             query, body.get('tier', 'public'),
             body.get('user') or body.get('user_id') or '',
             body.get('top_k', 5),
-            # v1.16.85 (2026-10-22, bug fix): the cache key must cover every
-            # input that changes the RESULT. kinds / wing / session_id /
-            # consult were missing, so a kinds=rule request could be served
-            # the cached rows of an earlier unfiltered (or consult=True)
-            # request for the same query -- measured, the auto-injection
-            # rows came back to a consult=False caller that way.
-            body.get('kinds'), body.get('wing'), body.get('session_id'),
+            _kinds_key, body.get('wing'), body.get('session_id'),
             body.get('consult'),
         )
         _rcache_hit = _READ_CACHE.get(_rcache_key)

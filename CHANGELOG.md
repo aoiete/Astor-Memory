@@ -1,3 +1,51 @@
+## v1.16.85 — The kinds filter is a hard constraint, and an explicit kind survives the write
+
+Two server-side correctness bugs, both measured on 1.16.84 before the fix.
+
+### (a) An explicit `kind` on `/v1/write` was silently discarded
+
+`astor_extract_facts()` takes no `kind` argument, so the forge always decided
+the kind with its own 3-zone classifier: success → `success_pattern`, failure
+→ `failure_pattern`, lesson → `lesson`, everything else → `fact`. Every kind a
+caller sent was therefore overwritten. Measured before the fix: `rule`,
+`user_preference`, `success_pattern`, `failure_pattern` and `lesson` were all
+stored as `fact`, for long and short text, in every writable mode.
+
+The comment at `server.py:2443` already promised a "re-apply after" step, but
+that code was never written — the suggested-kind variable was read and never
+used. An explicit caller kind now wins over the forge's verdict. An
+auto-filled kind does not: when the write hook suggests a kind because the
+caller supplied none, the forge's own classification is the better answer, so
+that path is left alone.
+
+### (b) Every auto-injection channel bypassed the kinds filter
+
+The `kinds` / `wing` / `session_id` filters ran at the end of the main recall
+path. All five auto-injection channels prepend *after* them: trigger-aware
+bootstrap, meta-recall patterns, lessons, mental models and knowledge pages.
+A `/v1/read?kinds=rule` therefore came back with `success_pattern`,
+`failure_pattern` and `lesson` rows — measured, a request for `kinds=rule`
+returned four rows, none of them `rule`.
+
+The filters are now re-applied after every injection channel, so a
+caller-supplied filter is a hard constraint. Re-applying is idempotent for the
+main recall path, which was already filtered, and a read without `kinds` is
+unchanged — the proactive-advisor behaviour stays. Injected rows carry no
+`provenance_kind` or `session_id`, so a wing-scoped or session-scoped caller
+no longer receives global injections either.
+
+### (c) The read cache key was missing every filter
+
+The cache key covered only `query`, `tier`, `user` and `top_k`. A
+`kinds=rule` request could be served the cached rows of an earlier unfiltered
+or `consult=True` request for the same query — which is how the injection
+leak was observed to survive `consult=False`. `kinds`, `wing`, `session_id` and
+`consult` are now part of the key.
+
+Verified live on 1.16.85: 6/6 explicit kinds stored verbatim; `kinds=rule`
+returns only `rule` rows with zero injected rows, while a read without `kinds`
+still receives the injections; `control_set_gate` verdict PASS.
+
 ## v1.16.84 — Three silent-data-loss defects in the read and write paths
 
 Found by auditing the memory system against the "keep the original evidence"
