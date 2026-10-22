@@ -62,6 +62,108 @@ in for the queries whose facts live in the private tier.
 
 `control_set_gate`: 0.6923 -> 1.000 (39/39). Test suite: 3 failed -> 924 passed.
 
+## v1.16.83 — Mutual peer friend requests + version-surface guard
+
+Peers can now send a friend request to each other instead of only adopting
+one-way. The request carries a signature-covered alias and note, lands in a
+friend-requests queue, and the receiving operator accepts or rejects it from
+the dashboard. Fixes along the way: a per-thread sqlite connection that
+crashed on concurrent use, and a deadlock in the request path.
+
+Also aligns the `[tool.astor]` version with the project version — the CLI
+reported a build several releases old because the two declarations had
+drifted. A test now asserts all three version surfaces agree.
+
+## v1.16.82 — Clean-install test + dead entry point removed
+
+Adds a test that installs the project from a clean checkout, so a broken
+install path fails in CI instead of at a user's first `pip install`. Removes
+an entry point that no longer had a working implementation.
+
+## v1.16.81 — Request-tier acceptance + backend declarations
+
+Accepts `admin` as a valid request tier alongside the other declared tiers,
+and declares both Ed25519 backends so the two supported key types are
+documented rather than implied.
+
+## v1.16.80 — Writable tier for the local agent + identity seeding
+
+Gives the local agent a tier it can actually write to, retires the retired
+repository path, and seeds the local identity on init so a fresh install
+starts with a usable identity instead of requiring a manual step.
+
+## v1.16.79 — Declared user_meta value sets + reachable `--fix`
+
+Declares which values are legal in the user_meta table so an invalid write
+is rejected at the boundary rather than corrupting the row, makes the
+`--fix` path reachable (it existed but could not run), and unifies the admin
+handling across the affected commands.
+
+## v1.16.78 — Corrected native-runtime diagnosis
+
+The diagnosis of a missing native runtime dependency was wrong, and the
+failure it reported was not survivable. Both fixed: the check now names the
+actual missing piece, and a failure in that check no longer takes the
+process down with it.
+
+## v1.16.77 — Dashboard asset cache-buster bump
+
+Bumps the dashboard asset cache-buster so a browser holding a stale
+cached bundle picks up the new build.
+
+## v1.16.76 — Install path made real, peer quarantine, MCP stdio fix
+
+- The documented install path now actually works end to end.
+- A node can open its public tier without adding a single peer.
+- The MCP stdio server answers properly instead of failing to respond.
+- A peer quarantine panel was added and the peer/friend terminology was
+  unified across the UI, API, CLI and docs.
+- The README is repositioned around peer-to-peer public memory.
+- A dependency cache artifact that had been committed is removed.
+- The README now documents MCP, and stops advertising a tier argument that
+  does nothing.
+- Two install-blocking defects found by a clean git install are fixed.
+
+## v1.16.75 — Bounded recall payloads
+
+Bounds the fact payload `/v1/read` hands back, and caps the `grep_verify`
+channel the same way, so a recall response cannot return an unbounded amount
+of text.
+
+## v1.16.74 — Semantic control-set gate
+
+The control-set check became keyword-based (meaning) rather than id-based
+(row identity), with a per-query tier override, because a single global tier
+is wrong when the set spans tiers. Scrubs `PYTHONPATH` before the pytest run
+so a second host interpreter cannot shadow the one under test. Also fixes a
+`KeyError` in the trigger-aware meta-recall counters, and skips the gate
+when no server is reachable.
+
+## v1.16.73 — Four-way reciprocal-rank fusion
+
+Retrieval now fuses four ranked candidate lists with reciprocal rank fusion
+instead of a single list.
+
+## v1.16.72 — Per-stage write-path timing instrumentation
+
+The write path reports where its time goes, stage by stage.
+
+## v1.16.71 — Dream-tier promotion gate + universal export + zero-flip ship gate
+
+- A distinct-hit promotion gate for the dream tier.
+- A universal export across four formats, plus a companion index file that
+  the markdown export's wikilinks resolve against.
+- A zero-flip ship gate: a 40-question control set that must pass before a
+  release is accepted. Gated on corpus size, not just reachability — a
+  freshly-initialised server answers a health check fine while every query
+  returns nothing, which is an empty-corpus signal rather than a recall
+  regression.
+- Dashboard fixes: system directories excluded from the total-user count,
+  plan ordering in the connections table, a cache-buster bump, and restored
+  blank-line separators.
+- Mermaid diagrams for the dream tier, the store/tier layout, and the L0–L3
+  flow.
+
 ## v1.16.70 (2026-10-05) — Ship D + Pre-upgrade inventory snapshot
 
 ### Ship D #1 — cross-vault wikilink index (`entities.jsonl`)
@@ -70,11 +172,11 @@ in for the queries whose facts live in the private tier.
 
 ### Pre-agent-upgrade cheat sheet
 
-Full inventory captured to `<ASTOR_RUNTIME_DIR>,md}`:
-- Hermes gateway status + skills (33) + plugins + cron jobs (74) + shell_hooks
+Full inventory captured to an operator-side snapshot (JSON + Markdown):
+- Agent-host status + skills + plugins + scheduled jobs + shell hooks
 - Astor source/runtime paths + server PID + schema versions + shipped features (v1.16.65 → v1.16.70, 7 ships today)
-- Moomoo OpenD status (NSSM disabled, Scheduled Task `OpenD-nogui` running, moomoo server-side auth still pending manual login)
-- Maker Pocket paths (<ASTOR_RUNTIME_DIR> + state.json)
+- Third-party integration service status (service wrapper disabled, scheduled task still running, server-side auth still pending manual login)
+- Operator project script paths + state files
 - Data dirs to preserve across upgrade + risk table + state snapshot
 
 Use this as the comparison baseline after the agent upgrade.
@@ -188,7 +290,7 @@ After fix: `pytest tests/` goes from `3 failed, 775 passed, 17 skipped, 11 error
 
 ## v1.16.56 (2026-10-03) — Path-leak fix: sanitize astor_dir in user-facing responses
 
-R-class 2026-10-03: 4 user-facing endpoints returned `astor_dir: str(astor_dir)` which leaked the full on-disk path (e.g. `<ASTOR_RUNTIME_DIR>` or `/home/alice/.astor`). Fixed via new helper `_astor_dir_label(p)` that returns only the last directory component via `PurePath(p).name`.
+R-class 2026-10-03: 4 user-facing endpoints returned `astor_dir: str(astor_dir)` which leaked the full on-disk path (e.g. the operator's runtime directory or `~/.astor`). Fixed via new helper `_astor_dir_label(p)` that returns only the last directory component via `PurePath(p).name`.
 
 - `server.py` L1998 — `/v1/dashboard` error response uses helper
 - `server.py` L6944 — `/v1/dashboard` payload uses helper
@@ -199,7 +301,7 @@ No behavior change for ops; users no longer see the full on-disk path in any res
 
 ## v1.16.55 (2026-10-03) — Audit-fix: 4 critical issues + 1 minor
 
-**Cross-platform paths** — Removed 4 `<ASTOR_RUNTIME_DIR>` hardcodes in `astor_memory/server.py` (lines 81, 1305, 1352, 1466) + 1 in `tests/_regression_check.py`. Replaced with `ASTOR_DIR` env var or `~/.astor` fallback via `Path.home() / '.astor'`. Linux install now works for `/v1/fact/{id}/distill` + `/v1/admin/user/{user_id}/toggle_distill` endpoints.
+**Cross-platform paths** — Removed 4 hardcoded runtime-directory paths in `astor_memory/server.py` (lines 81, 1305, 1352, 1466) + 1 in `tests/_regression_check.py`. Replaced with `ASTOR_DIR` env var or `~/.astor` fallback via `Path.home() / '.astor'`. Linux install now works for `/v1/fact/{id}/distill` + `/v1/admin/user/{user_id}/toggle_distill` endpoints.
 
 **PII leak fix** — Removed `<user>` hardcode from `/v1/fact/{id}/distill` candidate_user_id list. Was treating another user's ID as a fallback for any caller, potentially allowing cross-user fact enumeration.
 
@@ -613,7 +715,7 @@ clean version to commons.
 - **v1.16.21** skill Controller scoring: `controller_select_scored(query)` ranks every bank skill by token overlap (name+tags+description) — new skills discoverable without keyword-heuristic edits. `/v1/skill/recommend` now uses scoring first, tag heuristic as fallback.
 - **v1.16.22** memory eval set: `tests/eval_memory.py` — 30 fixed query->fact pairs (15 zh + 15 en), temp-DB isolated, gate hit_rate>=0.80 / mrr>=0.70. Baseline: hit_rate 0.933, mrr 0.917, PASS. CJK bigram fallback mirrors ecv.py tokenizer fix.
 - **v1.16.23** 失败复盘闭环: `POST /v1/failure_loop/run` — 3-step loop: snapshot-to-audit (rollback anchor) → scan failure/lesson facts (N days) → extract skills via controller_select_scored + promote recurring (>=2x) failures into lesson facts.
-- **v1.16.24** tunnel watchdog: `<ASTOR_RUNTIME_DIR>` — 502 self-heal (origin down -> respawn; tunnel down -> restart CloudflaredAstor) + telegram alert on unrecovered failure. Cron `astor-tunnel-watchdog-15min` (job 9d601f55ba47, silent-ok pattern). Python urllib default UA blocked by CF — watchdog sends browser UA.
+- **v1.16.24** tunnel watchdog: an operator-side script — 502 self-heal (origin down -> respawn; tunnel down -> restart the tunnel service) + a chat alert on unrecovered failure. Scheduled every 15 minutes on a silent-ok pattern. The default Python urllib user agent is blocked by the edge, so the watchdog sends a browser user agent.
 
 ## [1.16.20] - 2026-09-30
 
@@ -1172,7 +1274,7 @@ Per wechat article 3 ("北大 GraphMemix 论文解读", archived to `docs/wechat
 
 ## v1.15.52 (2026-09-30) — S26 tombstoned_at backfill utility
 
-**14,688 tombstones lacked `tombstoned_at` timestamp** across all tiers (admin 8145, public 3411, source 3130, private 132). Root cause: pre-feature tombstones + maker_pocket `_record_close()` tombstones without timestamp.
+**A large number of tombstones lacked a `tombstoned_at` timestamp** across the tiers. Root cause: tombstones written before the timestamp column existed, plus tombstones written by an operator-side integration that does not set the column.
 
 **New utility** `scripts/backfill_tombstoned_at.py`:
 - One-shot backfill: 14688 tombstones get `tombstoned_at = promoted_at` (closest proxy).
@@ -1188,8 +1290,8 @@ Per wechat article 3 ("北大 GraphMemix 论文解读", archived to `docs/wechat
 
 ## v1.15.51 (2026-09-29) — S25 完整集 A1+A2+A3 + source-tier endpoint fixes
 
-**A1 — knowledge_page auto-promote cron** (`scripts/auto_promote_knowledge_page.py`):
-5 operator-level topic pages (astor-architecture / hermes-runtime / maker-pocket / trading-policy / moomoo-bridge) auto-upserted into source tier. Idempotent (re-runs tombstone prior same-slug page). Same ACL bootstrap pattern as S24 mental_model cron.
+**A1 — knowledge_page auto-promote cron** (an operator-side script, not shipped):
+5 operator-level topic pages (architecture / runtime / a trading-bot project / trading policy / a broker-bridge project) auto-upserted into the source tier. Idempotent (re-runs tombstone prior same-slug page). Same ACL bootstrap pattern as S24 mental_model cron.
 
 **A2 — source-tier endpoint fixes** (3 endpoints):
 - `GET /v1/mental_model/list?tier=source&user_id=admin` — was returning 0 rows because source tier rows have `user_id IS NULL`. Patched to bypass user filter for source tier (operator-level).
@@ -1219,8 +1321,8 @@ Per wechat article 3 ("北大 GraphMemix 论文解读", archived to `docs/wechat
 ## v1.15.50 (2026-09-29) — S24 mental_model auto-promote cron
 
 **First auto-promote cron for Hindsight-style mental_models** (kind=mental_model):
-- `scripts/auto_promote_mental_model.py` writes 5 deterministic topic sheets into source tier.
-- Topics: user_timezone / ship_cadence / maker_pocket_state / portfolio_policy / recall_first_rule.
+- An operator-side auto-promote script writes 5 deterministic topic sheets into the source tier.
+- Topics: user_timezone / ship_cadence / trading_bot_state / portfolio_policy / recall_first_rule.
 - Each topic queries recent bus facts via deterministic SQL → synthesizes template answer + evidence_refs → upserts via `astor_init_acl + upsert_mental_model` (avoids CLI ACL block).
 - Re-runs idempotent (supersedes prior same-question MM via tombstone).
 - `dashboard_data._mental_models_section()` patched to include source tier (was only public + private).
@@ -1842,7 +1944,7 @@ which looked like a stale version badge.
 - Added `.version-badge` CSS to match header-meta style.
 
 Verified: 30/30 dashboard tests pass. Server reports
-`/v1/health.version=1.15.16`, `astor_dir=<ASTOR_RUNTIME_DIR>`.
+`/v1/health.version=1.15.16`, `astor_dir=<runtime>`.
 `hero.last_event_ts` now reflects public bus writes within 30s, and
 `growth_30d` shows cross-tier total.
 
@@ -2109,7 +2211,7 @@ CLI table:
   the `scripts/astor_decay_event_trigger.py` companion wrapper for
   event-driven incremental decay.
 - **Optional: jev relevance rerank** — `--jev-relevance on` flag
-  clearly labeled opt-in. Requires `<ASTOR_RUNTIME_DIR>\jev\`,
+  clearly labeled opt-in. Requires an operator-side scripts directory,
   `typesafe-sdk`, `TYPESAFE_API_KEY`, and a running jev server.
   **Installs of `astor-memory` without the jev shim see no behavior
   change** — the flag exists only for operators running the jev
@@ -2149,13 +2251,13 @@ a SINGLE verdict for the whole candidate set, not per-candidate.
 This ship logs the call site so the next pass can design
 per-candidate rerank with real data instead of guessing.
 
-**Requires** `<ASTOR_RUNTIME_DIR>\jev\` on `PYTHONPATH` (the CLI
+**Requires** the operator-side scripts directory on `PYTHONPATH` (the CLI
 auto-detects via `importlib` path probe).
 
 ```bash
 am recall "git push SSH" --zone success --jev-relevance on
 # → top hits ranked by local hybrid, jev verdict logged to
-#   <ASTOR_RUNTIME_DIR>\logs\jev_recall_rerank.jsonl
+#   <operator-scripts-dir>/logs/jev_recall_rerank.jsonl
 ```
 
 No DB migration, no public API change. 468 tests pass.
@@ -2293,7 +2395,7 @@ both are passed (escape hatch for advanced callers).
   (default off → hit wall → `--zone failure` → empty → `--zone lesson`
   → empty → `--zone success` → empty → fall back to web_search).
   Three rules (default off, one recall per failure, zone over keyword)
-  plus 5 concrete cross-domain examples (WeChat fetch, moomoo order,
+  plus 5 concrete cross-domain examples (a chat-platform fetch, a broker order,
   cron, patch, akshare quote).
 
 **Smoke gate** (`scripts/smoke_recall_zone.sh`, new): 5-second liveness
@@ -3331,14 +3433,14 @@ Verified 14/14 cases match expected classification:
 
 | input | classify | tier |
 |---|---|---|
-| "moomoo 啦账户怎么开户: 1. 注册 2. KYC" | None | public |
+| "how do I open a broker account: 1. register 2. KYC" | None | public |
 | "我的 TFSA 余额是 $1234" | 'private' | private |
 | "怎么 unlock_trade: 调 SDK" | None | public |
 | "我刚 place_order 买了 NVDA 100 股" | 'private' | private |
-| "moomoo OpenD 调 RSA 接口" | None | public |
-| "今天 moomoo 又报错了" | 'private' | private |
-| "moomoo 数据" | 'private' | private (no signal) |
-| "如何接入 moomoo SDK" | None | public |
+| "call the broker SDK RSA endpoint" | None | public |
+| "the broker call errored again today" | 'private' | private |
+| "broker data" | 'private' | private (no signal) |
+| "how do I integrate the broker SDK" | None | public |
 | "我不清楚" | 'private' | private |
 
 #### Side ships
@@ -3396,7 +3498,7 @@ Verified:
 - `bus.conn.commit()` runs in best-effort try/except; recall response never fails
 - Test recall: fact 5105 `access_count` 1 → 2 after two `/v1/read` calls; `last_confirmed_at` updated to current UTC
 - Non-surfaced facts do NOT increment (verified with fact 5085/5661 — only 5105 was in top_k=2 result)
-- Backup: `server.py.bak-pre-access-count-20260913` in `<REPO_ROOT>/astor_memory/`
+- Backup: `server.py.bak-pre-access-count-20260913` next to the module
 
 
 
@@ -3417,7 +3519,7 @@ Combined regression: 10 (data) + 8 (endpoint) + 10 (js) = 28/28 tests pass.
 
 - New `astor_memory/dashboard/` directory: `index.html` (4952 bytes), `style.css` (8569 bytes), `app.js` (12692 bytes)
 - 6-card layout: hero row, eval+growth, per-user+importance, keywords+recent, health
-- Warm-orange theme reused from pokerstats (`#FF8C2E` accent, `#F5EAD6` bg, `#FFD9B8` border)
+- Warm-orange theme borrowed from an earlier project (`#FF8C2E` accent, `#F5EAD6` bg, `#FFD9B8` border)
 - Chart.js 4.4.1 from jsdelivr CDN — bar (growth, per-user) + doughnut (importance) charts
 - 60s polling with chart-instance destroy+recreate to avoid memory leak
 - Flask static routes: `/dashboard/`, `/dashboard/index.html`, `/dashboard/<path:filename>`

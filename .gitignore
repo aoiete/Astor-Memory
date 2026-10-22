@@ -62,7 +62,7 @@ htmlcov/
 # Build (already in dist/)
 dist/
 
-# 2026-09-08: admin-specific eval test data (queries reference <ASTOR_RUNTIME_DIR> paths).
+# 2026-09-08: operator-specific eval test data (queries reference local paths).
 # Public release should ship a universal eval_set.jsonl without operator paths.
 # Admin keeps a local copy at tests/eval_set.jsonl (gitignored).
 tests/eval_set.jsonl
@@ -101,3 +101,9 @@ tests/.baseline/
 # fastembed writes a literal `~` dir into CWD during tests
 # (agent-harness detection). Never belongs in the repo.
 ~/.cache/
+
+# Operator-side maintenance scripts (not part of the shipped package).
+# They upsert operator-specific topic pages into the source tier, so
+# their content is deployment-specific by nature.
+scripts/auto_promote_knowledge_page.py
+scripts/auto_promote_mental_model.py

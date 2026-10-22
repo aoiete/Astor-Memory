@@ -1,7 +1,6 @@
 """Tests for astor_memory.export_memory (v1.16.71 Ship B).
 
-Run: PYTHONPATH=<ASTOR_RUNTIME> <PYTHON>/Scripts/python.exe -m pytest <REPO_ROOT>/tests/test_export_memory.py -v
-Or:  <PYTHON>/Scripts/python.exe -m pytest tests/test_export_memory.py
+Run: python -m pytest tests/test_export_memory.py -v
 """
 import csv
 import io
@@ -13,8 +12,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, r"<ASTOR_RUNTIME>")
-sys.path.insert(0, r"<REPO_ROOT>")
+# The package lives one level up from this file — resolve it relative to
+# the test, so the suite runs from any checkout path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from astor_memory.export_memory import (
     _fetch_facts, _format_markdown, _format_json, _format_csv,

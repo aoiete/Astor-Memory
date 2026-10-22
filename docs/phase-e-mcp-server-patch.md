@@ -103,7 +103,7 @@ imported before `list_tools` was defined.
 Set the env vars before launching the MCP server:
 
 ```bash
-export ASTOR_DIR='<ASTOR_RUNTIME_DIR>'
+export ASTOR_DIR='<runtime-dir>'
 export ASTOR_MEMORY_SRC='D:\ai\astor-memory'
 
 # Per-agent identity — each agent framework sets its own:

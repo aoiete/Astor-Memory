@@ -194,7 +194,8 @@ def measure(server: str, astor_dir: Path, queries: list[str],
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--server", default=DEFAULT_SERVER)
-    ap.add_argument("--astor-dir", default=r"<ASTOR_RUNTIME_DIR>")
+    ap.add_argument("--astor-dir", default=None,
+                    help="runtime dir (default: the shared resolver)")
     ap.add_argument("--tier", default=DEFAULT_TIER)
     ap.add_argument("--user", default=DEFAULT_USER)
     ap.add_argument("--top-k", type=int, default=5)

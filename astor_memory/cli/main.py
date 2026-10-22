@@ -1111,7 +1111,7 @@ def cmd_init(args) -> int:
             print(f'  Default: {default}')
             print('  Examples:')
             print('    Linux/Mac:  /var/lib/astor | ~/astor | /opt/astor')
-            print('    Windows:    C:/astor | <ASTOR_RUNTIME> | ~/astor')
+            print('    Windows:    C:/astor | <runtime-dir> | ~/astor')
             try:
                 answer = input(f'  Path [{default}]: ').strip()
             except (EOFError, KeyboardInterrupt):

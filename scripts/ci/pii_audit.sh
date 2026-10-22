@@ -10,7 +10,7 @@ PATTERNS=(
   '\b<USER>\b'
   '\b<AUTHOR>\.com\b'
   'C:\\Users\\<USER>'
-  '<HOME>'
+  '<home-dir>'
   '/c/Users/<USER>'
   '<WECHAT_OPENID_PREFIX>[A-Za-z0-9_-]{20,}'
   'muse_chat_admin_demo'

@@ -26,7 +26,7 @@ columns or orphan candidates.
 
 ```bash
 python scripts/astor_doctor.py check
-# Found 8 DBs under <ASTOR_RUNTIME_DIR>
+# Found 8 DBs under <runtime-dir>
 # public\memory\astor_bus_public.db
 #    memory_canonical: 52 cols, 4290 rows, user_version=1
 #    memory_candidates: 4701 rows (0 orphan)
@@ -76,7 +76,7 @@ source\memory\astor_bus_source.db                    3436    383    485      0  
 
 ## Environment
 
-- `ASTOR_DIR` — override the runtime dir (default `<ASTOR_RUNTIME>`).
+- `ASTOR_DIR` — override the runtime dir (default: the shared resolver).
   Useful for tests and CI.
 
 ## Tests

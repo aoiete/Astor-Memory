@@ -28,6 +28,15 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    from ._internal.acl_layout import get_astor_dir
+except ImportError:  # standalone script execution
+    import os
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from astor_memory._internal.acl_layout import get_astor_dir
+
 
 def _fetch_facts(conn, user_id, tier, include_all, top):
     """Pull facts matching dream-tier gate (importance>=0.7 OR dq>=3) unless --include-all."""
@@ -147,8 +156,11 @@ def main():
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
-    astor_dir = Path(args.astor_dir) if args.astor_dir else Path(
-        r"<ASTOR_RUNTIME>" if sys.platform == "win32" else "~/.astor")
+    # Default runtime location comes from the shared resolver
+    # ($ASTOR_DIR -> $ASTOR_DIR_NAME -> ~/.astor), so no operator-specific
+    # absolute path lives in source (portability rule) and the CLI agrees
+    # with every other entry point about where the runtime is.
+    astor_dir = Path(args.astor_dir) if args.astor_dir else get_astor_dir()
     user_db = astor_dir / "users" / args.user / "memory" / ("astor_bus_" + args.user + ".db")
     pub_db = astor_dir / "public" / "memory" / "astor_bus_public.db"
     if user_db.exists():

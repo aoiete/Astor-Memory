@@ -145,7 +145,7 @@ curl -m 5 -sS http://127.0.0.1:7803/v1/health
 
 ```bash
 cd /c/Users/<user>/.evox/agent/mcp-servers/astor-memory-rest-mcp
-ASTOR_DIR='<ASTOR_RUNTIME_DIR>' python -c "
+ASTOR_DIR='<runtime-dir>' python -c "
 import sys
 sys.path.insert(0, r'D:\ai\astor-memory')
 import mcp_server_extension
