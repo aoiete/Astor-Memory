@@ -177,11 +177,19 @@ def _check_control_set(server: str, top_k: int, tier: str,
         "infra_errors": infra_errors[:10],
         "fid_drift_count": len(fid_drift),
         "fid_drift_sample": fid_drift[:5],
-        # An infrastructure error is not a recall regression, so it does
-        # not flip the verdict on its own -- but a run where nothing could
-        # be answered at all is a broken run, and it must not report PASS.
-        "verdict": ("INFRA_ERROR" if n_pass == 0 and infra_errors
-                    else "PASS" if n_fail == 0 else "FAIL"),
+        # An infrastructure error is not a recall regression -- but a
+        # run that could not check every query has not proven anything
+        # about the unchecked ones either. Reporting PASS while a third
+        # of the queries were never answered is exactly the "looks
+        # perfect, measured nothing" failure this gate exists to catch.
+        #   FAIL        -- a query was answered and did not hold up
+        #   DEGRADED    -- some queries could not be reached; incomplete
+        #   INFRA_ERROR -- nothing could be reached at all
+        #   PASS        -- every query was checked and held up
+        "verdict": ("FAIL" if n_fail else
+                    "INFRA_ERROR" if (n_pass == 0 and infra_errors) else
+                    "DEGRADED" if infra_errors else
+                    "PASS"),
     }
 
 
