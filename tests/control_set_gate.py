@@ -212,7 +212,15 @@ def main() -> int:
         Path(args.output).write_text(
             json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8",
         )
-    return 0 if result["verdict"] == "PASS" else 1
+    # Exit codes, so a caller can tell a regression from an incomplete
+    # run: 0 = every query checked and held up, 1 = a query was answered
+    # and failed, 2 = the check could not be completed.
+    _v = result["verdict"]
+    if _v == "PASS":
+        return 0
+    if _v == "FAIL":
+        return 1
+    return 2  # DEGRADED / INFRA_ERROR
 
 
 if __name__ == "__main__":
