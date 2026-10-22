@@ -3083,6 +3083,27 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # v1.10.9: doc_timestamp anchors relative-time resolution.
             doc_timestamp=caller_event_ts,
         )
+        # v1.16.85 (2026-10-22, bug fix): the caller's explicit `kind` was
+        # dropped on the floor. astor_extract_facts() takes no kind argument,
+        # so the forge always decided the kind with its own 3-zone classifier
+        # (success -> success_pattern, failure -> failure_pattern,
+        # lesson -> lesson, everything else -> 'fact'). Measured: every
+        # explicit kind a caller sent was stored as 'fact', for both long
+        # and short text, in every writable mode. An auto-filled kind
+        # (ASTOR_AUTO_FILLED_KIND, set by before_write_hook) is NOT applied
+        # here on purpose -- in that case the forge's own verdict is the
+        # better answer. An explicit caller kind wins.
+        _explicit_kind = body.get('kind')
+        _auto_filled_kind = str(
+            request.environ.get('ASTOR_AUTO_FILLED_KIND', '')
+        ).strip().lower() in ('1', 'true', 'yes')
+        if _explicit_kind and not _auto_filled_kind and facts:
+            for _f in facts:
+                try:
+                    _f.kind = _explicit_kind
+                except Exception:
+                    pass
+
         # 2026-10-21 (R-class): 长文本静默丢弃修复。
         # forge.astor_choose_extract_mode 对 >1000 字符返回 'none' (extractor
         # 不做 document-scale 抽取) → facts=[] → 下面 `if not facts: return
@@ -3401,6 +3422,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     text, mode=mode, tier='source',
                     user_id=None, actor='rest_api.mirror',
                 )
+                # v1.16.85: same explicit-kind rule as the primary path.
+                _explicit_kind_m = body.get('kind')
+                _auto_filled_m = str(
+                    request.environ.get('ASTOR_AUTO_FILLED_KIND', '')
+                ).strip().lower() in ('1', 'true', 'yes')
+                if _explicit_kind_m and not _auto_filled_m and src_facts:
+                    for _fm in src_facts:
+                        try:
+                            _fm.kind = _explicit_kind_m
+                        except Exception:
+                            pass
                 for f in src_facts:
                     c_id = src_bus.insert_candidate(
                         event_id=src_event_id, namespace=user,
@@ -4262,6 +4294,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
             query, body.get('tier', 'public'),
             body.get('user') or body.get('user_id') or '',
             body.get('top_k', 5),
+            # v1.16.85 (2026-10-22, bug fix): the cache key must cover every
+            # input that changes the RESULT. kinds / wing / session_id /
+            # consult were missing, so a kinds=rule request could be served
+            # the cached rows of an earlier unfiltered (or consult=True)
+            # request for the same query -- measured, the auto-injection
+            # rows came back to a consult=False caller that way.
+            body.get('kinds'), body.get('wing'), body.get('session_id'),
+            body.get('consult'),
         )
         _rcache_hit = _READ_CACHE.get(_rcache_key)
         if _rcache_hit and (_rc_time.time() - _rcache_hit[0]) < 60:
@@ -5791,6 +5831,32 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception as _kp_exc:
             _safe_stderr_write(f'[astor.server] kp recall failed: type={type(_kp_exc).__name__} {_kp_exc}\n')
             _meta_recall_stats['errors'] += 1
+
+        # v1.16.85 (2026-10-22, bug fix): the auto-injection channels all
+        # run AFTER the kinds/wing/session filters, so they bypassed them
+        # entirely. Measured on 1.16.84: a /v1/read with kinds=rule came
+        # back with success_pattern / failure_pattern / lesson rows and
+        # hit_source=meta-recall / meta-recall-lessons. The five injection
+        # channels are: trigger-aware (5734), meta-recall patterns (5753),
+        # lessons (5766), mental models (5777), knowledge pages (5788).
+        # The filters are re-applied here, after every one of them, so a
+        # caller-supplied filter is a HARD constraint. Re-applying is
+        # idempotent for the main recall path (already filtered above).
+        # Injected rows carry no provenance_kind / session_id, so the wing
+        # and session filters drop them as well -- correct: a wing-scoped
+        # or session-scoped caller must not receive global injections.
+        if enriched:
+            if _kinds_filter_set:
+                enriched = [r for r in enriched
+                             if r.get('kind') in _kinds_filter_set][:top_k]
+            if _wing_filter_set is not None:
+                enriched = [r for r in enriched
+                             if r.get('provenance_kind') in _wing_filter_set][:top_k]
+            if _session_filter:
+                enriched = [r for r in enriched
+                             if (r.get('session_id') == _session_filter
+                                 or r.get('origin_session_id') == _session_filter)
+                            ][:top_k]
 
         # v1.16.20: cache store (before return).
         try:
