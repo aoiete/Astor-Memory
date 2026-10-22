@@ -2954,6 +2954,27 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         actor='rest_api', outcome=_w_outcome, why=_w_why,
                         doc_timestamp=_w_caller_ts,
                     )
+                    # 2026-10-21 (R-class): 长文本静默丢弃 — async 路径同修。
+                    # extractor 对 >1000 字符返回 'none' → facts=[] → 什么都不存。
+                    # 显式 mode='none' 是调用方自己的意图, 保留原语义。
+                    if (not _w_facts and _w_text
+                            and len(_w_text.strip()) >= 30
+                            and _w_mode != 'none'):
+                        from .forge.extractor import AstorFact as _WFact
+                        _w_facts = [_WFact(
+                            content=_w_text.strip(),
+                            kind=(_w_body.get('kind') or 'fact'),
+                            confidence=max(0.5, float(
+                                _w_body.get('confidence') or 0.7)),
+                            importance=max(0.5, float(
+                                _w_body.get('importance') or 0.6)),
+                            context=_w_text.strip()[:280],
+                            abstract=_w_text.strip()[:160],
+                            tags=list(_w_body.get('tags') or []) or None,
+                        )]
+                        _safe_stderr_write(
+                            f'[v1.16.84] long-text fallback (async): '
+                            f'{len(_w_text)} chars kept as 1 fact\n')
                     _w_bus = _w_bus_factory(tier=_w_tier, user_id=_w_user)
                     _w_fact_ids = []
                     for _w_f in _w_facts:
@@ -3062,6 +3083,32 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # v1.10.9: doc_timestamp anchors relative-time resolution.
             doc_timestamp=caller_event_ts,
         )
+        # 2026-10-21 (R-class): 长文本静默丢弃修复。
+        # forge.astor_choose_extract_mode 对 >1000 字符返回 'none' (extractor
+        # 不做 document-scale 抽取) → facts=[] → 下面 `if not facts: return
+        # {event_id, facts: [], count: 0}`。调用方 (astor_write 工具 / MCP /
+        # HTTP 客户端) 看到的是 HTTP 200 + count=0, 没有任何错误信号 ——
+        # 用户明确要求存的内容被静默吞掉, 连 candidate 都不建。
+        # 实测: 两条长 R-class lesson 就是这么丢的 (写入返回 count=0)。
+        #
+        # 修法: extractor 没抽出东西, 但调用方明确传了 text 且不是显式
+        # mode='none' (那是调用方自己说"别抽") → 把整条 text 当作一条 fact
+        # 直接存下来。用户的显式意图优先于 extractor 的规模假设。
+        # 同时保留显式 mode='none' 的原语义 (raw-event store 路径依赖它)。
+        if not facts and text and len(text.strip()) >= 30 and mode != 'none':
+            from .forge.extractor import AstorFact as _AstorFact
+            facts = [_AstorFact(
+                content=text.strip(),
+                kind=body.get('kind') or 'fact',
+                confidence=max(0.5, float(body.get('confidence') or 0.7)),
+                importance=max(0.5, float(body.get('importance') or 0.6)),
+                context=(text.strip()[:280]),
+                abstract=(text.strip()[:160]),
+                tags=list(body.get('tags') or []) or None,
+            )]
+            _safe_stderr_write(
+                f'[v1.16.84] long-text fallback: {len(text)} chars kept as '
+                f'1 fact (extractor returned none)\n')
         _w_stages['end_extract'] = _w_t.perf_counter()
 # 2026-10-03 v1.16.60: pre-promote filter (article-driven).
         # The 4-tier "提纯" principle from the Agent memory article
@@ -4760,8 +4807,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         try:
                             # Use module-level bus from outer scope (line 474).
                             _ph = ','.join('?' * len(_fids))
+                            # v1.16.84: tombstone filter — a tombstoned
+                            # fact's text must not feed the LLM reranker.
                             _rows = bus.conn.execute(
-                                f"SELECT id, content FROM memory_canonical WHERE id IN ({_ph})",
+                                f"SELECT id, content FROM memory_canonical "
+                                f"WHERE id IN ({_ph}) AND tombstoned = 0",
                                 _fids,
                             ).fetchall()
                             _fid_text = {int(r[0]): (r[1] or '') for r in _rows}
@@ -4814,8 +4864,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     cand_text = {}
                     if candidate_fids:
                         _ph2 = ',' .join('?' * len(candidate_fids))
+                        # v1.16.84: tombstone filter (same reason as above)
                         _rtext = bus.conn.execute(
-                            f"SELECT id, keywords, tags, metadata FROM memory_canonical WHERE id IN ({_ph2})",
+                            f"SELECT id, keywords, tags, metadata FROM "
+                            f"memory_canonical WHERE id IN ({_ph2}) "
+                            f"AND tombstoned = 0",
                             list(candidate_fids),
                         ).fetchall()
                         for _rid, _kw, _tg, _mt in _rtext:
@@ -4855,8 +4908,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     _bfids = [fid for fid, _ in results]
                     if _bfids:
                         _phb = ','.join('?' * len(_bfids))
+                        # v1.16.84: tombstone filter (same reason as above)
                         _brows = bus.conn.execute(
-                            f"SELECT id, content, keywords, tags FROM memory_canonical WHERE id IN ({_phb})",
+                            f"SELECT id, content, keywords, tags FROM "
+                            f"memory_canonical WHERE id IN ({_phb}) "
+                            f"AND tombstoned = 0",
                             _bfids,
                         ).fetchall()
                         _bcands = []
@@ -4922,7 +4978,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 "event_date, event_date_precision, origin_session_id, metadata, entities_json, created_at, memory_class, "
                 # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking
                 "evidence_quote, source_ref, source_hash "
-                "FROM memory_canonical WHERE id = ?",
+                # tombstoned 过滤。索引侧 (nest embeddings / lex documents)
+                # 只在部分 tombstone 路径上同步, 索引里会残留已删事实 ——
+                # 实测召回结果里大部分是已 tombstone 的行 (污染率 ~78%)。
+                # 读路径必须自己守住, 不能指望索引干净。
+                "FROM memory_canonical WHERE id = ? AND tombstoned = 0",
                 (fact_id,),
             ).fetchone()
             if row is None:
@@ -5119,7 +5179,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         _row = bus.conn.execute(
                             "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
                             "event_date, event_date_precision, origin_session_id "
-                            "FROM memory_canonical WHERE id = ?", (_fid,),
+                            "FROM memory_canonical WHERE id = ? AND tombstoned = 0", (_fid,),
                         ).fetchone()
                         if _row is None:
                             continue
@@ -5430,14 +5490,30 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     bus.conn.execute(
                         f"UPDATE memory_canonical SET access_count = MAX(1, access_count / 2) "
                         f"WHERE id NOT IN ({_ph_acc}) AND tombstoned = 0 "
-                        f"AND (last_confirmed_at IS NULL OR last_confirmed_at < ?) "
+                        # v1.16.84: same NULL semantics fix as the tombstone
+                        # scan below — a never-confirmed (brand new) fact must
+                        # not be treated as a 90-day-stale one.
+                        f"AND last_confirmed_at IS NOT NULL "
+                        f"AND last_confirmed_at < ? "
                         f"AND kind NOT IN ('lock_rule', 'rule', 'mental_model', 'knowledge_page')",
                         _surfaced_fids + [_30d_iso],
                     )
                     bus.conn.execute(
                         f"UPDATE memory_canonical SET tombstoned = 1 "
                         f"WHERE id NOT IN ({_ph_acc}) AND tombstoned = 0 "
-                        f"AND (last_confirmed_at IS NULL OR last_confirmed_at < ?) "
+                        # v1.16.84 fix (2026-10-21): NULL last_confirmed_at means
+                        # "never confirmed yet", NOT "confirmed 90+ days ago".
+                        # The old `IS NULL OR < cutoff` predicate tombstoned
+                        # every brand-new fact on the next recall pass, because
+                        # a fact that has never been surfaced has
+                        # last_confirmed_at = NULL. 1373 facts across 4 tiers
+                        # were silently deleted this way (tombstoned=1 with
+                        # tombstoned_at=NULL). Same semantics as the v1.16.34
+                        # fix in bus/store.py:1519 — only decay/tombstone when
+                        # last_confirmed_at was actually set AND is older than
+                        # the cutoff.
+                        f"AND last_confirmed_at IS NOT NULL "
+                        f"AND last_confirmed_at < ? "
                         f"AND kind NOT IN ('lock_rule', 'rule', 'mental_model', 'knowledge_page')",
                         _surfaced_fids + [_90d_iso],
                     )
@@ -5749,9 +5825,39 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _decay_report = {'skipped': 'no_hits_or_disabled'}
         except Exception as _dec_exc:
             _decay_report = {'error': str(_dec_exc)}
+        # 2026-10-21 (R-class): 终末 tombstone 防线。
+        # 上面三条取行路径 (ranked / grep_verify / neighbor-expand) 各自补了
+        # AND tombstoned = 0, 但任何未来新增的 append 路径都可能再漏一次 ——
+        # 模块 docstring 里那句 "guarding one and forgetting the other is how a
+        # 14k fact kept slipping through" 说的就是这个坑。
+        # 这里再兜一次底: 按 fact_id 批量查 tombstoned, 全部剔除。
+        _dropped_tombstoned = 0
+        if enriched:
+            try:
+                _enr_ids = [int(e['fact_id']) for e in enriched
+                            if e.get('fact_id') is not None]
+                if _enr_ids:
+                    _ph_t = ','.join('?' * len(_enr_ids))
+                    _dead_ids = {int(x[0]) for x in bus.conn.execute(
+                        f"SELECT id FROM memory_canonical "
+                        f"WHERE tombstoned = 1 AND id IN ({_ph_t})",
+                        _enr_ids).fetchall()}
+                    if _dead_ids:
+                        _before = len(enriched)
+                        enriched = [e for e in enriched
+                                    if int(e.get('fact_id') or -1) not in _dead_ids]
+                        _dropped_tombstoned = _before - len(enriched)
+                    else:
+                        _dropped_tombstoned = 0
+                else:
+                    _dropped_tombstoned = 0
+            except Exception:
+                _dropped_tombstoned = 0
         return jsonify({
             'results': enriched,
             'count': len(enriched),
+            # 2026-10-21: 本次响应里被 tombstone 防线剔除的死数据条数
+            'dropped_tombstoned': _dropped_tombstoned,
             # v1.16.75: facts dropped for exceeding FACT_MAX_CHARS, so a caller
             # can tell "nothing matched" from "matched but was oversized".
             'dropped_oversize': _dropped_oversize,
