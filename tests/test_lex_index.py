@@ -11,10 +11,23 @@ from pathlib import Path
 from unittest import mock
 
 # 2026-09-01: removed hardcoded <runtime_dir>.
-# If ASTOR_DIR is not set in env, fall back to a per-process tempdir so tests
-# are hermetic and don't touch the live runtime. CI / dev machines can still
-# point ASTOR_DIR at a real directory via the shell before running tests.
-os.environ.setdefault('ASTOR_DIR', str(Path(tempfile.mkdtemp(prefix="astor_test_"))))
+# 2026-10-22: this was `setdefault`, which silently kept an ASTOR_DIR that
+# was already in the environment. On a machine where ASTOR_DIR points at the
+# live runtime, this test then opened the *production* lexical index and
+# ran `DELETE FROM documents` on it -- wiping the public tier's index on
+# every test run. It went unnoticed because the damage looks like a
+# retrieval regression rather than a test bug, and the public tier's
+# documents are rebuilt lazily.
+#
+# Tests must never write a runtime database, so the directory is now
+# forced, not defaulted. A caller that genuinely needs a specific runtime
+# for a test must say so explicitly in that test.
+_TEST_ASTOR_DIR = tempfile.mkdtemp(prefix="astor_test_")
+os.environ['ASTOR_DIR'] = _TEST_ASTOR_DIR
+# The lexical index caches one connection per (tier, user) in a module
+# level registry, so the directory has to be in place before the package
+# is imported and before any test resolves a path.
+print(f"[test_lex_index] isolated ASTOR_DIR = {_TEST_ASTOR_DIR}")
 _ASTOR_SRC = Path(__file__).resolve().parent.parent
 if str(_ASTOR_SRC) not in sys.path:
     sys.path.insert(0, str(_ASTOR_SRC))

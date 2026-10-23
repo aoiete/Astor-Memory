@@ -17,6 +17,36 @@ from pathlib import Path
 
 import pytest
 
+# --- ASTOR_DIR isolation (2026-10-22) --------------------------------------
+# A test must never write a runtime database. The lexical-index test
+# opened the *production* public index and ran `DELETE FROM documents` on
+# it, because it isolated the runtime with
+#
+#     os.environ.setdefault('ASTOR_DIR', <tempdir>)
+#
+# and setdefault does nothing when the variable already exists. On a
+# machine where ASTOR_DIR points at the live runtime, every test run
+# silently wiped the public tier's lexical index. The symptom looked
+# like a retrieval regression (the public tier's facts stopped matching
+# keyword queries) rather than a test bug, and it took a version bump to
+# notice.
+#
+# The fix is to force the directory rather than default it, and to do it
+# here -- conftest is imported before collection, so every test module
+# and every fixture inherits the isolated value. A test that genuinely
+# needs the live runtime must opt in explicitly.
+#
+# ASTOR_TEST_USE_LIVE_RUNTIME=1 is the only way to run against a real
+# runtime, and it is meant for manual diagnostics, not for the suite.
+import tempfile as _tempfile
+
+if os.environ.get("ASTOR_TEST_USE_LIVE_RUNTIME") == "1":
+    print("[conftest] ASTOR_TEST_USE_LIVE_RUNTIME=1 -> using the real runtime")
+else:
+    _isolated = _tempfile.mkdtemp(prefix="astor_pytest_isolated_")
+    os.environ["ASTOR_DIR"] = _isolated
+    print(f"[conftest] isolated ASTOR_DIR = {_isolated}")
+
 # --- PYTHONPATH scrub (2026-10-07) ----------------------------------------
 # Symptom: running pytest from a shell that inherited a Hermes PYTHONPATH
 # made 34 tests fail with
