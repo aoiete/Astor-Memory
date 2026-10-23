@@ -2,7 +2,7 @@
 
 Found by reading a server log, not by a failing test.
 
-Every  wrote two lines to stderr and every  wrote
+Every `/v1/read` wrote two lines to stderr and every `/v1/write` wrote
 four or five, unconditionally — no environment variable, no log level, no
 way to turn them off. The volume was noise. The content was worse: the
 lines carried the first 30 characters of the query and the first 80
@@ -10,8 +10,8 @@ characters of the text being written. Whatever someone asked the memory
 about, and whatever they asked it to remember, ended up in the server log
 without anybody asking for it to be there.
 
-All seven sites now go through , which is silent unless
- is set. Same traces when you are chasing something;
+All seven sites now go through `_debug_write()`, which is silent unless
+`ASTOR_DEBUG=1` is set. Same traces when you are chasing something;
 nothing in the log when you are not.
 
 ## v1.16.96 — Two tests that were borrowing their fixtures
