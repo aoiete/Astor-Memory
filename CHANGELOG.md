@@ -1,27 +1,3 @@
-## v1.16.90 — A gate that cannot say "none of these fit"
-
-`astor_memory/_internal/decision_gate.py` wraps StartLux-Decision: give it a
-state and typed questions, it returns calibrated probabilities and never
-prose. The reason it is worth a client is one number the model volunteers and
-an LLM cannot: `none_probability`.
-
-An LLM asked whether a set of retrieved facts is sufficient will say yes. It
-has no way to express "none of these fit", so an LLM gate silently degrades
-into a rubber stamp. At the published threshold of 0.2 the decision model
-catches 66.3% of questions whose listed options are all wrong while flagging
-2.2% of questions that do have a right answer.
-
-`gate` defaults to 0.9 rather than the library's 0.6. StartLux's own
-measurements: 0.6 takes DecisionPivot pair accuracy from 88.1% to 68.4% on
-the 27B. The questions a gate asks are the rule-and-arithmetic kind, which is
-where that gap shows up.
-
-Degradation is the design constraint, not an afterthought. A missing key, a
-failed request, a non-JSON body — each returns a `GateResult` with
-`available` False and the reason attached. A choice gate that could not ask
-returns `choice=None`, never the first option: an outage that quietly picks
-one is worse than having no gate at all.
-
 ## v1.16.89 — The watchdog was killing a healthy server, and the version number lived in three places
 
 Two small defects, both found while verifying the lexical-recall repair.
