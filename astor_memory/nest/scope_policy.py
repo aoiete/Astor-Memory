@@ -94,6 +94,9 @@ EXPLICIT_PROVENANCE = frozenset({
 # 这些 outcome 说明"已经付出过验证成本"
 VERIFIED_OUTCOMES = frozenset({"failure", "lesson", "success"})
 
+# 累计被召回确认多少次后, 临时层升为长期层
+PROMOTE_AFTER_CONFIRMATIONS = 3
+
 # 这些 kind 本身就已经是提炼过的规则/结构化知识
 DISTILLED_KINDS = frozenset({
     "lesson", "failure_pattern", "success_pattern", "rule",
@@ -122,6 +125,7 @@ def classify_scope(
     provenance_kind: str | None = None,
     importance: float | None = None,
     explicit: bool = False,
+    confirmations: int = 0,
     ttl_days: int = DEFAULT_TTL_DAYS,
 ) -> ScopeDecision:
     """按证据决定 fact 落 long_term 还是 short_term。
@@ -148,6 +152,26 @@ def classify_scope(
 
     if capture_intent:
         return ScopeDecision(LONG_TERM, None, "capture intent")
+
+    # v1.16.94: 确认次数就是验证证据。
+    #
+    # 写时判定拿不到确认次数 (一条 fact 刚写下来还没被召回过), 所以
+    # 这一条只对**事后**判定有意义 —— 回填存量时用它。
+    #
+    # 为什么需要它: 一条 kind='fact'、importance 0.525 的规则, 写时
+    # 判定会把它算成"未验证的观察"。但实测里这种 fact 里有大量是被
+    # 反复召回的长期规则 —— "astor 是用户的记忆系统,助手应该主动调用
+    # recall 和写入" 被召回 349 次, "代码中不应该有 emoji" 被召回 205
+    # 次。它们显然是被验证过的, 只是当初抽取时 importance 打得不高。
+    # 这正是文章说的"正确经验应该经过多次验证后谨慎晋升" —— 而验证
+    # 的证据就是它有没有被反复用上。
+    try:
+        if int(confirmations) >= PROMOTE_AFTER_CONFIRMATIONS:
+            return ScopeDecision(
+                LONG_TERM, None,
+                f"recurring ({int(confirmations)} confirmations)")
+    except (TypeError, ValueError):
+        pass
 
     try:
         imp = float(importance) if importance is not None else 0.0
