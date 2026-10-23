@@ -1,3 +1,32 @@
+## v1.16.89 — The watchdog was killing a healthy server, and the version number lived in three places
+
+Two small defects, both found while verifying the lexical-recall repair.
+
+### (a) A busy server still got restarted
+
+The v1.16.87 work made the health probe treat a slow response as "busy,
+not broken" — but it only recognised `socket.timeout`. A busy waitress
+does not necessarily raise that; under load it resets the connection
+(WinError 10054) or aborts it, and both landed in the bare
+`except Exception: return False`. So the probe declared a perfectly
+healthy server dead and restarted it.
+
+The client-visible symptom was a `ConnectionResetError` during a
+110-query evaluation run, while the watchdog log said "unhealthy on port
+7803, restarting" a moment earlier. The distinguishing test was already
+in the code — if the port is listening and the owning PID is alive, the
+server is alive — it just was not reached for those exception types.
+
+### (b) The version number was declared in three places
+
+`astor_memory.__version__`, the package version in `pyproject.toml`, and
+`[tool.astor] version` are read by different callers. A bump that touches
+two of them leaves the third reporting the previous release, which is how
+a running server ended up claiming a version that no tag matched.
+
+All three are now updated together, and the release script checks them
+against each other.
+
 ## v1.16.88 — Chinese lexical recall was silently dead in every tier
 
 A defect that had been hiding since the September tokenizer change made
