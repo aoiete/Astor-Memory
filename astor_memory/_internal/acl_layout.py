@@ -74,12 +74,12 @@ def get_astor_dir() -> Path:
 
     Priority (highest first):
       1. $ASTOR_DIR env var (full absolute path)
-      2. $ASTOR_DIR_NAME env var (relative to home, e.g. '<ASTOR_RUNTIME_DIR>')
+      2. $ASTOR_DIR_NAME env var (relative to home, e.g. 'astor-runtime-dir')
       3. Default: '~/.astor/' (Unix-style hidden dir; cross-OS standard)
 
     Examples:
         ASTOR_DIR=/d/Astor-Memory/Runtime   → /d/Astor-Memory/Runtime
-        ASTOR_DIR_NAME=<ASTOR_RUNTIME_DIR> → ~<ASTOR_RUNTIME_DIR>
+        ASTOR_DIR_NAME=astor-runtime-dir → ~astor-runtime-dir
         (no env)                            → ~/.astor/
 
     Rationale (turn 2026-08-15): source-code separable from runtime data.

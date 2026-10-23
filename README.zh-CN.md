@@ -83,7 +83,7 @@ Server 默认绑定 `127.0.0.1:7803`。远程访问请用 Cloudflare Tunnel、ng
 尚未发布到 PyPI,从源码安装(一条命令),之后 `am` 成为 console script:
 
 ```bash
-pip install "astor-memory @ git+https://github.com/<repo-owner>/Astor-Memory.git"
+pip install "astor-memory @ git+https://github.com/aoiete/Astor-Memory.git"
 ```
 
 可选 `[muse]` extra 安装 Muse 适配器包。发布到 PyPI 后会改成
@@ -155,9 +155,9 @@ claude mcp add astor-memory -- am mcp serve
 
 ```bash
 # 安装(尚未发布到 PyPI,从源码装)
-pip install "astor-memory @ git+https://github.com/<repo-owner>/Astor-Memory.git"
+pip install "astor-memory @ git+https://github.com/aoiete/Astor-Memory.git"
 # 或带 Muse 适配器
-pip install "astor-memory[muse] @ git+https://github.com/<repo-owner>/Astor-Memory.git"
+pip install "astor-memory[muse] @ git+https://github.com/aoiete/Astor-Memory.git"
 
 # 初始化全新 runtime
 export ASTOR_DIR=/var/lib/astor

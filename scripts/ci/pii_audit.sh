@@ -4,6 +4,21 @@ set -e
 cd "$(git rev-parse --show-toplevel)"
 
 # Default patterns — generic, no real IDs.
+# The patterns below are GENERIC placeholders on purpose: they describe the
+# shape of a leak (a placeholder that was never replaced) rather than any
+# one operator's real identifier. Real identifiers cannot be listed here --
+# putting one in would leak the very thing this script exists to catch.
+#
+# The shapes that must never appear in a tracked file:
+#   <AUTHOR>          a personal name used as a handle
+#   <repo-owner>      a GitHub account name
+#   <USER>            a user handle
+#   <AUTHOR>.com      a personal domain
+#   C:\Users\<USER>  a Windows home path
+#   <home-dir>        a home directory
+#   /c/Users/<USER>   a POSIX-style home path
+#   wechat openids    an "@im.wechat" suffix on a real openid
+#   muse_chat_admin_demo / test_tunnel_admin: demo account ids
 PATTERNS=(
   '\b<AUTHOR>\b'
   '\b<repo-owner>\b'
@@ -12,7 +27,8 @@ PATTERNS=(
   'C:\\Users\\<USER>'
   '<home-dir>'
   '/c/Users/<USER>'
-  '<WECHAT_OPENID_PREFIX>[A-Za-z0-9_-]{20,}'
+  '[A-Za-z0-9]{8,}-[A-Za-z0-9]{15,}@im\.wechat'
+  '[0-9a-f]{8,16}@im\.bot'
   'muse_chat_admin_demo'
   'test_tunnel_admin'
 )

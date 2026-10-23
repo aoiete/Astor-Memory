@@ -38,7 +38,7 @@ from urllib import request as _urllib_request
 from urllib.error import URLError
 
 _TEMPORAL_SIGNAL_RE = re.compile(
-    r"\b(yesterday|today|tomorrow|last\s+(?:week|month|year|night|weekend|monday|tuesday|wednesday|thursday|friday|saturday|<user_d>)|\d+\s+(?:days?|weeks?|months?|years?)\s+ago|a\s+(?:couple|few)\s+(?:of\s+)?(?:days?|weeks?|months?)\s+ago|the\s+(?:other\s+day|day\s+before\s+yesterday)|last\s+night|this\s+morning|tonight|recently|lately|in\s+the\s+past)\b",
+    r"\b(yesterday|today|tomorrow|last\s+(?:week|month|year|night|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\d+\s+(?:days?|weeks?|months?|years?)\s+ago|a\s+(?:couple|few)\s+(?:of\s+)?(?:days?|weeks?|months?)\s+ago|the\s+(?:other\s+day|day\s+before\s+yesterday)|last\s+night|this\s+morning|tonight|recently|lately|in\s+the\s+past)\b",
     re.IGNORECASE,
 )
 

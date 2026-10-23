@@ -43,7 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-os.environ.setdefault("ASTOR_DIR", r"<ASTOR_RUNTIME_DIR>")
+os.environ.setdefault("ASTOR_DIR", r"astor-runtime-dir")
 
 SERVER = os.environ.get("ASTOR_SERVER", "http://127.0.0.1:7803")
 RUNTIME = Path(os.environ.get("ASTOR_DIR"))

@@ -61,14 +61,14 @@ def test_python_heredoc_is_skipped():
 
 
 def test_drive_path_to_executable_is_skipped():
-    assert _skip('[LESSON] <ASTOR_RUNTIME_DIR> -c "import os"')
+    assert _skip('[LESSON] C:/tools/python.exe -c "import os"')
 
 
 # ---------------------------------------------------------------- 反例
 def test_drive_path_rule_is_kept():
     """A path IS knowledge here. This one killed the first version."""
-    text = ("<ASTOR_RUNTIME_DIR> 优先 + Open vault > 合 wiki (locked 2026-08-01): "
-            "所有 AI 相关数据 / 工具 / 安装 / wikis 优先 <ASTOR_RUNTIME_DIR>")
+    text = ("C:/data 优先 + Open vault > 合 wiki (locked 2026-08-01): "
+            "所有 AI 相关数据 / 工具 / 安装 / wikis 优先 C:/data")
     assert not _skip(text)
     assert _reason(text) == ""
 
@@ -92,7 +92,7 @@ def test_uv_behaviour_note_is_kept():
 
 
 def test_source_vs_runtime_paths_are_kept():
-    text = ("<ASTOR_RUNTIME_DIR> 是 source 目录,<ASTOR_RUNTIME_DIR> "
+    text = ("C:/src 是 source 目录,C:/runtime "
             "是 runtime 目录,改 server.py 必须 sync")
     assert not _skip(text)
 

@@ -5,7 +5,7 @@
 ## 1. Install
 
 ```bash
-pip install "astor-memory @ git+https://github.com/<repo-owner>/Astor-Memory.git"
+pip install "astor-memory @ git+https://github.com/aoiete/Astor-Memory.git"
 am init
 
 # Optional: populate demo data so the dashboard isn't empty

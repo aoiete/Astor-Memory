@@ -29,7 +29,7 @@ _CN_NUM = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
 # weekday → Monday=0
 _CN_WD = {'一': 0, '二': 1, '三': 2, '四': 3, '五': 4, '六': 5, '日': 6, '天': 6}
 _EN_WD = {'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-          'friday': 4, 'saturday': 5, '<user_d>': 6}
+          'friday': 4, 'saturday': 5, 'sunday': 6}
 
 
 def _d(dt):

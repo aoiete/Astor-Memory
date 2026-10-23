@@ -19,7 +19,7 @@ Run:
     # expected: 3 facts returned from /v1/read, no errors
 
 Reference:
-    https://github.com/<repo-owner>/ASTOR-Memory  (docs/agent-adapters.md § Tier B)
+    https://github.com/aoiete/ASTOR-Memory  (docs/agent-adapters.md § Tier B)
 """
 from __future__ import annotations
 

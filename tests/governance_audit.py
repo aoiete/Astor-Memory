@@ -34,7 +34,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-os.environ.setdefault("ASTOR_DIR", r"<ASTOR_RUNTIME_DIR>")
+os.environ.setdefault("ASTOR_DIR", r"astor-runtime-dir")
 
 # 执行日志的典型特征 (文章说的"把执行日志直接当成知识库")
 NOISE_PATTERNS = [

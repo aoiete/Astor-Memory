@@ -176,6 +176,6 @@ as the persistent backend while Memmy provides the UI layer, or vice versa.
 
 ## Getting help
 
-- GitHub: https://github.com/<repo-owner>/Astor-Memory/issues
-- Docs: https://github.com/<repo-owner>/Astor-Memory/tree/main/docs
+- GitHub: https://github.com/aoiete/Astor-Memory/issues
+- Docs: https://github.com/aoiete/Astor-Memory/tree/main/docs
 - Examples: `examples/` directory in the repo

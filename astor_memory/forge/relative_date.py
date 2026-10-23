@@ -43,7 +43,7 @@ _MONTH_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
-_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "<user_d>"]
+_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 _WEEKDAY_RE = re.compile(
     r"\b(" + "|".join(_WEEKDAYS) + r"|last\s+(?:" + "|".join(_WEEKDAYS) + r")"
     r"|next\s+(?:" + "|".join(_WEEKDAYS) + r"))\b",

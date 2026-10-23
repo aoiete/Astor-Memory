@@ -29,7 +29,7 @@ API endpoints (v1):
     POST /v1/merge/apply       Apply merge
 
 Reference:
-    - https://github.com/<repo-owner>/Astor-Memory
+    - https://github.com/aoiete/Astor-Memory
     - Inspired by Memmy's cross-agent memory pattern (Sept 2026)
 
 License: MIT
