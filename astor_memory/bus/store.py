@@ -371,6 +371,10 @@ class AstorBus:
         user_id: str | None = None,
         tier: str = 'public',
         scope_type: str = 'long_term',
+        # v1.16.92: 临时层的到期时间。scope_type='short_term' 时给一个
+        # 具体时间, 读路径据此排除过期事实 (快速降级通道)。
+        # scope_type='long_term' 时留 NULL = 永久。
+        expires_at: str | None = None,
         verdict: str = 'settled',
         origin_session_id: str | None = None,
         stable_id: str | None = None,
@@ -536,6 +540,8 @@ class AstorBus:
                         evidence_quote, source_ref, source_hash,
                         memory_class,
                         visibility,
+                        -- v1.16.92: 临时层到期时间 (scope_type='short_term' 时非空)
+                        expires_at,
                         -- v1.16.29 visibility tier marker
                         -- v1.16.9.3 (2026-09-30): bi-temporal lifecycle columns
                         -- (added in v1.16.8 schema migration v13→v14). New
@@ -549,7 +555,7 @@ class AstorBus:
                         invalidated_by,
                         invalidated_at,
                         invalidated_reason)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         candidate_id, event_id, namespace, content, kind, confidence, importance,
                         tags, metadata, kw_json, ctx_text,
@@ -584,6 +590,8 @@ class AstorBus:
                         # instead of leaving the default 'world_fact'.
                         _derive_memory_class(kind, tags, content),
                         visibility,
+                        # v1.16.92: 临时层到期时间 (short_term 时非空, long_term 时 NULL)
+                        expires_at,
                         # v1.16.9.3: bi-temporal init values (cols in same
                         # order as the INSERT col list above). valid_from
                         # = now (same as created_at — active from write time);
@@ -1493,6 +1501,18 @@ class AstorBus:
         hit_set = set(int(h) for h in hit_fact_ids) if hit_fact_ids else set()
         boosted_count = 0
         decayed_count = 0
+        # v1.16.92: 续期用的新到期时间 (now + TTL)
+        try:
+            from ..nest.scope_policy import DEFAULT_TTL_DAYS as _ttl
+            _renewed_expiry = (
+                _dec_dt.datetime.now(_dec_dt.timezone.utc)
+                + _dec_dt.timedelta(days=int(_ttl))
+            ).isoformat().replace("+00:00", "Z")
+        except Exception:
+            _renewed_expiry = (
+                _dec_dt.datetime.now(_dec_dt.timezone.utc)
+                + _dec_dt.timedelta(days=30)
+            ).isoformat().replace("+00:00", "Z")
         with self.transaction() as c:
             # v1.16.34 fix: materialize SELECT rows first. Re-using the
             # same cursor for UPDATE inside the loop invalidates the
@@ -1507,12 +1527,30 @@ class AstorBus:
                 _imp = float(_imp) if _imp is not None else 0.5
                 if _id in hit_set:
                     _new_imp = min(max_importance, round(_imp * boost_factor_hit, 4))
-                    if _new_imp != _imp:
+                    # v1.16.92: 临时层 fact 被召回确认时**续期**。
+                    # 这是整个 scope 机制的安全阀: 只要一条 fact 还在被
+                    # 用, 它就不会过期 —— 所以"用户时区是 MDT"这种说一次
+                    # 就再也不提的稳定事实, 只要还在被召回就一直是活的;
+                    # 而真正过期的只有"写进来之后从来没被用到过"的那些。
+                    #
+                    # expires_at 只对 scope_type='short_term' 且已有
+                    # expires_at 的行生效; long_term 的 expires_at 是
+                    # NULL (永久), 不动。
+                    # 总是更新, 不看 importance 变没变: importance 有 1.0
+                    # 上限, 一条被反复召回的 fact 会顶在上限上, 那时
+                    # _new_imp == _imp, 原来的 `if _new_imp != _imp` 会
+                    # 跳过整条 UPDATE —— 于是 access_count 不再增长,
+                    # expires_at 也不再续期, 一条正在被频繁使用的 fact
+                    # 反而会过期。
+                    if True:
                         c.execute(
                             "UPDATE memory_canonical "
-                            "SET importance = ?, last_confirmed_at = ?, access_count = access_count + 1 "
+                            "SET importance = ?, last_confirmed_at = ?, access_count = access_count + 1, "
+                            "    expires_at = CASE "
+                            "      WHEN scope_type = 'short_term' AND expires_at IS NOT NULL "
+                            "      THEN ? ELSE expires_at END "
                             "WHERE id = ?",
-                            (_new_imp, _now, _id),
+                            (_new_imp, _now, _renewed_expiry, _id),
                         )
                         boosted_count += 1
                 else:

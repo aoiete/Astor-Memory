@@ -45,20 +45,27 @@ _SUCCESS_PATTERNS_ZH = [
     r'这个方法可以',
     r'这招可以',
     r'记住了',
-    r'work\s*了',
-    r'work了',
+    # v1.16.92: 英文词加词边界。原来 'verified' / 'working' / 'ok了' /
+    # 'work了' / 'ship 了' 都是无边界子串, 于是:
+    #   "unverified"  -> 匹配 'verified'  -> 判成 success
+    #   "book了"      -> 匹配 'ok了'      -> 判成 success
+    # 这不是小事: outcome 决定 fact 的 kind (success_pattern) 和 tier
+    # (public), 也决定 v1.16.92 的 scope 分级。一句"这条还没验证"会被
+    # 当成"已验证的做法", 于是既进了共享层, 又拿到了 long_term。
+    r'\bwork\s*了',
+    r'\bwork了',
     r'跑通了',
     r'通了',
-    r'ok\s*了',
-    r'ok了',
+    r'\bok\s*了',
+    r'\bok了',
     r'成了',
     r'通过了',
     r'接通',
-    r'ship 了',
-    r'ship\s*成功',
-    r'verified',
-    r'verify 成功',
-    r'working',
+    r'\bship 了',
+    r'\bship\s*成功',
+    r'\bverified\b',
+    r'\bverify 成功',
+    r'\bworking\b',
     r'就[这这]么干',
     r'这样就好了',
     r'能用了',

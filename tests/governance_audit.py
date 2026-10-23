@@ -151,11 +151,39 @@ def audit(tier: str = "private", user_id: str = "admin") -> dict:
                     f"WHERE tombstoned=0 GROUP BY {col} ORDER BY 2 DESC").fetchall()]
     n_kinds = len(kind_dist.get("kind", []))
     n_classes = len(kind_dist.get("memory_class", []))
+    n_scopes = len(kind_dist.get("scope_type", []))
+    # v1.16.92: 临时层是否真的在用。scope_type 只有一个取值 (long_term)
+    # 意味着记忆只有"永久"一种状态 —— 一次性观察和用户明确要求记住的
+    # 规则享受同样的地位, 那就是治理缺失。
     # 文章说"不要只写一个类型, 也不要全都塞进同一个向量库"
+    scope_detail = {}
+    if "scope_type" in cols:
+        scope_detail = {
+            "dist": kind_dist.get("scope_type", []),
+            "short_term": sum(
+                1 for s_, n_ in kind_dist.get("scope_type", []) if s_ == "short_term"),
+            "with_expiry": 0,
+            "expired_pending": 0,
+        }
+        if "expires_at" in cols:
+            scope_detail["with_expiry"] = conn.execute(
+                "SELECT COUNT(*) FROM memory_canonical "
+                "WHERE tombstoned=0 AND expires_at IS NOT NULL").fetchone()[0]
+            scope_detail["expired_pending"] = conn.execute(
+                "SELECT COUNT(*) FROM memory_canonical "
+                "WHERE tombstoned=0 AND scope_type='short_term' "
+                "  AND expires_at IS NOT NULL "
+                "  AND expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+            ).fetchone()[0]
+    scope_ok = (n_scopes >= 2) or (scope_detail.get("with_expiry", 0) == 0
+                                   and n == 0)
     check("Q3", "是否区分 临时/事实/情景/程序性?",
-          "OK" if n_kinds >= 3 and n_classes >= 2 else "WARN",
-          f"kind 种类 {n_kinds}, memory_class 种类 {n_classes}",
-          {"kinds": kind_dist})
+          "OK" if n_kinds >= 3 and n_classes >= 2 and scope_ok else "WARN",
+          f"kind 种类 {n_kinds}, memory_class 种类 {n_classes}, "
+          f"scope 种类 {n_scopes} "
+          f"(临时层 {scope_detail.get('short_term', 0)} 条, "
+          f"带到期时间 {scope_detail.get('with_expiry', 0)} 条)",
+          {"kinds": kind_dist, "scope": scope_detail})
 
     # ---- Q4 主动淘汰通道 ----
     ttl_cols = [c for c in ("valid_until", "expires_at", "invalidated_at",
