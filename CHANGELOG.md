@@ -1,3 +1,67 @@
+## v1.16.93 — The request teardown was closing a handle other requests were using
+
+A concurrent read load of 120 requests over 10 threads failed 94 of them.
+Clients saw WinError 10054, and the server log carried a repeating
+"Cannot operate on a closed database" on `/v1/read`.
+
+The chain:
+
+    request A ends -> teardown_request -> nest.close()
+      -> closes the SQLite connection of a process-wide singleton that
+         request B is using
+      -> B's query dies with "Cannot operate on a closed database"
+      -> B returns 500
+      -> the watchdog reads the health endpoint, sees a non-200, and
+         declares the server unhealthy
+      -> the watchdog kills a healthy server
+      -> clients see 10054 / 10061
+
+`astor_bus()` and `astor_nest()` have handed out per (tier, user, path)
+singletons for a while, so a handle touched by one request is shared
+with every other request. The teardown hook was written in v1.13.2,
+when the factories still built a fresh instance per call, to stop one
+WAL writer connection accumulating per request. Once the factories
+cached their instances, closing the handle per request only churned the
+connection and broke concurrency.
+
+Both factories now mark the instances they hand out as shared, and the
+teardown closes only the handles a request owns -- a `db_path` override,
+which bypasses the singleton. The nest's `_reopen()` also stopped
+closing the old connection before opening a new one: it shares one
+connection across waitress's workers, and a thread sitting between
+`execute()` and `fetchall()` on it would die. The v1.14.7 fix took the
+lock around detect-and-reopen, which protects the reopen but not the
+readers already holding the old connection.
+
+Measured after the fix, same load: 120 succeed and 0 fail, in 8.9s
+against 35.4s before.
+
+### The watchdog had the same shape of bug, twice
+
+`tasklist` enumerates every process on the host, so on a loaded box it
+blows past its budget. A timeout there used to mean "the process is
+gone", and the watchdog would declare a healthy server dead and restart
+it. That was fixed in v1.16.90. `netstat -ano -p TCP` enumerates every
+TCP connection and had the same fate, in the same `except: return
+None` as a genuine "nothing is listening" -- so the caller read a
+timeout as "the server is dead" and killed a healthy one.
+
+A probe that cannot answer is UNKNOWN, not DEAD. netstat's timeout is
+now 10s, an unanswered netstat is treated as alive (the first layer
+already confirmed something is listening, and a dead server does not
+hold its socket), and the cheapest possible fallback -- a single
+`connect_ex`, which spawns no process -- is used before concluding
+anything.
+
+### The watchdog now has version control
+
+It lived only on D: with no repository, which is an uncomfortable place
+for the one thing standing between astor and staying up. A copy is in
+`ops/`, genericised: the runtime directory comes from `ASTOR_DIR` and
+the interpreter from `ASTOR_PYTHON`. The deployed copy still pins this
+machine's paths, because a path is configuration rather than code; the
+logic must stay identical between the two.
+
 ## v1.16.92 — Memory finally has a temporary layer, and importance stopped being a lie
 
 An article on self-evolving agent memory argues that the point of a
