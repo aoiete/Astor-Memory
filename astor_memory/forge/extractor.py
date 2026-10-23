@@ -953,8 +953,13 @@ def astor_extract_facts(
                 base_url=_os_e.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
                 model=_os_e.environ.get('ASTOR_LLM_MODEL', 'google/gemini-3.7-flash'),
             )
-            _sys_d.stderr.write(f"[EXTRACT_DEBUG] mode=llm facts={len(_facts)} text_len={len(text)} text_preview={text[:80]!r}\n")
-            _sys_d.stderr.flush()
+            # v1.16.97: off unless ASTOR_DEBUG=1 -- this line puts the
+            # first 80 characters of the text being written into the
+            # server log, unasked.
+            import os as _os_x
+            if (_os_x.environ.get('ASTOR_DEBUG') or '').strip().lower() in ('1', 'true', 'yes', 'on'):
+                _sys_d.stderr.write(f"[EXTRACT_DEBUG] mode=llm facts={len(_facts)} text_len={len(text)} text_preview={text[:80]!r}\n")
+                _sys_d.stderr.flush()
             # v1.11 (2026-08-27): astor_llm_extract may now return a mix of
             # AstorFact (from the rich dict-array code path) and dict (from
             # the flat string-array fallback wrapper). Normalize to AstorFact

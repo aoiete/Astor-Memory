@@ -162,6 +162,30 @@ def _safe_stderr_write(msg: str) -> None:
         pass  # never let debug logging break the request
 
 
+
+_ASTOR_DEBUG_VALUES = ('1', 'true', 'yes', 'on')
+
+
+def _debug_enabled() -> bool:
+    """Is ASTOR_DEBUG turned on? Off by default.
+
+    v1.16.97: the recall and write paths used to log unconditionally --
+    two lines per /v1/read, four or five per /v1/write -- and what they
+    logged was the first 30 characters of the query and the first 80
+    characters of the text being written. That is both a log-volume
+    problem and a privacy problem: whatever the user asked the memory
+    about ends up in the server log, unasked. Turn the noise off unless
+    somebody is actually debugging.
+    """
+    import os as _os_d
+    return (_os_d.environ.get('ASTOR_DEBUG') or '').strip().lower() in _ASTOR_DEBUG_VALUES
+
+
+def _debug_write(msg: str) -> None:
+    """Write a debug line to stderr only when ASTOR_DEBUG is enabled."""
+    if _debug_enabled():
+        _safe_stderr_write(msg)
+
 def _pii_last_24h_count() -> int:
     """v1.16.x: count `memory_defense_scan` audit_log rows in the last 24h.
 
@@ -3143,7 +3167,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # v1.10.9: caller may supply event_time (ISO datetime) to anchor
         # relative-date resolution at write time.
         caller_event_ts = body.get('event_time') or body.get('event_ts')
-        print(f'[DEBUG] /v1/write caller_event_ts={caller_event_ts!r}', flush=True)
+        _debug_write(f'[DEBUG] /v1/write caller_event_ts={caller_event_ts!r}\n')
         # v1.13.1 (2026-09-14, Ship L): bridge the capture_intent hook to
         # the 3-zone architecture. Before extracting facts, classify the
         # text into success/failure/lesson/neutral. Pass outcome so the
@@ -3484,7 +3508,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 ).fetchone()
                 _ents = []
                 # DEBUG
-                _safe_stderr_write(f'[DEBUG-E] canon_id={canon_id} row={_ents_row!r}\n')
+                _debug_write(f'[DEBUG-E] canon_id={canon_id} row={_ents_row!r}\n')
                 if _ents_row and _ents_row[0] is not None and len(_ents_row[0]) > 2:
                     # len > 2 skips the literal '[]' string (Ship B writes
                     # the column with default '[]' before the 2nd UPDATE
@@ -3496,12 +3520,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         if not isinstance(_ents, list):
                             _ents = []
                     except Exception as _ex_in:
-                        _safe_stderr_write(f'[DEBUG-E] EXCEPTION inner {_ex_in!r}\n')
+                        _debug_write(f'[DEBUG-E] EXCEPTION inner {_ex_in!r}\n')
                         _ents = []
-                _safe_stderr_write(f'[DEBUG-E] PRE-append _ents type={type(_ents).__name__} len={len(_ents) if hasattr(_ents, "__len__") else "?"}\n')
+                _debug_write(f'[DEBUG-E] PRE-append _ents type={type(_ents).__name__} len={len(_ents) if hasattr(_ents, "__len__") else "?"}\n')
                 facts_entities.append(_ents)
             except Exception as _ex:
-                _safe_stderr_write(f'[DEBUG-E] EXCEPTION outer {_ex!r}\n')
+                _debug_write(f'[DEBUG-E] EXCEPTION outer {_ex!r}\n')
                 facts_entities.append([])
             # Index for BM25 keyword recall — best-effort
             try:
@@ -6071,7 +6095,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # v1.15.42 (Ship P3.1 recall enhancement): mental_model auto-injection.
         try:
             _mm = _meta_recall_mental_models(query, body.get('user') or body.get('user_id'), tier)
-            _safe_stderr_write(f'[DEBUG-MM] query={query[:30]!r} tier={tier!r} user={body.get("user") or body.get("user_id")!r} → {len(_mm) if _mm else 0} hits\n')
+            _debug_write(f'[DEBUG-MM] query={query[:30]!r} tier={tier!r} user={body.get("user") or body.get("user_id")!r} → {len(_mm) if _mm else 0} hits\n')
             if _mm:
                 enriched = _mm + enriched
                 _meta_recall_stats['triggered'] += 1
@@ -6082,7 +6106,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # v1.15.43 (Ship P3.1 knowledge_page recall):
         try:
             _kp = _meta_recall_knowledge_pages(query, body.get('user') or body.get('user_id'), tier)
-            _safe_stderr_write(f'[DEBUG-KP] query={query[:30]!r} tier={tier!r} user={body.get("user") or body.get("user_id")!r} → {len(_kp) if _kp else 0} hits\n')
+            _debug_write(f'[DEBUG-KP] query={query[:30]!r} tier={tier!r} user={body.get("user") or body.get("user_id")!r} → {len(_kp) if _kp else 0} hits\n')
             if _kp:
                 enriched = _kp + enriched
                 _meta_recall_stats['triggered'] += 1
