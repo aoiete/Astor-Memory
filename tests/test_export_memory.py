@@ -52,7 +52,7 @@ def _make_test_db(path):
         # High everything but tombstoned — BLOCKED
         ("tombstoned fact", "fact", 1.0, 10, 100, "admin", "private", 1),
         # user_id mismatch — BLOCKED
-        ("other user fact", "fact", 1.0, 5, 100, "sunday", "private", 0),
+        ("other user fact", "fact", 1.0, 5, 100, "user_b", "private", 0),
     ]
     for content, kind, imp, dq, ac, user_id, tier, ts in rows:
         conn.execute(

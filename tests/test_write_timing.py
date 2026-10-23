@@ -10,19 +10,35 @@ import urllib.request
 URL = "http://127.0.0.1:7803/v1/write"
 
 
+_CLIENT = None
+
+
+def _client():
+    global _CLIENT
+    if _CLIENT is None:
+        # v1.16.95: this test used to post to the LIVE server. Its probe text
+        # ("astor write path instrumentation probe ...") is on the residue
+        # list, so /v1/write now demotes it out of the shared tier -- which
+        # is the point: the probe must not reach the production public tier.
+        # Posting through the Flask test client against the isolated runtime
+        # (conftest points ASTOR_DIR at a temp dir) keeps the test honest
+        # AND keeps production clean.
+        from astor_memory.server import create_app
+        _CLIENT = create_app().test_client()
+    return _CLIENT
+
+
 def _write(text, debug_timing=True):
-    payload = json.dumps({
+    r = _client().post("/v1/write", json={
         "text": text,
         "kind": "fact",
         "debug_timing": debug_timing,
-    }).encode()
-    req = urllib.request.Request(URL, data=payload,
-        headers={"Content-Type": "application/json"})
+    }, headers={"X-Actor": "admin:admin"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        return {"_http_error": e.code, "_body": e.read().decode()[:500]}
+        return r.get_json()
+    except Exception:
+        return {"_http_error": r.status_code,
+                "_body": r.get_data(as_text=True)[:500]}
 
 
 class TestWriteTiming(unittest.TestCase):

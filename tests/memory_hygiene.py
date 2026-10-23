@@ -50,20 +50,25 @@ RUNTIME = Path(os.environ.get("ASTOR_DIR"))
 
 # 已知测试探针 / 调试残渣的前缀。这些是 astor 自己的测试和调试写进
 # 知识库的, 永远不该出现在任何 tier 里。
-PROBE_PREFIXES = (
-    "astor write path instrumentation probe",
-    "e2e_test_marker",
-    "e2e_correction",
-    "auto fork-",
-    "middleware-warn-test",
-    "LEAKPROBE",
-    "VERIFY1",
-    "demo probe from AstorClient",
-    "profile debug print",
-    "profile loop sub-stages",
-    "post-restart tunnel test",
-    "apple banana cherry",
-)
+# 2026-10-23: 本体搬到 astor_memory/forge/hygiene_rules.py, 因为写入口
+# 拦截 (server.py /v1/write) 必须认得同一批前缀 —— 两处各留一份迟早漂移。
+try:
+    from astor_memory.forge.hygiene_rules import PROBE_PREFIXES  # noqa: F401
+except Exception:  # pragma: no cover - standalone tool fallback
+    PROBE_PREFIXES = (
+        "astor write path instrumentation probe",
+        "e2e_test_marker",
+        "e2e_correction",
+        "auto fork-",
+        "middleware-warn-test",
+        "LEAKPROBE",
+        "VERIFY1",
+        "demo probe from AstorClient",
+        "profile debug print",
+        "profile loop sub-stages",
+        "post-restart tunnel test",
+        "apple banana cherry",
+    )
 
 # 近似重复: 前 N 字符相同即视为同一模板
 DUP_PREFIX_LEN = 40
@@ -89,33 +94,22 @@ def _probe_match(text: str) -> bool:
 # 其中绝大多数**不以**已知探针前缀开头 ("Maria 启动了 e2e_correction_..."),
 # 所以 PROBE_PREFIXES 的 startswith 抓不到。要按**内容模式**抓。
 #
-# 这些不是"用户的事实", 是 astor 自己的测试和 e2e 写进知识库的。
+# 规则本体在 astor_memory/forge/hygiene_rules.py —— 与 /v1/write 的写入口
+# 拦截共用同一份, 避免"清理用一套、拦截用另一套"导致漏网。
+#
 # 论文依据: HaluMem 的 FMR (抗虚构记忆率) 指标专门测"不该存的被存成事实"。
-TEST_RESIDUE_PATTERNS = (
-    # e2e 测试轮次: "Maria 启动了 e2e_correction_<id>_<ts> 项目"
-    re.compile(r"e2e_correction_\w+_\d+"),
-    re.compile(r"e2e_test_marker_\w+"),
-    # 通用测试/调试 marker
-    re.compile(r"\bmarker[-\s]?(test|fact|distill|publish|visibility)", re.I),
-    # "marker-<任意串>" —— 覆盖 marker-final / marker-q1w2e3 / marker-methodtest
-    re.compile(r"\bmarker[-\s][a-z0-9]", re.I),
-    # astor e2e 场景里虚构的人名 "Maria" —— 只匹配 e2e 叙述, 不能匹配
-    # 真实提到 Maria 的条目 (例如 "Maria 是用户的同事")。
-    re.compile(r"^Maria\b.*(测试|test|项目|启动|完成|marker|e2e|新发布|发布)", re.I),
-    re.compile(r"\bmethod curl (test|UA)", re.I),
-    re.compile(r"^(async test|profile test|poc|curl test|debug_timing)\b", re.I),
-    re.compile(r"^profile (timing|debug)\b", re.I),
-    re.compile(r"^async (final )?verify\b", re.I),
-    re.compile(r"\bhook_audit_test_", re.I),
-    # "她/他 启动了 ... 项目" —— e2e 场景脚本的叙述残留
-    re.compile(r"^她?他?们?实际上?没有?启动[了]?\s*e2e_", re.I),
-    re.compile(r"^她?他?们?完成了\s+e2e_", re.I),
-    # 时间戳型一次性事实: "..._<10位时间戳>" 结尾且带测试动词
-    re.compile(r"\b(test|probe|debug|mock)\b.*\b\d{10}\b", re.I),
-)
+try:
+    from astor_memory.forge.hygiene_rules import (  # noqa: F401
+        TEST_RESIDUE_PATTERNS, is_test_residue,
+    )
+except Exception:  # pragma: no cover - standalone tool fallback
+    TEST_RESIDUE_PATTERNS = ()
+    is_test_residue = None
 
 
 def _test_residue_match(text: str) -> bool:
+    if is_test_residue is not None:
+        return bool(is_test_residue(text))
     t = (text or "").strip()
     if not t:
         return False
