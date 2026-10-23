@@ -1,3 +1,65 @@
+## v1.16.94 — The scope rule, applied to the memory that already exists
+
+v1.16.92 gave every new fact a tier chosen from the evidence available
+at write time. Every fact written before that was still promoted with
+`scope_type='long_term'` and no expiry, so the mechanism governed new
+writes and nothing else: 4616 live facts, one scope value, zero expiry
+dates.
+
+The evidence the rule needs is still in the row -- kind, importance,
+provenance_kind, and the outcome the extractor recorded -- so the same
+decision can be made again for existing facts.
+
+Two signals are only available after the fact exists, and both turned
+out to matter.
+
+**How often it has been recalled.** A `kind='fact'`, importance 0.525
+rule looks unverified to a write-time decision. In the corpus, a lot of
+those have been recalled hundreds of times: "astor is the user's memory
+system, the assistant should call recall and write" 349 times, "no
+emoji in code" 205 times. They are plainly validated; the extractor just
+scored them low. The article's own rule -- a correct experience should
+be promoted carefully after repeated validation -- says the same thing,
+and the evidence for validation is whether it kept being used. Adding
+confirmations to the classifier cut the temporary-layer population from
+2831 to 1154.
+
+**Whether the content says it is durable.** The extractor classifies
+"用户偏好:使用astor记忆系统存储数据" as `kind='fact'`, importance 0.5,
+which the kind-based rule reads as a one-off observation. The author
+wrote "用户偏好" in the text, so the content carries the intent the
+kind missed. A marker check for that kind of wording keeps those
+permanent. It errs towards keeping things, which is the right way to
+be wrong: a fact that stays one layer too high is noise, and a fact
+that gets demoted is knowledge the user can no longer rely on.
+
+### Two groups, not one
+
+The backfill writes two different things, because the risk is not
+symmetric.
+
+Facts that have never been recalled get an expiry date. They are the
+ones with no evidence of use, and 30 days is a fair trial: use one and
+the expiry renews.
+
+Facts that have been recalled once or twice are marked provisional with
+no expiry. One recall is weak validation, but a 30-day window on
+something like "the user mixes Chinese statements with English
+technical terms" would still demote a long-standing preference
+because the topic had not come up. These carry the provisional label
+and the slightly lower ranking weight, and they are promoted to
+long_term once they have been recalled three times.
+
+Applied to the live corpus: 953 facts become provisional across the
+three tiers (public 270, private 690, source 1), and 31 of those carry
+an expiry date. Retrieval did not move -- found 0.955, cited 0.936,
+usable 0.918, all unchanged -- so the extra weight on unconfirmed facts
+costs nothing in practice.
+
+The governance audit's third question, which asks whether the memory
+distinguishes temporary from permanent at all, now passes on the real
+corpus instead of on the promise of a mechanism.
+
 ## v1.16.93 — The request teardown was closing a handle other requests were using
 
 A concurrent read load of 120 requests over 10 threads failed 94 of them.
