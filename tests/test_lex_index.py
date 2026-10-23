@@ -37,8 +37,9 @@ class TokenizeTests(unittest.TestCase):
         self.assertEqual(_tokenize('a to be'),
                          [])
     def test_cjk_unigram(self):
-        # Chinese: each CJK char is its own token
-        self.assertEqual(_tokenize('小明'), ['小', '明'])
+        # Chinese: each CJK char is its own token, PLUS bigram (v1.16.88).
+        # '小明' -> unigrams 小/明 + bigram 小明
+        self.assertEqual(_tokenize('小明'), ['小', '明', '小明'])
     def test_mixed(self):
         out = _tokenize('我叫小明 my name is John')
         self.assertIn('john', out)
