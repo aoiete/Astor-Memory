@@ -93,6 +93,10 @@ class AstorBus:
     """SQLite-backed bus for events + canonical facts."""
 
     def __init__(self, db_path: Path):
+        # v1.16.92: True when this instance is a process-wide singleton
+        # (see astor_bus()). The server's request teardown must not close
+        # those -- they are shared with concurrent requests.
+        self._shared = False
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: sqlite3.Connection | None = None
@@ -1649,12 +1653,18 @@ def astor_bus(
     with _BUS_LOCK:
         inst = _BUS_SINGLETONS.get(key)
         if inst is not None:
+            # v1.16.92: mark it as process-shared. The server's request
+            # teardown closes the handles a request touched; closing a
+            # shared handle would pull the connection out from under a
+            # concurrent request that is using the same instance.
+            inst._shared = True
             return inst
         # v1.13.2 (2026-09-04): hold _BUS_LOCK while constructing the
         # instance so two concurrent requests for the same key cannot
         # both run AstorBus._open() in parallel (which would deadlock
         # on astor_init_schema's write lock — "database is locked").
         inst = AstorBus(target)
+        inst._shared = True
         _BUS_SINGLETONS[key] = inst
         return inst
 

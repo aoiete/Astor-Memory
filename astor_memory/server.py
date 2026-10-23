@@ -1309,14 +1309,34 @@ def create_app(astor_dir: str | None = None) -> Flask:
         accumulates one open WAL writer connection per request and external
         direct-connect INSERT operations get 'database is locked' forever.
         """
+        # v1.16.92: only close handles this request *owns*.
+        #
+        # astor_bus() and astor_nest() hand out process-wide singletons
+        # (per tier/user/path), so a request that touched one is holding
+        # a handle other concurrent requests are using too. Closing it
+        # here pulled the SQLite connection out from under them: the
+        # in-flight query died with "Cannot operate on a closed
+        # database", the request 500'd, and the watchdog -- which reads
+        # the health endpoint -- then declared the server unhealthy and
+        # restarted it, so clients saw WinError 10054/10061.
+        #
+        # The v1.13.2 hook existed to stop one WAL writer connection per
+        # request. That is moot now that the factories cache instances:
+        # a shared handle is one connection for the whole process, and
+        # closing it per request only churns the connection (and breaks
+        # concurrency). Handles created for this request alone (a
+        # db_path override, which bypasses the singleton) are still
+        # closed.
         for bus in _request_buses:
             try:
-                bus.close()
+                if not getattr(bus, '_shared', False):
+                    bus.close()
             except Exception:
                 pass
         for nest in _request_nests:
             try:
-                nest.close() if hasattr(nest, 'close') else None
+                if not getattr(nest, '_shared', False):
+                    nest.close() if hasattr(nest, 'close') else None
             except Exception:
                 pass
         _request_buses.clear()
