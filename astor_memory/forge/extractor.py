@@ -17,6 +17,43 @@ from typing import Literal
 # Phase E (2026-09-16): auto-memory noise filter + tier routing for
 # auto-observed turns. ``astor_auto_observe`` consumes these.
 MIN_AUTO_OBSERVE_LENGTH = 30
+
+# v1.16.91 (2026-10-22): execution-log detection.
+#
+# The write gate used to score a turn on length alone, so a shell
+# transcript longer than 200 characters scored 0.6 and landed in the
+# public tier as if it were knowledge. The governance audit then counted
+# 74 live facts in the admin tier whose entire content was a command
+# line -- "/c/Users/.../python.exe -c \"", "powershell -NoProfile
+# -Command \"", truncated mid-quote.
+#
+# The distinguishing feature is position, not vocabulary: these start
+# with a command, while a genuine fact states the rule first and only
+# then mentions the command ("the correct path for sending a wechat
+# message is scripts/send_to_platform.py weixin --to <chat_id>").
+# Anchoring at the start is what keeps real facts safe.
+#
+# The first attempt was too broad -- it treated any leading "D:/" or
+# "C:\" as a transcript, and that flagged real knowledge such as
+# "<ASTOR_RUNTIME_DIR> takes priority over the vault" and "make pocket is IDLE at
+# $1500". A path *is* knowledge here, so only an executable path or a
+# shell invocation counts.
+#
+# Measured against the live corpus (6640 facts): 36 match and all 36 are
+# command transcripts. Facts that begin with a path, a git command, make,
+# curl or uv are left alone.
+_EXEC_LOG_START = re.compile(
+    r"^\s*(?:\[[A-Za-z_ ]{0,14}\])?\s*"          # optional [LESSON] tag
+    r"(?:"
+    r"(?:[A-Za-z]:)?[/\\][^\s\"']*?\.exe\b"      # any .exe path
+    r"|powershell\s+-(?:Command|NoProfile|File|EncodedCommand)\b"
+    r"|pwsh\s+-(?:Command|NoProfile|File)\b"
+    r"|python[0-9.]*\s+(?:-c\b|-m\b|-?\s?<<|-\")"  # python -c / -m / heredoc
+    r"|(?:ba|z|)sh\s+[^\s]*\.sh\b"                   # shell script
+    r"|node\s+[^\s]*\.js\b"
+    r")",
+    re.I)
+
 NOISE_PREFIXES = (
     "嗯",
     "ok",
@@ -436,6 +473,9 @@ def astor_should_skip_auto_observe(text: str) -> tuple[bool, str]:
       - "noise_prefix": first whitespace-separated token (or its first 2 chars
         for CJK) matches NOISE_PREFIXES. Handles ASCII ("hi", "thanks") and
         CJK ("你好") greetings.
+      - "execution_log": the turn opens with a command line rather than
+        prose. A transcript of a tool call is not knowledge, and scoring
+        it on length alone used to promote it into the public tier.
     """
     if not text or not text.strip():
         return True, "empty"
@@ -446,6 +486,8 @@ def astor_should_skip_auto_observe(text: str) -> tuple[bool, str]:
     first_two = stripped[:2].lower()
     if first_token in NOISE_PREFIXES or first_two in NOISE_PREFIXES:
         return True, "noise_prefix"
+    if _EXEC_LOG_START.match(stripped):
+        return True, "execution_log"
     return False, ""
 
 
