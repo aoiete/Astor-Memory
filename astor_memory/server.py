@@ -3115,12 +3115,53 @@ def create_app(astor_dir: str | None = None) -> Flask:
         _auto_filled_kind = str(
             request.environ.get('ASTOR_AUTO_FILLED_KIND', '')
         ).strip().lower() in ('1', 'true', 'yes')
+        # v1.16.92: kind 也可能放在 metadata 里 —— forge 的 observe 路径
+        # (extractor.py:627-640) 就是这么发的:
+        #     body['metadata'] = {..., 'importance': ..., 'outcome': ..., 'kind': ...}
+        _w_meta = body.get('metadata') if isinstance(body.get('metadata'), dict) else {}
+        if not _explicit_kind:
+            _explicit_kind = _w_meta.get('kind')
         if _explicit_kind and not _auto_filled_kind and facts:
             for _f in facts:
                 try:
                     _f.kind = _explicit_kind
                 except Exception:
                     pass
+
+        # v1.16.92 (bug fix): 调用方的 explicit `importance` 被丢在地板上。
+        # astor_extract_facts() 没有 importance 参数, regex 模式写死 0.5
+        # (extractor.py:319), 所以 server 存下来的 importance 恒等于
+        # AstorFact 的默认值 —— 哪怕调用方明明发了 0.85。
+        #
+        # 实测影响:
+        #   - client.py write() 发的 importance 被忽略
+        #   - mcp_auto_observe 发的 importance 被忽略 —— 而那个值是
+        #     _score_importance() 算出来的真分数 (failure/lesson 0.85,
+        #     neutral 0.3-0.6), 也就是说**抽取器的启发式分从来没生效过**
+        #   - importance 又是 tier 路由 / 衰减 / 排序 / v1.16.92 scope 分级
+        #     的输入, 它是哑的, 整条链就都哑了
+        #
+        # 修法与 v1.16.85 的 kind 修复同构: 显式调用方的值优先。
+        # 两个来源都认: body['importance'] (client.py) 和
+        # body['metadata']['importance'] (forge observe 路径)。
+        _explicit_importance = body.get('importance')
+        if _explicit_importance is None:
+            _explicit_importance = _w_meta.get('importance')
+        if _explicit_importance is not None and facts:
+            try:
+                _ei = float(_explicit_importance)
+                if 0.0 <= _ei <= 1.0:
+                    for _f in facts:
+                        try:
+                            _f.importance = _ei
+                        except Exception:
+                            pass
+            except (TypeError, ValueError):
+                pass
+        # outcome 同理: body['outcome'] 或 metadata['outcome']。这个值
+        # server 已经在函数开头算过 (astor_classify_outcome(text)), 显式
+        # 调用方给的更准。
+        _explicit_outcome = body.get('outcome') or _w_meta.get('outcome')
 
         # 2026-10-21 (R-class): 长文本静默丢弃修复。
         # forge.astor_choose_extract_mode 对 >1000 字符返回 'none' (extractor
@@ -3295,9 +3336,56 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # → promote_candidate → memory_canonical.entities_json.
                 entities=getattr(f, 'entities', None),
             )
+            # v1.16.92: evidence-gated scope. 显式传了 scope 就尊重调用方;
+            # 否则按证据分级 (nest/scope_policy.py) —— 门槛最低的一层落
+            # scope_type='short_term' 并带 expires_at, 由 scope_lifecycle
+            # 负责续期/晋升/降级。之前这里是 scope_type='long_term' 写死,
+            # 于是 4616 条活 fact 里没有一条有过期时间, 也没有一条是
+            # 临时层: 记忆只有"永久"一种状态。
+            _scope_caller = body.get('scope')
+            if _scope_caller:
+                _scope_type = _scope_caller
+                _scope_expires = None
+                _scope_reason = 'caller specified'
+            else:
+                try:
+                    from .nest.scope_policy import (
+                        classify_scope as _classify_scope,
+                        expiry_from_now as _expiry_from_now,
+                    )
+                    from .forge.extractor import (
+                        astor_detect_capture_intent as _detect_capture,
+                    )
+                    import datetime as _scope_dt
+                    _now_iso = _scope_dt.datetime.utcnow().isoformat() + 'Z'
+                    _dec = _classify_scope(
+                        kind=f.kind,
+                        # outcome 在本函数开头 (astor_classify_outcome)
+                        # 已经算好了 —— 直接用, 不要重新检测一遍
+                        outcome=(_explicit_outcome or outcome),
+                        capture_intent=(
+                            bool(body.get('capture_intent'))
+                            or _detect_capture(text or '')
+                            or _detect_capture(f.content or '')
+                        ),
+                        provenance_kind=(
+                            getattr(f, 'provenance_kind', None)
+                            or body.get('provenance_kind')
+                        ),
+                        importance=f.importance,
+                        explicit=bool(body.get('explicit')),
+                    )
+                    _scope_type = _dec.scope_type
+                    _scope_expires = _expiry_from_now(_dec.ttl_days, _now_iso)
+                    _scope_reason = _dec.reason
+                except Exception:
+                    _scope_type = scope
+                    _scope_expires = None
+                    _scope_reason = 'policy fallback'
             canon_id = bus.promote_candidate(
                 cand_id, promoted_by='rest.write', user_id=bus_user_id or user, tier=tier,
-                scope_type=scope,  # P1-fix 2026-08-15: thread scope through
+                scope_type=_scope_type,  # v1.16.92: evidence-gated (was: scope)
+                expires_at=_scope_expires,  # v1.16.92: short_term 的到期时间
                 # v1.11.0: thread session_id for agentic neighbor-expand.
                 # Facts from the same session can be pulled as read/navigate
                 # neighbors at recall time (Mistral Agentic Search pattern).
@@ -5037,17 +5125,46 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # request. Declared next to `enriched` so the counter is reset on
         # every /v1/read and reported in the same response.
         _dropped_oversize = 0
+        # v1.16.92: scope 权重。同等相关度下, 已验证的 long_term 永远
+        # 排在未验证的 short_term 前面 —— 临时层是工作集不是垃圾桶, 它
+        # 仍然可以被召回, 但不能压过一条同等相关的已验证规则。
+        # 权重 0.85 (见 nest/scope_policy.py): 再低会让工作集形同虚设,
+        # 再高就又变成"临时记忆和长期记忆平权", 那正是要修的。
+        try:
+            _scope_by_fid = {}
+            _rids = [int(f) for f, _ in results]
+            if _rids:
+                _ph = ','.join('?' * len(_rids))
+                for _row in bus.conn.execute(
+                        f"SELECT id, scope_type FROM memory_canonical "
+                        f"WHERE id IN ({_ph})", _rids).fetchall():
+                    _scope_by_fid[int(_row[0])] = _row[1]
+            if _scope_by_fid:
+                from .nest.scope_policy import scope_weight as _scope_weight
+                _weighted = [
+                    (_fid, _sc * _scope_weight(_scope_by_fid.get(int(_fid))))
+                    for _fid, _sc in results
+                ]
+                _weighted.sort(key=lambda x: x[1], reverse=True)
+                results = _weighted
+        except Exception:
+            pass
         for fact_id, sim in results:
             row = bus.conn.execute(
                 "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
                 "event_date, event_date_precision, origin_session_id, metadata, entities_json, created_at, memory_class, "
                 # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking
-                "evidence_quote, source_ref, source_hash, provenance_kind, valid_until "
+                "evidence_quote, source_ref, source_hash, provenance_kind, valid_until, scope_type, expires_at "
                 # tombstoned 过滤。索引侧 (nest embeddings / lex documents)
                 # 只在部分 tombstone 路径上同步, 索引里会残留已删事实 ——
                 # 实测召回结果里大部分是已 tombstone 的行 (污染率 ~78%)。
                 # 读路径必须自己守住, 不能指望索引干净。
-                "FROM memory_canonical WHERE id = ? AND tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                # v1.16.92: 再加 expires_at 过滤 —— 临时层到期的 fact
+                # 在被 demote_expired 清理之前就已经不该出现在召回里
+                # (那条清理是批量任务, 读路径不能等它跑)。
+                "FROM memory_canonical WHERE id = ? AND tombstoned = 0 "
+                "AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                "AND (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
                 (fact_id,),
             ).fetchone()
             if row is None:

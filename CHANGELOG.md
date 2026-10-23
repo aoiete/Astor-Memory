@@ -1,3 +1,87 @@
+## v1.16.92 — Memory finally has a temporary layer, and importance stopped being a lie
+
+An article on self-evolving agent memory argues that the point of a
+memory system is not storage but governance, and lays out three levels
+with different entry barriers: temporary experience (lowest barrier, may
+be incomplete, contains noise), project memory (verified across tasks,
+distilled into rules), and standalone capability (stable trigger, steps
+and validation criteria). It also states the rule that governs the
+transition: an experience that turns out to be wrong should be demoted or
+removed quickly, while a correct one should be promoted carefully after
+repeated validation.
+
+astor's schema already had room for this. `scope_type` carries a CHECK
+constraint that allows `short_term`, `memory_canonical.expires_at` exists,
+and `memory_candidates` has `ttl_days` and `expires_at`. Nothing used
+any of it. Every fact was promoted with `scope_type='long_term'` and no
+expiry, so 4616 live facts had 0 with an expiry date and one scope value
+between them. A one-off observation scraped out of an execution log and
+a rule the user explicitly asked us to keep lived in the same permanent
+bucket, with no way to demote the first and no way to promote the second
+deliberately.
+
+### Evidence decides the tier
+
+`nest/scope_policy.py` assigns a tier from evidence available at write
+time, in priority order: an explicit request; an explicit provenance
+(`manual`, `user_distilled`, `rule`, `operator`); a distilled kind
+(`lesson`, `failure_pattern`, `success_pattern`, `rule`,
+`user_preference`, `decision`, `mental_model`, `knowledge`,
+`knowledge_page`, `skill`, `reflection`, `correction`); a verified
+outcome (`failure`, `lesson`, `success`); capture intent; and finally
+importance of at least 0.7. Anything else is an unverified observation
+and lands in `short_term` with an expiry 30 days out.
+
+The 0.7 threshold is not arbitrary. In `forge/extractor.py`,
+`_score_importance` gives failure and lesson 0.85, success with capture
+intent 0.8, and caps neutral at 0.6 — so "at least 0.7" is exactly
+"not neutral", computed by a heuristic that was already running.
+
+### The temporary tier is a working set, not a bin
+
+`nest/scope_lifecycle.py` handles what happens afterwards. A short-term
+fact that is recalled is renewed. One confirmed often enough is promoted
+to `long_term` with its expiry cleared. One that expires is demoted by
+tombstone, which keeps the row and its audit trail.
+
+Renewal on recall is the safety valve, and it is what makes the scheme
+safe to run. Without it, "the user's timezone is MDT" — stated once and
+never mentioned again — would expire on a schedule. With it, only facts
+that have never been used are at risk. Measured against the three live
+tiers with this rule applied: 50.8% of the admin tier would be temporary,
+but 2342 of those 2343 have been recalled at least once. The facts that
+would actually be demoted are 1 in admin, 30 in public, 0 in source.
+
+Recall now excludes expired temporary facts in SQL, and ranks a
+temporary fact below an equally relevant `long_term` one (weight 0.85,
+not 0 — the working set still has to be reachable). The promotion and
+demotion passes run from the weekly governance job.
+
+### Two defects found while wiring this up
+
+**A caller's `importance` was discarded.** `astor_extract_facts` takes
+no importance argument and the regex path hardcodes 0.5, so the server
+stored 0.5 for everything, whatever the caller sent. `client.py` sends
+it; `mcp_auto_observe` sends it; and the value that observe path sends
+is the real score from `_score_importance`. The extractor's heuristic
+had never taken effect. Since importance feeds tier routing, decay,
+ranking and now the scope decision, it was inert across that whole
+chain. The fix mirrors the one that v1.16.85 made for `kind`: an
+explicit caller value wins, read from either the top level of the body
+or its `metadata` (the observe path puts it there).
+
+**"unverified" was detected as a success.** The success patterns had no
+word boundaries, so `verified` matched "unverified", `working` matched
+"unworking", and `ok了` matched "book了". The outcome decides a fact's
+kind and tier, so "this is not verified yet" was stored as a verified
+recipe, shared publicly and given `long_term`.
+
+The rules are covered by `tests/test_scope_policy.py` and
+`tests/test_scope_write_path.py` (41 tests), which exercise the write
+path end to end rather than only the classifier -- a unit test of
+`classify_scope` cannot show whether the server calls it, which is
+exactly why this gap went unnoticed while every test passed.
+
 ## v1.16.90 — The test suite was wiping the live index, and a shell transcript counted as knowledge
 
 Two defects, both found by auditing what the corpus actually contains
