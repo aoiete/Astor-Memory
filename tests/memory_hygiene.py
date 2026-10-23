@@ -130,6 +130,34 @@ def _forget(fact_id: int, tier: str, user_id: str | None,
         return False, f"{type(e).__name__}: {e}"
 
 
+# 结构性头部: 连续的 [key: value] 行。知识分页的 fact 都是这个形状 ——
+#   [source: 12-why-not-prediction.md]
+#   [section: 證據三：卦德 > 五行]
+#   [tag: 命理反思]
+#   [topic: 命理边界]
+#   <真正的正文>
+_STRUCT_HEADER = re.compile(r"^(?:\[.*\]\s*$\n?)+")
+# 数字 (含小数) 统一掩码: 让"只差一个时间戳/计数"的模板落进同一组
+_NUM = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def _shape_key(text: str) -> str:
+    """近似重复的形状键。
+
+    2026-10-23 修: 原来只按前 40 个字符分组, 于是**同一源文件的不同章节**
+    被判成重复 —— 它们的 [source:]/[section:]/[tag:]/[topic:] 头部完全相同,
+    前 40 字一模一样, 但正文讲的是不同的东西。实测误删了三个章节
+    (12-why-not-prediction.md 的 證據二 / 證據三 / 所以該怎麼用), 其中
+    一个正是"卦德 > 五行, 解释力约 5 倍"。
+
+    修法: 先剥掉结构性头部, 再把数字掩码, 然后比较。同一模板只差时间戳的
+    (maker_pocket V085_TP_CAP 那 240 条) 掩码后形状一致, 照样被抓到;
+    不同章节剥掉头部后正文不同, 不会再被误判。
+    """
+    body = _STRUCT_HEADER.sub("", text or "")
+    return _NUM.sub("#", body)[:600]
+
+
 def scan(tier: str, user_id: str | None) -> dict:
     bus = _bus_path(tier, user_id)
     if not bus:
@@ -141,11 +169,11 @@ def scan(tier: str, user_id: str | None) -> dict:
     c.close()
 
     groups: dict[str, list[int]] = {}
-    prefix_groups: dict[str, list[int]] = {}
+    shape_groups: dict[str, list[int]] = {}
     already: set[int] = set()
     for fid, content in rows:
         text = content or ""
-        prefix_groups.setdefault(text[:DUP_PREFIX_LEN], []).append(fid)
+        shape_groups.setdefault(_shape_key(text), []).append(fid)
         # One reason per fact: a fact that is already flagged as debris or
         # as a transcript must not also be counted as a duplicate, or the
         # totals double-count and the apply step forgets it twice.
@@ -159,7 +187,7 @@ def scan(tier: str, user_id: str | None) -> dict:
             already.add(fid)
 
     dup_ids: list[int] = []
-    for prefix, ids in prefix_groups.items():
+    for _shape, ids in shape_groups.items():
         if len(ids) >= DUP_MIN_COUNT:
             # keep the oldest of the group, quarantine the rest
             dup_ids.extend(i for i in ids[1:] if i not in already)
