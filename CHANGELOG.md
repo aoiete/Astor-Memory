@@ -1,3 +1,32 @@
+## v1.16.96 — Two tests that were borrowing their fixtures
+
+CI failed `test_recall_hybrid_default` with `count = 0` while the same
+test passed locally. The two tests had the same disease, and it was not a
+product bug.
+
+**The recall test expected a neighbour to have done its work.** It issued
+a recall for a random unique string and asserted the result was non-empty.
+Locally that passed because the stale `~/.astor` tree still held 9.6 MB
+of history for the adapter to find; on CI that directory does not exist,
+so the recall came back empty and the assertion failed. A test that needs
+*something* to have written a fact first is a test with an invisible
+dependency on the order the suite runs in.
+
+The test now seeds its own fact — through the REST write path, because
+that is the path that promotes a candidate into `memory_canonical` and
+writes the lexical index the recall reads. (The adapter's own
+`astor_write` tool stops at the candidate, and a candidate is not
+recallable — worth knowing, because it looks like it worked.)
+
+**The forget test raced the lexical index.** `/v1/forget` is BM25-only,
+and the index lags the canonical write. On a cold runtime there is no
+other traffic to warm it, so the first lookup reported "no BM25 hit".
+The test now retries: a forget that finds nothing tombstones nothing, so
+retrying is safe — it either hits or changes nothing.
+
+Verified against the CI shape rather than the local one: a throwaway
+server on a clean `ASTOR_DIR`, whole suite **1068 passed, 0 failed**.
+
 ## v1.16.95 — The recall API stopped falling over, and the test debris stopped coming back
 
 Two failures shared a shape: one optional dependency, and one directory
