@@ -110,3 +110,7 @@ scripts/auto_promote_mental_model.py
 
 # scratch verification probes
 .probe_*.py
+
+# local PII-rewrite backup tree (not part of the project)
+.old_tree/
+.git.bak-pre-pii-rewrite-*/

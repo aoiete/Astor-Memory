@@ -297,19 +297,19 @@ mcp = [
 [project.urls]
 
 
-Homepage = "https://github.com/<repo-owner>/Astor-Memory"
+Homepage = "https://github.com/aoiete/Astor-Memory"
 
 
-Repository = "https://github.com/<repo-owner>/Astor-Memory.git"
+Repository = "https://github.com/aoiete/Astor-Memory.git"
 
 
-Issues = "https://github.com/<repo-owner>/Astor-Memory/issues"
+Issues = "https://github.com/aoiete/Astor-Memory/issues"
 
 
-Discussions = "https://github.com/<repo-owner>/Astor-Memory"
+Discussions = "https://github.com/aoiete/Astor-Memory"
 
 
-Changelog = "https://github.com/<repo-owner>/Astor-Memory/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/aoiete/Astor-Memory/blob/main/CHANGELOG.md"
 
 
 

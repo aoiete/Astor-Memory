@@ -113,7 +113,7 @@ Install from source (not yet published to PyPI) with a single
 command; `am` becomes available as a console script:
 
 ```bash
-pip install "astor-memory @ git+https://github.com/<repo-owner>/Astor-Memory.git"
+pip install "astor-memory @ git+https://github.com/aoiete/Astor-Memory.git"
 ```
 
 Optional `[muse]` extra installs the Muse adapter package. Once the
@@ -188,9 +188,9 @@ directions, so a client cannot reach another user's memory.
 
 ```bash
 # Install (not yet on PyPI — install from source)
-pip install "astor-memory @ git+https://github.com/<repo-owner>/Astor-Memory.git"
+pip install "astor-memory @ git+https://github.com/aoiete/Astor-Memory.git"
 # or, with the Muse adapter
-pip install "astor-memory[muse] @ git+https://github.com/<repo-owner>/Astor-Memory.git"
+pip install "astor-memory[muse] @ git+https://github.com/aoiete/Astor-Memory.git"
 
 # Windows: check the host can run astor BEFORE starting anything.
 # Takes a second. If the Visual C++ runtime is too old for onnxruntime,

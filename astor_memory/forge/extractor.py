@@ -33,9 +33,9 @@ MIN_AUTO_OBSERVE_LENGTH = 30
 # message is scripts/send_to_platform.py weixin --to <chat_id>").
 # Anchoring at the start is what keeps real facts safe.
 #
-# The first attempt was too broad -- it treated any leading "D:/" or
-# "C:\" as a transcript, and that flagged real knowledge such as
-# "<ASTOR_RUNTIME_DIR> takes priority over the vault" and "make pocket is IDLE at
+# The first attempt was too broad -- it treated any leading drive letter
+# ("X:/" or "C:\") as a transcript, and that flagged real knowledge such as
+# "C:/data takes priority over the vault" and "make pocket is IDLE at
 # $1500". A path *is* knowledge here, so only an executable path or a
 # shell invocation counts.
 #
@@ -227,7 +227,7 @@ def extract_entities(text: str, fact_id: int = 0) -> list[dict]:
                  "Yes", "If", "When", "Where", "How", "Why", "What", "Who",
                  "Then", "Now", "Here", "There", "Today", "Yesterday",
                  "Tomorrow", "Monday", "Tuesday", "Wednesday", "Thursday",
-                 "Friday", "Saturday", "<user_d>", "January", "February",
+                 "Friday", "Saturday", "Sunday", "January", "February",
                  "March", "April", "May", "June", "July", "August",
                  "September", "October", "November", "December", "API",
                  "ASTOR", "CEO", "CTO", "AI", "OK", "TODO", "URL", "USD",

@@ -350,23 +350,23 @@ def test_astor_bus_for_user_cannot_open_other_user(monkeypatch, tmp_path):
 def test_astor_dir_name_env_overrides_default(monkeypatch, tmp_path):
     """ASTOR_DIR_NAME=foo → get_astor_dir() = ~/foo (relative to home)."""
     monkeypatch.delenv("ASTOR_DIR", raising=False)
-    monkeypatch.setenv("ASTOR_DIR_NAME", "<ASTOR_RUNTIME_DIR>")
+    monkeypatch.setenv("ASTOR_DIR_NAME", "astor-runtime-dir")
     from astor_memory._internal.acl_layout import get_astor_dir
-    expected = Path.home() / "<ASTOR_RUNTIME_DIR>"
+    expected = Path.home() / "astor-runtime-dir"
     assert get_astor_dir() == expected
 
 
 def test_astor_dir_env_overrides_astor_dir_name(monkeypatch, tmp_path):
     """ASTOR_DIR takes priority over ASTOR_DIR_NAME."""
     monkeypatch.setenv("ASTOR_DIR", str(tmp_path / "explicit"))
-    monkeypatch.setenv("ASTOR_DIR_NAME", "<ASTOR_RUNTIME_DIR>")
+    monkeypatch.setenv("ASTOR_DIR_NAME", "astor-runtime-dir")
     from astor_memory._internal.acl_layout import get_astor_dir
     assert get_astor_dir() == tmp_path / "explicit"
 
 
 def test_db_paths_resolve_under_astor_dir(monkeypatch, tmp_path):
     """get_db_path honors ASTOR_DIR for all tiers."""
-    target = tmp_path / "<ASTOR_RUNTIME_DIR>"
+    target = tmp_path / "astor-runtime-dir"
     monkeypatch.setenv("ASTOR_DIR", str(target))
     # Reimport — uses ASTOR_DIR at call time, so no reimport needed for this case
     assert get_db_path("public", "bus") == target / "public/memory/astor_bus_public.db"

@@ -5845,7 +5845,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # is intentionally low — admin corpus is dense (5K+ facts),
         # so genuine misses are rare but worth retrying with reformulation.
         # Without this, callers who write "我上次打 poker 怎么样" get
-        # empty results because the actual stored fact is "<user_d> played
+        # empty results because the actual stored fact is "Sunday played
         # NLHE at Deerfoot on Tuesday" — exact phrase match fails. The
         # rewrite strips discourse markers so semantic vector match can
         # work. Best-effort: never blocks the response, just adds a

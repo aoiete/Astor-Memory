@@ -9,7 +9,7 @@ didn't work. Every failure described here has actually occurred.
 ## Quick start
 
 ```bash
-git clone https://github.com/<repo-owner>/Astor-Memory.git
+git clone https://github.com/aoiete/Astor-Memory.git
 cd Astor-Memory
 
 uv venv --python 3.11
