@@ -84,6 +84,44 @@ def _probe_match(text: str) -> bool:
     return any(t.startswith(p) for p in PROBE_PREFIXES)
 
 
+# 2026-10-23 (HaluMem 解读): public 层 kind='fact' 719 条里 409 条 (56.9%)
+# 是测试残留 / 模板噪音, 而且 access_count 高达 300-500 —— 正在污染召回。
+# 其中绝大多数**不以**已知探针前缀开头 ("Maria 启动了 e2e_correction_..."),
+# 所以 PROBE_PREFIXES 的 startswith 抓不到。要按**内容模式**抓。
+#
+# 这些不是"用户的事实", 是 astor 自己的测试和 e2e 写进知识库的。
+# 论文依据: HaluMem 的 FMR (抗虚构记忆率) 指标专门测"不该存的被存成事实"。
+TEST_RESIDUE_PATTERNS = (
+    # e2e 测试轮次: "Maria 启动了 e2e_correction_<id>_<ts> 项目"
+    re.compile(r"e2e_correction_\w+_\d+"),
+    re.compile(r"e2e_test_marker_\w+"),
+    # 通用测试/调试 marker
+    re.compile(r"\bmarker[-\s]?(test|fact|distill|publish|visibility)", re.I),
+    # "marker-<任意串>" —— 覆盖 marker-final / marker-q1w2e3 / marker-methodtest
+    re.compile(r"\bmarker[-\s][a-z0-9]", re.I),
+    # astor e2e 场景里虚构的人名 "Maria" —— 只匹配 e2e 叙述, 不能匹配
+    # 真实提到 Maria 的条目 (例如 "Maria 是用户的同事")。
+    re.compile(r"^Maria\b.*(测试|test|项目|启动|完成|marker|e2e|新发布|发布)", re.I),
+    re.compile(r"\bmethod curl (test|UA)", re.I),
+    re.compile(r"^(async test|profile test|poc|curl test|debug_timing)\b", re.I),
+    re.compile(r"^profile (timing|debug)\b", re.I),
+    re.compile(r"^async (final )?verify\b", re.I),
+    re.compile(r"\bhook_audit_test_", re.I),
+    # "她/他 启动了 ... 项目" —— e2e 场景脚本的叙述残留
+    re.compile(r"^她?他?们?实际上?没有?启动[了]?\s*e2e_", re.I),
+    re.compile(r"^她?他?们?完成了\s+e2e_", re.I),
+    # 时间戳型一次性事实: "..._<10位时间戳>" 结尾且带测试动词
+    re.compile(r"\b(test|probe|debug|mock)\b.*\b\d{10}\b", re.I),
+)
+
+
+def _test_residue_match(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    return any(p.search(t) for p in TEST_RESIDUE_PATTERNS)
+
+
 def _bus_path(tier: str, user_id: str | None) -> Path | None:
     if tier == "public":
         cands = list(RUNTIME.rglob("astor_bus_public.db"))
@@ -92,7 +130,19 @@ def _bus_path(tier: str, user_id: str | None) -> Path | None:
     else:
         cands = [RUNTIME / "users" / (user_id or "admin") / "memory" /
                  f"astor_bus_{user_id or 'admin'}.db"]
-    cands = [c for c in cands if c.exists()]
+    # 2026-10-23 bug: rglob 会把 runtime 里的**备份副本**一起匹配到。
+    # .bak_bus_pre_* / .bak* 目录里的库是 apply 之前的快照, 活 fact 往往
+    # 比生产库多 —— "选活 fact 最多的那个" 于是选中了备份, 于是 scan 读
+    # 备份而 apply 通过 REST 打生产库, 两边 id 可能对不上 (这次侥幸一致,
+    # 因为备份就是 apply 前的精确副本; 一旦备份来自更早的时间点就会
+    # 隔离错 fact)。备份目录必须排除。
+    cands = [c for c in cands
+             if c.exists()
+             and not any(part.startswith(".bak")
+                         or part.endswith(".bak")
+                         or "_bak_" in part
+                         or "backup" in part.lower()
+                         for part in c.parts)]
     if not cands:
         return None
     # 选活 fact 最多的那个
@@ -181,6 +231,9 @@ def scan(tier: str, user_id: str | None) -> dict:
             continue
         if _probe_match(text):
             groups.setdefault("probe_debris", []).append(fid)
+            already.add(fid)
+        elif _test_residue_match(text):
+            groups.setdefault("test_residue", []).append(fid)
             already.add(fid)
         elif _exec_log_match(text):
             groups.setdefault("execution_log", []).append(fid)
