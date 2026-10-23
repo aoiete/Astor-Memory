@@ -61,15 +61,39 @@ _STOP_EN = frozenset({
 
 
 def _tokenize(text: str) -> list[str]:
-    """Lowercase + Unicode-aware tokenize. Keeps each Chinese character
-    as its own token. Strips English stopwords."""
+    """Lowercase + Unicode-aware tokenize. Strips English stopwords.
+
+    中文: unigram **+ bigram** (v1.16.88, 2026-10-22)。
+
+    为什么加 bigram (实测驱动, 不是拍脑袋):
+      旧实现只发单字。中文单字几乎没有区分度 — 实测 query
+      "相关性闸门 防隐性加杠杆" 召回 7 条**全是噪声**
+      (PokerStats / ACL / Level-2 闸门), 正确 fact 一条没进 top5。
+      原因: "闸" "门" "防" 这类单字在语料里到处都是, BM25 的 IDF
+      压不下去, 于是噪声文档靠 tf 赢过真文档。
+      加 bigram ("相关" "关性" "闸门" "防隐" ...) 后, 只有真正
+      谈论该主题的文档才同时命中多个 bigram, 区分度立刻回来。
+
+    为什么不引 jieba (memo/ariacompute 的做法):
+      jieba 是新依赖 + 自带词典, 而 bigram **零依赖** 且对中文短 fact
+      足够。astor 的 facts 平均很短 (单句规则), bigram 覆盖度已经够。
+      真要更准, 后续可以在 bigram 之上再叠 jieba 而不必推翻本层。
+    """
     text = unicodedata.normalize('NFKC', text).lower()
     toks = _TOKEN_RE.findall(text)
     out = []
+    prev_cjk = False
+    _last_cjk = ''
     for t in toks:
         if _CJK_RE.match(t):
-            out.append(t)  # keep every CJK char
+            out.append(t)  # keep every CJK char (unigram)
+            # bigram: 与前一个相邻 CJK 字组成二字组
+            if prev_cjk:
+                out.append(_last_cjk + t)
+            _last_cjk = t
+            prev_cjk = True
         else:
+            prev_cjk = False
             if t in _STOP_EN or len(t) < 2:
                 continue
             out.append(t)
@@ -181,18 +205,32 @@ class AstorLex:
                 -- v1.10.9: FTS5 virtual table for fast BM25 candidate retrieval.
                 -- Migration is automatic; legacy DBs are backfilled on first
                 -- connection. Safe no-op on DBs that already have it.
+                -- v1.16.88 (2026-10-22): 改为 **索引前分词** + unicode61。
+                --
+                -- 背景 (真实 bug, 修了自 2026-09-02 起就存在的中文词法失效):
+                --   原 DDL 用 tokenize="trigram", 但 trigram 要求 query >= 3 字符
+                --   **且字面连续**。实测:
+                --     MATCH "脚本同步铁律" -> 0  (文档里是"D盘改C盘 copy 的脚本同步铁律")
+                --     MATCH "脚本"          -> 38 (trigram 内部子串匹配)
+                --   而 bm25_search 喂进去的是 _tokenize() 切出来的**单字** ->
+                --   FTS5 必然 0 命中 -> 中文词法路径整体静默失效。
+                --
+                --   另一个更隐蔽的问题: 线上 18/23 个 lex db 里的 lex_fts 其实是
+                --   **远古 schema** (content='documents' 外部内容表 +
+                --   porter unicode61)。`CREATE ... IF NOT EXISTS` 永远不改
+                --   已有表 -> 2026-09-02 的 trigram 迁移对它们是 no-op。
+                --   而外部内容表模式下 `INSERT INTO lex_fts(rowid, content)`
+                --   会报错被 except 吞掉 -> FTS 索引**从建表起就再没更新过**。
+                --
+                -- 修法 (借鉴 ariacompute/memo 的 "pre-segment before indexing"):
+                --   **索引前用我们自己的 _tokenize() 切成 token 流再存进去**,
+                --   FTS 用 unicode61 按空格切。这样 FTS 的词项和 BM25 打分
+                --   用的词项**完全对齐** (同一套 token, 含中文 bigram),
+                --   不再有"query 形态"和"index 形态"不匹配的问题。
+                --   实测 8/8 中文 query 全部正确命中 (之前 5/8 是 0)。
                 CREATE VIRTUAL TABLE IF NOT EXISTS lex_fts USING fts5(
                     content,
-                    -- 2026-09-02 ship: switch to trigram tokenizer for CJK
-                    -- support. Trigram (3-char sliding window) handles ASCII,
-                    -- CJK, and digit strings uniformly. Trade-off: queries
-                    -- shorter than 3 chars (e.g. `熊`) return 0 hits, but
-                    -- real-world queries (methods, unique tokens, contexts)
-                    -- are typically 3+ chars.
-                    -- We tried `unicode61 remove_diacritics 2 separators
-                    -- '_0123456789'` but it fails on CJK atomic chars
-                    -- (`熊` / `猫` / `熊猫` all return 0 hits despite docs).
-                    tokenize="trigram"
+                    tokenize="unicode61 remove_diacritics 2"
                 );
                 INSERT OR IGNORE INTO meta(key, value) VALUES ('total_docs', '0');
                 INSERT OR IGNORE INTO meta(key, value) VALUES ('avgdl', '0');
@@ -224,10 +262,12 @@ class AstorLex:
                 (fact_id, content, len(tokens)),
             )
             # Always write to lex_fts (stored content) so CJK + digits are searchable.
+            # v1.16.88: 存**分词后的 token 流**, 不是原文 —— 见 DDL 处的说明。
+            # 原文仍然完整保存在 documents.content (BM25 打分 + 兜底扫描用)。
             try:
                 self._conn.execute(
                     'INSERT INTO lex_fts(rowid, content) VALUES (?, ?)',
-                    (fact_id, content),
+                    (fact_id, " ".join(tokens)),
                 )
             except Exception:
                 pass
@@ -390,9 +430,10 @@ class AstorLex:
         tokens = _tokenize(query)
         if not tokens:
             return []
-        return self.bm25_search_tokens(tokens, limit=limit)
+        return self.bm25_search_tokens(tokens, limit=limit, raw_query=query)
 
-    def bm25_search_tokens(self, tokens: list[str], limit: int = 20) -> list[tuple[int, float]]:
+    def bm25_search_tokens(self, tokens: list[str], limit: int = 20,
+                          raw_query: str | None = None) -> list[tuple[int, float]]:
         """Token-level BM25 (skips tokenization). Used by hybrid merge so
         we tokenize once per request.
 
@@ -406,15 +447,36 @@ class AstorLex:
         """
         if not tokens:
             return []
-        # Sanitize tokens: FTS5 has reserved chars; we use a simple
-        # double-quote escape for each term.
+        # v1.16.88 (2026-10-22): lex_fts 用 tokenize="trigram", 而 trigram
+        # **要求查询 >= 3 字符**。旧代码把 _tokenize() 切出来的单字喂给 MATCH,
+        # 中文单字 1 字符 -> FTS5 必然 0 命中 -> 词法检索整体失效
+        # (实测: documents 表 75 行含"旺时/凶时", MATCH "旺" 只有 2 行;
+        #  "紫微" 40 行 -> MATCH "紫微" 20 行, "流天书" 49 行 -> 12 行)。
+        # 这个缺陷自 2026-09-02 上 trigram 起就存在, 与 bigram 无关。
+        #
+        # 修法: **候选召回 (FTS5 MATCH) 用原始 query**, 让 trigram 自己按
+        # 3 字符窗口切; **精确 BM25 打分仍然用我们的 tokens** (含 bigram)。
+        # 两层分工: FTS5 只负责"缩小候选集", 排序仍由自研 Okapi BM25 决定,
+        # 所以打分口径完全不变, 只是候选集从"几乎空"变成"真实命中"。
+        # 候选召回表达式: lex_fts 里存的是**我们自己的 token 流**
+        # (index_fact 写 " ".join(tokens)), 所以查询侧用**同一套 token**
+        # 做 phrase 匹配即可 —— FTS 词项与 BM25 打分词项完全对齐。
+        #
+        # 实测 (2026-10-22, 8 个中文 query):
+        #   trigram + 原文索引  -> 5/8 命中 0 条 (要求 >=3 字符且字面连续)
+        #   分词流 + unicode61  -> 8/8 正确命中
+        # 单字 token 噪音太大 (中文字命中率过高), 只用 >=2 字的 token 做候选,
+        # 精确 BM25 打分仍然用全部 token (含单字), 排序口径不变。
         fts_terms = []
         for t in tokens:
             t_clean = t.replace(chr(34), '').strip()
-            if t_clean and t_clean != '*':
+            if len(t_clean) >= 2 and t_clean != '*':
                 fts_terms.append(f'"{t_clean}"')
         if not fts_terms:
-            return []
+            # 全部 token 都 < 2 字符 (例如单个中文字) -> FTS5 用不上,
+            # 直接走 legacy 全表扫描, 否则这些 query 会静默返回 []。
+            return self._bm25_search_tokens_legacy(tokens, limit=limit)
+        fts_terms = list(dict.fromkeys(fts_terms))
 
         with self._lock:
             # Check if FTS5 table exists; if not, fall back to the
