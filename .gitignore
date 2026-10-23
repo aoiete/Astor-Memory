@@ -107,3 +107,6 @@ tests/.baseline/
 # their content is deployment-specific by nature.
 scripts/auto_promote_knowledge_page.py
 scripts/auto_promote_mental_model.py
+
+# scratch verification probes
+.probe_*.py
