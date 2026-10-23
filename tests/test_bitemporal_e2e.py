@@ -36,6 +36,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SERVER_URL = "http://127.0.0.1:7803"
 
 
+def cls_user(obj):
+    return getattr(obj, "user_id", None) or "admin"
+
+
 def _server_alive() -> bool:
     try:
         r = requests.get(f"{SERVER_URL}/v1/health", timeout=2)
@@ -50,8 +54,28 @@ class TestBitemporalE2E(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tier = "public"
-        # Wait for server
+        # v1.16.95: write into the operator's own PRIVATE bucket, with the
+        # admin identity in the X-Actor header. Two reasons: the test no
+        # longer puts probes in a shared tier (which is what produced the
+        # 301 production residues), and the demotion path in /v1/write
+        # needs an authenticated caller to know whose private bucket to
+        # use.
+        cls.tier = "private"
+        cls.actor = {"X-Actor": "admin:admin"}
+        cls.user_id = "admin"
+        # 2026-10-23 (v1.16.95): this class used to post to the LIVE server
+        # with tier=public, which bypassed the conftest ASTOR_DIR isolation
+        # and wrote its probes straight into the production public tier —
+        # 301 residues that reached access_count 500 and polluted recall for
+        # every user. /v1/write now demotes test residue out of shared tiers,
+        # but the right fix is for the test not to touch production at all:
+        # use the Flask test client against an isolated runtime (conftest
+        # already points ASTOR_DIR at a temp dir). Same code path, same
+        # bi-temporal logic, zero production impact.
+        from astor_memory.server import create_app
+        cls.app = create_app()
+        cls.client = cls.app.test_client()
+        # Wait for server (kept: the class asserts a running instance)
         for _ in range(10):
             if _server_alive():
                 break
@@ -65,21 +89,20 @@ class TestBitemporalE2E(unittest.TestCase):
             "tier": self.tier,
             "kind": kind,
             "pii_scan": pii_scan,
+            "user": cls_user(self),
+            "user_id": cls_user(self),
         }
         if user_id is not None:
             body["user_id"] = user_id
         if extra:
             body.update(extra)
-        return requests.post(
-            f"{SERVER_URL}/v1/write",
-            json=body,
-            timeout=15,
-        )
+        return self.client.post("/v1/write", json=body,
+                                 headers=getattr(self, "actor", None))
 
     def test_health_returns_version(self):
         r = requests.get(f"{SERVER_URL}/v1/health", timeout=5)
         self.assertEqual(r.status_code, 200)
-        d = r.json()
+        d = r.json()          # requests response: .json() is a method
         self.assertIn("version", d)
         # Should be v1.16.14+
         self.assertTrue(d["version"].startswith("1.16."))
@@ -89,17 +112,16 @@ class TestBitemporalE2E(unittest.TestCase):
         text = f"Maria 完成了 {unique_marker} 测试"
         r = self._write_fact(text)
         self.assertEqual(r.status_code, 200)
-        fid = r.json()["fact_ids"][0]
+        fid = r.get_json()["fact_ids"][0]
 
         # Check bi-temporal lifecycle
-        r = requests.get(
-            f"{SERVER_URL}/v1/bitemporal/lifecycle/{fid}?tier={self.tier}",
-            timeout=5,
-        )
+        r = self.client.get(
+            f"/v1/bitemporal/lifecycle/{fid}?tier={self.tier}"
+            f"&user_id={cls_user(self)}")
         if r.status_code == 404:
             self.skipTest("fact not in public tier (ACL)")
         self.assertEqual(r.status_code, 200)
-        info = r.json()
+        info = r.get_json()
         self.assertIsNotNone(info.get("valid_from"))
         # Active facts should have valid_until=None
         self.assertIsNone(info.get("valid_until"))
@@ -113,7 +135,7 @@ class TestBitemporalE2E(unittest.TestCase):
         text1 = f"Maria 启动了 {marker} 项目"
         r1 = self._write_fact(text1, kind="fact")
         self.assertEqual(r1.status_code, 200)
-        fid1 = r1.json()["fact_ids"][0]
+        fid1 = r1.get_json()["fact_ids"][0]
 
         time.sleep(0.5)
 
@@ -121,18 +143,17 @@ class TestBitemporalE2E(unittest.TestCase):
         text2 = f"Maria 实际上没有启动 {marker} 项目"
         r2 = self._write_fact(text2, kind="correction")
         self.assertEqual(r2.status_code, 200)
-        fid2 = r2.json()["fact_ids"][0]
+        fid2 = r2.get_json()["fact_ids"][0]
         # New fact should appear in response
         self.assertNotEqual(fid1, fid2)
 
         # Verify fid1 was invalidated
-        r = requests.get(
-            f"{SERVER_URL}/v1/bitemporal/lifecycle/{fid1}?tier={self.tier}",
-            timeout=5,
-        )
+        r = self.client.get(
+            f"/v1/bitemporal/lifecycle/{fid1}?tier={self.tier}"
+            f"&user_id={cls_user(self)}")
         if r.status_code == 404:
             self.skipTest("fact not in public tier")
-        info = r.json()
+        info = r.get_json()
         # If auto-invalidate fired, is_active should be False
         if info.get("is_active"):
             # Auto-invalidate may not have fired if entities don't overlap
@@ -148,9 +169,15 @@ class TestBitemporalE2E(unittest.TestCase):
 class TestSkillBankChainE2E(unittest.TestCase):
     """Verify the chain endpoint works end-to-end against live server."""
 
+    @classmethod
+    def setUpClass(cls):
+        from astor_memory.server import create_app
+        cls.app = create_app()
+        cls.client = cls.app.test_client()
+
     def test_chain_with_two_skills(self):
-        r = requests.post(
-            f"{SERVER_URL}/v1/skill/chain",
+        r = self.client.post(
+            "/v1/skill/chain",
             json={
                 "skills": ["path_score", "coref_resolve"],
                 "context": {
@@ -159,10 +186,9 @@ class TestSkillBankChainE2E(unittest.TestCase):
                     "text": "",
                 },
             },
-            timeout=10,
         )
         self.assertEqual(r.status_code, 200)
-        d = r.json()
+        d = r.get_json()
         self.assertEqual(d["count"], 2)
         # Both skills should succeed (path_score with stub, coref with empty text)
         self.assertEqual(d["ok_count"], 2)

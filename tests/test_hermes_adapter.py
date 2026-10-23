@@ -110,7 +110,12 @@ class HermesAdapterToolTest(unittest.TestCase):
         req = _ur.Request(
             'http://127.0.0.1:7803/v1/write',
             data=body,
-            headers={'Content-Type': 'application/json'},
+            # v1.16.95: the probe text ("marker fact with ...") is on the
+            # residue list, so /v1/write demotes it into the caller's own
+            # private bucket instead of the shared public tier. The X-Actor
+            # header tells the server whose private bucket that is.
+            headers={'Content-Type': 'application/json',
+                     'X-Actor': 'admin:admin'},
         )
         # Skip if server not running
         try:
@@ -128,7 +133,9 @@ class HermesAdapterToolTest(unittest.TestCase):
         # attempt usually succeeds.
         result = json.loads(self.provider.handle_tool_call(
             'astor_forget', {
-                'query': unique, 'tier': 'public', 'user_id': None,
+                # The fact was demoted into admin's private bucket, so the
+                # forget must look there -- not in the public tier.
+                'query': unique, 'tier': 'private', 'user_id': 'admin',
                 'forget_threshold': 0.5,
             },
         ))

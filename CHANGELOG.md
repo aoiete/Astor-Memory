@@ -1,3 +1,68 @@
+## v1.16.95 — The recall API stopped falling over, and the test debris stopped coming back
+
+Two failures shared a shape: one optional dependency, and one directory
+that nobody owned.
+
+**The embedding stack was a hard dependency of `/v1/read`.** The warmup
+path already said "astor runs without it; semantic recall is
+disabled" — but the read path called `astor_get_embedding_model()`
+unguarded, so a missing fastembed/onnxruntime turned every recall into
+HTTP 500. The suite caught it: `test_acl_bob_can_read_own_private`
+failed with 500 instead of 200 when run under an interpreter without
+fastembed. Production runs on PY-311, which has it, so the live server
+was fine — but the failure mode was "one optional package missing takes
+the whole API down", and that is worth fixing regardless. The embed
+call is now wrapped: on failure `vec_weight` drops to 0 and recall
+continues on the lexical path alone.
+
+**Test debris was allowed to land in the shared tiers.** HaluMem
+(arXiv 2511.03506, EMNLP 2026) measures memory systems with an FMR
+metric — how well they resist storing things the user never confirmed.
+Applied to this database, the public layer came out at 56.9%: of 719
+live `kind='fact'` rows, 409 were e2e residue, marker probes or
+template variants. The worst offenders were not subtle: "Maria 完成了
+e2e_test_marker_xxx 测试", and — the one that made the metric concrete
+— "Maria 确认了发布日期", a fictional colleague's confirmation stored as
+fact.
+
+The source was `tests/test_bitemporal_e2e.py`, which posts to the LIVE
+server with `tier=public` and therefore bypasses the conftest
+`ASTOR_DIR` isolation. Those facts reached `access_count` 500: they
+were being returned by recall, over and over, to every user.
+
+`/v1/write` now demotes test residue to the caller's own private
+bucket instead of letting it reach a shared tier. It does not reject
+the write — the demotion needs an authenticated caller to know whose
+private bucket to use, and an anonymous caller may not write at all —
+so the suite stays green while the shared layer stays clean. The rules live in
+`astor_memory/forge/hygiene_rules.py` and are shared with
+`tests/memory_hygiene.py`, so the write gate and the cleanup tool
+cannot drift apart.
+
+Three test files were writing their probes into production through the
+live server, which is how the residues got there in the first place:
+`test_bitemporal_e2e.py` (tier=public, 301 rows), `test_write_timing.py`
+(the probe text is literally "astor write path instrumentation probe
+..."), and `test_hermes_adapter.py` ("marker fact with ..."). All three
+now post through the Flask test client against the isolated runtime the
+conftest already provides, or carry an explicit admin identity when
+they need the real server. `/v1/bitemporal/lifecycle` gained a
+`user_id` query parameter so a private-tier fact can be inspected --
+before that, `tier=private` always resolved to `user_id=None` and the
+lookup returned 404.
+
+Cleaning up the existing residue also needed one fix in the cleanup
+tool: `_bus_path` picked "the database with the most live facts" out
+of an `rglob`, which — after a backup was made — meant it picked the
+*backup*. Scan would read the backup while apply wrote to production.
+Backup directories are now excluded.
+
+Measured after the cleanup: public 956 → 465 live facts, source 192 →
+179, admin 4674 → 4658. The lexical indexes were rebuilt as well —
+they still held 1013 stale documents out of 1461 in public, so BM25 was
+returning facts that had already been quarantined — and a recall probe
+over four queries now returns zero test residue.
+
 ## v1.16.94 — The scope rule, applied to the memory that already exists
 
 v1.16.92 gave every new fact a tier chosen from the evidence available
