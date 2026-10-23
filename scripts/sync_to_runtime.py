@@ -233,6 +233,60 @@ def restart_server_via_nssm(timeout_s: int = HEALTH_TIMEOUT_S) -> bool:
     return False
 
 
+def _check_version_consistency(src: Path) -> bool:
+    """The release version is declared in three places and read by three
+    different callers:
+
+      - astor_memory.__version__          (what /v1/health reports)
+      - pyproject.toml [project] version   (what pip installs)
+      - pyproject.toml [tool.astor] version (what the am CLI reports)
+
+    A bump that touches two of them leaves the third stale, which is how
+    a running server ended up claiming a version no tag matched. Verify
+    all three agree before syncing; a mismatch is a release bug, not a
+    reason to propagate it to the runtime tree.
+    """
+    import re
+    versions = {}
+
+    init_py = src / 'astor_memory' / '__init__.py'
+    try:
+        m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']',
+                      init_py.read_text(encoding='utf-8'))
+        if m:
+            versions['__init__.__version__'] = m.group(1)
+    except Exception:
+        pass
+
+    pyproject = src / 'pyproject.toml'
+    try:
+        txt = pyproject.read_text(encoding='utf-8')
+        # [project] section
+        proj = re.search(r'\[project\](.*?)(?=\n\[|\Z)', txt, re.S)
+        if proj:
+            m = re.search(r'^version\s*=\s*["\']([^"\']+)["\']',
+                          proj.group(1), re.M)
+            if m:
+                versions['[project] version'] = m.group(1)
+        # [tool.astor] section
+        tool = re.search(r'\[tool\.astor\](.*?)(?=\n\[|\Z)', txt, re.S)
+        if tool:
+            m = re.search(r'^version\s*=\s*["\']([^"\']+)["\']',
+                          tool.group(1), re.M)
+            if m:
+                versions['[tool.astor] version'] = m.group(1)
+    except Exception:
+        pass
+
+    distinct = set(versions.values())
+    if len(distinct) > 1:
+        _log(f'ERROR: version mismatch across declaration sites: {versions}')
+        return False
+    if versions:
+        _log(f'version check: {list(distinct)[0]} (all {len(versions)} sites agree)')
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--src', type=Path, default=None,
@@ -290,6 +344,10 @@ def main() -> int:
 
     _log(f'src     = {args.src}')
     _log(f'runtime = {args.runtime}')
+
+    if not _check_version_consistency(args.src):
+        _log('ERROR: refusing to sync a tree whose version declarations disagree')
+        return 1
 
     if args.git_diff:
         # Only sync files in the current git diff
