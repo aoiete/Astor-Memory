@@ -1,3 +1,74 @@
+## v1.16.88 — Chinese lexical recall was silently dead in every tier
+
+A defect that had been hiding since the September tokenizer change made
+Chinese keyword search return nothing at all. The lexical path still looked
+healthy in aggregate metrics because the vector path quietly carried the
+load, so the failure only showed up when a query's expected fact was
+Chinese-specific.
+
+### (a) The index and the query path disagreed about what a word is
+
+The lexical index stored raw document text under a `trigram` tokenizer.
+Trigram matches a query only when it is at least three characters long and
+literally contiguous, so `MATCH "脚本同步铁律"` found nothing even though a
+document read "the script-sync rule" with unrelated characters in between.
+
+Worse, the query path handed that index the output of our own tokenizer,
+which emits one token per Chinese character. A one-character query can
+never match under trigram, so the candidate set came back empty and the
+lexical contribution to every Chinese query was zero.
+
+The fix is the one ariacompute/memo arrived at independently: index the
+*token stream* rather than the raw text. The index now stores what our
+tokenizer produced, and the query side matches the same tokens. Index terms
+and scoring terms are finally the same set, so the candidate stage and the
+ranking stage agree.
+
+### (b) A schema migration that could never apply
+
+The table was created with `CREATE VIRTUAL TABLE IF NOT EXISTS`, which
+leaves an existing table exactly as it is. The September migration to
+trigram therefore did nothing on any database that already existed.
+
+Eighteen of twenty-three databases were in fact on an older layout, and
+that layout has a second failure mode: it is an external-content table,
+so inserting into it raises. The insert was wrapped in a bare
+`except Exception: pass`, so the index stopped receiving new content the
+day the table was created and drifted out of sync with the documents it
+claimed to index.
+
+A migration tool now detects the real `tokenize=` clause — a substring
+search over the whole DDL misfires, because the word "unicode61" also
+appears in the comment explaining why trigram was chosen — rebuilds the
+table and re-ingests every document.
+
+### (c) The tokenizer gained character bigrams
+
+Single Chinese characters carry almost no discriminative power: the
+character for "gate" appears all over the corpus, so noise documents
+outranked relevant ones on term frequency alone. Adjacent-character
+bigrams restore the signal without adding a dependency or a dictionary.
+
+### Results
+
+| Metric | Before | After |
+| --- | --- | --- |
+| Chinese queries returning the right fact | 5/11 | 11/11 |
+| Recall (control set, all categories) | 0.900 | 0.955 |
+| Evidence usable once recalled | 0.891 | 0.936 |
+| Recalled but unusable | 1.9% | 1.9% |
+
+The remaining gap is not a retrieval defect: the queries that still miss
+name facts that were never written to the corpus in the first place.
+
+### New diagnostics
+
+- `tests/usage_rate.py` — measures the stage the existing evaluation never
+  covered. Recall was measured; whether recalled evidence actually reached
+  the answer was not. Offline and LLM-free, so it can gate regressions.
+- `tests/governance_audit.py` — turns a written memory-governance
+  checklist into a runnable audit with real numbers for each item.
+
 ## v1.16.86 — Invalidated facts were still being served, and the wing filter matched nothing
 
 Two more read-path defects, both found by auditing which columns the read
