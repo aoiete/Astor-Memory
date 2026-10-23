@@ -209,7 +209,7 @@ export ASTOR_HYDE_MODEL=minimax/minimax-m2  # default; override if you want diff
 ### "Sweep MMR λ on current eval set"
 
 ```bash
-cd <SCRIPTS_DIR>
+cd <REPO_DIR>
 <python> tests/eval_runner.py --all
 # inspect astor/metrics/eval_history.jsonl for per-variant mrr
 ```

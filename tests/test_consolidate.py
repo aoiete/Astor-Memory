@@ -216,9 +216,9 @@ class TestConsolidateDedup(unittest.TestCase):
 
     def test_dedup_tombstones_similar_facts_keeps_one(self):
         # 3 facts with identical prefix
-        _insert_fact(self.db_path, fact_id=10, content="[LESSON] cp <SCRIPTS_DIR>/admin/maker_pocket.py backup before edit")
-        _insert_fact(self.db_path, fact_id=11, content="[LESSON] cp <SCRIPTS_DIR>/admin/maker_pocket.py backup before modify")
-        _insert_fact(self.db_path, fact_id=12, content="[LESSON] cp <SCRIPTS_DIR>/admin/maker_pocket.py backup before change")
+        _insert_fact(self.db_path, fact_id=10, content="[LESSON] cp <SCRIPTS_DIR>/admin/example_script.py backup before edit")
+        _insert_fact(self.db_path, fact_id=11, content="[LESSON] cp <SCRIPTS_DIR>/admin/example_script.py backup before modify")
+        _insert_fact(self.db_path, fact_id=12, content="[LESSON] cp <SCRIPTS_DIR>/admin/example_script.py backup before change")
         report = consolidate(
             actions=["dedup"], dry_run=True,
             astor_dir=str(self.astor_dir), user_id="admin", tier="private", cap=100,
