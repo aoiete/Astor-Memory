@@ -55,6 +55,10 @@ class AstorNest:
         )
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         # Per Plan § Memory <-> concurrency: WAL + foreign_keys + busy_timeout
+        # v1.16.92: True when this instance is a process-wide singleton
+        # (see astor_nest()). The server's request teardown must not close
+        # those -- they are shared with concurrent requests.
+        self._shared = False
         self._conn = sqlite3.connect(str(self.db_path), isolation_level=None, check_same_thread=False)
         self._conn.execute('PRAGMA journal_mode = WAL')
         self._conn.execute('PRAGMA synchronous = NORMAL')
@@ -115,15 +119,25 @@ class AstorNest:
 
         Re-runs astor_init_nest_schema (idempotent CREATE TABLE IF NOT EXISTS)
         for defense against partial-recovery scenarios.
+
+        v1.16.92 fix (2026-10-22): do **not** close the old connection here.
+
+        The old code closed `self._conn` before opening the new one. But
+        this object shares one connection across waitress's worker threads
+        (`check_same_thread=False`), and a thread can be sitting between
+        `execute()` and `fetchall()` on it. Closing it out from under that
+        thread makes its `fetchall()` raise "Cannot operate on a closed
+        database" -- a 500 on a read request, with nothing wrong with the
+        server.
+
+        The v1.14.7 fix (2026-09-11) took the lock around detect+reopen
+        because an unlocked reopen had caused a SIGSEGV. It did not cover
+        this: the lock protects the reopen itself, not the readers that
+        already hold a reference to the old connection. Closing a
+        connection other threads are using is the defect, so the old
+        connection is now left alone and reclaimed by the garbage
+        collector once the last reader drops it.
         """
-        try:
-            if self._conn is not None:
-                try:
-                    self._conn.close()
-                except Exception:
-                    pass
-        except Exception:
-            pass
         self._conn = sqlite3.connect(
             str(self.db_path), isolation_level=None, check_same_thread=False
         )
@@ -416,10 +430,23 @@ class AstorNest:
             cache.pop(key, None)
 
         # Cold path: load from DB and stack
-        rows = self.conn.execute(
-            "SELECT fact_id, embedding FROM embeddings WHERE model_name = ?",
-            (model_name,),
-        ).fetchall()
+        #
+        # v1.16.92: the connection is shared across worker threads, so it
+        # can be closed by another thread between execute() and
+        # fetchall(). Retry once on a fresh connection rather than
+        # failing the read.
+        try:
+            rows = self.conn.execute(
+                "SELECT fact_id, embedding FROM embeddings WHERE model_name = ?",
+                (model_name,),
+            ).fetchall()
+        except sqlite3.ProgrammingError:
+            with self._cache_lock:
+                self._reopen()
+            rows = self.conn.execute(
+                "SELECT fact_id, embedding FROM embeddings WHERE model_name = ?",
+                (model_name,),
+            ).fetchall()
         if not rows:
             # Cache the empty state so future searches don't re-query.
             # Fingerprint (count=0, total_bytes=0, max_updated_at='') matches
@@ -777,6 +804,10 @@ def astor_nest(
         if inst is None:
             inst = AstorNest(target, tier=tier, user_id=user_id)
             _nest_singleton[key] = inst
+        # v1.16.92: mark it as process-shared. The server's request
+        # teardown closes the handles a request touched; closing a shared
+        # handle pulls the connection out from under a concurrent request.
+        inst._shared = True
         return inst
 
 
