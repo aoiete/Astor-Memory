@@ -49,15 +49,36 @@ def rebuild(tier: str, user_id: str | None = None, drop: bool = True) -> dict:
                     except OSError:
                         pass
         except OSError:
-            # Server is holding the file. In-place truncate instead.
+            # The server is holding the file. Truncate it in place.
+            #
+            # v1.16.90 (2026-10-22): this used to run only when the
+            # *in-process* singleton existed, so a rebuild launched from a
+            # separate process -- which is the normal case, since the
+            # server owns the live connection -- silently skipped the
+            # truncate and then re-indexed on top of the stale rows. The
+            # result was a lexical index holding hundreds of facts the bus
+            # had already deleted, still serving them to recall. The
+            # rebuild reported success because it indexed the rows it
+            # added; nobody looked at what was left behind.
+            #
+            # SQLite serialises the writes itself, so a direct connection
+            # is the right tool here. The singleton, when present, is
+            # still used so the in-process cache sees the change.
             from .lex_index import (
                 _LEX_SINGLETONS_LOCK, _LEX_SINGLETONS,
             )
             with _LEX_SINGLETONS_LOCK:
                 live = _LEX_SINGLETONS.get((tier, user_id))
+            targets = []
             if live is not None:
-                with live._lock:
-                    live._conn.executescript('''
+                targets.append((live._conn, live._lock))
+            else:
+                targets.append((sqlite3.connect(str(lex_path), timeout=30), None))
+            for conn, lock in targets:
+                try:
+                    if lock is not None:
+                        lock.acquire()
+                    conn.executescript('''
                         DELETE FROM documents;
                         DELETE FROM terms;
                         DELETE FROM postings;
@@ -66,7 +87,18 @@ def rebuild(tier: str, user_id: str | None = None, drop: bool = True) -> dict:
                         INSERT INTO meta(key,value) VALUES ('total_docs','0');
                         INSERT INTO meta(key,value) VALUES ('avgdl','0');
                     ''')
-                    live._conn.commit()
+                    conn.commit()
+                except Exception as e:
+                    print(f"  [WARN] truncate failed on {lex_path.name}: {e}",
+                          file=sys.stderr)
+                finally:
+                    if lock is not None:
+                        lock.release()
+                    else:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
             # Best-effort VACUUM (may also fail under exclusive lock; ignore)
             try:
                 if live is not None:
@@ -81,6 +113,22 @@ def rebuild(tier: str, user_id: str | None = None, drop: bool = True) -> dict:
         'WHERE tombstoned = 0 OR tombstoned IS NULL'
     ).fetchall()
     conn.close()
+
+    # v1.16.90: a rebuild that leaves rows behind is not a rebuild. The
+    # truncate used to be a no-op when the live connection lived in another
+    # process, so the index kept facts the bus had deleted. Verify the
+    # starting point is empty before re-indexing, and say so loudly if it
+    # is not.
+    if drop:
+        try:
+            _before = lex._conn.execute(
+                'SELECT COUNT(*) FROM documents').fetchone()[0]
+        except Exception:
+            _before = -1
+        if _before > 0:
+            print(f"  [WARN] lexical index still holds {_before} rows after "
+                  f"truncate for {tier}/{user_id} -- stale facts will "
+                  f"survive the rebuild", file=sys.stderr)
     n = 0
     for fid, content in rows:
         lex.index_fact(int(fid), str(content))
