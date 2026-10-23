@@ -1,3 +1,52 @@
+## v1.16.90 — The test suite was wiping the live index, and a shell transcript counted as knowledge
+
+Two defects, both found by auditing what the corpus actually contains
+rather than what the code claims to do.
+
+### (a) Running the tests emptied the public tier's lexical index
+
+`tests/test_lex_index.py` isolated the runtime with
+
+    os.environ.setdefault('ASTOR_DIR', <tempdir>)
+
+and `setdefault` does nothing when the variable already exists. On a
+machine where `ASTOR_DIR` points at the live runtime, the test opened the
+*production* public lexical index and ran `DELETE FROM documents`,
+`DELETE FROM terms` and `DROP TABLE lex_fts` against it.
+
+The damage reads as a retrieval regression rather than a test bug: the
+public tier's facts stop matching keyword queries while the vector path
+still answers, so the numbers move without anything failing loudly. The
+public index held 43 documents where its bus held 1381 live facts, and
+the 43 were test fixtures — "apple banana cherry", "e2e_test_marker",
+"instrumentation probe".
+
+The directory is now forced rather than defaulted, and conftest isolates
+`ASTOR_DIR` for the whole session before collection, so every test
+module and fixture inherits it. The live runtime is reachable only
+through an explicit `ASTOR_TEST_USE_LIVE_RUNTIME=1`. The public index
+is rebuilt from its bus afterwards and the tier's recall verified.
+
+### (b) A shell transcript was scored as knowledge
+
+The write gate scores an observed turn on length: anything over 200
+characters earns 0.6, and 0.5 is the threshold for the public tier. A
+transcript of a tool call therefore qualified as knowledge on the
+strength of being long — 74 live facts in the admin tier were nothing
+but a command line, often truncated mid-quote.
+
+The gate now recognises an execution log. The test is position, not
+vocabulary: a transcript starts with a command, while a genuine fact
+states the rule first and only then mentions the command. The first
+attempt flagged real knowledge — "<ASTOR_RUNTIME_DIR> takes priority over the vault",
+"make pocket is IDLE at $1500" — because a path is itself knowledge
+here, so the pattern is limited to an executable path or a shell
+invocation.
+
+Measured on the live corpus (6651 facts): 37 match and all 37 are
+command transcripts; no fact beginning with a path, git, make, curl or uv
+is affected.
+
 ## v1.16.89 — The watchdog was killing a healthy server, and the version number lived in three places
 
 Two small defects, both found while verifying the lexical-recall repair.
