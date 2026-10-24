@@ -3744,7 +3744,8 @@ def cmd_lock_rule_delete(args) -> int:
     con = _open_lock_rule_bus()
     try:
         cur = con.execute(
-            "UPDATE memory_canonical SET tombstoned = 1 "
+            "UPDATE memory_canonical SET tombstoned = 1, "
+            "invalidated_reason = 'lock_rule_removed' "
             "WHERE id = ? AND tags LIKE '%LOCK%'",
             (args.rule_id,),
         )
@@ -5166,9 +5167,11 @@ def cmd_decay_sweep_run(args) -> int:
     soft_tombstoned = 0
     for f in eligible:
         bus.conn.execute(
+            # v1.16.98: keep the reason on the row, not just in the audit log.
             "UPDATE memory_canonical SET tombstoned = 1, tombstoned_at = ?, "
-            "verdict = 'forgotten' WHERE id = ? AND tombstoned = 0",
-            (now_iso, f["id"]),
+            "invalidated_reason = ?, verdict = 'forgotten' "
+            "WHERE id = ? AND tombstoned = 0",
+            (now_iso, "cli_decay_sweep", f["id"]),
         )
         astor_audit(
             actor="cli:decay-sweep",

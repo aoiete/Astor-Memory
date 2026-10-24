@@ -32,6 +32,18 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+# v1.16.98: the oracle side of the evaluation -- see tests/eval_oracle.py.
+# It asks the store what it holds without going through the ranking
+# layer, so a miss can be attributed to the write path or the read path
+# instead of just being a miss.
+try:
+    from eval_oracle import coverage as _oracle_coverage
+    from eval_oracle import classify as _oracle_classify
+except ImportError:  # pragma: no cover - running from another cwd
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from eval_oracle import coverage as _oracle_coverage
+    from eval_oracle import classify as _oracle_classify
+
 ROOT = Path(os.environ.get("ASTOR_PROJECT_ROOT", str(Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name in ("tests", "tools") else Path.cwd())))
 TESTS_DIR = ROOT / "tests"
 METRICS_DIR = ROOT / "astor" / "metrics"
@@ -169,6 +181,20 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
             detail.append({"qid": q["qid"], "error": str(e), "matched": False, "mrr": 0.0})
             continue
         s = score_results(results, q["expected_keywords"], q.get("min_hits", 1))
+        # v1.16.98: the same question asked of the store directly. Same
+        # keywords, same scoring rule, no embedding/BM25/rerank in
+        # between -- so the difference between the two answers is the
+        # ranking layer's fault (or the index's), not the question's.
+        try:
+            _orc = _oracle_coverage(
+                q["expected_keywords"], tier=q.get("tier", "private"),
+                user=q.get("user", "admin"),
+                min_hits=q.get("min_hits", 1),
+            )
+        except Exception as _oe:
+            _orc = {"oracle_hit": False, "oracle_n": 0,
+                    "oracle_covered": [], "oracle_missed": [],
+                    "oracle_error": str(_oe)[:120]}
         entry = {
             "qid": q["qid"],
             "query": q["query"],
@@ -178,6 +204,11 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
             **{k: v for k, v in s.items()},
             "n_results": len(results),
             "top3_fids": [r.get("fact_id") for r in results[:3]],
+            "oracle_hit": _orc.get("oracle_hit", False),
+            "oracle_n": _orc.get("oracle_n", 0),
+            "oracle_missed": _orc.get("oracle_missed", []),
+            "gap": _oracle_classify(
+                bool(_orc.get("oracle_hit")), bool(s.get("matched"))),
         }
         detail.append(entry)
         latencies.append(lat_ms)
@@ -189,6 +220,14 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
     n = len(scored)
     hit_rate = sum(1 for d in scored if d.get("matched")) / n if n else 0
     mrr = statistics.mean(d.get("mrr", 0) for d in scored) if n else 0
+    # v1.16.98: gap decomposition (see eval_oracle.py).
+    _gap_counts = {"hit": 0, "storage_gap": 0, "retrieval_gap": 0}
+    for _d in scored:
+        _gap_counts[_d.get("gap", "storage_gap")] = (
+            _gap_counts.get(_d.get("gap", "storage_gap"), 0) + 1)
+    _oracle_rate = (sum(1 for d in scored if d.get("oracle_hit")) / n) if n else 0
+    _storage_gap = (_gap_counts.get("storage_gap", 0) / n) if n else 0
+    _retrieval_gap = (_gap_counts.get("retrieval_gap", 0) / n) if n else 0
     avg_lat = statistics.mean(latencies) if latencies else 0
     p50_lat = statistics.median(latencies) if latencies else 0
     p95_lat = (statistics.quantiles(latencies, n=20)[18] if len(latencies) >= 20
@@ -208,6 +247,14 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
     "n_queries": n,
     "hit_rate_at_k": round(hit_rate, 4),
     "mrr": round(mrr, 4),
+    # v1.16.98: the decomposition. oracle_hit_rate is the ceiling the
+    # store can reach without any ranking at all; storage_gap is what
+    # the write path lost; retrieval_gap is what the read path lost.
+    # Before this, a miss had no owner and every fix was a guess.
+    "oracle_hit_rate": round(_oracle_rate, 4),
+    "storage_gap_rate": round(_storage_gap, 4),
+    "retrieval_gap_rate": round(_retrieval_gap, 4),
+    "gap_breakdown": dict(_gap_counts),
     "avg_latency_ms": round(avg_lat, 2),
     "p50_latency_ms": round(p50_lat, 2),
     "p95_latency_ms": round(p95_lat, 2),

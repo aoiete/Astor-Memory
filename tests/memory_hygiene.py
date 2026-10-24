@@ -156,10 +156,13 @@ def _bus_path(tier: str, user_id: str | None) -> Path | None:
 
 
 def _forget(fact_id: int, tier: str, user_id: str | None,
-            dry_run: bool) -> tuple[bool, str]:
+            dry_run: bool, reason: str | None = None) -> tuple[bool, str]:
     body = json.dumps({
         "fact_id": fact_id, "tier": tier, "user_id": user_id,
+        # v1.16.98: say why, so the store can be audited for what the
+        # write path produced. The rule that matched is the reason.
         "tombstone_only": True, "dry_run": dry_run,
+        "reason": ("hygiene:%s" % reason) if reason else "hygiene",
     }).encode()
     req = urllib.request.Request(
         f"{SERVER}/v1/forget", data=body,
@@ -257,7 +260,7 @@ def apply(tier: str, user_id: str | None, plan: dict, dry_run: bool) -> dict:
     done, failed = 0, []
     for reason, ids in plan.get("groups", {}).items():
         for fid in ids:
-            ok, msg = _forget(fid, tier, user_id, dry_run)
+            ok, msg = _forget(fid, tier, user_id, dry_run, reason=reason)
             if ok:
                 done += 1
             else:

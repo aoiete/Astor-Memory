@@ -178,7 +178,9 @@ def upsert_knowledge_page(
             prior_meta = {}
         if prior_meta.get("slug") == slug:
             bus.conn.execute(
-                "UPDATE memory_canonical SET tombstoned=1, tombstoned_at=? WHERE id=?",
+                # v1.16.98: a replaced knowledge page is a death with a cause.
+                "UPDATE memory_canonical SET tombstoned=1, tombstoned_at=?, "
+                "invalidated_reason='superseded_by_knowledge_page' WHERE id=?",
                 (datetime.now(timezone.utc).isoformat(timespec="seconds"), prior_id),
             )
 

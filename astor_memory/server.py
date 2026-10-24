@@ -139,6 +139,26 @@ def _astor_bot_binding_connect(retry_max: int = 3):
                 raise
     return None
 
+def _forget_reason(reason: str | None, tombstone_only: bool) -> str:
+    """Why did this fact die? v1.16.98.
+
+    A tombstone with an empty reason is a deletion the system cannot
+    learn from. 95%+ of the dead rows in the live store had no reason
+    recorded, which is why the write path could never be held
+    accountable for the debris it produced -- the cleanup had to be
+    driven by regexes over content instead of by a record of what went
+    wrong.
+
+    Keep the vocabulary short and stable; it is going to be aggregated:
+        user_request      a human asked for it to go
+        tombstone_request a caller asked for a tombstone without saying why
+        hygiene:<rule>    the residue cleanup matched <rule>
+    """
+    if reason:
+        return str(reason)[:120]
+    return 'tombstone_request' if tombstone_only else 'user_request'
+
+
 def _safe_stderr_write(msg: str) -> None:
     """Write to sys.stderr without crashing if it is None.
 
@@ -5821,8 +5841,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         f"AND kind NOT IN ('lock_rule', 'rule', 'mental_model', 'knowledge_page')",
                         _surfaced_fids + [_30d_iso],
                     )
+                    # v1.16.98: the decay sweep is a deletion too -- say so.
                     bus.conn.execute(
-                        f"UPDATE memory_canonical SET tombstoned = 1 "
+                        f"UPDATE memory_canonical SET tombstoned = 1, "
+                        f"invalidated_reason = 'decay_sweep_stale' "
                         f"WHERE id NOT IN ({_ph_acc}) AND tombstoned = 0 "
                         # v1.16.84 fix (2026-10-21): NULL last_confirmed_at means
                         # "never confirmed yet", NOT "confirmed 90+ days ago".
@@ -6431,6 +6453,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         tombstone_only = bool(body.get('tombstone_only', False))
         dry_run = bool(body.get('dry_run', False))
         forget_threshold = float(body.get('forget_threshold', 5.0))
+        # v1.16.98: the caller may say WHY. The cleanup tools know (they
+        # matched a residue rule); a human request means "user_request".
+        forget_reason = (body.get('reason') or '').strip() or None
 
         if not fact_id and not query:
             return jsonify({'error': 'fact_id or query required', 'detail': 'Provide either fact_id (int) or query (string) in request body'}), 400
@@ -6534,9 +6559,16 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # 1. tombstone / hard-delete in bus
         try:
             if tombstone_only:
+                # v1.16.98: record WHY the fact died. A tombstone with no
+                # reason is a fact the system cannot learn from: 95%+ of
+                # the dead rows had an empty invalidated_reason, so there
+                # was no way to tell a user request from an expiry from a
+                # duplicate, and the write path could not be held
+                # accountable for the debris it produced.
                 bus.conn.execute(
-                    "UPDATE memory_canonical SET tombstoned = 1 WHERE id = ?",
-                    (cfid,),
+                    "UPDATE memory_canonical SET tombstoned = 1, "
+                    "invalidated_reason = ? WHERE id = ?",
+                    (_forget_reason(forget_reason, tombstone_only), cfid),
                 )
             else:
                 bus.conn.execute("DELETE FROM memory_canonical WHERE id = ?", (cfid,))

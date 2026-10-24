@@ -486,6 +486,7 @@ def consolidate(
                             conn.execute(
                                 "UPDATE memory_canonical "
                                 "SET tombstoned = 1, tombstoned_at = ?, "
+                                "    invalidated_reason = 'consolidated_duplicate', "
                                 "    metadata = COALESCE(metadata, '') || ? "
                                 "WHERE id = ?",
                                 (now, json.dumps({"consolidated_by": "dedup", "kept": action.fact_id}), tid),

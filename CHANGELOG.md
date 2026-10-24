@@ -1,3 +1,56 @@
+## v1.16.98 — Give every death a cause, and split "not stored" from "not found"
+
+Read from Uni-Mem (arXiv 2610.29671, Huawei Noah / SEU / SYSU): its
+Event-Wise Credit Assignment localises feedback to the events
+responsible for an outcome, and propagates credit along the update
+lineage — a record that was later UPDATEd or DELETEd hands some of that
+credit to whoever changed it. A deletion without a cause teaches the
+system nothing.
+
+Astor had the column (`invalidated_reason`) and left it empty. In the
+live store, 4,421 of 4,641 dead public rows and 8,550 of 8,910 dead
+admin-private rows had no reason recorded — including every one of the
+16,603 that had been recalled many times before they died. Six tombstone
+paths wrote no reason at all, `/v1/forget` among them, and that is the
+path the cleanup tool uses. So the write path could never be held
+accountable for the debris it produced; the only way to find it was a
+regex over content, after the fact.
+
+All six paths now record a cause (`user_request`, `tombstone_request`,
+`hygiene:<rule>`, `consolidated_duplicate`,
+`superseded_by_knowledge_page`, `decay_sweep_stale`,
+`lock_rule_removed`), and `/v1/forget` accepts a `reason` so a caller
+can say why.
+
+**The evaluation learned the same lesson.** Every metric astor had was a
+retrieval metric — hit_rate, mrr, ndcg — so a miss had no owner: it
+could mean the fact was never written, or that it was written and the
+search did not surface it. Those have opposite fixes, and every fix
+had to be tried blind. `eval_oracle.py` now asks the store what it holds
+without going through the ranking layer, and the harness reports three
+numbers instead of one: `oracle_hit_rate` (the ceiling), `storage_gap`
+(write path), `retrieval_gap` (read path).
+
+On the live corpus, with the two sides scored by the same rule:
+
+| metric | value |
+|---|---|
+| hit_rate@10 | 0.981 |
+| oracle_hit_rate | 1.000 |
+| storage_gap_rate | 0.000 |
+| retrieval_gap_rate | 0.019 |
+
+The read path was already within 2% of the ceiling, and 99.7% of live
+facts had been recalled at least once. **Further tuning of BM25
+weights, reranking and MMR is buying almost nothing** — the gap that
+matters is not in the ranking at all.
+
+One trap worth naming: the first version of the oracle required every
+keyword in one row while the recall path accepted any keyword, and it
+reported 46% of the corpus as missing. The gap was manufactured by
+comparing two different questions. The oracle is now scored with the
+same `min_hits` rule as the retrieval path, and the tests pin it.
+
 ## v1.16.97 — The debug lines were printing the user's own data
 
 Found by reading a server log, not by a failing test.
