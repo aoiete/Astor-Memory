@@ -164,16 +164,62 @@ class TestInstallerOutputIsReal(unittest.TestCase):
                       cfg.read_text(encoding="utf-8"))
 
     def test_hermes_install_is_idempotent(self):
+        """A config already in the target shape is left alone.
+
+        Priority mode hands memory to astor, so a config that still has
+        the built-in store on is NOT finished -- the first run completes
+        it and the second run has nothing left to do.
+        """
+        from astor_memory.installer.handlers import astor_install_hermes
+
         cfg = self.tmp / "config.yaml"
         cfg.write_text(
-            "memory:\n  provider: astor_memory\n  memory_enabled: true\n",
+            "memory:\n  provider: astor_memory\n"
+            "  memory_enabled: false\n  user_profile_enabled: false\n",
             encoding="utf-8")
-        res = astor_install("hermes", self.tmp,
-                           astor_verify_agent("hermes").get("recommended_mode"))
+        res = astor_install_hermes(self.tmp, "priority")
         self.assertFalse(res.get("changes"),
                          "re-running hermes install should be a no-op")
         notes = " ".join(res.get("notes", []))
         self.assertIn("already selects", notes)
+
+    def test_hermes_install_completes_a_partial_config(self):
+        """A config that names the provider but still has the built-in
+        store on gets completed on the first run."""
+        from astor_memory.installer.handlers import astor_install_hermes
+
+        cfg = self.tmp / "config.yaml"
+        cfg.write_text(
+            "memory:\n  provider: astor_memory\n  memory_enabled: true\n",
+            encoding="utf-8")
+        res = astor_install_hermes(self.tmp, "priority")
+        patches = [c for c in res.get("changes", [])
+                    if c["path"].endswith("config.yaml")]
+        self.assertTrue(patches, "a partial config was left alone")
+        cfg.write_text(patches[0]["content"], encoding="utf-8")
+        body = cfg.read_text(encoding="utf-8")
+        self.assertIn("memory_enabled: false", body)
+        self.assertIn("user_profile_enabled: false", body)
+        # Exactly one provider key -- a second one would make yaml pick
+        # one at random.
+        self.assertEqual(body.count("provider: astor_memory"), 1)
+
+    def test_hermes_install_handles_a_config_without_a_trailing_newline(self):
+        """The last line of the memory block may have no newline; it
+        still belongs to the block."""
+        from astor_memory.installer.handlers import astor_install_hermes
+
+        cfg = self.tmp / "config.yaml"
+        cfg.write_text("memory:\n  provider: auto", encoding="utf-8")
+        res = astor_install_hermes(self.tmp, "priority")
+        patches = [c for c in res.get("changes", [])
+                    if c["path"].endswith("config.yaml")]
+        self.assertTrue(patches)
+        cfg.write_text(patches[0]["content"], encoding="utf-8")
+        body = cfg.read_text(encoding="utf-8")
+        self.assertEqual(body.count("provider:"), 1)
+        self.assertIn("provider: astor_memory", body)
+        self.assertIn("memory_enabled: false", body)
 
 
 if __name__ == "__main__":

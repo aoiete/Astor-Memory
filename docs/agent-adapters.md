@@ -690,7 +690,24 @@ This:
    - Sets `memory.provider: astor_memory`.
    - Sets `memory_enabled: false` + `user_profile_enabled: false` to
      disable built-in `MEMORY.md` / `USER.md` injection entirely.
+     (Priority mode only. In coexist mode the built-in store keeps
+     running alongside astor.)
 4. Verifies via `am doctor --check-priority`.
+
+**Where the plugin lands.** Hermes discovers memory providers in
+`plugins/memory/__init__.py::_iter_provider_dirs`: bundled plugins under
+`<hermes home>/hermes-agent/plugins/memory/` first, then user plugins
+under `<hermes home>/plugins/`, then project-local ones. The installer
+uses the bundled location when a hermes-agent tree is present and the
+user location otherwise. Both are imported in-process, so the adapter
+resolves `agent.memory_provider` either way — but under
+`plugins.isolation: host` a user-location plugin is imported inside the
+isolated host instead and will not register.
+
+**Two guards.** An existing plugin is never overwritten: these files
+are hand-edited in practice, and replacing a working plugin with the
+packaged copy is a downgrade, not an install. And `config.yaml` is
+backed up to `config.yaml.bak-pre-astor-install` before the first edit.
 
 **Why no source patch is needed (verified 2026-08-15 against
 hermes-agent 0.20.0 commit `1649a4d7e`):**

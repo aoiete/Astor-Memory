@@ -1,3 +1,43 @@
+## v1.16.99 — 2026-10-25
+
+The Hermes installer now does what the docs promise.
+
+`am install --ide=hermes` only ever rewrote `memory.provider` in
+`config.yaml`. It never created the plugin, so a fresh install left
+`hermes memory status` reporting the provider selected while no plugin
+existed anywhere — the install looked finished and was not. The
+documentation had promised four steps since 2026-08-15; only half of
+one of them was implemented.
+
+**Fixed**
+
+- `astor install --ide=hermes` now installs the provider plugin:
+  creates the plugin directory, writes `__init__.py` from the packaged
+  `astor_memory/hermes_adapter.py`, writes `plugin.yaml`, and points at
+  `am doctor --check-priority`.
+- The plugin lands in the bundled location
+  (`<hermes home>/hermes-agent/plugins/memory/astor_memory/`) when a
+  hermes-agent tree is present, and in the user location
+  (`<hermes home>/plugins/astor_memory/`) otherwise. Hermes imports
+  both in-process, so the adapter resolves `agent.memory_provider`
+  either way.
+- Priority mode now also sets `memory.memory_enabled: false` and
+  `memory.user_profile_enabled: false`, which is what handing memory
+  over to astor actually means. Coexist mode leaves the built-in file
+  store running.
+
+**Guards**
+
+- An existing plugin is never overwritten. Provider plugins are
+  hand-edited in practice, and replacing a working one with the
+  packaged copy is a downgrade rather than an install.
+- `config.yaml` is backed up to `config.yaml.bak-pre-astor-install`
+  before the first edit.
+
+**Tests**: `tests/test_hermes_install.py` — 10 cases covering both
+install locations, priority vs coexist, the no-overwrite guard, the
+config backup, idempotency, and that the installed files parse.
+
 ## v1.16.98 — Give every death a cause, and split "not stored" from "not found"
 
 Read from Uni-Mem (arXiv 2610.29671, Huawei Noah / SEU / SYSU): its
@@ -50,6 +90,7 @@ keyword in one row while the recall path accepted any keyword, and it
 reported 46% of the corpus as missing. The gap was manufactured by
 comparing two different questions. The oracle is now scored with the
 same `min_hits` rule as the retrieval path, and the tests pin it.
+
 
 ## v1.16.97 — The debug lines were printing the user's own data
 

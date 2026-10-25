@@ -97,25 +97,71 @@ def astor_install_opencode(agent_dir: Path, mode: str) -> dict:
     return _result('opencode', mode, changes, notes)
 
 
+def _hermes_plugin_candidates(agent_dir: Path) -> list[Path]:
+    """Where a Hermes memory provider plugin may live, best first.
+
+    Hermes discovers memory providers in this order (plugins/memory/
+    __init__.py::_iter_provider_dirs): bundled plugins under
+    ``<hermes home>/hermes-agent/plugins/memory/``, then user plugins
+    under ``<hermes home>/plugins/``, then project-local ones.
+
+    Bundled comes first on purpose. A plugin outside the bundled tree
+    is imported inside an isolated host (plugins/plugin_loader.py
+    refuses in-process imports for user code), and the adapter needs
+    ``agent.memory_provider`` from the running hermes. Inside the
+    bundled tree it is imported in-process, so the ABC resolves.
+    """
+    return [
+        agent_dir / 'hermes-agent' / 'plugins' / 'memory' / 'astor_memory',
+        agent_dir / 'plugins' / 'astor_memory',
+    ]
+
+
+def _hermes_plugin_yaml() -> str:
+    from astor_memory import __version__ as _v
+    return (
+        'name: astor_memory\n'
+        'version: %s\n'
+        'description: "Astor Memory - 3-tier x 3-store SQLite memory system '
+        'with hybrid recall (vector + BM25 + jaccard). Replaces built-in '
+        'MEMORY.md / USER.md when set as memory.provider. Requires the '
+        'astor_memory server (default http://127.0.0.1:7803)."\n'
+        'config_schema:\n'
+        '  astor_dir:\n'
+        '    type: string\n'
+        '    default: "~/.astor"\n'
+        '  default_tier:\n'
+        '    type: string\n'
+        '    enum: ["public", "source", "private"]\n'
+        '    default: "public"\n' % _v
+    )
+
+
 def astor_install_hermes(agent_dir: Path, mode: str) -> dict:
-    """Hermes 0.20+: Tier B -- select astor_memory as the memory provider.
+    """Hermes 0.20+: Tier B -- install the provider plugin and select it.
 
-    v1.16.77 (2026-10-16): this handler used to emit "patch
-    system_prompt.py lines 483-499 (5-line change)" and write no files
-    at all. That instruction is wrong: docs/agent-adapters.md recorded on
-    2026-08-15 that it does not match hermes-agent 0.20.0 source
-    (checked against commit 1649a4d7e) and removed it. Following the old
-    note left the user with an install that wrote nothing and pointed at
-    the wrong file.
+    What the docs promised and this handler used to skip
+    (docs/agent-adapters.md lines 682-693): create the plugin directory,
+    drop the adapter in as __init__.py, write plugin.yaml, and edit
+    config.yaml. Until v1.16.99 only the config.yaml half happened, so
+    ``hermes memory status`` showed the provider selected while no
+    plugin existed -- the install looked done and was not.
 
-    What actually takes effect is `memory.provider: astor_memory` in
-    config.yaml. The hook entries under the same file are per-user
-    wiring and are not safe to generate blindly, so they stay manual.
+    Two guards, because a provider plugin is code that runs:
 
-    Rewrites config.yaml in place (surgical, idempotent) and reports
-    what it changed. Does not touch anything else in the file.
+    - An existing plugin is never overwritten. Operators hand-edit
+      these (this repo's own installation carries a local user-field
+      extension), and silently replacing a working plugin with the
+      packaged copy is a downgrade, not an install.
+    - config.yaml is backed up before the first edit.
+
+    In priority mode the built-in file memory is switched off
+    (memory_enabled / user_profile_enabled), which is the point of
+    priority mode: one memory system, not two. In coexist mode the
+    built-in store keeps running alongside astor.
     """
     import re as _re
+    import shutil as _shutil
 
     if mode == 'replace':
         return _result(
@@ -126,58 +172,139 @@ def astor_install_hermes(agent_dir: Path, mode: str) -> dict:
     notes: list[str] = []
     changes: list[dict] = []
 
+    # --- 1. the plugin itself -------------------------------------------
+    adapter = Path(__file__).resolve().parents[1] / 'hermes_adapter.py'
+    if not adapter.exists():
+        notes.append('Could not find hermes_adapter.py next to this '
+                     'package -- the plugin was not installed. The '
+                     'config.yaml change below still applies.')
+    else:
+        cands = _hermes_plugin_candidates(agent_dir)
+        target = next((c for c in cands if (c / '__init__.py').exists()), None)
+        if target is None:
+            # Prefer the bundled tree, but only if it is really there.
+            bundled = cands[0]
+            target = bundled if bundled.parent.is_dir() else cands[1]
+            init_dst = target / '__init__.py'
+            yaml_dst = target / 'plugin.yaml'
+            if init_dst.exists():
+                notes.append('%s already exists -- left untouched.' % init_dst)
+            else:
+                changes.append({
+                    'path': str(init_dst), 'action': 'write',
+                    'content': adapter.read_text(encoding='utf-8'),
+                })
+                notes.append('Installed the provider plugin at %s.' % target)
+            if yaml_dst.exists():
+                notes.append('%s already exists -- left untouched.' % yaml_dst)
+            else:
+                changes.append({
+                    'path': str(yaml_dst), 'action': 'write',
+                    'content': _hermes_plugin_yaml(),
+                })
+        else:
+            init_dst = target / '__init__.py'
+            yaml_dst = target / 'plugin.yaml'
+            notes.append('Provider plugin already present at %s -- '
+                         'nothing written there (a hand-edited plugin is '
+                         'never overwritten).' % target)
+            if not yaml_dst.exists():
+                changes.append({
+                    'path': str(yaml_dst), 'action': 'write',
+                    'content': _hermes_plugin_yaml(),
+                })
+                notes.append('Wrote the missing %s.' % yaml_dst)
+        if target is not None and target.parent.name == 'memory':
+            notes.append('The plugin lives inside the hermes-agent source '
+                         'tree, so a hermes upgrade may overwrite it. '
+                         'Re-run `am install --ide=hermes` afterwards.')
+        elif target is not None:
+            notes.append('The plugin lives under <hermes home>/plugins/. '
+                         'Hermes imports user plugins in-process unless '
+                         'plugins.isolation is set to "host"; under "host" '
+                         'the adapter cannot import agent.memory_provider '
+                         'and will not register.')
+
+    # --- 2. config.yaml -------------------------------------------------
     cfg = agent_dir / 'config.yaml'
     if not cfg.exists():
         cfg = Path.home() / '.hermes' / 'config.yaml'
     if not cfg.exists():
-        return _result('hermes', mode, [], [
+        return _result('hermes', mode, changes, notes + [
             f'Could not find config.yaml (looked in {agent_dir} and '
             f'~/.hermes). Set memory.provider: astor_memory manually, '
             f'and make sure astor_memory is importable by the hermes '
             f'venv (pip install -e . or PYTHONPATH).',
-            'Do NOT patch agent/system_prompt.py -- that recipe was '
-            'removed in docs/agent-adapters.md (2026-08-15) after being '
-            'found not to match hermes-agent 0.20.0.',
         ])
 
     text = cfg.read_text(encoding='utf-8')
-    m = _re.search(r'^(memory:\s*\n(?:[ \t]+\S.*\n)*)', text, _re.M)
+    # The block is every indented line under `memory:`. The last one may
+    # have no trailing newline, and it must still belong to the block:
+    # leaving it out makes the appended keys land ABOVE it, which puts
+    # two `provider:` keys in one map and makes the install run again
+    # on every call.
+    m = _re.search(r'^(memory:[ \t]*\n)((?:[ \t]+[^\n]*\n?)*)', text, _re.M)
     if not m:
-        return _result('hermes', mode, [], [
+        return _result('hermes', mode, changes, notes + [
             f'No top-level `memory:` block found in {cfg}. Add one '
             f'containing `provider: astor_memory`, or run with an agent '
             f'config that has a memory section.',
-            'Do NOT patch agent/system_prompt.py -- that recipe was '
-            'removed in docs/agent-adapters.md (2026-08-15).',
         ])
 
-    block = m.group(1)
+    block = m.group(2)
+    new_block = block
     pm = _re.search(r'^([ \t]+)provider:[ \t]*\S+', block, _re.M)
     if pm and pm.group(0).split(':', 1)[1].strip() == 'astor_memory':
-        notes.append(f'{cfg} already selects provider: astor_memory '
-                     '-- nothing to change.')
+        notes.append(f'{cfg} already selects provider: astor_memory.')
     elif pm:
         indent = pm.group(1)
-        new_block = block[:pm.start()] + f'{indent}provider: astor_memory'
-        new_block += block[pm.end():]
-        changes.append({
-            'path': str(cfg), 'action': 'patch',
-            'content': text[:m.start(1)] + new_block + text[m.end(1):],
-        })
+        new_block = (block[:pm.start()] + f'{indent}provider: astor_memory'
+                     + block[pm.end():])
         notes.append(f'{cfg}: provider switched from '
                      f'{pm.group(0).split(":", 1)[1].strip()} to '
                      f'astor_memory.')
     else:
-        indent = _re.match(r'^(memory:\s*\n)([ \t]+)', block, _re.M)
+        indent = _re.match(r'^(memory:[ \t]*\n)([ \t]+)', block, _re.M)
         pad = indent.group(2) if indent else '  '
-        new_block = block + f'{pad}provider: astor_memory\n'
-        changes.append({
-            'path': str(cfg), 'action': 'patch',
-            'content': text[:m.start(1)] + new_block + text[m.end(1):],
-        })
+        tail = '' if block.endswith('\n') else '\n'
+        new_block = block + tail + f'{pad}provider: astor_memory\n'
         notes.append(f'{cfg}: added `provider: astor_memory` to the '
                      f'memory block.')
 
+    # Priority mode hands memory over to astor: the built-in file store
+    # must stop injecting MEMORY.md / USER.md or the agent sees two
+    # memories. Coexist mode leaves both on.
+    if mode == 'priority':
+        for key in ('memory_enabled', 'user_profile_enabled'):
+            km = _re.search(r'^([ \t]+)%s:[ \t]*\S+' % key, new_block, _re.M)
+            if km:
+                if km.group(0).split(':', 1)[1].strip() == 'false':
+                    continue
+                indent = km.group(1)
+                new_block = (new_block[:km.start()]
+                             + f'{indent}{key}: false' + new_block[km.end():])
+            else:
+                indent = _re.match(r'^(memory:[ \t]*\n)([ \t]+)', new_block, _re.M)
+                pad = indent.group(2) if indent else '  '
+                tail = '' if new_block.endswith('\n') else '\n'
+                new_block = new_block + tail + f'{pad}{key}: false\n'
+        notes.append(f'{cfg}: priority mode disables the built-in file '
+                     f'memory (memory_enabled / user_profile_enabled). '
+                     f'Set them back to true to keep both.')
+
+    if new_block != block:
+        bak = cfg.with_suffix(cfg.suffix + '.bak-pre-astor-install')
+        try:
+            _shutil.copy2(cfg, bak)
+            notes.append('Backed up config.yaml to %s.' % bak.name)
+        except Exception as exc:
+            notes.append('Could not back up config.yaml (%s).' % exc)
+        changes.append({
+            'path': str(cfg), 'action': 'patch',
+            'content': text[:m.start(2)] + new_block + text[m.end(2):],
+        })
+
+    notes.append('Verify with `am doctor --check-priority`.')
     notes.append('Restart the hermes gateway afterwards (R218: never '
                  'restart it for the user).')
     notes.append('Autorecord hooks (config.yaml hooks:) are per-user '
