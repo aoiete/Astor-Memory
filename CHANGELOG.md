@@ -1,3 +1,52 @@
+## v1.17.0 — 2026-10-25
+
+The memory became readable.
+
+Astor stores facts in SQLite, which is good for querying and bad for
+reading: you cannot open it, you cannot diff it, and you cannot hand it
+to another tool. The Agent Memory Repo format (Cognition, 2026-10-05)
+picks the opposite trade — plain Markdown in a Git repository, so the
+memory is something a person can open, review, diff and roll back.
+
+`am export` projects the database into that shape. The database stays
+the source of truth; the files are a projection and the next export
+overwrites them.
+
+    am export --out ~/astor-export --tiers public --git
+
+    MEMORY.md          the short entry point: what is here and where
+    fact.md            one bullet per memory, open [key: value] tags
+    rule.md            ...one file per kind
+    tombstoned.md      what left the table, and why
+
+Two things the database already tracks and the plain format does not:
+
+- **provenance** — every bullet carries where it came from, not just
+  when: the event and candidate it was extracted from, the agent that
+  extracted it, the scope and the confidence.
+- **time** — a bullet states its validity window and whether a later
+  revision replaced it, so a reader can tell a live rule from a stale
+  one without trusting the prose.
+
+Three details that the first implementation got wrong and the tests
+now pin:
+
+- The same memory can exist in more than one tier's database. An
+  export must show it once: 1,885 rows collapsed to 1,176 live entries
+  on the public corpus.
+- "Left the table" is two different things. Removals and relocations
+  are separate sections in tombstoned.md, because a memory that moved
+  to another tier was not judged wrong.
+- The index links to files, not to kinds, so two kinds that share a
+  file do not produce two links to the same target.
+
+`am export` also takes `--tiers` (which tiers to include) and
+`--dry-run` (report what would be written without writing it).
+
+**Tests**: `tests/test_export_markdown.py` — 7 cases, including a
+cross-tier duplicate and a tier filter that must return nothing.
+
+
 ## v1.16.99 — 2026-10-25
 
 The Hermes installer now does what the docs promise.

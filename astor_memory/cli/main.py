@@ -66,6 +66,23 @@ def main(argv: list[str] | None = None) -> int:
     sub = subparsers.add_parser('version', help='Show version')
     sub.set_defaults(func=cmd_version)
 
+    # am export -- the memory as readable Markdown (Agent Memory Repo shape)
+    exp_p = subparsers.add_parser(
+        'export',
+        help='Export the memory as Markdown files (MEMORY.md + one bullet per memory)')
+    exp_p.add_argument('--out',
+                        default=os.path.join(os.path.expanduser('~'), 'astor-export'),
+                        help='Output directory (default: ~/astor-export)')
+    exp_p.add_argument('--tiers', default=None,
+                        help='Comma-separated tiers to include (default: all)')
+    exp_p.add_argument('--astor-dir', default=None,
+                        help='Astor runtime dir (default: $ASTOR_DIR)')
+    exp_p.add_argument('--git', action='store_true',
+                        help='Init or reuse a git repo in the output and commit')
+    exp_p.add_argument('--dry-run', action='store_true',
+                        help='Report what would be written without writing it')
+    exp_p.set_defaults(func=cmd_export)
+
     # am init
     sub = subparsers.add_parser('init', help='Initialize astor-memory')
     sub.set_defaults(func=cmd_init)
@@ -1058,6 +1075,31 @@ def cmd_seed(args) -> int:
         # must pass --zone none or the user gets 'No results found'.
         print('try:  am recall "hybrid retrieval" --zone none --top-k 5')
     return 0 if wrote else 1
+
+
+def cmd_export(args) -> int:
+    """`am export` -- write the memory as readable Markdown files.
+
+    The database stays the source of truth; this is a projection of it,
+    in the shape of the Agent Memory Repo format: MEMORY.md is the
+    short entry point, every other file is one bullet per memory.
+    """
+    from astor_memory.export.markdown import export
+
+    astor_dir = args.astor_dir or os.environ.get('ASTOR_DIR') or os.path.expanduser('~/.astor')
+    out = os.path.abspath(os.path.expanduser(args.out))
+    tiers = [t.strip() for t in args.tiers.split(',')] if args.tiers else None
+    rep = export(astor_dir, out, tiers=tiers, git=args.git,
+                 dry_run=args.dry_run)
+    if args.dry_run:
+        print('[dry-run] %d rows -> %d files in %s'
+              % (rep['rows'], rep['files'], rep['out']))
+        return 0
+    print('[OK] exported %d rows to %d files in %s'
+          % (rep['rows'], rep['files'], rep['out']))
+    if args.git:
+        print('     git: %s' % ('committed' if rep.get('git') else 'FAILED'))
+    return 0
 
 
 def cmd_version(args) -> int:
