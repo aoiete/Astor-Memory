@@ -1438,6 +1438,72 @@ async function onPeerAddByUrl() {
   }
 }
 
+  // v1.17.1: cross-node peer search.
+  // The endpoint (/v1/peer/search) has been there all along -- it asks
+  // every eligible peer, over the signed peer protocol, for matching
+  // facts from their public tier. Nothing in the dashboard reached it,
+  // so the whole federation was invisible from the UI.
+  async function onPeerSearch() {
+    const input = document.getElementById('peer-search-q');
+    const msg = document.getElementById('peer-search-msg');
+    const box = document.getElementById('peer-search-results');
+    if (!input) return;
+    const q = (input.value || '').trim();
+    if (!q) { if (msg) msg.textContent = 'type something to search for'; return; }
+    if (msg) msg.textContent = 'searching...';
+    if (box) { box.hidden = true; box.innerHTML = ''; }
+    try {
+      const r = await fetch('/v1/peer/search?q=' + encodeURIComponent(q) + '&limit=10');
+      const j = await r.json();
+      if (!r.ok) {
+        if (msg) msg.textContent = 'search failed: HTTP ' + r.status;
+        return;
+      }
+      const results = j.results || [];
+      const perPeer = j.per_peer || [];
+      const targets = j.targets || 0;
+      if (msg) {
+        msg.textContent = targets === 0
+          ? (j.hint || 'no eligible peers')
+          : (results.length + ' result(s) from ' + targets + ' peer(s)');
+      }
+      if (!box) return;
+      if (perPeer.some(p => p.error)) {
+        const bad = perPeer.filter(p => p.error).map(p => p.peer_id + ': ' + p.error);
+        const d = document.createElement('div');
+        d.className = 'peer-search-note';
+        d.textContent = 'some peers did not answer -- ' + bad.join('; ');
+        box.appendChild(d);
+      }
+      if (results.length === 0) {
+        const d = document.createElement('div');
+        d.className = 'peer-search-note';
+        d.textContent = 'nothing matched';
+        box.appendChild(d);
+      }
+      results.forEach(res => {
+        const d = document.createElement('div');
+        d.className = 'peer-search-item';
+        const src = document.createElement('code');
+        src.className = 'peer-search-src';
+        src.textContent = String(res.source_peer_id || '').slice(0, 22);
+        const rel = document.createElement('span');
+        rel.className = 'peer-search-rel';
+        rel.textContent = 'rel ' + Number(res.relevance || 0).toFixed(3);
+        const txt = document.createElement('div');
+        txt.className = 'peer-search-text';
+        txt.textContent = String(res.content || '');
+        d.appendChild(src);
+        d.appendChild(rel);
+        d.appendChild(txt);
+        box.appendChild(d);
+      });
+      box.hidden = false;
+    } catch (e) {
+      if (msg) msg.textContent = 'search failed';
+    }
+  }
+
 (function bindPeerSelfControls() {
   const copyBtn = document.getElementById('peer-self-copy');
   if (copyBtn) {
@@ -1468,6 +1534,12 @@ async function onPeerAddByUrl() {
   const openBox = document.getElementById('peer-open-search');
   if (openBox) openBox.addEventListener('change', onOpenSearchToggle);
   const urlBtn = document.getElementById('peer-add-url-btn');
+  const _searchBtn = document.getElementById('peer-search-btn');
+  if (_searchBtn) _searchBtn.addEventListener('click', onPeerSearch);
+  const _searchIn = document.getElementById('peer-search-q');
+  if (_searchIn) _searchIn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') onPeerSearch();
+  });
   if (urlBtn) urlBtn.addEventListener('click', onPeerAddByUrl);
   loadPeerIdentity().catch(() => {});
   loadOpenSearchState().catch(() => {});

@@ -10,7 +10,7 @@
 
 <title>Astor Dashboard</title>
 
-<link rel="stylesheet" href="/dashboard/style.css?v=1.17.16">
+<link rel="stylesheet" href="/dashboard/style.css?v=1.17.17">
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
@@ -226,6 +226,14 @@
     <button id="peer-add-url-btn" class="btn-primary" title="Look up the peer identity at that URL and add it">Look up &amp; add</button>
     <span class="peer-add-url-msg" id="peer-add-url-msg"></span>
   </div>
+  <!-- v1.17.1: cross-node peer search. The endpoint has existed
+       (/v1/peer/search) but nothing in the dashboard reached it. -->
+  <div class="peer-search-bar">
+    <input type="text" id="peer-search-q" placeholder="search the public tier of your peers" autocomplete="off" style="min-width:280px">
+    <button id="peer-search-btn" class="btn-primary" title="Ask every eligible peer for matching public-tier facts">Search peers</button>
+    <span class="peer-search-msg" id="peer-search-msg"></span>
+  </div>
+  <div id="peer-search-results" class="peer-search-results" hidden></div>
   <div id="peer-panel-body" class="peer-body">
 
     <div class="recall-hint">Loading peers…</div>
@@ -520,7 +528,7 @@
 
 
 
-<script src="/dashboard/app.js?v=1.17.16"></script>
+<script src="/dashboard/app.js?v=1.17.17"></script>
 
 </body>
 
