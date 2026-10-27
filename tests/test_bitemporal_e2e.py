@@ -104,8 +104,16 @@ class TestBitemporalE2E(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         d = r.json()          # requests response: .json() is a method
         self.assertIn("version", d)
-        # Should be v1.16.14+
-        self.assertTrue(d["version"].startswith("1.16."))
+        # The endpoint has to report a version at least as new as the
+        # release that added the fields this suite exercises. Comparing
+        # the numbers beats asserting a prefix: a hardcoded "1.16."
+        # prefix fails the moment the next minor ships, and that failure
+        # says nothing about the behaviour under test.
+        parts = d["version"].split(".")
+        self.assertGreaterEqual(len(parts), 2, d["version"])
+        major, minor = int(parts[0]), int(parts[1])
+        self.assertGreaterEqual((major, minor), (1, 16),
+                                "health reported an unexpected version: %s" % d["version"])
 
     def test_write_fact_stores_with_valid_until_null(self):
         unique_marker = f"e2e_test_marker_{uuid.uuid4().hex[:8]}_{int(time.time())}"

@@ -93,3 +93,49 @@ The suite was verified against three deliberately broken variants — the
 host-header check removed, the peer exemption widened to a prefix, and
 the gate moved ahead of the ACL hook — and each one fails the tests
 that are supposed to catch it.
+
+### The theme was broken, not just the new features
+
+The dashboard had been restyled to a light warm theme, but a set of
+rules still carried fallbacks from the dark theme it used to be. Five
+CSS variables — `--card`, `--bg-card`, `--bg-soft`, `--bg-elev`,
+`--mono` — were referenced but never defined, so every rule that used
+them got the hardcoded dark fallback instead of a theme colour. The
+passcode gate was one of them: a near-black card with `--text`
+rendered on it, which under the light theme is dark text on a dark
+card — a contrast ratio of 1.0, invisible.
+
+Two more of the same kind:
+
+- `--accent` (`#FF8C2E`) is a fill colour. It was also being used as
+  text colour on the light background, where it reached a ratio of
+  1.95. The headings, the peer ids and the role tags were all fading
+  out.
+- Buttons put white text on the accent fill, at 2.32.
+
+The fix keeps the theme exactly as it was and separates the two jobs:
+
+    --accent-text: #A84807    the same hue, dark enough to read as text
+    --on-accent:   #2A1706    the text colour on an accent fill
+    --warn-text / --danger-text / --good-text
+
+Dark text on the bright orange reads at 7.40, where white on it read
+at 2.32 — so the buttons keep the colour they had and become legible.
+
+All five missing variables are now defined, so no rule falls back to a
+colour from a theme that no longer exists.
+
+The verification was programmatic rather than by eye: a pass over every
+text node in the live page computing WCAG contrast (340 nodes, 20
+failures before, 0 after), and a static pass over the stylesheet
+resolving every variable and compositing every alpha background (18
+failures before, 0 after).
+
+Two smaller findings came out of the same pass:
+
+- `white-space: nowrap` in the base rule outranks `overflow-wrap:
+  anywhere`, so the friend code in the header was clipped rather than
+  wrapped on a narrow screen.
+- The edge cache held static assets for four hours, so a rebuilt
+  dashboard kept serving the previous build. They now carry
+  `Cache-Control: no-cache`, and the asset URLs carry a version.

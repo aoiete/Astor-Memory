@@ -12,6 +12,36 @@
   --warn: #f59e0b;
   --border: #FFD9B8;
   --good: #16a34a;
+
+  /* These five were referenced by rules that expected a dark theme and
+     carried a hardcoded dark fallback. The theme is light, so the
+     fallback won and produced dark panels with dark text -- invisible.
+     They are defined here so every reference resolves to the theme
+     instead of to a colour that belongs to a theme we no longer use. */
+  --card: #FFF3E6;         /* alias of --panel */
+  --bg-card: #FFF3E6;      /* alias of --panel */
+  --bg-soft: rgba(255, 140, 46, 0.07);
+  --bg-elev: #FFFBF4;      /* a raised surface above --panel */
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* --accent (#FF8C2E) is a fill colour, not a text colour. On the
+     light background it reached a contrast ratio of 1.95, which is
+     what made the headings, the peer ids and the role tags look like
+     they were fading out. These two separate the two jobs:
+       --accent-text  the same hue, dark enough to read as text
+       --on-accent    the text colour for something sitting on the
+                      accent fill (dark on the bright orange reads at
+                      7.4:1; white on it was 2.3:1) */
+  --accent-text: #A84807;
+  --on-accent: #2A1706;
+
+  /* The status colours are fills. As text on the light background they
+     reached 1.8 (warn), 2.8 (good) and 3.2 (danger), so the labels
+     that use them read as faded. These are the same hues, darkened to
+     the point where they work as type. */
+  --warn-text: #8A5200;
+  --danger-text: #B91C1C;
+  --good-text: #166534;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -40,7 +70,7 @@ body {
 
 .dash-header h1 {
   font-size: 22px;
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 700;
 }
 
@@ -61,9 +91,9 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
-.cache-badge.hit { background: var(--accent-soft); color: var(--accent-dim); }
-.cache-badge.miss { background: var(--warn); color: white; }
-.cache-badge.error { background: var(--danger); color: white; }
+.cache-badge.hit { background: var(--accent-soft); color: var(--accent-text); }
+.cache-badge.miss { background: var(--warn); color: var(--on-accent); }
+.cache-badge.error { background: var(--danger); color: var(--on-accent); }
 
 /* S20 (2026-09-25): server version badge — pulls from /v1/health, */
 /* shows operator when ship bumps are live. */
@@ -83,7 +113,7 @@ body {
 
 .btn-refresh {
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
   border: none;
   border-radius: 6px;
   width: 28px; height: 28px;
@@ -108,7 +138,7 @@ body {
 }
 .hero-card.accent {
   background: linear-gradient(135deg, var(--accent-soft), var(--panel));
-  border-color: var(--accent);
+  border-color: var(--accent-text);
 }
 .hero-label {
   font-size: 11px;
@@ -123,11 +153,11 @@ body {
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
-.hero-card.accent .hero-value { color: var(--accent-dim); }
+.hero-card.accent .hero-value { color: var(--accent-text); }
 .hero-card.wide .hero-value { font-size: 22px; }
-.trend-value.improving { color: var(--good); }
+.trend-value.improving { color: var(--good-text); }
 .trend-value.stable { color: var(--text-dim); }
-.trend-value.regressing { color: var(--danger); }
+.trend-value.regressing { color: var(--danger-text); }
 .trend-value.no_data { color: var(--text-dim); font-style: italic; }
 
 /* Grid 2 */
@@ -156,7 +186,7 @@ body {
 }
 .card h2 {
   font-size: 15px;
-  color: var(--accent);
+  color: var(--accent-text);
   margin-bottom: 12px;
   font-weight: 700;
 }
@@ -245,7 +275,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .kw-chip strong {
-  color: var(--accent-dim);
+  color: var(--accent-text);
   margin-right: 4px;
 }
 
@@ -279,7 +309,7 @@ body {
 }
 .health-card.clickable:hover {
   transform: translateY(-2px);
-  border-color: var(--accent);
+  border-color: var(--accent-text);
 }
 .health-hint {
   font-size: 9px;
@@ -301,8 +331,8 @@ body {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
-#health-embed:not(:empty).nonzero { color: var(--warn); }
-#health-warn:not(:empty).nonzero { color: var(--danger); }
+#health-embed:not(:empty).nonzero { color: var(--warn-text); }
+#health-warn:not(:empty).nonzero { color: var(--danger-text); }
 
 /* Modal */
 .modal {
@@ -334,7 +364,7 @@ body {
   padding: 14px 18px;
   border-bottom: 1px solid var(--border);
 }
-.modal-header h2 { color: var(--accent); font-size: 16px; }
+.modal-header h2 { color: var(--accent-text); font-size: 16px; }
 .modal-close {
   background: none;
   border: none;
@@ -344,7 +374,7 @@ body {
   padding: 0 6px;
   line-height: 1;
 }
-.modal-close:hover { color: var(--accent); }
+.modal-close:hover { color: var(--accent-text); }
 .modal-body {
   padding: 16px 18px;
   overflow-y: auto;
@@ -366,7 +396,7 @@ body {
 .modal-body .dx-section:last-child { border-bottom: none; }
 .modal-body .dx-section h3 {
   font-size: 13px;
-  color: var(--accent);
+  color: var(--accent-text);
   margin-bottom: 6px;
 }
 .modal-body .dx-tag {
@@ -379,8 +409,8 @@ body {
   margin-right: 4px;
   font-variant-numeric: tabular-nums;
 }
-.modal-body .dx-tag.warn { background: rgba(239, 68, 68, 0.15); color: var(--danger); border-color: var(--danger); }
-.modal-body .dx-tag.ok { background: rgba(22, 163, 74, 0.15); color: var(--good); border-color: var(--good); }
+.modal-body .dx-tag.warn { background: rgba(239, 68, 68, 0.15); color: var(--danger-text); border-color: var(--danger-text); }
+.modal-body .dx-tag.ok { background: rgba(22, 163, 74, 0.15); color: var(--good-text); border-color: var(--good-text); }
 .modal-body .dx-row {
   padding: 4px 6px;
   border-bottom: 1px solid var(--border);
@@ -415,7 +445,7 @@ body {
   text-align: center;
 }
 .health-card-grid .health-stat:hover {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   transform: translateY(-1px);
 }
 .health-card-grid .health-stat + .health-stat {
@@ -434,7 +464,7 @@ body {
   border-top: 1px solid var(--border);
 }
 .dash-footer a {
-  color: var(--accent-dim);
+  color: var(--accent-text);
   text-decoration: none;
   font-family: monospace;
 }
@@ -462,7 +492,7 @@ body {
 }
 .btn-primary {
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
   border: none;
   border-radius: 6px;
   padding: 6px 14px;
@@ -498,7 +528,7 @@ body {
   border-radius: 4px;
 }
 .recall-error {
-  color: var(--danger);
+  color: var(--danger-text);
   background: rgba(239, 68, 68, 0.08);
   border: 1px solid var(--danger);
   border-radius: 6px;
@@ -518,7 +548,7 @@ body {
   display: inline-block;
   width: 22px; height: 22px;
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
   border-radius: 50%;
   text-align: center;
   line-height: 22px;
@@ -529,7 +559,7 @@ body {
 }
 .recall-item .sim {
   font-size: 11px;
-  color: var(--accent-dim);
+  color: var(--accent-text);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   margin-left: 6px;
@@ -619,8 +649,8 @@ body {
 }
 .rc-page-btn:hover:not(:disabled) {
   background: var(--accent);
-  color: var(--bg);
-  border-color: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent-text);
 }
 .rc-page-btn:disabled {
   opacity: 0.4;
@@ -651,15 +681,15 @@ body {
   user-select: all;
 }
 .self-peer-id:hover {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent-text);
 }
 .rc-tab:hover {
   color: var(--text);
 }
 .rc-tab.active {
-  background: var(--accent, #4a9eff);
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .rc-body {
   display: flex;
@@ -735,15 +765,15 @@ body {
 }
 .rc-tag.rc-tier {
   background: rgba(74, 158, 255, 0.15);
-  color: #4a9eff;
+  color: #1a5fb4;
 }
 .rc-tag.rc-kind {
   background: rgba(155, 89, 182, 0.15);
-  color: #9b59b6;
+  color: #6d2f8c;
 }
 .rc-tag.rc-platform {
   background: rgba(46, 204, 113, 0.15);
-  color: #2ecc71;
+  color: #14713d;
 }
 .rc-meta-text {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -764,7 +794,7 @@ body {
   font-size: 0.75em;
   padding: 3px 8px;
   background: var(--bg);
-  color: var(--accent);
+  color: var(--accent-text);
   border: 1px solid var(--accent);
   border-radius: 4px;
   cursor: copy;
@@ -776,13 +806,13 @@ body {
 }
 .self-peer-id:hover {
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
 }
 
 /* v1.16.7: primary text button (replaces square btn-refresh for text labels) */
 .btn-primary {
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
   border: none;
   border-radius: 6px;
   padding: 6px 14px;
@@ -817,7 +847,7 @@ body {
 /* v1.16.7: peer rows show 'you' tag for self */
 .peer-pid-self {
   background: var(--good);
-  color: white;
+  color: var(--on-accent);
   font-size: 0.7em;
   padding: 1px 6px;
   border-radius: 3px;
@@ -849,26 +879,26 @@ body {
 .peer-section-label { font-size: 0.8em; color: var(--text-dim);
   text-transform: uppercase; letter-spacing: 0.05em; margin: 12px 0 6px;
   padding-bottom: 4px; border-bottom: 1px solid var(--border); }
-.peer-section-label.peer-blacklist { color: var(--danger); }
+.peer-section-label.peer-blacklist { color: var(--danger-text); }
 .peer-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
 .peer-table th { text-align: left; padding: 6px 8px;
   border-bottom: 1px solid var(--border); color: var(--text-dim);
   font-weight: 600; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.03em; }
 .peer-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-.peer-pid { font-family: monospace; color: var(--accent); }
+.peer-pid { font-family: monospace; color: var(--accent-text); }
 .peer-alias { color: var(--text); }
 .peer-endpoint { font-family: monospace; font-size: 0.8em; color: var(--text-dim); }
 .peer-trust-input { width: 60px; padding: 2px 4px; font-size: 0.85em;
   background: var(--bg); color: var(--text);
   border: 1px solid var(--border); border-radius: 3px; text-align: right; }
 .peer-trust-input.peer-trust-saved {
-  background: var(--good); color: white; border-color: var(--good);
+  background: var(--good); color: var(--on-accent); border-color: var(--good-text);
 }
 .peer-allow-toggle { padding: 2px 8px; font-size: 0.8em;
   border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
   background: var(--bg); color: var(--text); }
 .peer-allow-toggle.peer-allow-on {
-  background: var(--good); color: white; border-color: var(--good);
+  background: var(--good); color: var(--on-accent); border-color: var(--good-text);
 }
 .peer-allow-toggle.peer-allow-off {
   background: var(--bg); color: var(--text-dim);
@@ -882,11 +912,11 @@ body {
   margin-left: auto;
 }
 .role-admin {
-  color: var(--accent, #c97a3a);
+  color: var(--accent-text);
   font-weight: 600;
 }
 .role-user {
-  color: var(--text-dim, #888);
+  color: var(--text-dim);
 }
 
 /* v1.16.26: hero sub-label */
@@ -901,8 +931,8 @@ body {
 /* v1.16.27: Connections pagination buttons */
 .conn-page-btn {
   background: var(--bg-card, #1a1a1a);
-  border: 1px solid var(--border, #444);
-  color: var(--text, #ddd);
+  border: 1px solid var(--border);
+  color: var(--text);
   padding: 2px 8px;
   margin-left: 6px;
   border-radius: 4px;
@@ -910,8 +940,8 @@ body {
   font-size: 0.9em;
 }
 .conn-page-btn:hover:not(:disabled) {
-  border-color: var(--accent, #c97a3a);
-  color: var(--accent, #c97a3a);
+  border-color: var(--accent-text);
+  color: var(--accent-text);
 }
 .conn-page-btn:disabled {
   opacity: 0.4;
@@ -929,7 +959,7 @@ body {
   font-size: 0.85em;
 }
 .peer-pager-info {
-  color: var(--text-dim, #888);
+  color: var(--text-dim);
   margin-right: 6px;
 }
 
@@ -951,7 +981,7 @@ body {
   flex-wrap: wrap;
   margin-bottom: 6px;
 }
-.peer-quarantine-title { font-weight: 600; color: #b45309; }
+.peer-quarantine-title { font-weight: 600; color: var(--warn-text); }
 .peer-quarantine-count {
   display: inline-block;
   min-width: 20px;
@@ -964,7 +994,7 @@ body {
   font-weight: 600;
 }
 .peer-quarantine-hint {
-  color: var(--text-dim, #6b7280);
+  color: var(--text-dim);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -977,12 +1007,12 @@ body {
 .btn-ghost {
   background: transparent;
   border: 1px solid var(--border, #d1d5db);
-  color: var(--text-dim, #6b7280);
+  color: var(--text-dim);
   cursor: pointer;
   border-radius: 4px;
   font: inherit;
 }
-.btn-ghost:hover { color: var(--accent, #2563eb); }
+.btn-ghost:hover { color: var(--accent-text); }
 .btn-ghost:disabled { opacity: .5; cursor: default; }
 
 /* v1.16.83: friend-requests prompt strip */
@@ -996,14 +1026,14 @@ body {
 .peer-friend-requests-head { display: flex; gap: 10px; align-items: baseline; }
 .peer-friend-requests-title { font-weight: 600; }
 .peer-friend-requests-count { font-weight: 600; }
-.peer-friend-requests-hint { color: #888; font-size: 0.85em; }
+.peer-friend-requests-hint { color: var(--text-dim); font-size: 0.85em; }
 .peer-fr-row {
   display: flex; gap: 10px; align-items: center;
   padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.08);
 }
 .peer-fr-who { font-weight: 600; min-width: 120px; }
-.peer-fr-note { color: #bbb; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.peer-fr-since { color: #777; font-size: 0.8em; }
+.peer-fr-note { color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.peer-fr-since { color: var(--text-dim); font-size: 0.8em; }
 .peer-fr-accept, .peer-fr-reject {
   cursor: pointer; border: none; border-radius: 5px;
   padding: 4px 10px; font-size: 0.85em;
@@ -1014,36 +1044,44 @@ body {
 /* v1.17.0: passcode gate */
 .auth-gate {
   position: fixed; inset: 0; z-index: 9999;
-  background: rgba(12, 14, 20, 0.96);
+  /* The scrim follows the theme. It was a hardcoded near-black at 96%
+     opacity, which under the light theme turned the whole dashboard
+     into a dark rectangle -- and then the dark --text on the dark
+     card made the title and the button invisible. A themed scrim
+     keeps the prompt readable in whatever theme is active. */
+  background: rgba(26, 16, 8, 0.55);
+  backdrop-filter: blur(2px);
   display: flex; align-items: center; justify-content: center;
   padding: 24px;
 }
 .auth-gate[hidden] { display: none; }
 .auth-gate-card {
-  background: var(--card, #161a22);
-  border: 1px solid var(--border, #2a303c);
+  background: var(--panel);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 32px 28px;
   width: 100%; max-width: 340px;
   text-align: center;
+  color: var(--text);
+  box-shadow: 0 12px 40px rgba(26, 16, 8, 0.25);
 }
 .auth-gate-icon { font-size: 34px; margin-bottom: 8px; }
 .auth-gate-title { font-size: 17px; font-weight: 600; margin-bottom: 4px; }
-.auth-gate-sub { font-size: 13px; color: var(--text-dim, #8b93a3); margin-bottom: 18px; }
+.auth-gate-sub { font-size: 13px; color: var(--text-dim); margin-bottom: 18px; }
 .auth-input {
   width: 100%; box-sizing: border-box;
   padding: 10px 12px; margin-bottom: 12px;
-  border-radius: 8px; border: 1px solid var(--border, #2a303c);
-  background: var(--bg, #0e1117); color: var(--text, #e6e9ef);
+  border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text);
   font-size: 15px; text-align: center; letter-spacing: 2px;
 }
 .auth-btn { width: 100%; }
 .auth-error {
-  margin-top: 12px; font-size: 12.5px; color: #e5534b;
+  margin-top: 12px; font-size: 12.5px; color: var(--danger-text);
   word-break: break-word;
 }
 .auth-gate-hint {
-  margin-top: 16px; font-size: 11.5px; color: var(--text-dim, #8b93a3);
+  margin-top: 16px; font-size: 11.5px; color: var(--text-dim);
   line-height: 1.5;
 }
 
@@ -1122,4 +1160,205 @@ body {
   border-radius: 5px;
   cursor: pointer;
 }
-.btn-plain:hover { color: var(--accent); }
+.btn-plain:hover { color: var(--accent-text); }
+
+/* v1.17.1: narrow-screen layout.
+   The dashboard was built for a desktop viewport and had no working
+   phone layout: the header meta row held a peer id, a friend code and
+   three badges on one line, and the tables laid out their columns at
+   their natural width. On a 390px screen that produced a 723px page --
+   every element overflowed and the page scrolled sideways. The
+   operator views this on a phone, so the narrow layout is the one that
+   matters. */
+@media (max-width: 720px) {
+  /* The header meta row wraps instead of forcing the page wide. */
+  .header-meta {
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
+    max-width: 100%;
+  }
+  /* white-space: nowrap in the base rule wins over overflow-wrap, so
+     the friend code was clipped instead of wrapped. The peer id is a
+     single unbroken token; letting it break anywhere is the only way
+     it fits a phone. */
+  .self-peer-id {
+    display: block;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  /* A long id must be breakable, not a rigid 270px box. */
+  .version-badge,
+  .cache-badge,
+  .last-event {
+    white-space: normal;
+  }
+  /* Tables scroll inside their own card rather than widening the page.
+     The overflow has to sit on the element that CONTAINS the table --
+     the table's own box still reports its full width to the layout,
+     so a scroll container on an ancestor only helps if that ancestor
+     is the one establishing the containing block. The section carries
+     padding, so the table is wrapped in its own scroller instead. */
+  .card-wide,
+  .connections-panel,
+  .peer-panel {
+    max-width: 100%;
+    overflow: hidden;
+  }
+  /* The scroller is a block with an explicit width, so it establishes
+     its own containing block; the table inside is then allowed to be
+     wider than it and scrolls. Without width:100% the scroller sizes
+     itself to the table, which defeats the whole point. */
+  .table-scroll {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .table-scroll > .variants-table,
+  .table-scroll > .peer-table {
+    width: max-content;
+    min-width: 100%;
+  }
+  /* The peer table has a fixed action column; everything else may wrap. */
+  .peer-table td,
+  .peer-table th {
+    white-space: normal;
+  }
+  /* The peer identity bar and the add-by-URL row stack.
+     The controls are also given a thumb-sized minimum: at 22px the
+     copy buttons were technically visible and effectively untappable. */
+  .peer-self-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px;
+  }
+  .peer-self-left,
+  .peer-self-right {
+    width: 100%;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .peer-self-left {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  /* The two copy buttons share a row of their own. */
+  .peer-self-left .btn-plain + .btn-plain {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .peer-self-left .btn-plain {
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: start;
+  }
+  .peer-self-left .btn-plain:first-of-type {
+    grid-column: 1;
+  }
+  .peer-self-left .btn-plain:last-of-type {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .peer-self-id {
+    max-width: 100%;
+    width: 100%;
+    font-size: 13px;
+    line-height: 1.45;
+    padding: 8px 10px;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+  }
+  .peer-self-label {
+    font-size: 11px;
+  }
+  /* Copy buttons: side by side, but tall enough to hit. */
+  .peer-self-left .btn-plain {
+    display: inline-block;
+    min-height: 38px;
+    padding: 0 14px;
+    font-size: 13px;
+    line-height: 36px;
+  }
+  .peer-switch {
+    font-size: 14px;
+    min-height: 38px;
+  }
+  .peer-switch input {
+    width: 18px;
+    height: 18px;
+  }
+  .peer-switch-hint {
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .peer-add-by-url {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .peer-add-by-url input[type="text"] {
+    width: 100%;
+    min-width: 0 !important;
+    min-height: 40px;
+    font-size: 14px;
+  }
+  .peer-add-by-url .btn-primary {
+    width: 100%;
+    min-height: 40px;
+    font-size: 14px;
+  }
+  .peer-add-url-msg {
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  /* The friend-code row (peer id, alias, trust, note) is a desktop
+     row of small controls. On a phone it stacks, and the controls
+     grow to a thumb-sized minimum -- at 22px they were visible but
+     not reliably tappable. */
+  .peer-actions {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .peer-actions input[type="text"],
+  .peer-actions input[type="number"] {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0 !important;
+    min-height: 40px;
+    font-size: 14px;
+    padding: 8px 10px;
+  }
+  .peer-actions .btn-primary {
+    width: 100%;
+    min-height: 40px;
+    font-size: 14px;
+  }
+  .peer-actions .btn-refresh {
+    width: 100%;
+    min-height: 40px;
+    font-size: 16px;
+  }
+  /* The friend-request accept/reject buttons are the one place the
+     operator approves an inbound peer, so they get a real touch
+     target too. */
+  .peer-friend-requests .btn-primary,
+  .peer-friend-requests .btn-ghost {
+    min-height: 38px;
+    padding: 0 16px;
+    font-size: 13px;
+  }
+  /* The open-search checkbox itself is small by nature; the label
+     around it is the target, and it is already 38px tall. */
+  .peer-switch input {
+    flex: 0 0 auto;
+  }
+}

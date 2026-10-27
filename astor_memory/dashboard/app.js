@@ -929,7 +929,9 @@ async function renderPeerQuarantine(payload) {
   strip.hidden = false;
   count.textContent = String(peers.length);
 
-  let html = '<table class="peer-table"><thead><tr>'
+  // The table sits inside its own scroller: on a narrow screen the
+  // columns would otherwise widen the whole page.
+  let html = '<div class="table-scroll"><table class="peer-table"><thead><tr>'
     + '<th>peer_id</th><th>alias</th><th>trust</th>'
     + '<th>endpoint</th><th>seen</th><th>action</th>'
     + '</tr></thead><tbody>';
@@ -949,7 +951,7 @@ async function renderPeerQuarantine(payload) {
       + '<button class="btn-ghost btn-sm" data-q-block="' + escapeHtml(pid) + '">Block</button></td>'
       + '</tr>';
   }
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   body.innerHTML = html;
 
   body.querySelectorAll('[data-q-approve]').forEach(btn => {
