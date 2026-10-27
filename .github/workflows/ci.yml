@@ -93,9 +93,19 @@ jobs:
             --junitxml=pytest-report.xml 2>&1 | tee pytest-stdout.txt
           rc=${PIPESTATUS[0]}
           # A failing run has to say WHICH test failed, without anyone
-          # needing auth to read the job log. The step summary is
-          # readable through the public API.
+          # needing auth to read the job log or download the artifact.
+          #
+          # `::error::` is a workflow command: it becomes an annotation
+          # on the check run, and annotations ARE served by the public
+          # API (GET /repos/{owner}/{repo}/commits/{ref}/check-runs ->
+          # .../annotations). The step summary is not -- it only shows
+          # in the web UI, so writing to it alone leaves the failure
+          # invisible from outside.
           if [ "$rc" != "0" ]; then
+            echo "::error title=pytest failed::exit $rc"
+            grep -E '^(FAILED|ERROR) ' pytest-stdout.txt | while read -r line; do
+              echo "::error file=pytest::${line}"
+            done || true
             {
               echo "## pytest failed (exit $rc)"
               echo '```'
