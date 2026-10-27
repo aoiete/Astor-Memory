@@ -172,10 +172,14 @@ def _module_uses_third_party(tree: pyast.AST, local: set[str], stdlib: set[str],
     """
     found: set[str] = set()
     declared = declared or set()
-    # A backport that IS declared as a dependency satisfies the import
-    # of the stdlib module it stands in for.
+    # A stdlib module that has a backport for older interpreters counts
+    # as stdlib here, provided the backport is DECLARED. `import
+    # tomllib` inside a try/except that falls back to `import tomli` is
+    # stdlib on 3.11+ and the backport on 3.10 -- either way it is not a
+    # third-party dependency the project failed to declare, and the AST
+    # scan cannot see the try/except.
     for std_name, backport in _STDLIB_BACKPORTS.items():
-        if backport in local or backport in stdlib or backport in declared:
+        if backport in declared:
             stdlib = stdlib | {std_name}
     for node in pyast.walk(tree):
         if isinstance(node, pyast.Import):
