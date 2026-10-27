@@ -111,6 +111,12 @@ _META_RECALL_STATS: dict = {
     'trigger_aware_triggered': 0,
     'trigger_aware_returned_total': 0,
     'peer_fanout_returned_total': 0,
+    # v1.17.3: when did the fanout last fire, and how many times did it
+    # find nothing locally? A switch that is ON but never triggers looks
+    # identical to a switch that is OFF, and the operator has no way to
+    # tell them apart from the dashboard.
+    'peer_fanout_last_triggered_at': None,
+    'peer_fanout_local_miss_total': 0,
 }
 _meta_recall_stats = _META_RECALL_STATS
 
@@ -6144,6 +6150,26 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # module) unless ASTOR_PEER_FANOUT_DEFAULT forces it off. A caller
         # can still opt out per call with peer_fanout=false. Cost: nothing
         # on a local hit, up to TOTAL_TIMEOUT_SECONDS (10s) on a miss.
+        #
+        # v1.17.3 (2026-10-27): "local miss" used to mean "the recall
+        # returned zero rows". A vector store always returns its nearest
+        # neighbours, so a query for a word nobody ever wrote still came
+        # back with five rows (a gibberish query scored 0.94 cosine
+        # against "OAuth token" facts), and the peer network was never
+        # asked -- the fanout was dead code on any node with an
+        # embedding model.
+        #
+        # The signal that actually separates "this node has it" from
+        # "this node has nothing" is LEXICAL: did any of the query's
+        # tokens occur in this node's own index at all? A vector
+        # neighbour with no lexical overlap is the embedding model's
+        # guess, not a match. So the local miss is now:
+        #
+        #     no results at all, OR no result with a lexical hit
+        #
+        # The lexical-hit set is recorded during recall (bm25_hits, and
+        # the synonym variants that feed it), so the check costs
+        # nothing extra.
         _peer_dispatched = False
         _peer_results = []
         _peer_per_peer = []
@@ -6157,7 +6183,61 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _pf_want = False
         else:
             _pf_want = bool(_pf_req)
-        if _pf_want and not enriched:
+        # The ids this node can actually vouch for lexically.
+        #
+        # v1.17.3: matching the query is not enough. BM25 matches with
+        # OR, so a query of "qqqzzz nonexistent token xyzzy12345"
+        # matched a document about OAuth tokens -- one term out of
+        # four -- and BM25's score cannot tell that apart from a real
+        # match because it is normalized inside the candidate set.
+        # The count of matched terms can.
+        #
+        # A real query matches at least two of its terms, or is a
+        # single term that matched. A gibberish query matches one
+        # term out of several, which means this node has nothing
+        # about it and the peers should be asked.
+        _lexical_ids = set()
+        _coverage_ran = False
+        _local_ids = set()
+        for _r in (enriched or []):
+            try:
+                _local_ids.add(int(_r.get('fact_id')))
+            except Exception:
+                pass
+        # Two signals, either is enough to call it a local hit:
+        #
+        #  (a) one document matched two or more of the query's terms.
+        #      That is a real match, whatever the rest of the query
+        #      looks like.
+        #  (b) at least half of the query's terms are words this corpus
+        #      has seen. A question in the corpus's own vocabulary is a
+        #      question this node can answer.
+        #
+        # Neither holds for "qqqzzz nonexistent token xyzzy12345": one
+        # term out of four, and the one that matched ("token") matched
+        # a single document. A vector store returns that document
+        # anyway -- it is the nearest neighbour -- and calling that a
+        # hit is what kept the peer network from ever being asked.
+        try:
+            from .nest.lex_index import astor_lex as _alex
+            _lex = _alex(tier=tier, user_id=user_id)
+            _cov = _lex.bm25_coverage(query, limit=5)
+            _best_cov = max((m for _f, _s, m in _cov), default=0)
+            _ratio, _known_n, _total_n = _lex.known_term_ratio(query)
+            # 30% is the measured split on a real node: gibberish scores
+            # 0-15%, real questions score 42-100%. The threshold is a
+            # constant because the measurement is -- not a guess.
+            _ratio_ok = _ratio >= 0.30
+            _local_hit = bool(_best_cov >= 2 or _ratio_ok)
+        except Exception:
+            # If the coverage query fails, fall back to "any bm25 hit
+            # counts" rather than treating every query as a miss --
+            # that would fan out on every single read.
+            try:
+                _local_hit = bool(bm25_hits)
+            except Exception:
+                _local_hit = bool(_local_ids)
+        if _pf_want and not _local_hit:
             # v1.15.27 Ship K: body.topic + body.topic_min_weight filters
             # for topic-aware PPS fanout.
             _pf_topic = body.get("topic") or None
@@ -6181,6 +6261,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _peer_dispatched = True
                 _meta_recall_stats['peer_fanout_triggered'] = (
                     _meta_recall_stats.get('peer_fanout_triggered', 0) + 1
+                )
+                _meta_recall_stats['peer_fanout_last_triggered_at'] = (
+                    time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
                 )
                 _meta_recall_stats['peer_fanout_returned_total'] = (
                     _meta_recall_stats.get('peer_fanout_returned_total', 0)
@@ -10825,11 +10908,37 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'Search does not create friendships.',
         })
 
+    def _peer_eligible_count() -> int:
+        """How many peers could actually be asked right now.
+
+        A fanout that is enabled but has no eligible target is a
+        different failure from a fanout that never triggers, and the
+        operator needs to tell them apart.
+        """
+        try:
+            from ._internal.peer_relationships import list_peers as _pl
+            from ._internal.peer_search import select_search_targets as _sel
+            return len(_sel(_pl()))
+        except Exception:
+            return -1
+
     @app.route('/v1/peer/fanout', methods=['GET'])
     def peer_fanout_status():
-        """Is /v1/read allowed to fall back to the peer network on a miss?"""
+        """Is /v1/read allowed to fall back to the peer network on a miss?
+
+        Also reports whether it actually fired. A switch that is ON but
+        never triggers is indistinguishable from one that is OFF, and
+        the reason it does not trigger is the interesting part: the local
+        recall keeps returning its nearest vector neighbours, so the
+        "local miss" condition never holds.
+        """
         from ._internal import peer_fanout as _pf
-        return jsonify(_pf.status())
+        st = _pf.status()
+        st['triggered'] = int(_META_RECALL_STATS.get('peer_fanout_triggered', 0))
+        st['returned_total'] = int(_META_RECALL_STATS.get('peer_fanout_returned_total', 0))
+        st['last_triggered_at'] = _META_RECALL_STATS.get('peer_fanout_last_triggered_at')
+        st['eligible_peers'] = _peer_eligible_count()
+        return jsonify(st)
 
     @app.route('/v1/peer/fanout', methods=['POST'])
     def peer_fanout_toggle():
@@ -10900,6 +11009,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'endpoint': r.get('endpoint') or '',
                 'has_pubkey': bool(r.get('public_key')),
                 'allow_search': bool(meta.get('allow_search', False)),
+                # v1.17.3: the outbound mirror -- "may I search this peer".
+                # Independent of allow_search, which is the inbound side.
+                'outbound_search': bool(meta.get('outbound_search', True)),
                 'added_at': r.get('added_at') or '',
                 'updated_at': r.get('updated_at') or '',
                 'metadata_keys': sorted(meta.keys()) if isinstance(meta, dict) else [],
@@ -10966,6 +11078,26 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'unknown_peer'}), 404
         ok = _sas(peer_id, allow)
         return jsonify({'ok': ok, 'peer_id': peer_id, 'allow_search': allow})
+
+    @app.route('/v1/peer/<peer_id>/outbound-search', methods=['POST'])
+    def peer_outbound_search(peer_id):
+        """Set whether THIS node may search that peer. Body: {enabled: bool}.
+
+        The mirror of allow-search. allow_search is inbound ("that peer
+        may search me"); this is outbound ("I may search that peer").
+        The two are independent: a peer can read from me without me
+        reading from it.
+        """
+        from ._internal.peer_relationships import (
+            set_outbound_search as _sos, get_peer as _gp,
+        )
+        body = request.get_json(force=True) or {}
+        enabled = bool(body.get('enabled', True))
+        if not _gp(peer_id):
+            return jsonify({'error': 'unknown_peer'}), 404
+        ok = _sos(peer_id, enabled)
+        return jsonify({'ok': ok, 'peer_id': peer_id,
+                        'outbound_search': enabled})
 
     @app.route('/v1/peer/<peer_id>/blacklist', methods=['POST'])
     def peer_blacklist(peer_id):

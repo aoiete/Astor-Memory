@@ -370,6 +370,26 @@ def select_search_targets(
         # flag on OUR row is inbound consent -- it says "that peer may search
         # me" -- so it does not gate what we may search. Both sides must set
         # their own flag, which is what makes the friend path bilateral.
+        #
+        # v1.17.3: the OUTBOUND side is our own row's outbound_search flag
+        # -- "may I search that peer". It is independent of the inbound
+        # consent: a peer can be allowed to search me while I have not
+        # chosen to search it.
+        #
+        # The flag lives in the peer's metadata JSON, so read it from
+        # there. list_peers() hands back the parsed metadata dict.
+        _meta = f.get('metadata') or {}
+        if isinstance(_meta, str):
+            try:
+                import json as _json_m
+                _meta = _json_m.loads(_meta)
+            except Exception:
+                _meta = {}
+        _outbound = f.get('outbound_search')
+        if _outbound is None:
+            _outbound = _meta.get('outbound_search', True)
+        if not _outbound:
+            continue
         if trust < MIN_TRUST_FOR_SEARCH:
             continue
         if kind in ('blacklist', 'quarantine'):

@@ -1083,6 +1083,91 @@ def remove_topic(
 
 _ALLOW_SEARCH_KEY = "allow_search"
 
+# ---------------------------------------------------------------------------
+# v1.17.3 (2026-10-27): the OUTBOUND side of the same question.
+#
+# `allow_search` is inbound consent: "that peer may search ME". Its
+# mirror is "may I search THAT peer" -- and it did not exist. A node
+# with three peers would query all three on every local miss, with no
+# way to say "search that one, not the other two".
+#
+# The two are independent on purpose. Peer A may allow B to search A
+# while A does not want to search B -- that is a normal relationship
+# (one side is a library, the other is a reader).
+#
+# Stored in metadata.outbound_search, same JSON column, same reason:
+# no schema change.
+#
+# Default is ON. A peer you added, trusted and gave an endpoint to is
+# someone you meant to talk to; making the operator opt IN to every
+# peer individually would silently break every existing setup. The
+# flag exists to turn one peer OFF, not to turn one ON.
+# ---------------------------------------------------------------------------
+
+_OUTBOUND_SEARCH_KEY = "outbound_search"
+
+
+def _read_outbound_search_flag(
+    peer_id: str,
+    astor_dir: str | None = None,
+) -> bool:
+    """Read the metadata.outbound_search flag for a peer.
+
+    Missing peer or missing key = True (default on): the peer was added
+    deliberately, so it is eligible unless the operator says otherwise.
+    """
+    row = get_peer(peer_id, astor_dir=astor_dir)
+    if not row:
+        return False
+    meta = row.get("metadata") or {}
+    if isinstance(meta, str):
+        try:
+            import json as _json
+            meta = _json.loads(meta)
+        except Exception:
+            meta = {}
+    return bool(meta.get(_OUTBOUND_SEARCH_KEY, True))
+
+
+def set_outbound_search(
+    peer_id: str,
+    enabled: bool,
+    astor_dir: str | None = None,
+) -> bool:
+    """Set or revoke the outbound search flag for a peer.
+
+    Args:
+        peer_id: friend's peer ID (astor:<32-hex>)
+        enabled: True = I may search them; False = I will not
+        astor_dir: optional ASTOR_DIR override
+
+    Returns True if the peer exists and the flag was written.
+    """
+    import json as _json
+    con = _get_conn(astor_dir)
+    with _RELATIONSHIPS_LOCK:
+        row = con.execute(
+            "SELECT metadata FROM peer_relationships WHERE peer_id = ?",
+            (peer_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            meta = _json.loads(row["metadata"]) if row["metadata"] else {}
+        except Exception:
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta[_OUTBOUND_SEARCH_KEY] = bool(enabled)
+        now = _now_iso()
+        con.execute(
+            "UPDATE peer_relationships "
+            "SET metadata = ?, updated_at = ? WHERE peer_id = ?",
+            (_json.dumps(meta, ensure_ascii=False), now, peer_id),
+        )
+        con.commit()
+    return True
+
 
 def _read_allow_search_flag(
     peer_id: str,

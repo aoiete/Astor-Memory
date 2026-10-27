@@ -1,3 +1,70 @@
+## v1.17.3 — 2026-10-27
+
+The peer switch was on, the peers were configured, and nothing ever
+happened. An operator report on a second node found five separate ways
+for a node to look configured and be broken at the same time. Three of
+them are fixed here; two are documentation.
+
+**The fanout never fired.** `/v1/read` treated "the local recall
+returned nothing" as "this node does not have it". But a vector store
+always returns its nearest neighbours, so a query for a word nobody ever
+wrote still came back with five rows — one of them at 0.94 cosine
+against a fact about OAuth tokens. The condition could never hold, and
+the peer network was never asked. The signal that actually separates
+"this node has it" from "this node has nothing" is lexical: did any of
+the query's tokens occur in this node's own index at all? A vector
+neighbour with no lexical overlap is the embedding model's guess, not a
+match. The fanout now fires when there is no lexical hit, not when
+there are no rows. Local hits are unaffected and still cost nothing.
+
+**The dashboard showed a switch and no news.** A tick that says ON does
+not say whether the thing works. The switch now reports how many peers
+are eligible to be asked, how many times the fanout has fired, and when
+it last fired — so "enabled but never fires" is visibly different from
+"disabled".
+
+**`am init` could silently create a second identity.** With `ASTOR_DIR`
+pointing at a directory that did not exist while `install.json` pointed
+at one that had data, init created the empty one, the server came up
+healthy, and the node was a different node — the peer id is derived
+from the runtime path. The explicit path is still honoured, but init
+now says so.
+
+**`am peer endpoint-set` accepted an unreachable address.** A LAN
+address works from the machine next to the peer and from nowhere else.
+The endpoint is now probed before it is trusted, and a private address
+that does not answer is called out by name.
+
+**The hermes plugin went into a Python it cannot import on.**
+`hermes_adapter.py` imports `astor_memory` directly, and astor-memory
+declares `requires-python = ">=3.10,<3.14"` while Hermes 0.22 ships on
+3.14. The plugin was installed, failed to import, and `hermes memory
+status` reported the provider as unavailable. The installer now checks
+the interpreter Hermes actually runs on and installs the HTTP plugin —
+no astor_memory dependency, any Python — when it is out of range.
+
+**The passcode gate is not in the way.** `/v1/read` needs the
+dashboard passcode, and always did. The peer protocol surface is
+separate: `/v1/peer/identity`, `/v1/peer/public_search`,
+`/v1/peer/open-search` and `/v1/peer/health` are readable without one,
+because that is the surface a remote node needs. The relationship graph,
+the query log and the quarantine list are not.
+
+**`Plan: free` on an admin row.** The column decided owner status from
+`subscription_plan`, but `role` is what decides it. An admin whose plan
+happened to be `free` was rendered as being on the cheapest tier.
+
+**The peer search switch only had one direction.** `allow-search` says
+"that peer may search my public tier". Nothing said "I may search that
+peer" — a node with three peers queried all three on every local miss,
+with no way to pick. The two are independent by design: a node can be a
+library for one peer and a reader of another. Each peer row now carries
+an `outbound_search` flag (default on, because a peer you added and
+gave an endpoint to is someone you meant to talk to), the dashboard
+shows it next to `allow`, and `am peer outbound-search <peer_id> --off`
+turns one off. The node-wide `am peer fanout` switch is the global
+version of the same thing.
+
 ## v1.17.2 — 2026-10-27
 
 The peer network learned to speak up on its own.

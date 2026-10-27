@@ -922,6 +922,15 @@ def main(argv: list[str] | None = None) -> int:
     peer_unallow_search.add_argument('peer_id', help='Peer ID to revoke')
     peer_unallow_search.set_defaults(func=cmd_peer_unallow_search)
 
+    # v1.17.3: the OUTBOUND mirror of allow-search. allow-search is
+    # "that peer may search me"; this is "I may search that peer".
+    peer_outbound = peer_sub.add_parser('outbound-search',
+        help='Set whether I may search a peer (default: yes)')
+    peer_outbound.add_argument('peer_id', help='Peer ID')
+    peer_outbound.add_argument('--off', action='store_true',
+                               help='Stop searching this peer')
+    peer_outbound.set_defaults(func=cmd_peer_outbound_search)
+
     # v1.17.2: the node-level auto peer-search switch. `am peer fanout`
     # shows it; `--off` turns it off, `--on` turns it on. Default is ON.
     peer_fanout = peer_sub.add_parser('fanout',
@@ -1308,6 +1317,35 @@ def cmd_init(args) -> int:
     env_dir = os.environ.get('ASTOR_DIR')
     if env_dir:
         astor_dir = Path(env_dir).expanduser()
+        # v1.17.3 (2026-10-27): ASTOR_DIR pointed at a directory that
+        # does not exist (or is empty) while the install.json on this
+        # machine points somewhere that HAS data. Init then created a
+        # second, empty runtime there and -- because the peer id is
+        # derived from the runtime path -- the node came up under a
+        # NEW identity, with health returning 200 and no error. The
+        # operator saw the node "come up" and did not know it was a
+        # different node.
+        #
+        # An explicit ASTOR_DIR is still honoured -- the operator may
+        # genuinely want a second runtime -- but it is never silent.
+        try:
+            from ..config import _astor_home as _ah
+            _ij = _ah() / '.astor' / 'install.json'
+            if _ij.exists() and not astor_dir.exists():
+                _cfg = json.loads(_ij.read_text(encoding='utf-8'))
+                _saved = _cfg.get('astor_dir')
+                if _saved and Path(_saved).expanduser() != astor_dir:
+                    _sp = Path(_saved).expanduser()
+                    _has = _sp.exists() and any(_sp.glob('*.db'))
+                    if _has:
+                        print(f'[init] WARNING: ASTOR_DIR={astor_dir} does not exist, '
+                              f'but install.json points at {_sp}, which HAS data.')
+                        print('[init]          Initializing here gives this node a NEW '
+                              'peer id and leaves the old data behind.')
+                        print('[init]          If that is not what you want, unset '
+                              'ASTOR_DIR and run again.')
+        except Exception as _warn_exc:
+            print(f'[init] (could not check install.json: {_warn_exc})')
     else:
         # 2. ~/.astor/install.json if it exists
         # ASTOR_HOME env var overrides Path.home() (e.g. when run from
@@ -4584,6 +4622,10 @@ def cmd_peer_fanout(args) -> int:
     st = _pf.status()
     print(f'[fanout] enabled={st["enabled"]} source={st["source"]}')
     print('           local hits unaffected; a local miss may cost up to 10s')
+    print('           this is the GLOBAL switch. Per peer, use:')
+    print('             am peer outbound-search <peer_id> --off')
+    print('           (allow-search is the other direction: that peer may')
+    print('            search my public tier.)')
     return 0
 
 
@@ -4610,6 +4652,38 @@ def cmd_peer_allow_search(args) -> int:
         print('     they can now search your PUBLIC tier (max 20 facts per query)')
     else:
         print('     they can no longer search your PUBLIC tier')
+    return 0
+
+
+def cmd_peer_outbound_search(args) -> int:
+    """v1.17.3: set whether I may search a peer.
+
+    The mirror of `allow-search`. That one is inbound -- it says "that
+    peer may search my public tier". This one is outbound -- "may I
+    search that peer". The two are independent: a node can be a library
+    for one peer and a reader of another.
+
+    Default is on. A peer you added, trusted and gave an endpoint to is
+    someone you meant to talk to; this exists to turn one peer off, not
+    to opt in to each one.
+    """
+    from .._internal.peer_relationships import set_outbound_search, get_peer
+    row = get_peer(args.peer_id)
+    if not row:
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        print('      add it first: am peer add <peer_id> ...', file=sys.stderr)
+        return 1
+    want = not bool(getattr(args, 'off', False))
+    ok = set_outbound_search(args.peer_id, want)
+    if not ok:
+        print(f'[ERR] failed to set outbound-search for {args.peer_id}',
+              file=sys.stderr)
+        return 1
+    print(f'[OK] outbound-search={want} for {args.peer_id}')
+    if want:
+        print('     you will search this peer when your local recall misses')
+    else:
+        print('     you will NOT search this peer')
     return 0
 
 
@@ -4944,18 +5018,56 @@ def cmd_peer_topic_bump(args) -> int:
 
 
 def cmd_peer_endpoint_set(args) -> int:
-    """v1.14.72 (Phase 3): set endpoint URL for a peer."""
+    """v1.14.72 (Phase 3): set endpoint URL for a peer.
+
+    v1.17.3 (2026-10-27): an endpoint that the other node cannot reach is
+    silent. The peer row looks configured, the dashboard shows it, and
+    every search against that peer times out -- so the fanout returns
+    nothing and the operator concludes the feature is broken. A LAN
+    address (192.168.x.x) is the usual mistake: it works from the
+    machine that owns the peer and from nowhere else.
+
+    Probe the endpoint before storing it. A failure is a warning, not an
+    error -- the operator may be configuring a peer before it is up, or
+    behind a firewall that blocks the probe but not the real request.
+    """
     from .._internal.peer_relationships import update_endpoint
     try:
         result = update_endpoint(args.peer_id, args.url)
         if result:
             print(f'[OK] endpoint set: {args.peer_id[:20]}... → {args.url}')
+            _warn_if_unreachable(args.url)
             return 0
         print(f'[ERR] peer not found: {args.peer_id}')
         return 1
     except ValueError as e:
         print(f'[ERR] {e}', file=sys.stderr)
         return 1
+
+
+def _warn_if_unreachable(url: str, timeout: float = 3.0) -> None:
+    """Probe a peer endpoint and warn if it does not answer.
+
+    A private address is the giveaway: 10.x / 172.16-31.x / 192.168.x
+    work only on the LAN the peer is on.
+    """
+    try:
+        import urllib.request
+        import urllib.error
+        req = urllib.request.Request(
+            url.rstrip('/') + '/v1/peer/identity', method='GET')
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            r.read(256)
+    except Exception as e:
+        print(f'[WARN] endpoint did not answer /v1/peer/identity: '
+              f'{type(e).__name__}: {e}')
+        import re as _re
+        m = _re.match(r'https?://(\d+\.\d+\.\d+\.\d+)', url or '')
+        if m:
+            print(f'       {m.group(1)} is a private address — it only works '
+                  'from the same LAN as the peer.')
+        print('       The peer row is saved, but searches against it will '
+              'time out until it is reachable.')
 
 
 def cmd_peer_endpoint_get(args) -> int:

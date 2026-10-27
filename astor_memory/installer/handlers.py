@@ -12,6 +12,7 @@ dry-run-able and testable without filesystem side-effects.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from .registry import (
     PRIORITY_MARKER,
@@ -137,6 +138,83 @@ def _hermes_plugin_yaml() -> str:
     )
 
 
+def _hermes_python_version(agent_dir: Path) -> str | None:
+    """The Python version the Hermes install runs on, as '3.14'.
+
+    Hermes ships its own interpreter, so the version that matters is
+    the one in the hermes venv, not the one running this installer.
+    """
+    for rel in (('.venv', 'Scripts', 'python.exe'),
+                ('hermes-agent', '.venv', 'Scripts', 'python.exe')):
+        py = agent_dir.joinpath(*rel)
+        if not py.exists():
+            continue
+        try:
+            import subprocess
+            out = subprocess.run([str(py), '-c',
+                                  'import sys; print("%d.%d" % sys.version_info[:2])'],
+                                 capture_output=True, text=True, timeout=20)
+            v = (out.stdout or '').strip()
+            if re.match(r'^\d+\.\d+$', v):
+                return v
+        except Exception:
+            continue
+    return None
+
+
+def _requires_python_range() -> str | None:
+    """The requires-python spec astor-memory declares, e.g. '>=3.10,<3.14'."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib
+        except Exception:
+            return None
+    try:
+        root = Path(__file__).resolve().parents[2]
+        data = tomllib.loads((root / 'pyproject.toml').read_text(encoding='utf-8'))
+        return (data.get('project') or {}).get('requires-python')
+    except Exception:
+        return None
+
+
+def _python_in_range(version: str, spec: str) -> bool:
+    """Does `version` satisfy a requires-python spec such as '>=3.10,<3.14'?
+
+    Only the comparators packaging understands are handled: >=, >, <=,
+    <, ==, !=. Anything else is treated as satisfied -- refusing to
+    install on a spec we cannot parse would be worse than trying.
+    """
+    try:
+        major, minor = (int(x) for x in version.split('.')[:2])
+    except Exception:
+        return True
+    cur = (major, minor)
+    for part in (spec or '').split(','):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r'^(>=|<=|==|!=|>|<)\s*(\d+)(?:\.(\d+))?$', part)
+        if not m:
+            continue
+        op = m.group(1)
+        want = (int(m.group(2)), int(m.group(3) or 0))
+        if op == '>=' and not cur >= want:
+            return False
+        if op == '>' and not cur > want:
+            return False
+        if op == '<=' and not cur <= want:
+            return False
+        if op == '<' and not cur < want:
+            return False
+        if op == '==' and cur != want:
+            return False
+        if op == '!=' and cur == want:
+            return False
+    return True
+
+
 def astor_install_hermes(agent_dir: Path, mode: str) -> dict:
     """Hermes 0.20+: Tier B -- install the provider plugin and select it.
 
@@ -179,6 +257,42 @@ def astor_install_hermes(agent_dir: Path, mode: str) -> dict:
                      'package -- the plugin was not installed. The '
                      'config.yaml change below still applies.')
     else:
+        # v1.17.3 (2026-10-27): hermes_adapter.py imports astor_memory
+        # directly (astor_memory._internal.acl, astor_memory.nest.*), so
+        # the plugin only works if astor_memory is importable by the
+        # interpreter that runs hermes. astor-memory declares
+        # requires-python >=3.10,<3.14; Hermes 0.22 ships on Python 3.14.
+        # Installing the direct-import adapter there produces a plugin
+        # that fails to import, and `hermes memory status` reports the
+        # provider as unavailable -- an install that looks done and is not.
+        #
+        # The HTTP plugin (docs/agent_plugin_template/frameworks/hermes)
+        # talks to the running server over REST and has no astor_memory
+        # dependency at all, so it works on any Python. Use it when the
+        # target interpreter is out of range, and say so.
+        _http_tpl = (Path(__file__).resolve().parents[2] / 'docs'
+                     / 'agent_plugin_template' / 'frameworks' / 'hermes'
+                     / '__init__.py')
+        _adapter_src = adapter
+        _py_ver = _hermes_python_version(agent_dir)
+        _needs_python = _requires_python_range()
+        if _py_ver and _needs_python and not _python_in_range(_py_ver, _needs_python):
+            if _http_tpl.exists():
+                _adapter_src = _http_tpl
+                notes.append(
+                    'Hermes runs on Python %s, outside astor-memory\'s '
+                    'supported range %s. Installed the HTTP plugin instead '
+                    'of the direct-import adapter -- it talks to the '
+                    'running astor server over REST and needs no '
+                    'astor_memory install.' % (_py_ver, _needs_python))
+            else:
+                notes.append(
+                    'Hermes runs on Python %s, outside astor-memory\'s '
+                    'supported range %s, and the HTTP plugin template was '
+                    'not found. The direct-import adapter was installed '
+                    'anyway and will fail to import there. Provide your own '
+                    'HTTP adapter under <hermes home>/plugins/ instead.'
+                    % (_py_ver, _needs_python))
         cands = _hermes_plugin_candidates(agent_dir)
         target = next((c for c in cands if (c / '__init__.py').exists()), None)
         if target is None:
@@ -192,7 +306,7 @@ def astor_install_hermes(agent_dir: Path, mode: str) -> dict:
             else:
                 changes.append({
                     'path': str(init_dst), 'action': 'write',
-                    'content': adapter.read_text(encoding='utf-8'),
+                    'content': _adapter_src.read_text(encoding='utf-8'),
                 })
                 notes.append('Installed the provider plugin at %s.' % target)
             if yaml_dst.exists():

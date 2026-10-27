@@ -460,9 +460,15 @@ function _drawConnPage() {
       // showing it in the Plan column reads as though the operator is on some
       // plan they could be compared against other users on. It still SORTS by
       // PLAN_RANK above (admin first) — only the cell changes.
+      //
+      // v1.17.3: the check was on subscription_plan === 'admin', but the
+      // column that decides who is the owner is role. An admin row whose
+      // plan is 'free' rendered as "Plan: free", which says the operator
+      // is on the cheapest tier — the opposite of what the ACL means.
+      // role === 'admin' is the one that counts.
       + '<td>' + escapeHtml(
-            b.subscription_plan === 'admin' ? 'n/a'
-                                           : (b.subscription_plan || '—')) + '</td>'
+            b.role === 'admin' ? 'n/a'
+                                : (b.subscription_plan || '—')) + '</td>'
       + '<td>' + escapeHtml(b.default_tier || '—') + '</td>'
       + '<td>' + escapeHtml(b.scope || '—') + '</td>'
       + '<td>' + escapeHtml((b.bound_at || '').slice(0, 16) || '—') + '</td>';
@@ -1104,8 +1110,10 @@ function renderPeerRows(rows, sectionKey) {
   const slice = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   let html = '<table class="peer-table"><thead><tr>'
     + '<th>peer_id</th><th>alias</th><th>trust</th>'
-    + '<th>endpoint</th><th>pubkey</th><th>allow</th>'
-    + '<th>search</th>'
+    + '<th>endpoint</th><th>pubkey</th>'
+    + '<th title="inbound: that peer may search my public tier">allow</th>'
+    + '<th title="outbound: I may search that peer">outbound</th>'
+    + '<th title="whether a local miss would actually reach this peer">search</th>'
     + '<th>updated</th><th>actions</th>'
     + '</tr></thead><tbody>';
   slice.forEach(p => {
@@ -1118,17 +1126,24 @@ function renderPeerRows(rows, sectionKey) {
       : '<span class="recall-hint">—</span>';
     const allowCls = p.allow_search ? 'peer-allow-on' : 'peer-allow-off';
     const allowTxt = p.allow_search ? 'ON' : 'off';
+    // v1.17.3: the outbound mirror. Independent of allow_search -- that
+    // one says "that peer may search me", this one says "I may search
+    // that peer". A peer can read from me without me reading from it.
+    const outCls = (p.outbound_search === false) ? 'peer-allow-off' : 'peer-allow-on';
+    const outTxt = (p.outbound_search === false) ? 'off' : 'ON';
     const updated = p.updated_at ? p.updated_at.slice(0, 10) : '—';
     // Why a peer is not searchable from here. Trust and endpoint are the
     // local gates; the remote's own allow-search is the fourth gate and
     // only they can turn it on, so say so instead of showing a bare "no".
     const search = (p.kind === 'blacklist' || p.kind === 'quarantine')
       ? '<span class="recall-hint">blocked</span>'
-      : (trust < 50
-        ? '<span class="recall-hint">trust &lt; 50</span>'
-        : (!p.endpoint
-          ? '<span class="recall-hint">no endpoint</span>'
-          : '<span class="rc-tag rc-kind">✓</span>'));
+      : (p.outbound_search === false
+        ? '<span class="recall-hint">outbound off</span>'
+        : (trust < 50
+          ? '<span class="recall-hint">trust &lt; 50</span>'
+          : (!p.endpoint
+            ? '<span class="recall-hint">no endpoint</span>'
+            : '<span class="rc-tag rc-kind">✓</span>')));
     html += '<tr>'
       + '<td class="peer-pid" title="' + escapeHtml(p.peer_id) + '">'
       + escapeHtml(p.peer_id.length > 22 ? p.peer_id.slice(0,22) + '…' : p.peer_id)
@@ -1143,6 +1158,9 @@ function renderPeerRows(rows, sectionKey) {
       + '<td><button class="peer-allow-toggle ' + allowCls
       + '" data-pid="' + escapeHtml(p.peer_id) + '" data-action="toggle-allow">'
       + allowTxt + '</button></td>'
+      + '<td><button class="peer-allow-toggle ' + outCls
+      + '" data-pid="' + escapeHtml(p.peer_id) + '" data-action="toggle-outbound">'
+      + outTxt + '</button></td>'
       + '<td>' + search + '</td>'
       + '<td class="recall-hint">' + escapeHtml(updated) + '</td>'
       + '<td>'
@@ -1206,6 +1224,18 @@ async function onPeerAction(ev) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({allow: next})
+    });
+    btn.disabled = false;
+    if (!r.ok) { alert('toggle failed: HTTP ' + r.status); return; }
+  } else if (action === 'toggle-outbound') {
+    // v1.17.3: the outbound mirror of allow-search. allow = "that peer
+    // may search me"; outbound = "I may search that peer".
+    const next = btn.textContent.trim() !== 'ON';
+    btn.disabled = true;
+    const r = await fetch('/v1/peer/' + encodeURIComponent(pid) + '/outbound-search', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: next})
     });
     btn.disabled = false;
     if (!r.ok) { alert('toggle failed: HTTP ' + r.status); return; }
@@ -1404,13 +1434,26 @@ async function loadFanoutState() {
     if (!r.ok) { if (hint) hint.textContent = 'status unavailable'; return; }
     const j = await r.json();
     box.checked = !!j.enabled;
-    if (hint) {
-      hint.textContent = j.source === 'env'
-        ? 'forced by ASTOR_PEER_FANOUT_DEFAULT'
-        : (box.checked
-          ? 'local miss asks peers (up to 10s; local hits unaffected)'
-          : 'local only — a miss returns empty');
+    if (!hint) return;
+    // v1.17.3: the switch alone does not say whether the thing works.
+    // Report what it actually did: how many peers it could have asked,
+    // how many times it fired, and when it last fired.
+    const peers = (j.eligible_peers === -1) ? '?' : j.eligible_peers;
+    const fired = j.triggered || 0;
+    const last = j.last_triggered_at
+      ? String(j.last_triggered_at).replace('T', ' ').replace('Z', ' UTC')
+      : 'never';
+    let state;
+    if (j.source === 'env') {
+      state = 'forced by ASTOR_PEER_FANOUT_DEFAULT';
+    } else if (!j.enabled) {
+      state = 'local only — a miss returns empty';
+    } else if (peers === 0) {
+      state = 'ON but no eligible peer (need trust≥50 + endpoint + their allow)';
+    } else {
+      state = `ON · ${peers} peer(s) · fired ${fired}x · last ${last}`;
     }
+    hint.textContent = state;
   } catch (e) {
     if (hint) hint.textContent = 'status unavailable';
   }

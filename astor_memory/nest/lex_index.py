@@ -32,6 +32,7 @@ text the tokenizer falls back to bi-gram (length=2) which is reasonable.
 from __future__ import annotations
 
 import re
+import math
 import sqlite3
 import threading
 import unicodedata
@@ -418,6 +419,175 @@ class AstorLex:
         return scores[:limit]
 
     # ---------- read path: BM25 ----------
+    def bm25_coverage(self, query: str, limit: int = 20) -> list[tuple[int, float, int]]:
+        """Like bm25_search, but also reports how many query terms each
+        document actually matched.
+
+        Why: BM25 matches with OR. A query of "qqqzzz nonexistent token
+        xyzzy12345" matched a document about OAuth tokens, because
+        "token" is in it -- one term out of four, on a query that means
+        nothing. BM25's score cannot tell that apart from a real match,
+        because it is normalized inside the candidate set: the one weak
+        hit becomes 1.0.
+
+        The number of matched terms can. A real query matches most of its
+        terms (a 5-word query matches 4 or 5); a gibberish query matches
+        one, or none. This is the signal the peer fanout needs: "does
+        this node actually have anything about this, or did it just
+        return its nearest neighbour?"
+
+        Returns [(fact_id, score, matched_term_count), ...].
+        """
+        tokens = _tokenize(query)
+        if not tokens:
+            return []
+        uniq = set(tokens)
+        fts_terms = [f'"{t.replace(chr(34), "").strip()}"'
+                     for t in tokens
+                     if len(t.replace(chr(34), "").strip()) >= 2 and t != '*']
+        fts_terms = list(dict.fromkeys(fts_terms))
+        if not fts_terms:
+            return self._bm25_coverage_legacy(tokens, uniq, limit)
+        try:
+            rows = self._conn.execute(
+                "SELECT rowid FROM lex_fts WHERE lex_fts MATCH ? LIMIT ?",
+                (' OR '.join(fts_terms), max(limit * 5, 200)),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return self._bm25_coverage_legacy(tokens, uniq, limit)
+        if not rows:
+            return []
+        cand = [int(r[0]) for r in rows]
+        tf_rows = self._conn.execute(
+            'SELECT fact_id, content, length FROM documents '
+            'WHERE fact_id IN (' + ','.join('?' * len(cand)) + ') '
+            'AND tombstoned = 0', cand).fetchall()
+        return self._score_coverage(tf_rows, uniq, limit)
+
+    def _bm25_coverage_legacy(self, tokens, uniq, limit):
+        rows = self._conn.execute(
+            'SELECT fact_id, content, length FROM documents '
+            'WHERE tombstoned = 0').fetchall()
+        return self._score_coverage(rows, uniq, limit)
+
+    def _score_coverage(self, tf_rows, uniq, limit):
+        if not tf_rows:
+            return []
+        N = self._conn.execute(
+            'SELECT COUNT(*) FROM documents WHERE tombstoned = 0'
+        ).fetchone()[0] or 1
+        avgdl = self._conn.execute(
+            'SELECT COALESCE(AVG(length), 0) FROM documents '
+            'WHERE tombstoned = 0').fetchone()[0] or 1.0
+        out = []
+        for fact_id, content, dlen in tf_rows:
+            if not content:
+                continue
+            doc_tf = Counter(_tokenize(content))
+            if not doc_tf:
+                continue
+            s = 0.0
+            matched = 0
+            for term in uniq:
+                tf = doc_tf.get(term, 0)
+                if tf == 0:
+                    continue
+                matched += 1
+                df_row = self._conn.execute(
+                    'SELECT df FROM terms WHERE term = ?', (term,)).fetchone()
+                if df_row is None or df_row[0] == 0:
+                    continue
+                idf = (N - df_row[0] + 0.5) / (df_row[0] + 0.5) + 1.0
+                idf = math.log(max(idf, 1e-9))
+                denom = (tf + BM25_K1 * (1 - BM25_B
+                        + BM25_B * dlen / max(avgdl, 1e-9)))
+                s += idf * (tf * (BM25_K1 + 1)) / denom
+            if s > 0:
+                out.append((int(fact_id), s, matched))
+        out.sort(key=lambda x: x[1], reverse=True)
+        return out[:limit]
+
+    def known_terms(self, query: str) -> tuple[set[str], set[str]]:
+        """Split the query's tokens into (known to this corpus, unknown).
+
+        "Known" means the token appears in the lexical index at all --
+        df > 0 in the terms table. The ratio is the signal that separates
+        a question this node can answer from a question it has never
+        seen:
+
+          "peer fanout 延迟"   5 of 5 known  -> this node probably has it
+          "密码 怎么存"        7 of 9 known  -> ditto (the two unknown ones
+                                                are bigram artefacts)
+          "qqqzzz nonexistent
+           token xyzzy12345"   1 of 4 known  -> this node has never seen
+                                                this; ask the peers
+
+        A per-document term count cannot make this distinction: one
+        common word ("token") matching one document looks the same as a
+        rare word ("passcode") matching one.
+        """
+        tokens = _tokenize(query)
+        if not tokens:
+            return set(), set()
+        uniq = set(tokens)
+        known = set()
+        rows = self._conn.execute(
+            'SELECT term FROM terms WHERE df > 0 AND term IN ('
+            + ','.join('?' * len(uniq)) + ')', list(uniq)).fetchall()
+        for r in rows:
+            known.add(r[0])
+        return known, uniq - known
+
+    def known_term_ratio(self, query: str) -> tuple[float, int, int]:
+        """How much of the query's INFORMATION does this corpus know?
+
+        Returns (ratio, known_count, total_count).
+
+        The ratio is IDF-weighted, and that matters. Counting terms
+        treats "token" (in every OAuth fact on the node) as worth as
+        much as "passcode" (in one). Weighting by IDF says what the
+        corpus would say if you asked it: the rare word is the one that
+        identifies the topic, the common one is noise.
+
+        Measured on a real node (private tier, ~5k facts):
+
+          "qqqzzz nonexistent token xyzzy12345"   15%  -> never seen
+          "zzzqqq wwwwvvvv"                          0%  -> never seen
+          "weixin"                                 100%  -> known
+          "peer fanout 延迟"                        75%  -> known
+          "开盘动量"                                 56%  -> known
+          "密码 怎么存"                              53%  -> known
+
+        A query the corpus has no words for is the one the peers should
+        be asked about.
+        """
+        tokens = _tokenize(query)
+        if not tokens:
+            return 0.0, 0, 0
+        uniq = set(tokens)
+        rows = self._conn.execute(
+            'SELECT term, df FROM terms WHERE term IN ('
+            + ','.join('?' * len(uniq)) + ')', list(uniq)).fetchall()
+        dfs = {r[0]: int(r[1] or 0) for r in rows}
+        N = self._conn.execute(
+            'SELECT COUNT(*) FROM documents WHERE tombstoned = 0'
+        ).fetchone()[0] or 1
+        import math as _m
+        num = 0.0
+        den = 0.0
+        known = 0
+        for term in uniq:
+            df = dfs.get(term, 0)
+            # Okapi IDF. A term nobody wrote (df=0) gets the highest
+            # weight, which is what we want: an unknown word is the
+            # strongest evidence that this node cannot answer.
+            idf = _m.log(max((N - df + 0.5) / (df + 0.5) + 1.0, 1e-9))
+            den += idf
+            if df > 0:
+                num += idf
+                known += 1
+        return (num / den if den > 0 else 0.0), known, len(uniq)
+
     def bm25_search(self, query: str, limit: int = 20) -> list[tuple[int, float]]:
         """Return [(fact_id, bm25_score), ...] sorted desc by score.
 
