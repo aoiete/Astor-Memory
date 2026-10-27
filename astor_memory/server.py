@@ -11012,6 +11012,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # v1.17.3: the outbound mirror -- "may I search this peer".
                 # Independent of allow_search, which is the inbound side.
                 'outbound_search': bool(meta.get('outbound_search', True)),
+                # v1.17.3: every address for this peer, in try order.
+                # The primary endpoint column first, then alternates.
+                'endpoints': ([r.get('endpoint')] if r.get('endpoint') else [])
+                             + [e for e in (meta.get('endpoints') or [])
+                                if e != r.get('endpoint')],
                 'added_at': r.get('added_at') or '',
                 'updated_at': r.get('updated_at') or '',
                 'metadata_keys': sorted(meta.keys()) if isinstance(meta, dict) else [],
@@ -11078,6 +11083,32 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'unknown_peer'}), 404
         ok = _sas(peer_id, allow)
         return jsonify({'ok': ok, 'peer_id': peer_id, 'allow_search': allow})
+
+    @app.route('/v1/peer/<peer_id>/endpoints', methods=['POST'])
+    def peer_set_endpoints(peer_id):
+        """Replace the list of addresses for a peer. Body: {endpoints: [...]}.
+
+        A peer can be reachable at more than one address -- the LAN one
+        and the public one. The dispatcher tries them in order and stops
+        at the first that answers, so the same configuration works from
+        inside the LAN and from outside it.
+        """
+        from ._internal.peer_relationships import (
+            set_peer_endpoints as _spe, get_peer as _gp,
+        )
+        body = request.get_json(force=True) or {}
+        eps = body.get('endpoints')
+        if not isinstance(eps, list) or not eps:
+            return jsonify({'error': 'endpoints_required'}), 400
+        if not _gp(peer_id):
+            return jsonify({'error': 'unknown_peer'}), 404
+        try:
+            ok = _spe(peer_id, [str(e) for e in eps])
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        from ._internal.peer_relationships import get_peer_endpoints
+        return jsonify({'ok': ok, 'peer_id': peer_id,
+                        'endpoints': get_peer_endpoints(peer_id)})
 
     @app.route('/v1/peer/<peer_id>/outbound-search', methods=['POST'])
     def peer_outbound_search(peer_id):

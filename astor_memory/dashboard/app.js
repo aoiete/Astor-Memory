@@ -1120,7 +1120,13 @@ function renderPeerRows(rows, sectionKey) {
     const pid = encodeURIComponent(p.peer_id);
     const alias = p.alias || '';
     const trust = p.trust != null ? p.trust : '?';
-    const endpoint = p.endpoint || '<span class="recall-hint">— none —</span>';
+    // v1.17.3: a peer can have several addresses -- the LAN one and the
+    // public one. Show them all; the dispatcher tries them in order.
+    const _eps = (p.endpoints && p.endpoints.length) ? p.endpoints
+                  : (p.endpoint ? [p.endpoint] : []);
+    const endpoint = _eps.length
+      ? _eps.map(function (e) { return escapeHtml(e); }).join('<br>')
+      : '<span class="recall-hint">— none —</span>';
     const hasPub = p.has_pubkey
       ? '<span class="rc-tag rc-kind">✓</span>'
       : '<span class="recall-hint">—</span>';
@@ -1153,7 +1159,7 @@ function renderPeerRows(rows, sectionKey) {
       + '<input type="number" class="peer-trust-input" min="0" max="100" '
       + 'value="' + trust + '" data-pid="' + escapeHtml(p.peer_id) + '" />'
       + '</td>'
-      + '<td class="peer-endpoint">' + (typeof endpoint === 'string' ? escapeHtml(endpoint) : endpoint) + '</td>'
+      + '<td class="peer-endpoint">' + endpoint + '</td>'
       + '<td class="peer-pub">' + hasPub + '</td>'
       + '<td><button class="peer-allow-toggle ' + allowCls
       + '" data-pid="' + escapeHtml(p.peer_id) + '" data-action="toggle-allow">'

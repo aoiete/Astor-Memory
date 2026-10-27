@@ -1106,6 +1106,122 @@ _ALLOW_SEARCH_KEY = "allow_search"
 
 _OUTBOUND_SEARCH_KEY = "outbound_search"
 
+# ---------------------------------------------------------------------------
+# v1.17.3 (2026-10-27): a peer can have more than one address.
+#
+# The endpoint column holds ONE address, and that turned out to be a
+# choice nobody should have to make. A peer on the same LAN is fastest
+# at 192.168.1.x; the same peer reached from another network is only
+# reachable by its public name. An operator who is on the LAN wants
+# the LAN address and an operator off the LAN wants the public one,
+# and the peer row can only say one thing.
+#
+# So: `endpoint` stays the primary address (nothing about the existing
+# behaviour changes), and `metadata.endpoints` holds the full ordered
+# list -- primary first, then the alternates. The dispatcher tries
+# them in order and stops at the first that answers. An unreachable
+# first address costs one timeout, not a failed search.
+#
+# Metadata JSON rather than a new column: same reason allow_search and
+# outbound_search live there -- no schema change for a field that did
+# not exist when the table was created.
+# ---------------------------------------------------------------------------
+
+_ENDPOINTS_KEY = "endpoints"
+
+
+def get_peer_endpoints(
+    peer_id: str,
+    astor_dir: str | None = None,
+) -> list[str]:
+    """Every address this peer can be reached at, in the order to try them.
+
+    The primary `endpoint` column comes first, then any alternates in
+    metadata.endpoints. Duplicates are dropped, order is preserved.
+    """
+    row = get_peer(peer_id, astor_dir=astor_dir)
+    if not row:
+        return []
+    out: list[str] = []
+    primary = (row.get('endpoint') or '').strip()
+    if primary:
+        out.append(primary.rstrip('/'))
+    meta = row.get('metadata') or {}
+    if isinstance(meta, str):
+        try:
+            import json as _json
+            meta = _json.loads(meta)
+        except Exception:
+            meta = {}
+    if isinstance(meta, dict):
+        for ep in (meta.get(_ENDPOINTS_KEY) or []):
+            ep = (str(ep or '')).strip()
+            if ep and ep.rstrip('/') not in out:
+                out.append(ep.rstrip('/'))
+    return out
+
+
+def set_peer_endpoints(
+    peer_id: str,
+    endpoints: list[str],
+    astor_dir: str | None = None,
+) -> bool:
+    """Replace the peer's address list. The first entry is the primary.
+
+    Returns True if the peer exists and the list was written.
+    """
+    import json as _json
+    clean: list[str] = []
+    for ep in (endpoints or []):
+        ep = (str(ep or '')).strip()
+        if not ep:
+            continue
+        if not (ep.startswith('http://') or ep.startswith('https://')):
+            raise ValueError(
+                f"endpoint must start with http:// or https://; got {ep!r}")
+        if ep not in clean:
+            clean.append(ep)
+    if not clean:
+        raise ValueError("at least one endpoint is required")
+    con = _get_conn(astor_dir)
+    with _RELATIONSHIPS_LOCK:
+        row = con.execute(
+            "SELECT metadata FROM peer_relationships WHERE peer_id = ?",
+            (peer_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            meta = _json.loads(row["metadata"]) if row["metadata"] else {}
+        except Exception:
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta[_ENDPOINTS_KEY] = clean
+        now = _now_iso()
+        con.execute(
+            "UPDATE peer_relationships "
+            "SET endpoint = ?, metadata = ?, updated_at = ? WHERE peer_id = ?",
+            (clean[0], _json.dumps(meta, ensure_ascii=False), now, peer_id),
+        )
+        con.commit()
+    return True
+
+
+def add_peer_endpoint(
+    peer_id: str,
+    endpoint: str,
+    astor_dir: str | None = None,
+) -> bool:
+    """Add one more address for a peer, keeping the existing order."""
+    cur = get_peer_endpoints(peer_id, astor_dir=astor_dir)
+    endpoint = (endpoint or '').strip()
+    if not endpoint:
+        raise ValueError("endpoint is required")
+    if endpoint.rstrip('/') in cur:
+        return True
+    return set_peer_endpoints(peer_id, cur + [endpoint], astor_dir=astor_dir)
+
 
 def _read_outbound_search_flag(
     peer_id: str,

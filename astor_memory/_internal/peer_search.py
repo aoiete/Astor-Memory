@@ -400,6 +400,33 @@ def select_search_targets(
     return targets
 
 
+def _endpoints_for(f: dict) -> list[str]:
+    """Every address a peer row lists, in the order to try them.
+
+    The primary `endpoint` column first, then any alternates in
+    metadata.endpoints. A peer on the LAN and the same peer reachable by
+    its public name can both be configured; the dispatcher tries them in
+    order and stops at the first that answers.
+    """
+    out: list[str] = []
+    primary = (f.get('endpoint') or '').strip()
+    if primary:
+        out.append(primary.rstrip('/'))
+    meta = f.get('metadata') or {}
+    if isinstance(meta, str):
+        try:
+            import json as _json_e
+            meta = _json_e.loads(meta)
+        except Exception:
+            meta = {}
+    if isinstance(meta, dict):
+        for ep in (meta.get('endpoints') or []):
+            ep = (str(ep or '')).strip()
+            if ep and ep.rstrip('/') not in out:
+                out.append(ep.rstrip('/'))
+    return out
+
+
 def dispatch_search_to_peers(
     request: PeerSearchRequest,
     targets: list[dict],
@@ -419,14 +446,20 @@ def dispatch_search_to_peers(
     import urllib.error
     responses = []
     for f in targets:
-        endpoint = (f.get('endpoint') or '').rstrip('/')
-        if not endpoint:
+        # v1.17.3: a peer can have several addresses -- the LAN one and
+        # the public one. Try them in order and stop at the first that
+        # answers, so an operator on the LAN gets the fast path and an
+        # operator off it gets the public one, without configuring
+        # anything differently.
+        endpoints = _endpoints_for(f)
+        if not endpoints:
             responses.append(PeerSearchResponse(
                 requestor_peer_id=request.requestor_peer_id,
                 results=(),
                 error='no_endpoint',
             ))
             continue
+        endpoint = endpoints[0]
         url = endpoint + '/v1/peer/public_search?req=' + urllib.parse.quote(
             request.to_query_string()
         )
@@ -441,52 +474,62 @@ def dispatch_search_to_peers(
                      "User-Agent": "astor-memory/peer-search"},
             method='GET',
         )
-        try:
-            with urllib.request.urlopen(req, timeout=per_peer_timeout) as resp:
-                body = resp.read(MAX_RESPONSE_BYTES + 1)
-                if len(body) > MAX_RESPONSE_BYTES:
+        # Try each address in turn; the first that answers wins. An
+        # address that times out costs one timeout, not a failed search.
+        last_error = 'no_endpoint'
+        for endpoint in endpoints:
+            url = endpoint + '/v1/peer/public_search?req=' + urllib.parse.quote(
+                request.to_query_string()
+            )
+            req = urllib.request.Request(
+                url,
+                headers={"Accept": "application/json",
+                         "User-Agent": "astor-memory/peer-search"},
+                method='GET',
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=per_peer_timeout) as resp:
+                    body = resp.read(MAX_RESPONSE_BYTES + 1)
+                    if len(body) > MAX_RESPONSE_BYTES:
+                        last_error = 'response_too_large'
+                        continue
+                    data = json.loads(body)
+                    results = tuple(
+                        PeerSearchResult(
+                            source_peer_id=r['source_peer_id'],
+                            source_trust=r.get('source_trust', 0),
+                            fact_id=r.get('fact_id', 0),
+                            content=r['content'],
+                            kind=r.get('kind', 'fact'),
+                            tags=tuple(r.get('tags', [])),
+                            created_at=r.get('created_at', ''),
+                            relevance=r.get('relevance', 0.5),
+                        )
+                        for r in data.get('results', [])
+                    )
                     responses.append(PeerSearchResponse(
                         requestor_peer_id=request.requestor_peer_id,
-                        results=(),
-                        error='response_too_large',
+                        results=results,
+                        truncated=data.get('truncated', False),
+                        error=data.get('error'),
                     ))
-                    continue
-                data = json.loads(body)
-                results = tuple(
-                    PeerSearchResult(
-                        source_peer_id=r['source_peer_id'],
-                        source_trust=r.get('source_trust', 0),
-                        fact_id=r.get('fact_id', 0),
-                        content=r['content'],
-                        kind=r.get('kind', 'fact'),
-                        tags=tuple(r.get('tags', [])),
-                        created_at=r.get('created_at', ''),
-                        relevance=r.get('relevance', 0.5),
-                    )
-                    for r in data.get('results', [])
-                )
-                responses.append(PeerSearchResponse(
-                    requestor_peer_id=request.requestor_peer_id,
-                    results=results,
-                    truncated=data.get('truncated', False),
-                    error=data.get('error'),
-                ))
-        except urllib.error.HTTPError as e:
+                    break
+            except urllib.error.HTTPError as e:
+                # 4xx is the peer's own answer -- it understood and
+                # refused. Trying the next address would be talking to
+                # the same node anyway, so stop.
+                last_error = f'HTTP {e.code}'
+                break
+            except urllib.error.URLError as e:
+                last_error = f'URLError: {e.reason}'
+                continue
+            except (TimeoutError, json.JSONDecodeError, Exception) as e:
+                last_error = f'{type(e).__name__}: {e}'
+                continue
+        else:
             responses.append(PeerSearchResponse(
                 requestor_peer_id=request.requestor_peer_id,
                 results=(),
-                error=f'HTTP {e.code}',
-            ))
-        except urllib.error.URLError as e:
-            responses.append(PeerSearchResponse(
-                requestor_peer_id=request.requestor_peer_id,
-                results=(),
-                error=f'URLError: {e.reason}',
-            ))
-        except (TimeoutError, json.JSONDecodeError, Exception) as e:
-            responses.append(PeerSearchResponse(
-                requestor_peer_id=request.requestor_peer_id,
-                results=(),
-                error=f'{type(e).__name__}: {e}',
+                error=last_error,
             ))
     return responses

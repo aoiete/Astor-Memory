@@ -924,6 +924,15 @@ def main(argv: list[str] | None = None) -> int:
 
     # v1.17.3: the OUTBOUND mirror of allow-search. allow-search is
     # "that peer may search me"; this is "I may search that peer".
+    # v1.17.3: a peer can be reachable at several addresses. The first
+    # is the primary; the rest are tried in order if it does not answer.
+    peer_endpoints = peer_sub.add_parser('endpoints',
+        help='List or replace the addresses for a peer')
+    peer_endpoints.add_argument('peer_id', help='Peer ID')
+    peer_endpoints.add_argument('urls', nargs='*',
+        help='Addresses, most preferred first')
+    peer_endpoints.set_defaults(func=cmd_peer_endpoints)
+
     peer_outbound = peer_sub.add_parser('outbound-search',
         help='Set whether I may search a peer (default: yes)')
     peer_outbound.add_argument('peer_id', help='Peer ID')
@@ -4655,6 +4664,44 @@ def cmd_peer_allow_search(args) -> int:
     return 0
 
 
+def cmd_peer_endpoints(args) -> int:
+    """v1.17.3: list or replace the addresses for a peer.
+
+    With no URLs it prints the current list. With URLs it replaces the
+    list; the first is the primary endpoint and the rest are alternates
+    tried in order when the primary does not answer.
+
+    A peer on the LAN and the same peer reachable by its public name can
+    both be configured:
+
+        am peer endpoints astor:xxx http://192.168.1.185:7803 \
+            https://peer.example.com
+    """
+    from .._internal.peer_relationships import (
+        get_peer_endpoints, set_peer_endpoints, get_peer,
+    )
+    if not get_peer(args.peer_id):
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        return 1
+    if not args.urls:
+        for i, ep in enumerate(get_peer_endpoints(args.peer_id)):
+            print(f'  {i + 1}. {ep}')
+        return 0
+    try:
+        ok = set_peer_endpoints(args.peer_id, list(args.urls))
+    except ValueError as e:
+        print(f'[ERR] {e}', file=sys.stderr)
+        return 1
+    if not ok:
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        return 1
+    print(f'[OK] endpoints for {args.peer_id}:')
+    for i, ep in enumerate(get_peer_endpoints(args.peer_id)):
+        print(f'  {i + 1}. {ep}')
+    print('     they are tried in this order; the first that answers wins')
+    return 0
+
+
 def cmd_peer_outbound_search(args) -> int:
     """v1.17.3: set whether I may search a peer.
 
@@ -5031,12 +5078,21 @@ def cmd_peer_endpoint_set(args) -> int:
     error -- the operator may be configuring a peer before it is up, or
     behind a firewall that blocks the probe but not the real request.
     """
-    from .._internal.peer_relationships import update_endpoint
+    from .._internal.peer_relationships import (
+        update_endpoint, add_peer_endpoint, get_peer_endpoints,
+    )
     try:
         result = update_endpoint(args.peer_id, args.url)
         if result:
             print(f'[OK] endpoint set: {args.peer_id[:20]}... → {args.url}')
             _warn_if_unreachable(args.url)
+            # v1.17.3: keep any alternates. A peer reachable at both a
+            # LAN address and a public name needs both, and replacing
+            # the primary must not drop the fallback.
+            alt = [e for e in get_peer_endpoints(args.peer_id)
+                   if e != args.url.rstrip('/')]
+            if alt:
+                print(f'     alternates kept: {", ".join(alt)}')
             return 0
         print(f'[ERR] peer not found: {args.peer_id}')
         return 1

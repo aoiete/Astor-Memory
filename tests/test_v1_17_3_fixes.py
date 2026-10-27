@@ -133,3 +133,71 @@ class TestOutboundSearchSwitch(unittest.TestCase):
         )
         self.assertTrue(_read_outbound_search_flag('astor:does-not-exist')
                         is False)  # unknown peer -> False
+
+
+class TestMultiEndpointPeer(unittest.TestCase):
+    """A peer can be reachable at more than one address.
+
+    The LAN address is fast and only works inside the LAN; the public
+    name works from anywhere. An operator should not have to pick one.
+    The dispatcher tries them in order and stops at the first that
+    answers.
+    """
+
+    def test_endpoints_helper_orders_primary_first(self):
+        from astor_memory._internal.peer_search import _endpoints_for
+        f = {'endpoint': 'http://192.168.1.185:7803',
+             'metadata': {'endpoints': ['http://192.168.1.185:7803',
+                                        'https://peer.example.com']}}
+        eps = _endpoints_for(f)
+        self.assertEqual(eps[0], 'http://192.168.1.185:7803')
+        self.assertIn('https://peer.example.com', eps)
+        # no duplicates
+        self.assertEqual(len(eps), len(set(eps)))
+
+    def test_endpoints_helper_without_metadata(self):
+        from astor_memory._internal.peer_search import _endpoints_for
+        self.assertEqual(_endpoints_for({'endpoint': 'http://a:1'}),
+                         ['http://a:1'])
+        self.assertEqual(_endpoints_for({}), [])
+
+    def test_set_and_get_roundtrip(self):
+        import os
+        import tempfile
+        from astor_memory._internal import peer_relationships as PR
+        tmp = tempfile.mkdtemp()
+        PR.add_peer('astor:multi1', alias='m', trust=60,
+                    endpoint='http://192.168.1.9:7803', astor_dir=tmp)
+        PR.set_peer_endpoints(
+            'astor:multi1',
+            ['http://192.168.1.9:7803', 'https://peer.example.com'],
+            astor_dir=tmp)
+        got = PR.get_peer_endpoints('astor:multi1', astor_dir=tmp)
+        self.assertEqual(got, ['http://192.168.1.9:7803',
+                               'https://peer.example.com'])
+        # the primary column is the first entry
+        row = PR.get_peer('astor:multi1', astor_dir=tmp)
+        self.assertEqual(row['endpoint'], 'http://192.168.1.9:7803')
+
+    def test_add_peer_endpoint_appends(self):
+        import os
+        import tempfile
+        from astor_memory._internal import peer_relationships as PR
+        tmp = tempfile.mkdtemp()
+        PR.add_peer('astor:multi2', alias='m', trust=60,
+                    endpoint='http://192.168.1.9:7803', astor_dir=tmp)
+        PR.add_peer_endpoint('astor:multi2', 'https://peer.example.com',
+                             astor_dir=tmp)
+        got = PR.get_peer_endpoints('astor:multi2', astor_dir=tmp)
+        self.assertEqual(got, ['http://192.168.1.9:7803',
+                               'https://peer.example.com'])
+
+    def test_rejects_non_http_endpoint(self):
+        import tempfile
+        from astor_memory._internal import peer_relationships as PR
+        tmp = tempfile.mkdtemp()
+        PR.add_peer('astor:multi3', alias='m', trust=60,
+                    endpoint='http://a:1', astor_dir=tmp)
+        with self.assertRaises(ValueError):
+            PR.set_peer_endpoints('astor:multi3', ['ftp://nope'],
+                                  astor_dir=tmp)
