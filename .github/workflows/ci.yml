@@ -85,10 +85,11 @@ jobs:
           done
           curl -fsS http://127.0.0.1:7803/v1/health || (cat /tmp/astor-server.log; exit 1)
 
-      - name: Run pytest (with 60s per-test timeout)
+      - name: Run pytest (with 180s per-test timeout)
         run: |
           export ASTOR_DIR=/tmp/astor-ci
-          pytest tests/ -v --tb=short -p no:cacheprovider --timeout=180
+          pytest tests/ -v --tb=short -p no:cacheprovider --timeout=180 \
+            --junitxml=pytest-report.xml
 
       - name: Stop astor server
         if: always()
