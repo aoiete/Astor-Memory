@@ -234,6 +234,8 @@ def search_peer(endpoint: str, query: str, peer_id: str, public_key: str,
     Tries the open-search path first, then falls back to the friend
     PPS path. Both are read-only: neither writes to the remote node.
     """
+    open_err = ''
+    open_detail = ''
     try:
         out = search_peer_open(endpoint, query, peer_id, public_key,
                                private_key, topic=topic, limit=limit,
@@ -241,18 +243,35 @@ def search_peer(endpoint: str, query: str, peer_id: str, public_key: str,
         if not out.get("error"):
             return out
         open_err = out.get("error")
+        open_detail = out.get("detail") or ""
     except ConnectError as e:
         open_err = str(e)
 
+    friend_err = ''
+    friend_detail = ''
     try:
         out = search_peer_friend(endpoint, query, peer_id, public_key,
                                  private_key, topic=topic, limit=limit,
                                  timeout=timeout)
         if not out.get("error"):
             return out
-        raise ConnectError("%s (open search: %s)" % (out.get("error"), open_err))
-    except ConnectError:
-        raise ConnectError("open search: %s" % open_err)
+        friend_err = out.get("error")
+        friend_detail = out.get("detail") or ""
+    except ConnectError as e:
+        friend_err = str(e)
+
+    # Keep the remote's own explanation. The bare code
+    # "open_search_closed" says nothing to the operator; the detail
+    # says "this node does not accept unsolicited queries", which is
+    # the difference between "I did something wrong" and "they have
+    # it closed". The previous version also raised inside the try and
+    # caught it with its own except, so the friend-path message was
+    # never the one that reached the caller.
+    detail = friend_detail or open_detail
+    parts = [p for p in (friend_err, open_err) if p]
+    raise ConnectError("%s%s" % (
+        "; ".join(parts),
+        " -- " + detail if detail else ""))
 
 
 def search_peer_friend(endpoint: str, query: str, peer_id: str, public_key: str,

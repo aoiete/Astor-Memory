@@ -4130,6 +4130,26 @@ def cmd_peer_read(args) -> int:
             timeout=args.timeout)
     except _pc.ConnectError as e:
         print('[ERR] %s' % e, file=sys.stderr)
+        # The bare error code is not something the operator can act on.
+        # Say what to do about it.
+        msg = str(e)
+        if 'open_search_closed' in msg:
+            # The remote's own detail already says what is wrong; only
+            # add the remedy, and only when the detail was not sent.
+            if 'does not accept unsolicited' not in msg:
+                print('      that node does not accept unsolicited queries.',
+                      file=sys.stderr)
+            print('      ask them to run: am peer open-search --allow --peer-id "*"',
+                  file=sys.stderr)
+        elif 'search_not_allowed' in msg:
+            print('      that node has not allowed this peer to search it.',
+                  file=sys.stderr)
+            print('      ask them to run: am peer allow-search %s' % args.peer_id,
+                  file=sys.stderr)
+        elif 'bad_signature' in msg:
+            print('      the signature did not verify -- the peer id or key',
+                  file=sys.stderr)
+            print('      you sent does not match the one they know.', file=sys.stderr)
         return 1
     results = res.get('results') or []
     print('[OK] %d result(s) from %s' % (len(results), row.get('alias') or args.peer_id))
