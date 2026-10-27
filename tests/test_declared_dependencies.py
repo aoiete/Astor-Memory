@@ -154,9 +154,29 @@ def _stdlib_names() -> set[str]:
     return names
 
 
-def _module_uses_third_party(tree: pyast.AST, local: set[str], stdlib: set[str]) -> set[str]:
-    """Top-level module names imported by `tree` that are neither local nor stdlib."""
+# A module that is stdlib on this interpreter but has a declared
+# backport for older ones. `import tomllib` inside a try/except that
+# falls back to `import tomli` is stdlib on 3.11+ and the backport on
+# 3.10 -- either way it is not a third-party dependency the project
+# failed to declare, and the AST scan cannot see the try/except.
+_STDLIB_BACKPORTS = {"tomllib": "tomli"}
+
+
+def _module_uses_third_party(tree: pyast.AST, local: set[str], stdlib: set[str],
+                             declared: set[str] | None = None) -> set[str]:
+    """Top-level module names imported by `tree` that are neither local nor stdlib.
+
+    `declared` is the set of distributions the project actually
+    declares. A module whose backport is declared counts as stdlib for
+    the module it stands in for.
+    """
     found: set[str] = set()
+    declared = declared or set()
+    # A backport that IS declared as a dependency satisfies the import
+    # of the stdlib module it stands in for.
+    for std_name, backport in _STDLIB_BACKPORTS.items():
+        if backport in local or backport in stdlib or backport in declared:
+            stdlib = stdlib | {std_name}
     for node in pyast.walk(tree):
         if isinstance(node, pyast.Import):
             for alias in node.names:
@@ -171,6 +191,31 @@ def _module_uses_third_party(tree: pyast.AST, local: set[str], stdlib: set[str])
                 if root not in local and root not in stdlib:
                     found.add(root)
     return found
+
+
+def _declared_distributions() -> set[str]:
+    """The distribution names pyproject declares, lowercased."""
+    try:
+        import tomllib as _toml
+    except ModuleNotFoundError:
+        try:
+            import tomli as _toml
+        except Exception:
+            return set()
+    try:
+        data = _toml.loads((REPO_ROOT / 'pyproject.toml').read_text(encoding='utf-8'))
+    except Exception:
+        return set()
+    out: set[str] = set()
+    deps = list((data.get('project') or {}).get('dependencies') or [])
+    for extra in ((data.get('project') or {}).get('optional-dependencies') or {}).values():
+        deps.extend(extra or [])
+    for spec in deps:
+        name = spec.split(';')[0].strip()
+        name = re.split(r'[<>=!~\[ ]', name)[0].strip().lower()
+        if name:
+            out.add(name.replace('-', '_'))
+    return out
 
 
 def _deps_excluded_by_marker() -> set[str]:
@@ -352,6 +397,19 @@ def test_clean_install_provides_every_imported_third_party_module(tmp_path: Path
     # Matching raw names reported pynacl as missing on an install that had it.
     # Walking the distributions' top_level.txt plus the module names actually
     # resolvable covers both spellings.
+    # The probe has to answer "which IMPORT names can this interpreter
+    # resolve", not "which distributions are installed" -- and it has to
+    # cope with wheels that ship no top_level.txt.
+    #
+    # tomli has no top_level.txt. Its wheel is tomli/tomli/__init__.py,
+    # so the import name is 'tomli' but nothing declares it. The old
+    # probe read only top_level.txt, so it reported tomli as absent
+    # even on an interpreter where tomli was installed and importable
+    # -- which is exactly what the py3.10 CI leg saw.
+    #
+    # So: keep reading the metadata (it names the distribution), and
+    # ALSO ask the import system directly. A name the interpreter can
+    # import is a name it can import.
     probe = (
         "import json, importlib.metadata as md, importlib.util as u\n"
         "names = set()\n"
@@ -365,6 +423,12 @@ def test_clean_install_provides_every_imported_third_party_module(tmp_path: Path
         "                names.add(line.split('.')[0])\n"
         "    except Exception:\n"
         "        pass\n"
+        "for n in list(names):\n"
+        "    try:\n"
+        "        if u.find_spec(n.replace('-', '_')) is not None:\n"
+        "            names.add(n.replace('-', '_'))\n"
+        "    except Exception:\n"
+        "        pass\n"
         "print(json.dumps(sorted(names)))\n"
     )
     r = subprocess.run([str(py), "-c", probe], capture_output=True, text=True)
@@ -376,6 +440,9 @@ def test_clean_install_provides_every_imported_third_party_module(tmp_path: Path
     stdlib = _stdlib_names()
     local = {p.name for p in REPO_ROOT.iterdir() if (p / "__init__.py").exists()}
     local |= {"astor_memory"}
+    # The distributions the project declares. A backport in here counts
+    # as covering the stdlib module it stands in for.
+    declared = _declared_distributions()
 
     needed: set[str] = set()
     for path in sorted((REPO_ROOT / "astor_memory").rglob("*.py")):
@@ -383,7 +450,7 @@ def test_clean_install_provides_every_imported_third_party_module(tmp_path: Path
             tree = pyast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:
             continue
-        needed |= _module_uses_third_party(tree, local, stdlib)
+        needed |= _module_uses_third_party(tree, local, stdlib, declared)
 
     # Modules reached only through a guarded import that degrades when the
     # library is absent. These are optional by construction: each site has a
