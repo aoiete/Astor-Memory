@@ -88,8 +88,22 @@ jobs:
       - name: Run pytest (with 180s per-test timeout)
         run: |
           export ASTOR_DIR=/tmp/astor-ci
+          set +e
           pytest tests/ -v --tb=short -p no:cacheprovider --timeout=180 \
-            --junitxml=pytest-report.xml
+            --junitxml=pytest-report.xml 2>&1 | tee pytest-stdout.txt
+          rc=${PIPESTATUS[0]}
+          # A failing run has to say WHICH test failed, without anyone
+          # needing auth to read the job log. The step summary is
+          # readable through the public API.
+          if [ "$rc" != "0" ]; then
+            {
+              echo "## pytest failed (exit $rc)"
+              echo '```'
+              grep -E '^(FAILED|ERROR) ' pytest-stdout.txt || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $rc
 
       - name: Stop astor server
         if: always()
