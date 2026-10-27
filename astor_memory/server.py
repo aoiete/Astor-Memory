@@ -1374,6 +1374,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return None
         if _path in ('/', '/index.html', '/favicon.ico'):
             return None
+        # The dashboard is also served at the root, and index.html there
+        # references its assets as /style.css and /app.js. Without these
+        # the public dashboard loads with no stylesheet and no script --
+        # it renders as unstyled HTML, which reads as "the styling is
+        # broken" rather than "an asset was refused".
+        if _path in ('/style.css', '/app.js'):
+            return None
         # Health and the stats endpoints are not data -- a health probe
         # returns no facts. Returning None from a before_request hook
         # does not stop the other hooks, so the ACL binding still runs.
