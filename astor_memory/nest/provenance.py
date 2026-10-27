@@ -53,19 +53,37 @@ def _open_conn(tier: str = 'public', user_id: str | None = None) -> sqlite3.Conn
     return conn
 
 
+def _columns_present(conn, names) -> set[str]:
+    """Which of `names` this database's memory_canonical actually has."""
+    try:
+        have = {r[1] for r in conn.execute("PRAGMA table_info(memory_canonical)")}
+    except Exception:
+        return set()
+    return {n for n in names if n in have}
+
+
 def _read_fact(
     tier: str, user_id: str | None, fact_id: int,
 ) -> Optional[dict]:
     """Read a fact row from bus. Returns None if missing."""
     conn = _open_conn(tier, user_id)
     try:
+        # v1.17.3 (2026-10-27): the evidence columns are v1.14.74+, and a
+        # database created before them does not have them. Selecting a
+        # missing column is an error, not an empty value, so ask the
+        # schema which of them this database actually has.
+        have = _columns_present(conn, (
+            'evidence_quote', 'source_ref', 'source_hash',
+        ))
+        cols = ['id', 'content', 'kind', 'importance', 'tags', 'metadata',
+                'event_id', 'namespace', 'user_id', 'promoted_at',
+                'tombstoned',
+                'parent_fact_ids', 'provenance_kind', 'provenance_agent',
+                'provenance_depth', 'provenance_at']
+        cols.extend(c for c in ('evidence_quote', 'source_ref', 'source_hash')
+                    if c in have)
         row = conn.execute(
-            "SELECT id, content, kind, importance, tags, metadata, "
-            "event_id, namespace, user_id, promoted_at, "
-            "tombstoned, "
-            "parent_fact_ids, provenance_kind, provenance_agent, "
-            "provenance_depth, provenance_at "
-            "FROM memory_canonical WHERE id = ?",
+            "SELECT %s FROM memory_canonical WHERE id = ?" % ", ".join(cols),
             (fact_id,),
         ).fetchone()
     finally:
@@ -76,9 +94,15 @@ def _read_fact(
             'event_id', 'namespace', 'user_id', 'promoted_at',
             'tombstoned',
             'parent_fact_ids', 'provenance_kind', 'provenance_agent',
-            'provenance_depth', 'provenance_at',
-            # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking
-            'evidence_quote', 'source_ref', 'source_hash')
+            'provenance_depth', 'provenance_at')
+    # v1.14.74+ Ship A2-Akasha: evidence-grounded source linking. The
+    # keys below are the ones the SELECT actually asked for -- the
+    # previous version listed all three unconditionally while the
+    # SELECT asked for none of them, so zip() truncated the dict and
+    # every provenance response silently lost its evidence.
+    keys = keys + tuple(
+        c for c in ('evidence_quote', 'source_ref', 'source_hash')
+        if c in have)
     rec = dict(zip(keys, row))
     # Parse JSON columns
     try:
