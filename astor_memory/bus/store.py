@@ -975,9 +975,10 @@ class AstorBus:
                 import numpy as _np
                 from astor_memory.nest.embeddings import astor_get_embedding_model, astor_get_model_name_for_ram
                 model_name_for_query = astor_get_model_name_for_ram()  # bge-base to match canonical vector index dim
-                model_for_query = astor_get_embedding_model(model_name=model_name_for_query)
                 from astor_memory.nest.embeddings import astor_embed_query_cached
-                query_emb = astor_embed_query_cached(model_for_query, model_name_for_query, query)
+                # Same v1.16.42 signature change that broke bitemporal: the
+                # helper takes (model_name, query) and routes to the pool.
+                query_emb = astor_embed_query_cached(model_name_for_query, query)
                 # Collect unmatched rows
                 unmatched = [r for r in rows if int(r[0]) not in kw_scores][:10]
                 # Try precomputed path first

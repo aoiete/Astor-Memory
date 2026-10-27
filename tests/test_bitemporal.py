@@ -312,5 +312,65 @@ class TestAutoInvalidateIntegration(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+
+class TestAutoInvalidateRetiresTheOldFact(unittest.TestCase):
+    """The auto-invalidate path must actually retire the old fact.
+
+    astor_embed_query_cached changed its signature in v1.16.42 and the
+    two call sites were not updated. The TypeError was swallowed by the
+    except inside the function, so the mechanism has been silently dead
+    since then, and the e2e test that covers it skips when it does not
+    fire -- so a green suite did not mean a working feature. Only 12
+    facts in the source tier had ever been superseded.
+
+    This test is deterministic. The two facts carry identical content,
+    so their similarity is 1.0 and no entity filter can be the reason
+    nothing was retired. It skips only when the embedding model cannot
+    be loaded, which is an environment problem and not a behaviour one.
+    """
+
+    def test_identical_correction_retires_the_previous_fact(self):
+        from astor_memory.bus.bitemporal import auto_invalidate_on_update
+
+        try:
+            from astor_memory.nest.embeddings import (
+                astor_get_embedding_model, astor_get_model_name_for_ram)
+            astor_get_embedding_model(model_name=astor_get_model_name_for_ram())
+        except Exception as exc:  # environment, not behaviour
+            self.skipTest(f"embedding model unavailable: {exc}")
+
+        b = _TempBus()
+        text = 'Maria launched the astor project'
+        ents = json.dumps([{'name': 'Maria'}])
+        for fid in (1, 2):
+            b.conn.execute(
+                "INSERT INTO memory_canonical (id, candidate_id, event_id, namespace, "
+                "content, kind, importance, entities_json, tombstoned, valid_until) "
+                "VALUES (?, 1, 1, 'public', ?, 'correction', 1.0, ?, 0, NULL)",
+                (fid, text, ents))
+        b.conn.commit()
+
+        result = auto_invalidate_on_update(
+            b, new_fact_id=2, content=text,
+            entities=[{'name': 'Maria'}], kind='correction')
+
+        # A swallowed TypeError comes back as an error dict, not a result.
+        self.assertNotIn('error', (result[0] if result else {}),
+                         f"auto-invalidate errored: {result}")
+
+        old = b.conn.execute(
+            "SELECT valid_until, invalidated_by FROM memory_canonical WHERE id = 1"
+        ).fetchone()
+        self.assertIsNotNone(old['valid_until'],
+                             'the older fact was not retired')
+        self.assertEqual(old['invalidated_by'], 2)
+
+        new = b.conn.execute(
+            "SELECT valid_until FROM memory_canonical WHERE id = 2"
+        ).fetchone()
+        self.assertIsNone(new['valid_until'],
+                          'the new fact must stay active')
+
+
 if __name__ == '__main__':
     unittest.main()

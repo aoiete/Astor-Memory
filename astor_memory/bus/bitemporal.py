@@ -328,7 +328,15 @@ def auto_invalidate_on_update(
     try:
         model_name = astor_get_model_name_for_ram()
         model = astor_get_embedding_model(model_name=model_name)
-        new_emb = astor_embed_query_cached(model, model_name, content[:500])
+        # v1.16.42 changed the signature to (model_name, query) so it can
+        # route to the pool. This call site was not updated, and the
+        # TypeError was swallowed by the except below, so auto-invalidation
+        # has been silently dead ever since.
+        # v1.16.42 changed the signature to (model_name, query) so it can
+        # route to the pool. This call site was not updated, and the
+        # TypeError was swallowed by the except below, so auto-invalidation
+        # has been silently dead ever since.
+        new_emb = astor_embed_query_cached(model_name, content[:500])
         cand_texts = [(int(r[0]), (r[1] or '')[:500], r[2], r[3], r[4])
                       for r in rows]
         cand_embs = list(model.embed(

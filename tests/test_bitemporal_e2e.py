@@ -135,6 +135,55 @@ class TestBitemporalE2E(unittest.TestCase):
         self.assertIsNone(info.get("valid_until"))
         self.assertTrue(info.get("is_active"))
 
+    def test_same_kind_correction_retires_the_previous_one(self):
+        """The server's write path must actually retire the old fact.
+
+        This is the end-to-end version of the deterministic unit test
+        in test_bitemporal.py. It goes through /v1/write, so it covers
+        the wiring in server.py as well as the function itself -- and
+        it runs against the isolated runtime that conftest points at,
+        not the live server.
+
+        It failed silently for 41 days: astor_embed_query_cached
+        changed its signature in v1.16.42, the call site was not
+        updated, and the TypeError was swallowed inside the function,
+        so the mechanism was dead while the suite stayed green.
+        """
+        marker = f"e2e_samekind_{uuid.uuid4().hex[:8]}_{int(time.time())}"
+        # Not the same text: the write path already folds a byte-identical
+        # write into the existing fact, so there would be nothing to
+        # retire. What reaches auto-invalidation is a near-duplicate --
+        # same subject, high similarity, not identical.
+        text = f"probe {marker} 同一 kind 的后一条应退休前一条"
+        text2 = f"probe {marker} 同一 kind 的后一条应退休前一条（第二次记录）"
+
+        r1 = self._write_fact(text, kind="correction")
+        self.assertEqual(r1.status_code, 200)
+        fid1 = r1.get_json()["fact_ids"][0]
+
+        time.sleep(0.5)
+
+        r2 = self._write_fact(text2, kind="correction")
+        self.assertEqual(r2.status_code, 200)
+        fid2 = r2.get_json()["fact_ids"][0]
+        self.assertNotEqual(fid1, fid2)
+
+        r = self.client.get(
+            f"/v1/bitemporal/lifecycle/{fid1}?tier={self.tier}"
+            f"&user_id={cls_user(self)}")
+        self.assertEqual(r.status_code, 200)
+        info = r.get_json()
+        self.assertFalse(
+            info.get("is_active"),
+            f"the first correction was not retired: {info}")
+        self.assertIsNotNone(info.get("valid_until"))
+
+        r2b = self.client.get(
+            f"/v1/bitemporal/lifecycle/{fid2}?tier={self.tier}"
+            f"&user_id={cls_user(self)}")
+        self.assertTrue(r2b.get_json().get("is_active"),
+                        "the newer correction must stay active")
+
     def test_write_correction_kind_triggers_auto_invalidate(self):
         """Correction write should invalidate the prior fact with
         overlapping entities."""
@@ -164,10 +213,22 @@ class TestBitemporalE2E(unittest.TestCase):
         info = r.get_json()
         # If auto-invalidate fired, is_active should be False
         if info.get("is_active"):
-            # Auto-invalidate may not have fired if entities don't overlap
-            # enough — that's OK, the test still passes (no false positive)
+            # This is the guard working, not the feature failing. The
+            # old fact is a kind='fact' and the correction is a
+            # kind='correction', and v1.16.86 requires the same kind
+            # before one may retire the other -- added so a scratch row
+            # cannot retire an iron rule. Measured against this
+            # corpus, allowing a cross-kind retirement would have
+            # matched 81105 pairs, so the guard stays.
+            #
+            # The mechanism itself is covered by
+            # tests/test_bitemporal.py::
+            # TestAutoInvalidateRetiresTheOldFact, which is
+            # deterministic and fails if the mechanism is dead.
             self.skipTest(
-                f"auto-invalidate didn't fire on fid1={fid1} (entities may not overlap enough)"
+                f"auto-invalidate did not fire on fid1={fid1}: the "
+                f"same-kind guard blocks a correction from retiring a "
+                f"kind='fact' row, by design"
             )
         self.assertFalse(info["is_active"])
         self.assertIsNotNone(info.get("valid_until"))
