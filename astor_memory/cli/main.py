@@ -96,6 +96,40 @@ def main(argv: list[str] | None = None) -> int:
                         help='Report what would be written without writing it')
     exp_p.set_defaults(func=cmd_export)
 
+    # am bundle -- the memory state as one portable file (machine-readable)
+    bundle_p = subparsers.add_parser(
+        'bundle',
+        help='Pack the memory state into one file, and put it back')
+    bundle_sub = bundle_p.add_subparsers(dest='bundle_cmd', required=True)
+
+    b_export = bundle_sub.add_parser(
+        'export', help='Pack the memory state into a tar.gz')
+    b_export.add_argument('--out', default=None,
+                          help='Output file (default: <astor_dir>/bundles/memory_<ts>.tar.gz)')
+    b_export.add_argument('--tiers', default='public',
+                          help='Comma-separated tiers to pack (default: public)')
+    b_export.add_argument('--users', default=None,
+                          help='Comma-separated private users to pack (default: every user)')
+    b_export.add_argument('--astor-dir', default=None,
+                          help='Astor runtime dir (default: $ASTOR_DIR)')
+    b_export.add_argument('--dry-run', action='store_true',
+                          help='Report what would be packed without packing it')
+    b_export.set_defaults(func=cmd_bundle_export)
+
+    b_import = bundle_sub.add_parser('import', help='Restore a bundle')
+    b_import.add_argument('path', help='Path to the bundle file')
+    b_import.add_argument('--astor-dir', default=None,
+                          help='Astor runtime dir (default: $ASTOR_DIR)')
+    b_import.add_argument('--dry-run', action='store_true',
+                          help='Report what would be restored without restoring it')
+    b_import.add_argument('--no-verify', action='store_true',
+                          help='Skip the checksum check (not recommended)')
+    b_import.set_defaults(func=cmd_bundle_import)
+
+    b_inspect = bundle_sub.add_parser('inspect', help='Show a bundle manifest')
+    b_inspect.add_argument('path', help='Path to the bundle file')
+    b_inspect.set_defaults(func=cmd_bundle_inspect)
+
     # am init
     sub = subparsers.add_parser('init', help='Initialize astor-memory')
     sub.set_defaults(func=cmd_init)
@@ -1159,6 +1193,83 @@ def cmd_export(args) -> int:
           % (rep['rows'], rep['files'], rep['out']))
     if args.git:
         print('     git: %s' % ('committed' if rep.get('git') else 'FAILED'))
+    return 0
+
+
+def cmd_bundle_export(args) -> int:
+    """`am bundle export` -- pack the memory state into one tar.gz."""
+    from astor_memory.bundle import export_bundle
+
+    astor_dir = (args.astor_dir or os.environ.get('ASTOR_DIR')
+                 or os.path.expanduser('~/.astor'))
+    tiers = [t.strip() for t in args.tiers.split(',') if t.strip()]
+    users = ([u.strip() for u in args.users.split(',') if u.strip()]
+             if args.users else None)
+    out = args.out or os.path.join(
+        astor_dir, 'bundles', 'memory_%s.tar.gz'
+        % time.strftime('%Y%m%d_%H%M%S'))
+    rep = export_bundle(astor_dir, out, tiers=tiers, user_ids=users,
+                        dry_run=args.dry_run)
+    man = rep['manifest']
+    if args.dry_run:
+        print('[dry-run] %d files, %.1f MB -> %s'
+              % (len(man['files']), man['total_bytes'] / 1024 / 1024, out))
+        for f in man['files']:
+            print('    %-52s %8.1f KB' % (f['arcname'], f['bytes'] / 1024))
+        return 0
+    print('[OK] packed %d files (%.1f MB) -> %s'
+          % (len(man['files']), man['total_bytes'] / 1024 / 1024, out))
+    for f in man['files']:
+        print('    %-52s %8.1f KB  %s'
+              % (f['arcname'], f['bytes'] / 1024, f['sha256'][:12]))
+    return 0
+
+
+def cmd_bundle_import(args) -> int:
+    """`am bundle import` -- put a bundle back."""
+    from astor_memory.bundle import import_bundle
+
+    astor_dir = (args.astor_dir or os.environ.get('ASTOR_DIR')
+                 or os.path.expanduser('~/.astor'))
+    try:
+        rep = import_bundle(args.path, astor_dir, dry_run=args.dry_run,
+                             verify=not args.no_verify)
+    except ValueError as e:
+        print('[FAIL] %s' % e)
+        return 1
+    if args.dry_run:
+        print('[dry-run] %d files would be restored into %s'
+              % (len(rep['plan']), astor_dir))
+        for p in rep['plan']:
+            print('    %-52s -> %s' % (p['arcname'], p['target']))
+        return 0
+    print('[OK] restored %d files into %s' % (rep['restored'], astor_dir))
+    return 0
+
+
+def cmd_bundle_inspect(args) -> int:
+    """`am bundle inspect` -- show what a bundle holds."""
+    from astor_memory.bundle import inspect_bundle
+
+    try:
+        man = inspect_bundle(args.path)
+    except Exception as e:
+        print('[FAIL] %s' % e)
+        return 1
+    print('bundle      %s' % man['bundle_path'])
+    print('size        %.1f MB' % (man['bundle_bytes'] / 1024 / 1024))
+    print('created     %s' % man['created_at'])
+    print('astor       %s' % man.get('astor_version'))
+    print('tiers       %s' % ', '.join(man.get('tiers') or []))
+    print('files       %d (%.1f MB)'
+          % (len(man['files']), man['total_bytes'] / 1024 / 1024))
+    for f in man['files']:
+        rows = ', '.join('%s=%d' % (k, v) for k, v in
+                         sorted(f['rows'].items()) if v)
+        print('    %-52s %8.1f KB  %s'
+              % (f['arcname'], f['bytes'] / 1024, f['sha256'][:12]))
+        if rows:
+            print('        %s' % rows)
     return 0
 
 
