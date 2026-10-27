@@ -94,48 +94,35 @@ host-header check removed, the peer exemption widened to a prefix, and
 the gate moved ahead of the ACL hook — and each one fails the tests
 that are supposed to catch it.
 
-### The theme was broken, not just the new features
+### The palette was left alone on purpose
 
-The dashboard had been restyled to a light warm theme, but a set of
-rules still carried fallbacks from the dark theme it used to be. Five
-CSS variables — `--card`, `--bg-card`, `--bg-soft`, `--bg-elev`,
-`--mono` — were referenced but never defined, so every rule that used
-them got the hardcoded dark fallback instead of a theme colour. The
-passcode gate was one of them: a near-black card with `--text`
-rendered on it, which under the light theme is dark text on a dark
-card — a contrast ratio of 1.0, invisible.
+An earlier version of this release also recoloured the dashboard: the
+accent was replaced with a darker variant wherever it was used as
+text, buttons went from white text on the accent fill to dark text,
+and the status colours got darker text variants. The intent was to
+raise the contrast ratio on the light background.
 
-Two more of the same kind:
+That was reverted. The theme is a warm palette that was tuned on
+purpose, and a contrast ratio below the WCAG threshold on a heading in
+a chosen palette is a judgement call for whoever chose the palette.
+Overriding it changed a dashboard the operator had said looked right,
+which is a worse outcome than the ratio it was meant to fix.
 
-- `--accent` (`#FF8C2E`) is a fill colour. It was also being used as
-  text colour on the light background, where it reached a ratio of
-  1.95. The headings, the peer ids and the role tags were all fading
-  out.
-- Buttons put white text on the accent fill, at 2.32.
+Against v1.17.0 the stylesheet now deletes exactly one line: the
+pagination button that was dark text on a hardcoded dark background,
+invisible in the light theme. It now uses the theme's own surface
+colour. Everything else in this release is additive.
 
-The fix keeps the theme exactly as it was and separates the two jobs:
+The features added here are written against the theme that is in use
+-- `--bg`, `--panel`, `--panel-2`, `--text`, `--text-dim`,
+`--accent`, `--border` -- so the passcode gate and the peer controls
+sit in the same palette as the rest of the dashboard rather than
+importing one of their own.
 
-    --accent-text: #A84807    the same hue, dark enough to read as text
-    --on-accent:   #2A1706    the text colour on an accent fill
-    --warn-text / --danger-text / --good-text
-
-Dark text on the bright orange reads at 7.40, where white on it read
-at 2.32 — so the buttons keep the colour they had and become legible.
-
-All five missing variables are now defined, so no rule falls back to a
-colour from a theme that no longer exists.
-
-The verification was programmatic rather than by eye: a pass over every
-text node in the live page computing WCAG contrast (340 nodes, 20
-failures before, 0 after), and a static pass over the stylesheet
-resolving every variable and compositing every alpha background (18
-failures before, 0 after).
-
-Two smaller findings came out of the same pass:
-
-- `white-space: nowrap` in the base rule outranks `overflow-wrap:
-  anywhere`, so the friend code in the header was clipped rather than
-  wrapped on a narrow screen.
-- The edge cache held static assets for four hours, so a rebuilt
-  dashboard kept serving the previous build. They now carry
-  `Cache-Control: no-cache`, and the asset URLs carry a version.
+The narrow-screen layout is also a change the theme did not ask for
+and does not affect: on a 390px screen the page was 723px wide and
+scrolled sideways, because the header meta row held a peer id, a
+friend code and three badges on one line, and the tables laid their
+columns out at their natural width. The tables now scroll inside
+their own container, the header row wraps, and the controls are at
+least 38px tall so they can be tapped.
