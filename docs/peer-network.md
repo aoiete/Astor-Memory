@@ -318,6 +318,47 @@ card with:
 Auto-polls every 60s alongside the rest of the dashboard. The panel
 is fully driven by the REST endpoints — no separate dashboard API.
 
+### What the panel can do (v1.17.1)
+
+Four controls, all of them backed by endpoints that already existed:
+
+| Control | Endpoint | What it does |
+|---|---|---|
+| Open to public search | `GET`/`POST /v1/peer/open-search` | Switches whether any signature-verified peer may query this node's public tier. `{"allow": false}` closes it to everyone. |
+| Add by URL | `GET /v1/peer/lookup?url=...` | Reads a node's public identity document from its URL and adds it, so a friend code does not have to be transcribed by hand. The lookup runs on the operator's machine — the browser never contacts the remote origin, so no credential leaves the host. |
+| Search peers | `GET /v1/peer/search?q=...` | Broadcasts a query to every eligible peer and shows what came back, with relevance and the peer each result came from. |
+| Copy peer id / friend code | `GET /v1/peer/identity` | The node's own identity, copyable, with the friend code when one is published. |
+
+### Two peer paths, two permission models
+
+This is the part that surprises people, so it is worth stating
+plainly:
+
+- **`/v1/peer/search`** broadcasts over the **friend** path. The far
+  side must list the requester as a friend with `allow_search` set,
+  and the requester needs trust >= 50 and an endpoint on file
+  locally. The friend path is mutual on purpose: being listed by
+  someone is a stronger signal than a signature.
+- **`am peer read`** queries one peer over the **open-search** path,
+  where the far side only has to have open search switched on. Any
+  signature-verified peer is welcome.
+
+Both are signed, both read the public tier only, and neither writes
+to the far side. The distinction is who has to opt in: the friend
+path needs the far side to know you by name, the open-search path
+needs only a switch.
+
+A peer that does not answer is reported in the panel rather than
+silently dropped — a peer that is on the list but cannot be reached
+is a different problem from a peer that has nothing to say.
+
+### The panel is behind a passcode
+
+The dashboard is reachable from the public internet, so it ships with
+a passcode gate. The page and its assets load for anyone (the page
+*is* the prompt); every data endpoint and every write needs the
+passcode. See `docs/dashboard.md` for the full matrix.
+
 ---
 
 ## Operational recipes
