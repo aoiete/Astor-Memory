@@ -87,8 +87,23 @@ HDR_PASSCODE = "X-Astor-Passcode"
 
 
 def _runtime_dir() -> Path:
-    base = os.environ.get("ASTOR_DIR") or ""
-    return Path(base) if base else Path.home() / ".astor"
+    """Where this node's runtime lives.
+
+    This has to be the same directory the server uses, or the passcode
+    ends up somewhere the operator does not think of and the two
+    halves of the gate disagree about where the node lives. The server
+    resolves it through astor_memory.config.get_default_astor_dir(),
+    which reads ASTOR_DIR, then install.json, then ~/.astor. This used
+    to look at ASTOR_DIR alone, so on a node installed into a project
+    directory the data was in <project>/.astor while the passcode was
+    in ~/.astor -- two different nodes, in effect.
+    """
+    try:
+        from ..config import get_default_astor_dir
+        return get_default_astor_dir()
+    except Exception:
+        base = os.environ.get("ASTOR_DIR") or ""
+        return Path(base) if base else Path.home() / ".astor"
 
 
 def _secret_path() -> Path:
@@ -104,6 +119,28 @@ def passcode_path() -> Path:
     return _secret_path()
 
 
+def _legacy_secret_path() -> Path:
+    """Where the passcode used to live before the runtime directory was
+    resolved the same way the server resolves it.
+
+    A node installed into a project directory kept its data in
+    <project>/.astor while the passcode sat in ~/.astor, because this
+    module used to read ASTOR_DIR alone and the server read install.json
+    as well. Now that both agree, an existing passcode has to be moved
+    across or the operator silently gets a different one after an
+    update.
+    """
+    try:
+        from ..config import get_default_astor_dir
+        current = get_default_astor_dir()
+    except Exception:
+        return Path.home() / ".astor" / "identity" / "dashboard_passcode"
+    legacy = Path.home() / ".astor" / "identity" / "dashboard_passcode"
+    if legacy == current / "identity" / "dashboard_passcode":
+        return legacy
+    return legacy
+
+
 def get_passcode() -> str:
     """The operator's passcode, creating one if there isn't one yet.
 
@@ -116,6 +153,22 @@ def get_passcode() -> str:
         if path.exists():
             val = path.read_text(encoding="utf-8").strip()
             if val:
+                return val
+    except Exception:
+        pass
+    # Migrate a passcode that was written to the old location, so an
+    # update does not quietly change the operator's code.
+    try:
+        legacy = _legacy_secret_path()
+        if legacy.exists() and legacy != path:
+            val = legacy.read_text(encoding="utf-8").strip()
+            if val:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(val, encoding="utf-8")
+                try:
+                    os.chmod(path, 0o600)
+                except Exception:
+                    pass
                 return val
     except Exception:
         pass
