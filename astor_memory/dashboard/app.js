@@ -908,7 +908,7 @@ async function resolveFriendRequest(id, accept) {
   const res = await fetch('/v1/peer/friend-requests/' + id + '/resolve', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accept: accept, trust: 30 }),
+    body: JSON.stringify({ accept: accept, trust: 60 }),
   });
   const d = await res.json().catch(() => ({}));
   if (!res.ok || !d.ok) {
@@ -1105,6 +1105,7 @@ function renderPeerRows(rows, sectionKey) {
   let html = '<table class="peer-table"><thead><tr>'
     + '<th>peer_id</th><th>alias</th><th>trust</th>'
     + '<th>endpoint</th><th>pubkey</th><th>allow</th>'
+    + '<th>search</th>'
     + '<th>updated</th><th>actions</th>'
     + '</tr></thead><tbody>';
   slice.forEach(p => {
@@ -1118,6 +1119,16 @@ function renderPeerRows(rows, sectionKey) {
     const allowCls = p.allow_search ? 'peer-allow-on' : 'peer-allow-off';
     const allowTxt = p.allow_search ? 'ON' : 'off';
     const updated = p.updated_at ? p.updated_at.slice(0, 10) : '—';
+    // Why a peer is not searchable from here. Trust and endpoint are the
+    // local gates; the remote's own allow-search is the fourth gate and
+    // only they can turn it on, so say so instead of showing a bare "no".
+    const search = (p.kind === 'blacklist' || p.kind === 'quarantine')
+      ? '<span class="recall-hint">blocked</span>'
+      : (trust < 50
+        ? '<span class="recall-hint">trust &lt; 50</span>'
+        : (!p.endpoint
+          ? '<span class="recall-hint">no endpoint</span>'
+          : '<span class="rc-tag rc-kind">✓</span>'));
     html += '<tr>'
       + '<td class="peer-pid" title="' + escapeHtml(p.peer_id) + '">'
       + escapeHtml(p.peer_id.length > 22 ? p.peer_id.slice(0,22) + '…' : p.peer_id)
@@ -1132,6 +1143,7 @@ function renderPeerRows(rows, sectionKey) {
       + '<td><button class="peer-allow-toggle ' + allowCls
       + '" data-pid="' + escapeHtml(p.peer_id) + '" data-action="toggle-allow">'
       + allowTxt + '</button></td>'
+      + '<td>' + search + '</td>'
       + '<td class="recall-hint">' + escapeHtml(updated) + '</td>'
       + '<td>'
       + (p.kind === 'blacklist'
@@ -1294,7 +1306,7 @@ async function onPeerAdd() {
   document.getElementById('peer-add-pid').value = '';
   document.getElementById('peer-add-alias').value = '';
   document.getElementById('peer-add-note').value = '';
-  document.getElementById('peer-add-trust').value = '30';
+  document.getElementById('peer-add-trust').value = '60';
   await fetchPeers();
   if (!endpoint) {
     alert('Added locally, but their friend code had no address.\n\n' +
@@ -1383,6 +1395,53 @@ async function onOpenSearchToggle() {
   }
 }
 
+async function loadFanoutState() {
+  const box = document.getElementById('peer-fanout');
+  const hint = document.getElementById('peer-fanout-hint');
+  if (!box) return;
+  try {
+    const r = await fetch('/v1/peer/fanout');
+    if (!r.ok) { if (hint) hint.textContent = 'status unavailable'; return; }
+    const j = await r.json();
+    box.checked = !!j.enabled;
+    if (hint) {
+      hint.textContent = j.source === 'env'
+        ? 'forced by ASTOR_PEER_FANOUT_DEFAULT'
+        : (box.checked
+          ? 'local miss asks peers (up to 10s; local hits unaffected)'
+          : 'local only — a miss returns empty');
+    }
+  } catch (e) {
+    if (hint) hint.textContent = 'status unavailable';
+  }
+}
+
+async function onFanoutToggle() {
+  const box = document.getElementById('peer-fanout');
+  const hint = document.getElementById('peer-fanout-hint');
+  if (!box) return;
+  const want = box.checked;
+  if (hint) hint.textContent = 'saving...';
+  try {
+    const r = await fetch('/v1/peer/fanout', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: want})
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      box.checked = !want;
+      if (hint) hint.textContent = 'failed: HTTP ' + r.status;
+      alert('could not change the auto peer-search setting: HTTP ' + r.status + ' ' + t.slice(0, 160));
+      return;
+    }
+    await loadFanoutState();
+  } catch (e) {
+    box.checked = !want;
+    if (hint) hint.textContent = 'failed';
+  }
+}
+
 async function onPeerAddByUrl() {
   const input = document.getElementById('peer-add-url');
   const msg = document.getElementById('peer-add-url-msg');
@@ -1415,7 +1474,7 @@ async function onPeerAddByUrl() {
     const add = await fetch('/v1/peer/add', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({peer_id: pid, endpoint: url, trust: 30})
+      body: JSON.stringify({peer_id: pid, endpoint: url, trust: 60})
     });
     if (!add.ok) {
       const t = await add.text();
@@ -1533,6 +1592,8 @@ async function onPeerAddByUrl() {
   }
   const openBox = document.getElementById('peer-open-search');
   if (openBox) openBox.addEventListener('change', onOpenSearchToggle);
+  const fanoutBox = document.getElementById('peer-fanout');
+  if (fanoutBox) fanoutBox.addEventListener('change', onFanoutToggle);
   const urlBtn = document.getElementById('peer-add-url-btn');
   const _searchBtn = document.getElementById('peer-search-btn');
   if (_searchBtn) _searchBtn.addEventListener('click', onPeerSearch);
@@ -1543,6 +1604,7 @@ async function onPeerAddByUrl() {
   if (urlBtn) urlBtn.addEventListener('click', onPeerAddByUrl);
   loadPeerIdentity().catch(() => {});
   loadOpenSearchState().catch(() => {});
+  loadFanoutState().catch(() => {});
 })();
 
 

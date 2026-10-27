@@ -172,6 +172,12 @@ def _module_uses_third_party(tree: pyast.AST, local: set[str], stdlib: set[str])
 
 
 @pytest.mark.slow
+# v1.17.2: this test installs the whole package from the network inside a bare
+# venv. With a warm uv cache that is seconds; on a cold CI runner competing
+# with the other matrix legs for bandwidth it has blown the default 180s
+# per-test timeout (b064aa0 failed exactly this way on the 3.10 and 3.12
+# legs while 3.11/3.13 passed). The work itself is correct — give it room.
+@pytest.mark.timeout(600)
 def test_clean_install_provides_every_imported_third_party_module(tmp_path: Path) -> None:
     """Build a venv from pyproject alone, then walk the package for imports.
 

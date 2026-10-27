@@ -160,7 +160,7 @@
 
       <input type="text" id="peer-add-alias" placeholder="alias (optional)" autocomplete="off">
 
-      <input type="number" id="peer-add-trust" placeholder="trust 0-100" min="0" max="100" value="30">
+      <input type="number" id="peer-add-trust" placeholder="trust 0-100" min="0" max="100" value="60">
 
       <input type="text" id="peer-add-note" placeholder="note (shown in their prompt)" autocomplete="off" style="min-width:170px">
 
@@ -219,6 +219,13 @@
         <span>Open to public search</span>
       </label>
       <span class="peer-switch-hint" id="peer-open-search-hint">loading…</span>
+    </div>
+    <div class="peer-self-right">
+      <label class="peer-switch" title="When local recall finds nothing, ask the peer network before giving up. Local hits are unaffected.">
+        <input type="checkbox" id="peer-fanout">
+        <span>Auto peer search</span>
+      </label>
+      <span class="peer-switch-hint" id="peer-fanout-hint">loading…</span>
     </div>
   </div>
   <div class="peer-add-by-url">

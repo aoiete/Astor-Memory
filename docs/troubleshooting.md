@@ -71,6 +71,43 @@ sudo dnf install gcc python3-devel
 
 ## Initialization errors
 
+### One node shows two peer_ids (identity split across directories)
+
+**Symptom:** `GET /v1/peer/identity` returns a different `peer_id` than
+the one your peers know, or the node's data "disappears" after a
+restart.
+
+**Cause:** `install.json` stored a **relative** `astor_dir` (e.g.
+`.astor`). A relative path resolves against whatever cwd the process
+started in, so starting the server from the source checkout and from
+the home directory produced two different runtime directories — and
+therefore two identities.
+
+**Fix:** store an absolute path. `am init` now does this automatically
+(`resolve_install_dir`), but a directory written by an older version
+still needs a one-time repair:
+
+```bash
+# check what is stored
+cat ~/.astor/install.json
+
+# rewrite astor_dir as an absolute path
+python - <<'PY'
+import json, pathlib
+p = pathlib.Path.home() / '.astor' / 'install.json'
+cfg = json.loads(p.read_text())
+cfg['astor_dir'] = str(pathlib.Path(cfg['astor_dir']).resolve())
+p.write_text(json.dumps(cfg, indent=2))
+print(cfg['astor_dir'])
+PY
+```
+
+Then restart the server and confirm `peer_id` is unchanged. Moving the
+runtime directory is safe **if `identity/` moves with it** — `peer_id`
+is read from `identity/peer_id`, not recomputed. Set `ASTOR_DIR` (or
+`ASTOR_HOME`) explicitly for any service, scheduled task, or script
+that starts the server, so the path never depends on the cwd.
+
 ### `am init` fails with "Permission denied"
 
 Default path `~/.astor/` not writable. Either:

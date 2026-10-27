@@ -6138,11 +6138,26 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # provenance explicitly. Default: no fanout. Anti-hostile: requires
         # explicit caller opt-in via body flag; per-peer rate limit (R12593
         # lock) still applies.
+        #
+        # v1.17.2 (2026-10-27): the node-level switch. A node with peers
+        # configured should use them, so the default is ON (peer_fanout
+        # module) unless ASTOR_PEER_FANOUT_DEFAULT forces it off. A caller
+        # can still opt out per call with peer_fanout=false. Cost: nothing
+        # on a local hit, up to TOTAL_TIMEOUT_SECONDS (10s) on a miss.
         _peer_dispatched = False
         _peer_results = []
         _peer_per_peer = []
         _peer_local_error = None
-        if body.get("peer_fanout") is True and not enriched:
+        _pf_req = body.get("peer_fanout")
+        if _pf_req is None:
+            try:
+                from ._internal import peer_fanout as _pf_mod
+                _pf_want = _pf_mod.is_enabled()
+            except Exception:
+                _pf_want = False
+        else:
+            _pf_want = bool(_pf_req)
+        if _pf_want and not enriched:
             # v1.15.27 Ship K: body.topic + body.topic_min_weight filters
             # for topic-aware PPS fanout.
             _pf_topic = body.get("topic") or None
@@ -10136,7 +10151,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             'error': 'missing_endpoint',
                             'detail': 'the peer endpoint URL is required to '
                                       'deliver a friend request'}), 400
-        trust = int(body.get('trust', 30))
+        trust = int(body.get('trust', 60))
         alias = body.get('alias') or None
         note = body.get('note') or ''
         try:
@@ -10190,7 +10205,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         from ._internal.peer_relationships import resolve_friend_request
         body = request.get_json(silent=True) or {}
         accept = bool(body.get('accept', False))
-        trust = int(body.get('trust', 30))
+        trust = int(body.get('trust', 60))
         alias = body.get('alias') or None
         try:
             out = resolve_friend_request(
@@ -10810,6 +10825,26 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'Search does not create friendships.',
         })
 
+    @app.route('/v1/peer/fanout', methods=['GET'])
+    def peer_fanout_status():
+        """Is /v1/read allowed to fall back to the peer network on a miss?"""
+        from ._internal import peer_fanout as _pf
+        return jsonify(_pf.status())
+
+    @app.route('/v1/peer/fanout', methods=['POST'])
+    def peer_fanout_toggle():
+        """Turn the auto peer-search fallback on or off for this node.
+
+        Body: {enabled: bool}. Costs nothing on a local hit; on a miss it
+        may spend up to 10s asking peers (3s per peer).
+        """
+        from ._internal import peer_fanout as _pf
+        body = request.get_json(silent=True) or {}
+        if 'enabled' not in body:
+            return jsonify({'error': 'enabled_required'}), 400
+        ok = _pf.set_enabled(bool(body.get('enabled')))
+        return jsonify({'ok': ok, **_pf.status()})
+
     @app.route('/v1/peer/quarantine/list', methods=['GET'])
     def peer_quarantine_list():
         from ._internal.peer_relationships import list_quarantined_peers
@@ -10884,7 +10919,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if not pid.startswith('astor:') or len(pid) != len('astor:') + 32:
             return jsonify({'error': 'invalid_peer_id',
                             'detail': 'must be astor:<32-hex>'}), 400
-        trust = int(body.get('trust', 30))
+        trust = int(body.get('trust', 60))
         if not 0 <= trust <= 100:
             return jsonify({'error': 'trust_out_of_range'}), 400
         kind = body.get('kind', 'friend')
@@ -10991,7 +11026,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if not targets:
             return jsonify({'results': [], 'count': 0,
                             'targets': 0,
-                            'hint': 'no eligible friends (trust>=50 + endpoint + allow_search)'})
+                            'hint': ('no eligible peers on this node — a peer needs '
+                                     'trust >= 50 and an endpoint here; the remote '
+                                     'must also have you as a friend with '
+                                     'allow-search on')})
         req = build_search_request(
             query=q, requestor_peer_id=me['peer_id'],
             requestor_pubkey=me['public_key'],

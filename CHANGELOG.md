@@ -1,3 +1,41 @@
+## v1.17.2 — 2026-10-27
+
+The peer network learned to speak up on its own.
+
+Two nodes that had added each other, trusted each other and allowed each
+other's searches could still fail to find anything, because the request
+never left the machine: `/v1/read` only reached the peers when the
+caller passed `peer_fanout: true`, and nothing in the dashboard or the
+Hermes adapter did that. The switch is now a node-level decision, on by
+default.
+
+    GET  /v1/peer/fanout                 # what is it doing now
+    POST /v1/peer/fanout {"enabled": false}
+    am peer fanout --off
+
+    # dashboard: "Auto peer search", next to the open-search switch
+
+What it costs, in the code's own numbers: **nothing** when local recall
+found something — the fan-out only fires on a miss. A miss may spend up
+to 10 seconds asking peers (3 seconds per peer). A node with no
+eligible peers pays nothing either way.
+
+This release also fixes the install path and the peer default trust:
+
+- **`am init` writes an absolute path.** A relative `astor_dir` in
+  `install.json` resolved against whatever directory the process
+  happened to start in, so one machine could end up with two identities
+  — one per working directory. The runtime now defaults to a sibling of
+  the source checkout (`<source>/../Astor-Memory-Runtime`), which keeps
+  it out of the source tree and out of the user profile.
+- **`peer add` defaults to trust 60, not 30.** Search needs trust >= 50,
+  so the old default made every freshly added peer invisible to the
+  network. The dashboard's peer table now shows *why* a peer is not
+  searchable ("trust < 50", "no endpoint") instead of a bare no.
+- **The peer-search hint now says what is actually missing.** It used to
+  list `allow_search` as a local requirement; that check lives on the
+  remote side.
+
 ## v1.17.0 — 2026-10-25
 
 The memory became readable.

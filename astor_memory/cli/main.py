@@ -647,7 +647,7 @@ def main(argv: list[str] | None = None) -> int:
                               help='URL of the other node, or a friend code '
                                    '(astor:<hex>@host)')
     peer_connect.add_argument('--alias', help='Human-readable name for it')
-    peer_connect.add_argument('--trust', type=int, default=30,
+    peer_connect.add_argument('--trust', type=int, default=60,
                               help='Trust score 0-100 (default 30)')
     peer_connect.add_argument('--note', default='', help='Note sent with the request')
     peer_connect.add_argument('--send', action='store_true',
@@ -707,7 +707,7 @@ def main(argv: list[str] | None = None) -> int:
         help='Add or update a friend')
     friend_add.add_argument('peer_id', help='Peer ID (astor:<32-hex>)')
     friend_add.add_argument('--alias', help='Human-readable alias')
-    friend_add.add_argument('--trust', type=int, default=30,
+    friend_add.add_argument('--trust', type=int, default=60,
         help='Trust score 0-100 (default 30 = new peer default)')
     friend_add.add_argument('--pubkey', help='Base64 public key for verify')
     friend_add.add_argument('--endpoint', help='HTTP endpoint URL (Phase 3)')
@@ -736,7 +736,7 @@ def main(argv: list[str] | None = None) -> int:
     friend_accept = friend_sub.add_parser('accept',
         help='Accept a pending inbound friend request by id')
     friend_accept.add_argument('request_id', type=int)
-    friend_accept.add_argument('--trust', type=int, default=30,
+    friend_accept.add_argument('--trust', type=int, default=60,
         help='Trust score to assign on accept (0-100, default 30)')
     friend_accept.add_argument('--alias', help='Override the alias '
         'displayed in the friend list')
@@ -921,6 +921,14 @@ def main(argv: list[str] | None = None) -> int:
         help='Revoke search permission for a friend')
     peer_unallow_search.add_argument('peer_id', help='Peer ID to revoke')
     peer_unallow_search.set_defaults(func=cmd_peer_unallow_search)
+
+    # v1.17.2: the node-level auto peer-search switch. `am peer fanout`
+    # shows it; `--off` turns it off, `--on` turns it on. Default is ON.
+    peer_fanout = peer_sub.add_parser('fanout',
+        help='Auto peer-search on a local miss (on by default)')
+    peer_fanout.add_argument('--on', action='store_true', help='Enable')
+    peer_fanout.add_argument('--off', action='store_true', help='Disable')
+    peer_fanout.set_defaults(func=cmd_peer_fanout)
 
     # v1.15.22 Ship E: PPS per-peer rate limit CLI.
     peer_rl = peer_sub.add_parser('rl',
@@ -1319,7 +1327,8 @@ def cmd_init(args) -> int:
 
         # 3. Prompt operator
         if astor_dir is None:
-            default = str(home_root / '.astor')
+            from ..config import default_install_dir, resolve_install_dir
+            default = str(default_install_dir())
             print('astor-memory first install — choose install location.')
             print(f'  Default: {default}')
             print('  Examples:')
@@ -1331,15 +1340,24 @@ def cmd_init(args) -> int:
                 answer = ''
             if not answer:
                 answer = default
-            astor_dir = Path(answer).expanduser()
+            astor_dir = resolve_install_dir(answer)
+        else:
+            # A saved path may be relative (written by an older `am init`).
+            # Resolve it now so the next write is absolute.
+            from ..config import resolve_install_dir
+            astor_dir = resolve_install_dir(astor_dir)
 
-            # Persist
-            install_json.parent.mkdir(parents=True, exist_ok=True)
-            install_json.write_text(
-                json.dumps({'astor_dir': str(astor_dir), 'installed_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}, indent=2),
-                encoding='utf-8'
-            )
-            print(f'[init] saved {install_json}')
+        # Persist
+        install_json.parent.mkdir(parents=True, exist_ok=True)
+        from ..config import _source_dir as _src_dir
+        install_json.write_text(
+            json.dumps({'astor_dir': str(astor_dir),
+                        'source_dir': str(_src_dir()),
+                        'installed_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())},
+                       indent=2),
+            encoding='utf-8'
+        )
+        print(f'[init] saved {install_json}')
 
     # Set env so downstream code (get_default_astor_dir) sees it
     os.environ['ASTOR_DIR'] = str(astor_dir)
@@ -4549,6 +4567,23 @@ def cmd_peer_blacklist(args) -> int:
     add_peer(args.peer_id, kind='blacklist', trust=0, metadata=metadata)
     reason_str = f' reason={args.reason!r}' if args.reason else ''
     print(f'[OK] blacklisted: {args.peer_id}{reason_str}')
+    return 0
+
+
+def cmd_peer_fanout(args) -> int:
+    """v1.17.2: the node-level auto peer-search switch.
+
+    /v1/read falls back to the peer network when local recall found
+    nothing. Local hits are never affected; a miss may cost up to 10s
+    asking peers (3s per peer). Default is ON.
+    """
+    from .._internal import peer_fanout as _pf
+    if getattr(args, 'on', False) or getattr(args, 'off', False):
+        want = bool(getattr(args, 'on', False)) and not bool(getattr(args, 'off', False))
+        _pf.set_enabled(want)
+    st = _pf.status()
+    print(f'[fanout] enabled={st["enabled"]} source={st["source"]}')
+    print('           local hits unaffected; a local miss may cost up to 10s')
     return 0
 
 

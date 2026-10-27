@@ -366,11 +366,10 @@ def select_search_targets(
                 continue
         # Opt-in enforcement is SERVER-side (friend's /v1/peer/public_search
         # returns 403 'search_not_allowed' unless THEIR local row for the
-        # requestor has metadata.allow_search=True). Local A-side flag is
-        # informational only — if the friend set it here too, we can skip
-        # the round-trip for known-not-opted-in peers.
-        allow = (f.get('allow_search')
-                 or (f.get('metadata') or {}).get('allow_search'))
+        # requestor has metadata.allow_search=True). The local allow_search
+        # flag on OUR row is inbound consent -- it says "that peer may search
+        # me" -- so it does not gate what we may search. Both sides must set
+        # their own flag, which is what makes the friend path bilateral.
         if trust < MIN_TRUST_FOR_SEARCH:
             continue
         if kind in ('blacklist', 'quarantine'):

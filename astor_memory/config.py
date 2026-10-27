@@ -18,6 +18,11 @@ DEFAULT_CONFIG_PATH_NAME = 'config.yaml'
 DEFAULT_BUS_PATH_NAME = 'astor_bus.db'
 DEFAULT_FORGE_PATH_NAME = 'astor_forge.db'
 DEFAULT_NEST_PATH_NAME = 'astor_nest.db'
+# Runtime lives next to the source checkout, not inside it. A relative
+# astor_dir in install.json resolves against whatever cwd the process
+# happened to start in, which is how one machine ended up with two
+# identities (one per cwd). Sibling + absolute removes the ambiguity.
+DEFAULT_RUNTIME_DIR_NAME = 'Astor-Memory-Runtime'
 
 
 def _astor_home() -> Path:
@@ -32,6 +37,35 @@ def _astor_home() -> Path:
     return Path(os.environ.get('ASTOR_HOME') or str(Path.home()))
 
 
+def _source_dir() -> Path:
+    """The source checkout this package was imported from."""
+    return Path(__file__).resolve().parent.parent
+
+
+def default_install_dir() -> Path:
+    """Where `am init` puts the runtime when the operator does not say.
+
+    A sibling of the source checkout: <parent>/Astor-Memory-Runtime. That
+    keeps the runtime OUT of the source tree (so a checkout move or a
+    re-clone cannot touch it) and OUT of the user profile (so it is not
+    mistaken for a per-user cache). Absolute by construction.
+    """
+    return _source_dir().parent / DEFAULT_RUNTIME_DIR_NAME
+
+
+def resolve_install_dir(raw: str | os.PathLike) -> Path:
+    """Turn an operator-supplied path into an absolute one.
+
+    install.json stores this value, and a relative one resolves against
+    the cwd of whatever process reads it later -- that is how one machine
+    grew a second identity. Resolve at write time, once.
+    """
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = (Path.cwd() / p).resolve()
+    return p
+
+
 def get_default_astor_dir() -> Path:
     """Get default astor dir (reads env at call time).
 
@@ -39,7 +73,7 @@ def get_default_astor_dir() -> Path:
     1. ASTOR_DIR env var (CI / scripted installs)
     2. $ASTOR_HOME/.astor/install.json `astor_dir` field (operator install)
     3. ~/.astor/install.json `astor_dir` field (legacy single-user)
-    4. ~/.astor default (cross-platform)
+    4. <source>/../Astor-Memory-Runtime (default install location)
     """
     env_dir = os.environ.get('ASTOR_DIR')
     if env_dir:
@@ -54,7 +88,7 @@ def get_default_astor_dir() -> Path:
                 return Path(saved).expanduser()
         except Exception:
             pass
-    return (_astor_home() / '.astor').expanduser()
+    return default_install_dir()
 
 
 def get_default_config_path() -> Path:

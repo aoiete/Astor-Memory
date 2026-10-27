@@ -268,6 +268,43 @@ Response shape:
 }
 ```
 
+### Auto peer-search on a local miss (v1.17.2)
+
+`/v1/read` used to reach the peer network only when the caller passed
+`peer_fanout: true`. The switch makes it a node-level decision instead.
+
+**Where it lives:** `identity/peer_fanout.json` on disk, so a restart
+does not silently change it. `GET /v1/peer/fanout` reads it,
+`POST /v1/peer/fanout {"enabled": true|false}` writes it. The dashboard
+exposes it as **Auto peer search** next to the open-search switch.
+
+**Default:** ON. A node with peers configured should use them.
+
+**What it costs — the numbers are the code's, not estimates:**
+
+| Situation | Cost |
+|---|---|
+| Local recall FOUND something | **0** — no peer is contacted, no extra latency |
+| Local recall found NOTHING | up to **10s** total budget (`TOTAL_TIMEOUT_SECONDS`), **3s** per peer (`PEER_TIMEOUT_SECONDS`) |
+
+So "on" does not mean "every read is slow". It means "a read that found
+nothing may take up to 10 extra seconds instead of returning empty".
+A node with no eligible peers (no trust>=50 row with an endpoint) pays
+nothing either way — the fan-out short-circuits on an empty target list.
+
+**Override order** (highest first):
+
+1. `ASTOR_PEER_FANOUT_DEFAULT` env var (`1`/`0`) — operator override,
+   wins over the stored decision
+2. `POST /v1/peer/fanout` — the dashboard switch
+3. default — ON
+
+A single request can still opt out with `{"peer_fanout": false}`, or
+force it with `{"peer_fanout": true}` regardless of the node setting.
+
+**Fan-out still fires only on a local miss.** A local hit never
+contacts a peer, so the switch cannot slow down the common path.
+
 ---
 
 ## Trust model
