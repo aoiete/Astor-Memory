@@ -42,6 +42,8 @@ except ModuleNotFoundError:  # Python 3.10
 
 import ast as pyast
 import subprocess
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -171,6 +173,126 @@ def _module_uses_third_party(tree: pyast.AST, local: set[str], stdlib: set[str])
     return found
 
 
+def _deps_excluded_by_marker() -> set[str]:
+    """Project dependencies whose environment marker excludes this interpreter.
+
+    "tomli; python_version < '3.11'" is not installed on 3.11 -- that is
+    what the marker means. The code uses stdlib tomllib there. A clean
+    install on 3.11 therefore has no tomli, and a test that reports it
+    as missing fails on every interpreter except the one it was
+    written for.
+
+    Only the markers packaging itself defines are honoured:
+    python_version, platform_system, sys_platform, os_name,
+    platform_machine, implementation_name. Anything else is treated as
+    "applies" -- excluding a dependency we cannot reason about would
+    hide a real omission.
+    """
+    try:
+        import tomllib as _toml
+    except ModuleNotFoundError:
+        try:
+            import tomli as _toml
+        except Exception:
+            return set()
+    try:
+        data = _toml.loads((REPO_ROOT / 'pyproject.toml').read_text(encoding='utf-8'))
+    except Exception:
+        return set()
+    deps = list((data.get('project') or {}).get('dependencies') or [])
+    for extra in ((data.get('project') or {}).get('optional-dependencies') or {}).values():
+        deps.extend(extra or [])
+
+    excluded: set[str] = set()
+    for spec in deps:
+        if ';' not in spec:
+            continue
+        name_part, marker = spec.split(';', 1)
+        name = re.split(r'[<>=!~\[ ]', name_part.strip())[0].strip().lower()
+        if not name:
+            continue
+        if not _marker_applies(marker.strip()):
+            excluded.add(name)
+    return excluded
+
+
+def _marker_applies(marker: str) -> bool:
+    """Does this PEP 508 environment marker hold for the running interpreter?"""
+    if not marker:
+        return True
+    import platform
+    import sys
+    env = {
+        'python_version': '%d.%d' % sys.version_info[:2],
+        'python_full_version': '%d.%d.%d' % sys.version_info[:3],
+        'platform_system': platform.system(),
+        'sys_platform': sys.platform,
+        'os_name': os.name,
+        'platform_machine': platform.machine(),
+        'implementation_name': sys.implementation.name,
+        'platform_python_implementation': platform.python_implementation(),
+    }
+    # Split on 'and' / 'or' at the top level.
+    parts = re.split(r'\s+(and|or)\s+', marker)
+    result = True
+    joiner = None
+    for part in parts:
+        if part == 'and' or part == 'or':
+            joiner = part
+            continue
+        val = _eval_marker_clause(part.strip(), env)
+        if joiner is None:
+            result = val
+        elif joiner == 'and':
+            result = result and val
+        else:
+            result = result or val
+        joiner = 'and'
+    return result
+
+
+def _eval_marker_clause(clause: str, env: dict) -> bool:
+    m = re.match(r"^([A-Za-z_]+)\s*(==|!=|>=|<=|>|<|~=)\s*['\"]([^'\"]*)['\"]$", clause)
+    if m:
+        key, op, want = m.group(1), m.group(2), m.group(3)
+        have = env.get(key)
+        if have is None:
+            return True
+        return _compare_versions(have, op, want)
+    # A bare name means "this marker variable is set".
+    return bool(env.get(clause.strip()))
+
+
+def _compare_versions(have: str, op: str, want: str) -> bool:
+    def _parts(v):
+        out = []
+        for p in re.split(r'[._-]', v):
+            try:
+                out.append(int(p))
+            except ValueError:
+                out.append(0)
+        return tuple(out)
+    a, b = _parts(have), _parts(want)
+    n = max(len(a), len(b))
+    a = a + (0,) * (n - len(a))
+    b = b + (0,) * (n - len(b))
+    if op == '==':
+        return a == b
+    if op == '!=':
+        return a != b
+    if op == '>=':
+        return a >= b
+    if op == '<=':
+        return a <= b
+    if op == '>':
+        return a > b
+    if op == '<':
+        return a < b
+    if op == '~=':
+        return a >= b and a[:2] == b[:2]
+    return True
+
+
 @pytest.mark.slow
 # v1.17.2: this test installs the whole package from the network inside a bare
 # venv. With a warm uv cache that is seconds; on a cold CI runner competing
@@ -276,6 +398,20 @@ def test_clean_install_provides_every_imported_third_party_module(tmp_path: Path
     OPTIONAL_WITH_FALLBACK = {
         "sentence_transformers", "yaml", "dateutil", "agent", "hermes_agent",
     }
+
+    # v1.17.3 (2026-10-27): a dependency with an environment marker is
+    # only installed when the marker matches the environment doing the
+    # install. "tomli; python_version < '3.11'" is absent from a 3.11
+    # clean install BY DESIGN -- the code uses stdlib tomllib there.
+    # Reporting it as missing made the test fail on every interpreter
+    # except 3.10, which is backwards: the point of the marker is that
+    # each interpreter gets the dependency it needs.
+    #
+    # Read the markers out of pyproject and drop the dependencies that
+    # are conditional on something this interpreter does not satisfy.
+    _marker_skipped = _deps_excluded_by_marker()
+    if _marker_skipped:
+        needed -= _marker_skipped
 
     missing = sorted(
         m for m in needed

@@ -152,6 +152,15 @@ dependencies = [
     # try/except actually has a backend to fall through to.
     "cryptography>=41.0,<47.0",
     "pynacl>=1.5,<2.0",
+    # v1.17.3 (2026-10-27): tomli is the tomllib backport for Python 3.10,
+    # and it used to be a TEST-ONLY dependency -- the dev extra said "no
+    # shipped code parses TOML". That stopped being true: the hermes
+    # installer reads requires-python out of pyproject.toml to decide
+    # whether the plugin it is about to write can even import
+    # astor_memory on the interpreter hermes runs. On Python 3.10 that
+    # import raised ModuleNotFoundError and the installer blew up.
+    # The dependency test caught it: a clean install had no tomli.
+    "tomli>=2.0,<3.0; python_version < '3.11'",
 
 
     "fastembed>=0.3,<1.0",
