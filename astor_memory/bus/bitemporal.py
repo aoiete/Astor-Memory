@@ -356,7 +356,23 @@ def auto_invalidate_on_update(
         except Exception:
             new_importance = 0.0
         results = []
-        for (fid, _txt, _ent, _ckind, _cimp), emb in zip(cands, cand_embs):
+        # v1.17.3 (2026-10-27): zip the CANDIDATE LIST with its embeddings,
+        # not the loop variable `cands`.
+        #
+        # `rows` is the union of every subject's candidates; `cands` is
+        # whatever the last iteration of the subject loop happened to
+        # return. They are different lists whenever there is more than
+        # one subject -- which is every query with more than one token.
+        # Zipping `cands` with `cand_embs` (which were computed over
+        # `rows`) paired each fact's metadata with a DIFFERENT fact's
+        # embedding, so the similarity score described somebody else.
+        #
+        # The bug was invisible while there was exactly one subject and
+        # one candidate. It showed up as an auto-invalidation that
+        # sometimes did not fire, depending on which subject happened to
+        # be last in the set iteration order -- which is why it looked
+        # flaky and failed only in a full-suite run.
+        for (fid, _txt, _ent, _ckind, _cimp), emb in zip(rows, cand_embs):
             en = float(_np.linalg.norm(emb))
             if new_norm > 0 and en > 0:
                 sim = float(_np.dot(new_emb, emb) / (new_norm * en))
