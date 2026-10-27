@@ -1,3 +1,116 @@
+// escapeHtml -- one HTML escaper for the whole file.
+//
+// It used to live inside the dashboard IIFE, while several of its
+// callers (fetchPeers, renderPeerRows) sit outside that IIFE. The
+// result was a ReferenceError at runtime: the peer panel caught the
+// error and rendered it as "fetch peers failed: escapeHtml is not
+// defined", which reads like a server problem rather than a scoping
+// one -- and the peer list never rendered at all.
+//
+// It is defined at the top level so every scope can reach it.
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// v1.17.0: passcode gate. The dashboard is reachable from the public
+// internet, so every request carries a session token. The token lives
+// in sessionStorage: a reload does not ask again, closing the tab does.
+//
+// fetch is wrapped rather than each call site being patched, because a
+// call site that forgets the header is a silent data leak, and there
+// are dozens of them.
+(function () {
+  const TOKEN_KEY = 'astor_admin_token';
+  const HDR = 'X-Astor-Admin-Token';
+
+  function getToken() {
+    try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; }
+  }
+  function setToken(t) {
+    try { t ? sessionStorage.setItem(TOKEN_KEY, t) : sessionStorage.removeItem(TOKEN_KEY); }
+    catch (e) { /* private mode: the page still works for this load */ }
+  }
+
+  const gate = document.getElementById('auth-gate');
+  const errBox = document.getElementById('auth-error');
+  let gateShown = false;
+
+  function showGate(msg) {
+    if (!gate) return;
+    gate.hidden = false;
+    gateShown = true;
+    if (errBox) {
+      errBox.textContent = msg || '';
+      errBox.hidden = !msg;
+    }
+    const input = document.getElementById('auth-passcode');
+    if (input) setTimeout(() => input.focus(), 30);
+  }
+  function hideGate() {
+    if (!gate) return;
+    gate.hidden = true;
+    gateShown = false;
+  }
+  window.__astorShowGate = showGate;
+
+  async function submitPasscode(code) {
+    const res = await fetch('/v1/auth/passcode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode: code }),
+    });
+    let body = {};
+    try { body = await res.json(); } catch (e) { /* non-JSON error */ }
+    if (!res.ok) {
+      showGate(body.detail || body.error || 'that passcode is not right');
+      return false;
+    }
+    setToken(body.token);
+    hideGate();
+    location.reload();
+    return true;
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('auth-submit');
+    const input = document.getElementById('auth-passcode');
+    if (btn) btn.addEventListener('click', () => {
+      submitPasscode((input && input.value) || '');
+    });
+    if (input) input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitPasscode(input.value || '');
+    });
+  });
+
+  const origFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    // The auth endpoints themselves must not carry a stale token, and
+    // the page load must not be blocked by our own gate.
+    const isAuth = url.indexOf('/v1/auth/') !== -1;
+    if (!isAuth && getToken()) {
+      init = init || {};
+      init.headers = Object.assign({}, init.headers || {}, { [HDR]: getToken() });
+      if (typeof input !== 'string' && input && input.headers) {
+        try { input.headers.set(HDR, getToken()); } catch (e) { /* ignore */ }
+      }
+    }
+    return origFetch(input, init).then((res) => {
+      if (res.status === 401) {
+        setToken('');
+        showGate('Enter the passcode to continue');
+      }
+      return res;
+    });
+  };
+})();
+
 /* Astor Dashboard frontend logic — fetch /v1/dashboard every 60s, render 6 sections */
 (function () {
   'use strict';
@@ -556,15 +669,6 @@ function _drawConnPage() {
     });
   }
 
-  function escapeHtml(s) {
-    if (s == null) return '';
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
 
   // boot
   document.addEventListener('DOMContentLoaded', () => {
@@ -1208,6 +1312,166 @@ async function onPeerAdd() {
 }
 
 document.getElementById('peer-add-btn').addEventListener('click', onPeerAdd);
+
+// v1.17.1: identity card, open-search switch, add-by-URL.
+// The identity card makes the peer id copyable instead of something the
+// operator has to dig out of a log file. The switch is the control that
+// decides whether other nodes may query this node's public tier at all,
+// so it belongs in the dashboard rather than the CLI only. Add-by-URL
+// removes the friend-code copy dance: a node publishes its own identity,
+// so pointing at the URL is enough.
+async function loadPeerIdentity() {
+  const idEl = document.getElementById('peer-self-id');
+  if (!idEl) return;
+  try {
+    const r = await fetch('/v1/peer/identity');
+    if (!r.ok) { idEl.textContent = '(identity unavailable)'; return; }
+    const j = await r.json();
+    idEl.textContent = j.peer_id || '(no peer id)';
+    idEl.dataset.peerId = j.peer_id || '';
+    idEl.dataset.friendCode = j.friend_code || '';
+  } catch (e) {
+    idEl.textContent = '(identity unavailable)';
+  }
+}
+
+async function loadOpenSearchState() {
+  const box = document.getElementById('peer-open-search');
+  const hint = document.getElementById('peer-open-search-hint');
+  if (!box) return;
+  try {
+    const r = await fetch('/v1/peer/open-search');
+    if (!r.ok) { if (hint) hint.textContent = 'status unavailable'; return; }
+    const j = await r.json();
+    const openTo = Array.isArray(j.open_to) ? j.open_to : [];
+    box.checked = openTo.includes('*');
+    if (hint) {
+      hint.textContent = box.checked
+        ? 'any signature-verified peer may query the public tier'
+        : (openTo.length ? ('open to ' + openTo.length + ' peer(s)') : 'closed to everyone');
+    }
+  } catch (e) {
+    if (hint) hint.textContent = 'status unavailable';
+  }
+}
+
+async function onOpenSearchToggle() {
+  const box = document.getElementById('peer-open-search');
+  const hint = document.getElementById('peer-open-search-hint');
+  if (!box) return;
+  const want = box.checked;
+  if (hint) hint.textContent = 'saving...';
+  try {
+    const r = await fetch('/v1/peer/open-search', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({allow: want, peer_id: '*'})
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      box.checked = !want;
+      if (hint) hint.textContent = 'failed: HTTP ' + r.status;
+      alert('could not change the open-search setting: HTTP ' + r.status + ' ' + t.slice(0, 160));
+      return;
+    }
+    await loadOpenSearchState();
+  } catch (e) {
+    box.checked = !want;
+    if (hint) hint.textContent = 'failed';
+  }
+}
+
+async function onPeerAddByUrl() {
+  const input = document.getElementById('peer-add-url');
+  const msg = document.getElementById('peer-add-url-msg');
+  if (!input) return;
+  const raw = (input.value || '').trim();
+  if (!raw) return;
+  let url = raw;
+  if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+  if (msg) msg.textContent = 'looking up...';
+  try {
+    // The lookup runs on the operator's machine (see /v1/peer/lookup), so
+    // the browser does not hit the remote origin's CORS policy and no
+    // credential leaves this host.
+    const look = await fetch('/v1/peer/lookup?url=' + encodeURIComponent(url));
+    if (!look.ok) {
+      let detail = '';
+      try { detail = (await look.json()).detail || ''; } catch (e) { /* ignore */ }
+      if (msg) msg.textContent = 'lookup failed: HTTP ' + look.status;
+      alert('could not read the identity at that URL.\n\nHTTP ' + look.status +
+            (detail ? '\n' + detail : '') +
+            '\n\nCheck the address, and that the node is reachable from this machine.');
+      return;
+    }
+    const j = await look.json();
+    const pid = j.peer_id;
+    if (!pid) {
+      if (msg) msg.textContent = 'no peer id at that URL';
+      return;
+    }
+    const add = await fetch('/v1/peer/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({peer_id: pid, endpoint: url, trust: 30})
+    });
+    if (!add.ok) {
+      const t = await add.text();
+      if (msg) msg.textContent = 'add failed: HTTP ' + add.status;
+      alert('add failed: HTTP ' + add.status + ' ' + t.slice(0, 160));
+      return;
+    }
+    input.value = '';
+    // Refresh the list, but do not let a failure in the refresh undo
+    // the fact that the peer was added. The add already succeeded; a
+    // refresh that throws is a display problem, not an add failure.
+    try {
+      await fetchPeers();
+    } catch (e) {
+      /* the list will refresh on the next poll */
+    }
+    if (msg) msg.textContent = 'added ' + pid;
+  } catch (e) {
+    if (msg) msg.textContent = 'lookup failed';
+  }
+}
+
+(function bindPeerSelfControls() {
+  const copyBtn = document.getElementById('peer-self-copy');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', () => {
+      const el = document.getElementById('peer-self-id');
+      if (!el) return;
+      const pid = el.dataset.peerId || el.textContent || '';
+      if (navigator.clipboard) navigator.clipboard.writeText(pid);
+      copyBtn.textContent = 'copied';
+      setTimeout(() => { copyBtn.textContent = 'copy'; }, 1200);
+    });
+  }
+  const codeBtn = document.getElementById('peer-self-code');
+  if (codeBtn) {
+    codeBtn.addEventListener('click', () => {
+      const el = document.getElementById('peer-self-id');
+      if (!el) return;
+      const code = el.dataset.friendCode || '';
+      if (!code) {
+        alert('no friend code yet -- set ASTOR_PUBLIC_ENDPOINT to publish one');
+        return;
+      }
+      if (navigator.clipboard) navigator.clipboard.writeText(code);
+      codeBtn.textContent = 'copied';
+      setTimeout(() => { codeBtn.textContent = 'friend code'; }, 1200);
+    });
+  }
+  const openBox = document.getElementById('peer-open-search');
+  if (openBox) openBox.addEventListener('change', onOpenSearchToggle);
+  const urlBtn = document.getElementById('peer-add-url-btn');
+  if (urlBtn) urlBtn.addEventListener('click', onPeerAddByUrl);
+  loadPeerIdentity().catch(() => {});
+  loadOpenSearchState().catch(() => {});
+})();
+
+
 document.getElementById('peer-refresh-btn').addEventListener('click', fetchPeers);
 // Auto-fetch on dashboard load (in addition to the 60s loop)
 fetchPeers().catch(() => {});

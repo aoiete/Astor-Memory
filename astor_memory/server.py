@@ -1197,6 +1197,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
 
     @app.before_request
+    @app.before_request
     def _astor_bind_request_acl() -> None:
         # Reset per-request bus/nest tracking lists.
         _request_buses.clear()
@@ -1343,6 +1344,55 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except AttributeError:
             astor_init_acl(actor='admin:admin', role='admin', tier='public',
                            subscription_plan=None)
+
+
+    @app.before_request
+    def _astor_dashboard_auth_gate():
+        '''Passcode gate for the dashboard and the write endpoints.
+    
+        This deployment is reachable from the public internet (a tunnel
+        points at it), and the dashboard had no authentication: anyone who
+        opened the URL could read the aggregate payload -- which includes
+        private-tier fact text and the list of bound users -- and could
+        call the write endpoints directly. One operator, one dashboard, so
+        this is a passcode, not a user system.
+    
+        Loopback is exempt: the CLI, the Hermes adapter and the cron jobs
+        are on this machine and already have the runtime directory. The
+        public tier's read endpoints stay open -- that is what the public
+        tier is for, and the peer federation depends on it.
+        '''
+        from ._internal import dashboard_auth as _dauth
+        _path = request.path or ''
+        _method = (request.method or 'GET').upper()
+        # Static assets and the health probe: the page has to load
+        # before a passcode can be typed, and a health probe is not data.
+        # The dashboard page and its assets are not secret -- the page IS
+        # the passcode prompt. It has to load before anyone can type a
+        # passcode. The data behind it is what the gate protects.
+        if _path.startswith('/dashboard/') or _path.startswith('/static/'):
+            return None
+        if _path in ('/', '/index.html', '/favicon.ico'):
+            return None
+        # Health and the stats endpoints are not data -- a health probe
+        # returns no facts. Returning None from a before_request hook
+        # does not stop the other hooks, so the ACL binding still runs.
+        if _path in ('/health', '/v1/health', '/v1/lex/stats', '/v1/snapshot/stats',
+                     '/v1/cascade/stats', '/v1/viewer/stats', '/v1/audit/health'):
+            return None
+        if _path in ('/v1/auth/passcode', '/v1/auth/session', '/v1/auth/logout'):
+            return None
+        _allowed, _reason = _dauth.request_is_authorized(
+            request.headers, request.remote_addr or '', _method, _path,
+            host=request.host or '')
+        if _allowed:
+            return None
+        return jsonify({
+            'error': 'passcode_required',
+            'detail': ('this endpoint needs the dashboard passcode; '
+                        'send it as ' + _dauth.HDR_TOKEN),
+            'reason': _reason,
+        }), 401
 
     @app.teardown_request
     def _astor_close_request_buses(_exc) -> None:
@@ -2454,6 +2504,55 @@ def create_app(astor_dir: str | None = None) -> Flask:
             "ship_c_warn": ship_c_warn,
         })
 
+    @app.route('/v1/auth/passcode', methods=['POST'])
+    def auth_passcode():
+        '''Exchange the passcode for a session token.
+    
+        The passcode is never returned by any endpoint. It is compared
+        in constant time, and repeated wrong guesses are throttled per
+        client so that guessing online is slower than guessing offline.
+        '''
+        from ._internal import dashboard_auth as _dauth
+        body = request.get_json(silent=True) or {}
+        code = (body.get('passcode') or '').strip()
+        client = request.remote_addr or 'unknown'
+        allowed, info = _dauth.check_attempt(client)
+        if not allowed:
+            return jsonify({'error': 'too_many_attempts',
+                            'detail': 'try again later',
+                            **info}), 429
+        if not _dauth.check_passcode(code):
+            _dauth.record_failure(client)
+            return jsonify({'error': 'bad_passcode',
+                            'detail': 'that passcode is not right'}), 401
+        _dauth.record_success(client)
+        token = _dauth.issue_session()
+        return jsonify({'ok': True, 'token': token,
+                        'expires_in': _dauth.SESSION_TTL_SECONDS})
+
+    @app.route('/v1/auth/session', methods=['GET'])
+    def auth_session_status():
+        '''Is the token in this request still live? The dashboard polls
+        this on load so a stale tab shows the passcode screen instead of
+        a half-broken page.
+        '''
+        from ._internal import dashboard_auth as _dauth
+        token = (request.headers.get(_dauth.HDR_TOKEN) or '').strip()
+        if _dauth.is_local_request(request.remote_addr or '',
+                                      host=request.host or ''):
+            return jsonify({'ok': True, 'loopback': True})
+        return jsonify({'ok': _dauth.valid_session(token),
+                        'expires_in': _dauth.SESSION_TTL_SECONDS})
+
+    @app.route('/v1/auth/logout', methods=['POST'])
+    def auth_logout():
+        '''Drop the session token. The browser forgets its copy too.
+        '''
+        from ._internal import dashboard_auth as _dauth
+        token = (request.headers.get(_dauth.HDR_TOKEN) or '').strip()
+        _dauth.revoke_session(token)
+        return jsonify({'ok': True})
+
     @app.route('/dashboard/', methods=['GET'])
     @app.route('/dashboard/index.html', methods=['GET'])
     @app.route('/', methods=['GET'])
@@ -2466,6 +2565,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
         - /  (root — convenient default for the public hostname)
         """
         from flask import send_from_directory, redirect
+        # The page itself is NOT secret, and gating it would be a bug:
+        # the page IS the passcode prompt, so a gated page can never
+        # render the prompt, and the operator is locked out of their own
+        # dashboard with no way to enter the code. The shell is served to
+        # anyone; every endpoint it calls requires the passcode.
+        #
+        # The shell contains no data -- it is HTML, CSS and JS. The
+        # data lives behind /v1/dashboard and the peer endpoints, and
+        # those are gated.
         dashboard_dir = Path(__file__).parent / "dashboard"
         # If request is for `/`, serve dashboard HTML directly.
         # If request is for `/dashboard/` or `/dashboard/index.html`, same.
@@ -2475,10 +2583,23 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
     @app.route('/dashboard/<path:filename>', methods=['GET'])
     def dashboard_static(filename):
-        """Serve dashboard static assets (style.css, app.js)."""
+        """Serve dashboard static assets (style.css, app.js).
+
+        The assets are versioned in the HTML (?v=1.17.1), but the edge
+        cache in front of this server keys on the URL and does not know
+        that the version means anything. With a four-hour max-age it
+        kept serving the previous build long after the file changed,
+        which reads as "my change did nothing". The cache headers below
+        tell the edge not to hold on to them; the version parameter
+        still gives the browser a fresh URL when the file really did
+        change.
+        """
         from flask import send_from_directory
         dashboard_dir = Path(__file__).parent / "dashboard"
-        return send_from_directory(str(dashboard_dir), filename)
+        resp = send_from_directory(str(dashboard_dir), filename)
+        resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
+        resp.headers['ETag'] = ''
+        return resp
 
     @app.route('/<path:filename>', methods=['GET'])
     def root_static(filename):
@@ -10605,6 +10726,71 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'peer_id': pid,
             'open_to': _pos.open_peers(),
         }), (200 if ok else 400)
+
+    @app.route('/v1/peer/lookup', methods=['GET'])
+    def peer_lookup():
+        """Look up a node's public identity by URL.
+
+        The dashboard cannot fetch a remote node directly: the browser
+        would hit the remote origin's CORS policy, and the operator's
+        own credentials would have to travel to a host they do not
+        control. So the lookup happens here, on the operator's machine,
+        and only the public identity document comes back.
+
+        Nothing is stored by this call -- it answers "who is at that
+        URL" so the operator can decide whether to add it.
+        """
+        url = (request.args.get('url') or '').strip()
+        if not url:
+            return jsonify({'error': 'url_required'}), 400
+        try:
+            from ._internal import peer_connect as _pc
+            ident = _pc.fetch_identity(url)
+        except Exception as e:
+            return jsonify({'error': 'lookup_failed',
+                            'detail': str(e)[:300]}), 502
+        return jsonify({
+            'peer_id': ident.get('peer_id'),
+            'public_key': ident.get('public_key'),
+            'endpoint': ident.get('endpoint'),
+        })
+
+    @app.route('/v1/peer/identity', methods=['GET'])
+    def peer_identity_public():
+        """This node's public identity: peer_id, public key, friend code.
+    
+        Public on purpose. A peer_id is not a secret -- it is the
+        subject of every signature this node makes -- and the public
+        key is how a stranger verifies those signatures. What is
+        NOT here: the private key, the local path, the tier layout,
+        or any fact.
+    
+        This is what `am peer connect <endpoint>` reads to learn
+        who it is talking to. Without it, a node behind NAT would
+        have to be told its peer_id and public key by hand, and a
+        stranger would have nothing to verify.
+        """
+        from ._internal.peer_identity import (
+            init_identity, local_friend_code,
+        )
+        try:
+            ident = init_identity()
+        except Exception as e:
+            return jsonify({
+                'error': 'identity_unavailable',
+                'detail': str(e),
+            }), 503
+        code = ''
+        try:
+            code = local_friend_code()
+        except Exception:
+            pass
+        return jsonify({
+            'peer_id': ident.get('peer_id'),
+            'public_key': ident.get('public_key'),
+            'first_run_ts': ident.get('first_run_ts'),
+            'friend_code': code,
+        })
 
     @app.route('/v1/peer/open-search', methods=['GET'])
     def peer_open_search_status():

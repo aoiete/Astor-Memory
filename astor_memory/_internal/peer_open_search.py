@@ -44,9 +44,52 @@ _budget: dict[str, list[float]] = {}
 # Set of peer_ids allowed to query without a friendship. Empty = closed.
 _open_to: dict[str, dict] = {}
 
+# This was an in-memory dict, which meant the operator's decision
+# evaporated on every restart: you open your public tier, the server
+# bounces for an unrelated reason, and your peers start getting 403
+# again with nothing in the logs to say why. Every other peer setting
+# lives in the database; this one now does too.
+_STATE_FILE = "peer_open_search.json"
+
+
+def _state_path(astor_dir=None) -> Path:
+    import os as _os
+    base = _os.environ.get("ASTOR_DIR") or astor_dir or ""
+    root = Path(base) if base else Path.home() / ".astor"
+    return root / "identity" / _STATE_FILE
+
+
+def _load(astor_dir=None) -> None:
+    path = _state_path(astor_dir)
+    try:
+        if not path.exists():
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(v, dict):
+                _open_to[k] = v
+
+
+def _save(astor_dir=None) -> None:
+    path = _state_path(astor_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(_open_to, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+    except Exception:
+        pass
+
 
 def _now() -> float:
     return time.monotonic()
+
+
+# Restore the operator's grants at import time, so a restart does not
+# silently close a public tier that was opened on purpose.
+_load()
 
 
 def is_open_for(peer_id: str) -> bool:
@@ -67,6 +110,7 @@ def set_open(peer_id: str, allow: bool = True, *, note: str = "") -> bool:
         _open_to[peer_id] = {'since': _now(), 'note': note}
     else:
         _open_to.pop(peer_id, None)
+    _save()
     return True
 
 
@@ -77,6 +121,7 @@ def open_peers() -> list[str]:
 def close_all() -> None:
     """Revoke every open-search grant."""
     _open_to.clear()
+    _save()
 
 
 def check_rate(peer_id: str, *, limit: int = _MAX_PER_WINDOW,

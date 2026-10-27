@@ -10,13 +10,31 @@
 
 <title>Astor Dashboard</title>
 
-<link rel="stylesheet" href="style.css?v=1.16.76">
+<link rel="stylesheet" href="style.css?v=1.17.1">
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
 </head>
 
 <body>
+<!-- v1.17.0: the dashboard is reachable from the public internet, so it
+     has a passcode. The gate lives on the server; this is the screen
+     that asks for it. -->
+<div id="auth-gate" class="auth-gate" hidden>
+  <div class="auth-gate-card">
+    <div class="auth-gate-icon">🧠</div>
+    <div class="auth-gate-title">Astor Dashboard</div>
+    <div class="auth-gate-sub">Enter the passcode to continue</div>
+    <input type="password" id="auth-passcode" class="auth-input"
+           placeholder="passcode" autocomplete="current-password"
+           autofocus>
+    <button id="auth-submit" class="btn-primary auth-btn">Unlock</button>
+    <div id="auth-error" class="auth-error" hidden></div>
+    <div class="auth-gate-hint">The passcode is stored in your runtime
+      directory, not in the app.</div>
+  </div>
+</div>
+
 
 <!-- S18 (2026-09-10): This dashboard ships as a generic template in the
 
@@ -185,6 +203,27 @@
 
   </div>
 
+  <!-- v1.17.1: identity card + open-search switch + add-by-URL -->
+  <div class="peer-self-bar" id="peer-self-bar">
+    <div class="peer-self-left">
+      <span class="peer-self-label">This node</span>
+      <code id="peer-self-id" class="peer-self-id">…</code>
+      <button class="btn-sm btn-plain" id="peer-self-copy" title="Copy my peer id">copy</button>
+      <button class="btn-sm btn-plain" id="peer-self-code" title="Copy my friend code">friend code</button>
+    </div>
+    <div class="peer-self-right">
+      <label class="peer-switch">
+        <input type="checkbox" id="peer-open-search">
+        <span>Open to public search</span>
+      </label>
+      <span class="peer-switch-hint" id="peer-open-search-hint">loading…</span>
+    </div>
+  </div>
+  <div class="peer-add-by-url">
+    <input type="text" id="peer-add-url" placeholder="or paste their node URL (https://host or host:port) — their peer id is looked up automatically" autocomplete="off" style="min-width:340px">
+    <button id="peer-add-url-btn" class="btn-primary" title="Look up the peer identity at that URL and add it">Look up &amp; add</button>
+    <span class="peer-add-url-msg" id="peer-add-url-msg"></span>
+  </div>
   <div id="peer-panel-body" class="peer-body">
 
     <div class="recall-hint">Loading peers…</div>
@@ -479,7 +518,7 @@
 
 
 
-<script src="app.js?v=1.16.76"></script>
+<script src="app.js?v=1.17.1"></script>
 
 </body>
 

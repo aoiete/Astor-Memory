@@ -63,6 +63,19 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest='command')
 
     # am version
+    # am dashboard passcode -- the gate on the public dashboard
+    dash_p = subparsers.add_parser(
+        'dashboard', help='Dashboard access control')
+    dash_sub = dash_p.add_subparsers(dest='dashboard_command', required=True)
+    dash_pc = dash_sub.add_parser(
+        'passcode', help='Show or set the dashboard passcode')
+    dash_pc.add_argument('--set', default=None,
+                          help='Set a new passcode (min 6 chars) and revoke sessions')
+    dash_pc.add_argument('--reset', action='store_true',
+                          help='Print the current passcode')
+    dash_pc.set_defaults(func=cmd_dashboard_passcode)
+
+
     sub = subparsers.add_parser('version', help='Show version')
     sub.set_defaults(func=cmd_version)
 
@@ -576,6 +589,51 @@ def main(argv: list[str] | None = None) -> int:
     peer_p = subparsers.add_parser('peer', help='Peer network identity + relationships (Phase 1: status only)')
     peer_sub = peer_p.add_subparsers(dest='peer_command', required=True)
 
+    # v1.17.0: public-tier read-only access for peers we cannot reach.
+    # A node behind NAT cannot be dialled, so the working direction is
+    # outbound from their side. These three commands make that a
+    # one-liner on each end.
+    peer_open_search = peer_sub.add_parser(
+        'open-search',
+        help='Open or close public-tier search for signature-verified peers')
+    peer_open_search.add_argument('--peer-id', default='*',
+                                  help="Peer ID to invite, or '*' for all (default: *)")
+    peer_open_search.add_argument('--allow', action='store_true',
+                                  help='Open public-tier search (default)')
+    peer_open_search.add_argument('--off', action='store_true',
+                                  help='Close public-tier search')
+    peer_open_search.add_argument('--note', default='',
+                                  help='Free-text note stored with the setting')
+    peer_open_search.set_defaults(func=cmd_peer_open_search)
+
+    peer_connect = peer_sub.add_parser(
+        'connect',
+        help='Meet a node that cannot reach you: read its identity and record it')
+    peer_connect.add_argument('target',
+                              help='URL of the other node, or a friend code '
+                                   '(astor:<hex>@host)')
+    peer_connect.add_argument('--alias', help='Human-readable name for it')
+    peer_connect.add_argument('--trust', type=int, default=30,
+                              help='Trust score 0-100 (default 30)')
+    peer_connect.add_argument('--note', default='', help='Note sent with the request')
+    peer_connect.add_argument('--send', action='store_true',
+                              help='Also send a signed friend request')
+    peer_connect.add_argument('--timeout', type=int, default=20,
+                              help='Network timeout in seconds')
+    peer_connect.set_defaults(func=cmd_peer_connect)
+
+    peer_read = peer_sub.add_parser(
+        'read',
+        help="Search a peer's public tier (read-only, signed)")
+    peer_read.add_argument('query', help='Search query')
+    peer_read.add_argument('--peer-id', required=True, help='Peer to query')
+    peer_read.add_argument('--topic', default=None, help='Optional topic filter')
+    peer_read.add_argument('--limit', type=int, default=10, help='Max results')
+    peer_read.add_argument('--timeout', type=int, default=20,
+                           help='Network timeout in seconds')
+    peer_read.set_defaults(func=cmd_peer_read)
+
+
     peer_status = peer_sub.add_parser('status',
         help='Show this peer identity (peer_id + key + DB path)')
     peer_status.add_argument('--reveal-private', action='store_true',
@@ -821,6 +879,8 @@ def main(argv: list[str] | None = None) -> int:
     peer_allow_search = peer_sub.add_parser('allow-search',
         help='Mark a friend as allowing my searches (opt-in)')
     peer_allow_search.add_argument('peer_id', help='Peer ID to allow')
+    peer_allow_search.add_argument('--off', action='store_true',
+                            help='Revoke the opt-in in one step')
     peer_allow_search.set_defaults(func=cmd_peer_allow_search)
 
     peer_unallow_search = peer_sub.add_parser('unallow-search',
@@ -3962,6 +4022,161 @@ def cmd_recall_history(args) -> int:
     return 0
 
 
+def cmd_peer_open_search(args) -> int:
+    """`am peer open-search` -- open or close public-tier search.
+
+    A peer behind NAT cannot be reached, so the only working direction
+    is outbound from their side: they call us, we answer. This opens
+    the door for that.
+
+    --peer-id '*' opens to every signature-verified peer. Naming one
+    peer_id invites just that node. Nothing is written to the peer
+    table -- querying does not make someone a friend, and being
+    queryable is not friendship.
+    """
+    from .._internal import peer_open_search as _pos
+    pid = (args.peer_id or '*').strip() or '*'
+    ok = _pos.set_open(pid, bool(args.allow), note=str(args.note or '')[:200])
+    if not ok:
+        print('[ERR] could not set open-search for %s' % pid, file=sys.stderr)
+        return 1
+    if args.allow:
+        print('[OK] public tier is queryable by: %s' % (', '.join(_pos.open_peers()) or pid))
+        print('     read-only, public tier only, rate limited')
+        print('     anyone with a valid signature can now read; no friendship required')
+    else:
+        print('[OK] closed public-tier search for: %s' % pid)
+    return 0
+
+
+def cmd_peer_connect(args) -> int:
+    """`am peer connect <endpoint>` -- meet a node that cannot call you.
+
+    Reads the other side's public identity, records it, and optionally
+    sends the first friend request. Works when the other node is
+    behind NAT, because every step here goes outbound from this one.
+    """
+    from .._internal import peer_connect as _pc
+    from .._internal.peer_identity import init_identity
+    from .._internal.peer_relationships import add_peer, get_peer
+    # A friend code (astor:<hex>@host) is accepted as well as a plain
+    # URL. The code is a convenience for a human; the URL is what the
+    # machine actually needs, and when the code carries an address we
+    # use it instead of asking the human to retype it.
+    target = (args.target or '').strip()
+    if target.startswith('astor:') and '@' in target:
+        target = target.split('@', 1)[1]
+    try:
+        ident = _pc.fetch_identity(target, timeout=args.timeout)
+    except _pc.ConnectError as e:
+        print('[ERR] %s' % e, file=sys.stderr)
+        return 1
+    pid = ident.get('peer_id')
+    if not pid:
+        print('[ERR] no peer_id in the identity document', file=sys.stderr)
+        return 1
+    endpoint = ident.get('endpoint') or target
+    pubkey = ident.get('public_key') or ''
+    print('[OK] reached %s' % endpoint)
+    print('     peer_id  : %s' % pid)
+    if pubkey:
+        print('     pubkey   : %s' % pubkey[:32] + '...')
+    existing = get_peer(pid)
+    add_peer(pid, alias=args.alias, trust=args.trust, public_key=pubkey,
+             endpoint=endpoint, kind='friend')
+    print('[OK] recorded %s (trust=%d)' % (pid, args.trust))
+    if existing:
+        print('     (was already known)')
+    if args.send:
+        from .._internal.peer_identity import sign
+        from .._internal.peer_relationships import send_friend_request
+        try:
+            note = args.note or 'hello from %s' % init_identity().get('peer_id')
+        except Exception:
+            note = 'hello'
+        try:
+            res = send_friend_request(pid, endpoint, note=note)
+            print('[OK] friend request sent -> %s' % (res or 'pending'))
+        except Exception as e:
+            print('[WARN] could not send the friend request: %s' % e, file=sys.stderr)
+    print()
+    print('  next: am peer read "<query>" --peer-id %s' % pid)
+    return 0
+
+
+def cmd_peer_read(args) -> int:
+    """`am peer read "<query>" --peer-id <id>` -- search a peer's public tier.
+
+    Signed request, public tier only, read-only. The peer decides
+    whether to answer (see `am peer open-search` on their side).
+    """
+    from .._internal import peer_connect as _pc
+    from .._internal.peer_identity import init_identity
+    from .._internal.peer_relationships import get_peer
+    row = get_peer(args.peer_id)
+    if not row:
+        print('[ERR] peer not found: %s' % args.peer_id, file=sys.stderr)
+        print('      am peer connect <endpoint> first', file=sys.stderr)
+        return 1
+    endpoint = (row.get('endpoint') or '').strip()
+    if not endpoint:
+        print('[ERR] no endpoint for %s' % args.peer_id, file=sys.stderr)
+        return 1
+    ident = init_identity()
+    try:
+        res = _pc.search_peer(
+            endpoint, args.query, ident['peer_id'], ident['public_key'],
+            ident['private_key'], topic=args.topic, limit=args.limit,
+            timeout=args.timeout)
+    except _pc.ConnectError as e:
+        print('[ERR] %s' % e, file=sys.stderr)
+        return 1
+    results = res.get('results') or []
+    print('[OK] %d result(s) from %s' % (len(results), row.get('alias') or args.peer_id))
+    for r in results:
+        print()
+        print('  %s' % str(r.get('content', '')).strip()[:400])
+        meta = []
+        if r.get('relevance') is not None:
+            meta.append('relevance=%.4f' % float(r['relevance']))
+        if r.get('fact_id') is not None:
+            meta.append('fact_id=%s' % r['fact_id'])
+        if meta:
+            print('  [%s]' % ' '.join(meta))
+    return 0
+
+def cmd_dashboard_passcode(args) -> int:
+    """`am dashboard passcode` -- show, set, or reset the dashboard passcode.
+
+    The dashboard is reachable from the public internet, so it needs a
+    gate. This is the gate's control panel.
+    """
+    from .._internal import dashboard_auth as _dauth
+    if args.set:
+        try:
+            val = _dauth.set_passcode(args.set)
+        except ValueError as e:
+            print('[ERR] %s' % e, file=sys.stderr)
+            return 1
+        print('[OK] passcode set (length %d)' % len(val))
+        print('     all existing sessions were revoked')
+        return 0
+    if args.reset:
+        val = _dauth.get_passcode()
+        print('[OK] current passcode: %s' % val)
+        print('     (use --set to change it)')
+        return 0
+    val = _dauth.get_passcode()
+    print('dashboard passcode: %s' % val)
+    print('  path   : %s' % _dauth.passcode_path())
+    print('  header : %s' % _dauth.HDR_TOKEN)
+    print()
+    print('  curl example:')
+    print("    curl -H '%s: %s' https://<your-host>/v1/dashboard" % (_dauth.HDR_TOKEN, val))
+    return 0
+
+
+
 def cmd_peer_status(args) -> int:
     """v1.14.67 (2026-09-17): print this peer's identity.
 
@@ -4219,12 +4434,16 @@ def cmd_peer_allow_search(args) -> int:
         print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
         print('      add it first: am peer add <peer_id> ...', file=sys.stderr)
         return 1
-    ok = set_allow_search(args.peer_id, True)
+    want = not bool(getattr(args, 'off', False))
+    ok = set_allow_search(args.peer_id, want)
     if not ok:
         print(f'[ERR] failed to set allow-search for {args.peer_id}', file=sys.stderr)
         return 1
-    print(f'[OK] allow-search=True for {args.peer_id}')
-    print('     they can now search your PUBLIC tier (max 20 facts per query)')
+    print(f'[OK] allow-search={want} for {args.peer_id}')
+    if want:
+        print('     they can now search your PUBLIC tier (max 20 facts per query)')
+    else:
+        print('     they can no longer search your PUBLIC tier')
     return 0
 
 
