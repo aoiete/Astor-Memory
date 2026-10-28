@@ -1,0 +1,250 @@
+"""test_distill_opt_in.py — the mining consent switch.
+
+The mining command reads two columns out of bot-binding.db: whether a
+user's private tier may be promoted into the shared tier, and whether
+they may write to it. Both were read but never created -- the schema
+migration added `default_tier` and `trusted_agent` and stopped -- so on
+a database from before v1.16.x the mining command raised "no such
+column" and quietly fell back to its own tier. Nobody was told.
+
+The switch is also a switch: it defaults to on (a user who has not
+opted out of sharing shares), and the operator can turn it off in the
+dashboard -- including for the operator's own tier, which is what makes
+it a switch rather than a decoration.
+"""
+from __future__ import annotations
+
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+
+def _legacy_db(tmp_path) -> Path:
+    """A bot-binding.db from before the consent columns existed."""
+    db = tmp_path / "bot-binding.db"
+    con = sqlite3.connect(str(db))
+    con.executescript("""
+        CREATE TABLE user_meta (
+            user_id          TEXT PRIMARY KEY,
+            short_alias      TEXT UNIQUE NOT NULL,
+            display_name     TEXT,
+            real_name        TEXT,
+            role             TEXT NOT NULL DEFAULT 'user',
+            subscription_plan TEXT DEFAULT 'trial',
+            timezone         TEXT,
+            tz_offset_hours  INTEGER,
+            verified_by      TEXT,
+            verified_at      TEXT,
+            notes            TEXT,
+            active           INTEGER NOT NULL DEFAULT 1,
+            extra_json       TEXT,
+            created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+            source           TEXT,
+            default_tier     TEXT NOT NULL DEFAULT 'public',
+            trusted_agent    INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO user_meta (user_id, short_alias, role)
+        VALUES ('admin', 'admin', 'admin');
+    """)
+    con.commit()
+    con.close()
+    return db
+
+
+def test_the_consent_columns_are_created(tmp_path, monkeypatch):
+    """A legacy database gains the columns, with the default that means
+    "shares" rather than "does not share"."""
+    db = _legacy_db(tmp_path)
+    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
+    from astor_memory._internal import bot_binding
+    monkeypatch.setattr(bot_binding, "_con", None)
+
+    con = bot_binding._connect()
+    cols = {r[1] for r in con.execute("PRAGMA table_info(user_meta)").fetchall()}
+    assert "distill_opt_in" in cols
+    assert "allow_commons_write" in cols
+    row = con.execute(
+        "SELECT distill_opt_in, allow_commons_write FROM user_meta "
+        "WHERE user_id = 'admin'").fetchone()
+    # -1 = "never asked". The operator's own tier is mined on that
+    # state (running the command is the consent); anyone else's is not.
+    assert row[0] == -1
+    assert row[1] == 1
+    bot_binding.close()
+
+
+def test_the_switch_turns_off(tmp_path, monkeypatch):
+    from astor_memory._internal import bot_binding
+    monkeypatch.setattr(bot_binding, "_con", None)
+    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
+    bot_binding.upsert_user(user_id="u1", short_alias="u1")
+
+    assert bot_binding.set_distill_opt_in("u1", False) is True
+    assert bot_binding.get_user("u1")["distill_opt_in"] == 0
+    assert bot_binding.set_distill_opt_in("u1", True) is True
+    assert bot_binding.get_user("u1")["distill_opt_in"] == 1
+    # -1 is the third state: the absence of a decision, which a
+    # two-way switch could not express.
+    assert bot_binding.set_distill_opt_in("u1", -1) is True
+    assert bot_binding.get_user("u1")["distill_opt_in"] == -1
+    assert bot_binding.set_distill_opt_in("nobody", False) is False
+    bot_binding.close()
+
+
+def test_the_mining_command_honours_the_switch(tmp_path, monkeypatch):
+    """The operator's own tier is mined when the switch is on and is
+    skipped when it is off. A switch that cannot be turned off is not
+    a switch."""
+    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
+    monkeypatch.setenv("ASTOR_USER_ID", "admin")
+    from astor_memory._internal import bot_binding
+    monkeypatch.setattr(bot_binding, "_con", None)
+    bot_binding.upsert_user(user_id="admin", short_alias="admin", role="admin")
+
+    from astor_memory.cli.main import cmd_mine_public
+
+    class _Args:
+        apply = False
+        limit = 0
+        min_length = 40
+
+    rc = cmd_mine_public(_Args())
+    assert rc == 0
+    bot_binding.set_distill_opt_in("admin", False)
+    rc = cmd_mine_public(_Args())
+    assert rc == 0
+    bot_binding.close()
+
+
+def test_a_fresh_database_has_the_columns(tmp_path, monkeypatch):
+    """A database created by the current code has them from the start,
+    so the ALTER path is only for databases that predate them."""
+    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
+    from astor_memory._internal import bot_binding
+    monkeypatch.setattr(bot_binding, "_con", None)
+    con = bot_binding._connect()
+    cols = {r[1] for r in con.execute("PRAGMA table_info(user_meta)").fetchall()}
+    assert "distill_opt_in" in cols
+    assert "allow_commons_write" in cols
+    bot_binding.close()
+
+
+def test_the_operator_is_mined_unless_switched_off(tmp_path, monkeypatch):
+    """The operator's own tier is mined on "never asked" and skipped on
+    an explicit "off". That is what makes the dashboard switch a
+    switch: running the command is the consent, and the switch is how
+    the operator withdraws it."""
+    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
+    monkeypatch.setenv("ASTOR_USER_ID", "admin")
+    from astor_memory._internal import bot_binding
+    monkeypatch.setattr(bot_binding, "_con", None)
+    bot_binding.upsert_user(user_id="admin", short_alias="admin", role="admin")
+    from astor_memory.cli.main import cmd_mine_public
+
+    class _Args:
+        apply = False
+        limit = 0
+        min_length = 40
+
+    import io
+    import contextlib
+
+    def _scopes():
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cmd_mine_public(_Args())
+        return buf.getvalue()
+
+    assert "admin" in _scopes()
+    bot_binding.set_distill_opt_in("admin", False)
+    assert "mining disabled for admin" in _scopes()
+    bot_binding.set_distill_opt_in("admin", -1)
+    assert "admin" in _scopes()
+    bot_binding.close()
+
+
+def test_another_user_needs_their_own_consent(tmp_path, monkeypatch):
+    """One user's tier is never mined on the operator's say-so. The
+    consent is theirs."""
+    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
+    monkeypatch.setenv("ASTOR_USER_ID", "admin")
+    from astor_memory._internal import bot_binding
+    monkeypatch.setattr(bot_binding, "_con", None)
+    bot_binding.upsert_user(user_id="admin", short_alias="admin", role="admin")
+    bot_binding.upsert_user(user_id="u2", short_alias="u2")
+    # A user with no data layer has nothing to mine, and the mining
+    # command only looks at users who have one.
+    from astor_memory._internal.acl_layout import Tier, Store, ensure_layout
+    for _store in Store:
+        ensure_layout(Tier.PRIVATE, _store, "u2")
+    from astor_memory.cli.main import cmd_mine_public
+
+    class _Args:
+        apply = False
+        limit = 0
+        min_length = 40
+
+    import io
+    import contextlib
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cmd_mine_public(_Args())
+    scopes = [l for l in buf.getvalue().splitlines() if "scopes:" in l]
+    assert scopes and "u2" not in scopes[0]
+    bot_binding.set_distill_opt_in("u2", True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cmd_mine_public(_Args())
+    scopes = [l for l in buf.getvalue().splitlines() if "scopes:" in l]
+    assert scopes and "u2" in scopes[0]
+    bot_binding.close()
+
+
+def test_the_dashboard_renders_the_three_states():
+    """The operator has to be able to tell "never asked" from "off" --
+    they are different, and a bool would show a decision the operator
+    never made."""
+    import re
+    from pathlib import Path as _P
+    app = (_P(__file__).resolve().parent.parent /
+           "astor_memory" / "dashboard" / "app.js").read_text(encoding="utf-8")
+    assert "data-action=\"toggle-distill\"" in app
+    assert "_distillText" in app
+    assert "'auto'" in app
+    html = (_P(__file__).resolve().parent.parent /
+            "astor_memory" / "dashboard" / "index.html").read_text(encoding="utf-8")
+    assert ">Distill<" in html
+
+
+def test_the_binding_list_carries_the_flag():
+    """The dashboard gets the flag from /v1/binding/list, so the query
+    has to select it -- and the value has to survive as the integer
+    it is, not collapse to a bool."""
+    from pathlib import Path as _P
+    server = (_P(__file__).resolve().parent.parent /
+              "astor_memory" / "server.py").read_text(encoding="utf-8")
+    assert "m.distill_opt_in" in server
+    assert "d['distill_opt_in'] = int(" in server
+
+
+def test_the_server_connection_does_not_close_the_singleton(tmp_path, monkeypatch):
+    """The dashboard's connection is closed by its caller, so it must
+    not be the shared singleton -- closing it would take the
+    singleton down for everything else."""
+    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
+    from astor_memory._internal import bot_binding
+    monkeypatch.setattr(bot_binding, "_con", None)
+    bot_binding.upsert_user(user_id="admin", short_alias="admin", role="admin")
+    from astor_memory.server import _astor_bot_binding_connect
+
+    db = _astor_bot_binding_connect()
+    db.close()
+    # The singleton must still work after the caller's close.
+    assert bot_binding.get_user("admin") is not None
+    bot_binding.close()

@@ -126,7 +126,16 @@ _meta_recall_stats = _META_RECALL_STATS
 # hit SQLITE_BUSY under 8-thread pool contention. Retry with exponential backoff.
 import time as _bot_t
 def _astor_bot_binding_connect(retry_max: int = 3):
-    """Open bot-binding.db with retry on SQLITE_BUSY. 100-user safe."""
+    """Open bot-binding.db with retry on SQLITE_BUSY. 100-user safe.
+
+    v1.17.6: this used to open the file with raw sqlite, which meant
+    the schema was never initialised on this path. A database created
+    before the consent columns existed therefore had no
+    distill_opt_in -- and the dashboard query that reads it raised
+    "no such column" and the whole panel failed to render. The
+    connection now goes through bot_binding, which owns the schema
+    and migrates it on connect.
+    """
     import sqlite3 as _bot_s
     _delay = 0.05
     for _i in range(retry_max + 1):
@@ -134,6 +143,21 @@ def _astor_bot_binding_connect(retry_max: int = 3):
             # v1.16.55: cross-platform ASTOR_DIR or ~/.astor
             from pathlib import Path as _Path
             _bdir = os.environ.get('ASTOR_DIR') or str(_Path.home() / '.astor')
+            # Ask bot_binding to make sure the schema is current, then
+            # open our own connection: the callers close the handle
+            # they get, and that must not be the shared singleton.
+            # The migration runs on its own connection so the
+            # singleton is neither closed nor handed out.
+            try:
+                from ._internal import bot_binding as _bb
+                _mig = _bot_s.connect(
+                    os.path.join(_bdir, 'bot-binding.db'), timeout=10.0)
+                try:
+                    _bb._init_schema(_mig)
+                finally:
+                    _mig.close()
+            except Exception:
+                pass
             _db = _bot_s.connect(os.path.join(_bdir, 'bot-binding.db'), timeout=10.0)
             _db.execute('PRAGMA journal_mode=WAL')
             _db.execute('PRAGMA busy_timeout=5000')
@@ -1758,32 +1782,33 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception:
             return jsonify({'error': 'astor_init_acl required'}), 503
         body = request.get_json(force=True) if request.is_json else {}
-        # v1.16.32: require explicit True/False (not bool coercion of 'maybe').
+        # v1.16.32: require explicit True/False (not bool coercion of
+        # 'maybe'). v1.17.5 adds "reset" for the third state -- never
+        # asked -- because a two-way switch cannot express the absence
+        # of a decision.
         _v = body.get('allow_distill')
-        if not isinstance(_v, bool):
+        if _v == 'reset':
+            allow = -1
+        elif isinstance(_v, bool):
+            allow = 1 if _v else 0
+        else:
             return jsonify({'error': 'allow_distill_must_be_bool',
-                            'detail': f'expected true/false, got {type(_v).__name__}'}), 400
-        allow = _v
+                            'detail': f'expected true/false/reset, got {type(_v).__name__}'}), 400
+        # v1.17.5: go through bot_binding rather than raw SQL. The raw
+        # UPDATE assumed the column existed, and on a database created
+        # before v1.16.x it did not -- so the switch was a 500 on exactly
+        # the installs that needed it. bot_binding owns the schema and
+        # migrates it on connect, so the column is there and the audit
+        # row is written the same way as every other user_meta change.
         try:
-            import sqlite3 as _sq
-            # v1.16.55: cross-platform path via ASTOR_DIR or ~/.astor
-            from pathlib import Path as _P2
-            _sq_astor_dir = os.environ.get('ASTOR_DIR') or str(_P2.home() / '.astor')
-            _sqdb = _sq.connect(os.path.join(_sq_astor_dir, 'bot-binding.db'))
-            _cur = _sqdb.execute(
-                "UPDATE user_meta SET distill_opt_in = ? WHERE user_id = ?",
-                (1 if allow else 0, user_id),
-            )
-            _sqdb.commit()
-            if _cur.rowcount == 0:
-                _sqdb.close()
+            from ._internal.bot_binding import set_distill_opt_in
+            if not set_distill_opt_in(user_id, allow, actor=ctx.actor or 'admin'):
                 return jsonify({'error': 'user_not_found', 'user_id': user_id}), 404
-            _sqdb.close()
         except Exception as _e:
             return jsonify({'error': 'toggle_failed', 'detail': str(_e)}), 500
         return jsonify({
             'user_id': user_id,
-            'distill_opt_in': bool(allow),
+            'distill_opt_in': allow,
         })
 
     
@@ -9835,18 +9860,32 @@ def create_app(astor_dir: str | None = None) -> Flask:
             import sqlite3 as _sqlite3
             _db = _astor_bot_binding_connect()
             _db.row_factory = _sqlite3.Row
+            # v1.17.5: distill_opt_in rides along so the dashboard can
+            # render the mining switch without a second request per row.
             rows = _db.execute("""
                 SELECT b.platform_id, b.chat_id, b.user_id, b.scope, b.bound_at,
-                       m.short_alias, m.role, m.subscription_plan, m.default_tier
+                       m.short_alias, m.role, m.subscription_plan, m.default_tier,
+                       m.distill_opt_in
                 FROM bindings b
                 LEFT JOIN user_meta m ON m.user_id = b.user_id
                 WHERE b.active = 1
                 ORDER BY b.platform_id, b.user_id
             """).fetchall()
             _db.close()
+            bindings = []
+            for r in rows:
+                d = dict(r)
+                # The three states are distinct and the operator needs to
+                # see them apart: -1 = never asked, 0 = explicitly off,
+                # 1 = on. Collapsing to a bool would show "never asked"
+                # as "off", which is a decision the operator never made.
+                d['distill_opt_in'] = int(d.get('distill_opt_in') if
+                                          d.get('distill_opt_in') is not None
+                                          else -1)
+                bindings.append(d)
             resp = jsonify({
                 'count': len(rows),
-                'bindings': [dict(r) for r in rows],
+                'bindings': bindings,
             })
             # v1.16.25: never let CF edge cache operator-view endpoints.
             resp.headers['Cache-Control'] = 'no-store'

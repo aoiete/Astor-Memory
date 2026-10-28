@@ -114,7 +114,30 @@ def _init_schema(con: sqlite3.Connection) -> None:
             updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
             source           TEXT,
             default_tier     TEXT NOT NULL DEFAULT 'public',
-            trusted_agent    INTEGER NOT NULL DEFAULT 0
+            trusted_agent    INTEGER NOT NULL DEFAULT 0,
+            -- v1.17.5: whether this user's private tier may be mined
+            -- into the shared tier, and whether they may write to it.
+            --
+            -- distill_opt_in defaults to 0: a user who has not said
+            -- yes has not consented to their private facts being
+            -- promoted into the shared tier. The operator's own tier
+            -- is the exception -- running the mining command IS the
+            -- consent -- and the dashboard switch is how that consent
+            -- is withdrawn, so the command reads the flag for the
+            -- operator too.
+            --
+            -- allow_commons_write defaults to 1: writing to the shared
+            -- tier is the normal thing for a fact to be for.
+            -- -1 means "never asked": the mining command treats it as
+            -- the operator's own consent to mine their own tier, which
+            -- is what running the command has always meant. 0 is an
+            -- explicit "off" that the operator set in the dashboard.
+            -- The column predates this code (v1.16.30 added it to one
+            -- live database by hand), so existing rows read 0, and
+            -- without the sentinel the operator's own tier would come
+            -- up unmined on every install that had that database.
+            distill_opt_in       INTEGER NOT NULL DEFAULT -1,
+            allow_commons_write  INTEGER NOT NULL DEFAULT 1
         );
         CREATE INDEX IF NOT EXISTS idx_user_meta_alias ON user_meta(short_alias);
 
@@ -152,6 +175,26 @@ def _init_schema(con: sqlite3.Connection) -> None:
     if "trusted_agent" not in existing:
         con.execute(
             "ALTER TABLE user_meta ADD COLUMN trusted_agent INTEGER NOT NULL DEFAULT 0"
+        )
+    # v1.17.5: the same treatment for the two mining-consent columns.
+    # They were read by the mining command and by the admin toggle
+    # route, but never created by the schema -- v1.16.30 added
+    # distill_opt_in to one live database by hand and the code never
+    # grew the CREATE or the ALTER. So a fresh install, or any
+    # machine that was not that one, raised "no such column" and the
+    # mining command quietly fell back to its own tier.
+    #
+    # The default is -1 for distill_opt_in: "never asked". For another
+    # user that means no consent, so their tier is not mined. For the
+    # operator's own tier it means the consent that running the command
+    # has always carried. 0 is an explicit "off".
+    if "distill_opt_in" not in existing:
+        con.execute(
+            "ALTER TABLE user_meta ADD COLUMN distill_opt_in INTEGER NOT NULL DEFAULT -1"
+        )
+    if "allow_commons_write" not in existing:
+        con.execute(
+            "ALTER TABLE user_meta ADD COLUMN allow_commons_write INTEGER NOT NULL DEFAULT 1"
         )
     con.commit()
 
@@ -417,6 +460,44 @@ def set_user_default_tier(
         metadata={"field": "default_tier", "value": tier, "actor": actor},
         reason=f"set default_tier={tier} for user {user_id}",
     )
+
+
+def set_distill_opt_in(
+    user_id: str,
+    opt_in: bool | int,
+    actor: str = "admin",
+) -> bool:
+    """Set the mining-consent flag for a user_id. Audited as admin_op.
+
+    Whether this user's private tier may be promoted into the shared
+    tier. The mining command reads it: a user who has not opted in is
+    not mined, and the operator's own tier is mined because running
+    the command is the consent.
+
+    ``opt_in`` is True/False for on/off, or -1 for "never asked" --
+    the state a fresh row starts in, which the operator can choose to
+    return to. The three states are different: -1 is the absence of a
+    decision, 0 is a decision not to share, 1 is a decision to share.
+
+    Returns True if a row was updated, False if the user is unknown.
+    """
+    value = -1 if opt_in == -1 else int(bool(opt_in))
+    con = _connect()
+    if con.execute("SELECT 1 FROM user_meta WHERE user_id = ?",
+                   (user_id,)).fetchone() is None:
+        return False
+    con.execute(
+        "UPDATE user_meta SET distill_opt_in = ?, updated_at = ? WHERE user_id = ?",
+        (value, _now_iso(), user_id))
+    con.commit()
+    try:
+        _audit(action="admin_op", target=f"user_meta/{user_id}",
+               metadata={"field": "distill_opt_in", "value": value,
+                         "actor": actor},
+               reason=f"set distill_opt_in={value} for user {user_id}")
+    except Exception:
+        pass
+    return True
 
 
 def is_trusted_agent(user_id: str) -> bool:

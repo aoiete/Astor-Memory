@@ -66,10 +66,26 @@ def test_there_is_only_one_delete_branch():
         "run, so the others are dead code" % len(branches))
 
 
+def _all_handler_bodies() -> str:
+    """Every click handler in app.js, not just the peer one.
+
+    The check is "a button whose action has no branch does nothing when
+    clicked". A button is not necessarily in the peer table -- the
+    connections table has its own switch -- so looking at one handler
+    reported a working button as a dead one. The set of handlers is
+    what a click can reach.
+    """
+    # The whole file, minus the line comments. A handler can be
+    # anywhere in it, and slicing a function body out by brace
+    # counting stops at the first nested `}` -- which is a try/finally
+    # in most handlers.
+    src = APP_JS.read_text(encoding="utf-8")
+    return "\n".join(l.split("//")[0] for l in src.splitlines())
+
+
 def test_every_action_button_has_a_branch():
     """A button whose action has no branch does nothing when clicked."""
-    body = _on_peer_action_body()
-    code = "\n".join(l.split("//")[0] for l in body.splitlines())
+    code = _all_handler_bodies()
     src = APP_JS.read_text(encoding="utf-8")
     actions = set(re.findall(r'data-action="([a-z-]+)"', src))
     handled = set(re.findall(r"action === '([a-z-]+)'", code))

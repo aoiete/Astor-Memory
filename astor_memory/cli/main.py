@@ -1284,23 +1284,47 @@ def cmd_mine_public(args) -> int:
     _own = os.environ.get('ASTOR_USER_ID') or 'admin'
     _meta = {}
     try:
-        _db = _sq.connect(os.path.join(_astor_dir, 'bot-binding.db'))
-        _db.row_factory = _sq.Row
-        for _r in _db.execute(
-                "SELECT user_id, distill_opt_in, allow_commons_write "
-                "FROM user_meta"):
+        # bot_binding owns the schema, and its connect() migrates it, so
+        # the two consent columns exist on a database from any version.
+        # Reading them with raw SQL raised "no such column" on a v1.16.x
+        # database and the command quietly fell back to its own tier --
+        # the switch was not honoured and nobody was told.
+        from .._internal import bot_binding as _bb
+        for _r in _bb.list_users(active_only=False):
+            # -1 = never asked. 0 = explicitly off. 1 = on. The
+            # distinction matters for the operator's own tier: "never
+            # asked" still carries the consent that running the command
+            # has always meant, while "off" is a decision.
+            _opt = _r.get('distill_opt_in')
+            _opt = -1 if _opt is None else int(_opt)
             _meta[_r['user_id']] = (
-                int(_r['distill_opt_in'] or 0),
-                int(_r['allow_commons_write'] or 0))
-        _db.close()
+                _opt,
+                int(_r.get('allow_commons_write') or 0))
     except Exception as _e:
         print(f'  user_meta unavailable ({_e}); mining own tier only')
 
-    scopes = [('private', _own)]
+    # v1.17.5: the operator's own tier is mined unless the operator has
+    # switched it off in the dashboard. Running the command is the
+    # consent; the switch is how that consent is withdrawn, and a
+    # switch that cannot switch off is not a switch.
+    #
+    # A user who is not in user_meta at all has no row to read, so the
+    # operator's own row falls back to "on" -- which is the historical
+    # behaviour and the safe one, since the operator is running the
+    # command in the first place.
+    _own_opt, _own_allow = _meta.get(_own, (-1, 1))
+    scopes = []
+    if _own_opt != 0 and _own_allow != 0:
+        scopes.append(('private', _own))
+    else:
+        print(f'  mining disabled for {_own} (distill_opt_in=0)')
     for _u in list_user_ids():
         if _u == _own:
             continue
-        _opt, _allow = _meta.get(_u, (0, 0))
+        # Another user's tier needs their own consent: distill_opt_in=1
+        # AND allow_commons_write. A user who has never been asked
+        # defaults to not consenting.
+        _opt, _allow = _meta.get(_u, (-1, 0))
         if _opt == 1 and _allow != 0:
             scopes.append(('private', _u))
     print(f'[mine-public] scopes: {[u for _t, u in scopes]}')

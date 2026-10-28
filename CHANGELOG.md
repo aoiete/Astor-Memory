@@ -1,4 +1,4 @@
-## v1.17.5 — 2026-10-27
+## v1.17.6 — 2026-10-27
 
 The shared tier keeps the method and loses the machine.
 
@@ -97,6 +97,39 @@ of the path: the shared tier scrubs a machine-local path to
 `<home>/AppData/...`, and a pattern that starts at the first slash
 captures only the tail of it -- dropping the placeholder, which is
 the part that says "this was somebody's machine".
+
+### The mining switch was a switch that could not be switched
+
+`bot-binding.db` carries two consent columns: whether a user's private
+tier may be mined into the shared tier, and whether they may write to
+it. The mining command reads both, and the admin toggle route wrote
+one. The schema created neither -- v1.16.30 added `distill_opt_in` to
+one live database by hand and the code never grew the CREATE or the
+ALTER, so a fresh install, or any machine that was not that one,
+raised `no such column` and the mining command fell back to its own
+tier without saying so.
+
+Both columns are in the schema now, and the toggle route goes through
+`bot_binding`, which owns the schema and migrates it on connect -- so
+the switch works on exactly the installs that needed it.
+
+The flag has three states, not two. `-1` is "never asked": for the
+operator's own tier it carries the consent that running the mining
+command has always meant, and for anyone else it means their tier is
+not mined. `0` is an explicit "off". `1` is "on". A two-way switch
+cannot tell "never asked" from "off", and showing them the same way
+claims a decision they never made, so the dashboard shows `auto` for
+the first and `off` for the second, and the button cycles through all
+three.
+
+The operator's own tier is mined unless the operator has switched it
+off. Running the command is the consent; the dashboard switch is how
+that consent is withdrawn, and a switch that cannot be turned off is
+not a switch.
+
+Another user's tier still needs their own consent: `distill_opt_in=1`
+AND `allow_commons_write`. One user's say-so does not move another
+user's facts into the shared tier.
 
 ### The CLI could not print its own output
 

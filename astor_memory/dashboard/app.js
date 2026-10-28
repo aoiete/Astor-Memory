@@ -471,7 +471,16 @@ function _drawConnPage() {
                                 : (b.subscription_plan || '—')) + '</td>'
       + '<td>' + escapeHtml(b.default_tier || '—') + '</td>'
       + '<td>' + escapeHtml(b.scope || '—') + '</td>'
-      + '<td>' + escapeHtml((b.bound_at || '').slice(0, 16) || '—') + '</td>';
+      + '<td>' + escapeHtml((b.bound_at || '').slice(0, 16) || '—') + '</td>'
+      // v1.17.5: the mining consent switch, per user. ON by default --
+      // a user who has not opted out of sharing has their methods
+      // promoted into the shared tier. The operator turns it off to
+      // withdraw. Reuses the peer toggle's styling; the wording is
+      // deliberately not "opt in" because the default IS in.
+      + '<td><button class="peer-allow-toggle ' + _distillCls(b.distill_opt_in)
+      + '" data-uid="' + escapeHtml(b.user_id || '') + '" '
+      + 'data-action="toggle-distill">'
+      + _distillText(b.distill_opt_in) + '</button></td>';
     tbody.appendChild(tr);
   }
   if (summary) {
@@ -488,6 +497,62 @@ function _drawConnPage() {
     document.getElementById('conn-next').onclick = () => { _connPage++; _drawConnPage(); };
   }
 }
+
+  // v1.17.5: the mining consent switch has three states, and the
+  // operator needs to see them apart. "auto" is the absence of a
+  // decision -- for the operator's own tier it means the consent that
+  // running the mining command carries; for anyone else it means their
+  // tier is not mined. Showing it as "off" would claim a decision the
+  // operator never made.
+  function _distillText(v) {
+    if (v === 1) return 'ON';
+    if (v === 0) return 'off';
+    return 'auto';
+  }
+  function _distillCls(v) {
+    if (v === 1) return 'peer-allow-on';
+    if (v === 0) return 'peer-allow-off';
+    return 'peer-allow-auto';
+  }
+
+  // v1.17.5: the mining consent switch. One click, no confirm: the
+  // flag is what decides whether this user's private methods reach
+  // the shared tier, and it is reversible in the same place.
+  async function onConnDistillToggle(ev) {
+    const btn = ev.target.closest('button[data-action="toggle-distill"]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const uid = btn.dataset.uid;
+    if (action === 'toggle-distill' && uid) {
+      // auto -> ON -> off -> auto. The three states cycle because a
+      // two-way switch cannot express "never asked".
+      const cur = btn.textContent.trim();
+      const want = cur === 'auto' ? true : (cur === 'ON' ? false : 'reset');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/v1/admin/user/' + encodeURIComponent(uid)
+          + '/toggle_distill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ allow_distill: want }),
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          alert('Toggle failed: ' + (d.error || r.status));
+          return;
+        }
+        await fetchConnections();
+      } catch (e) {
+        alert('Toggle failed: ' + e);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+  }
+  const _connTbody = document.querySelector('#connections-table tbody');
+  if (_connTbody) {
+    _connTbody.addEventListener('click', onConnDistillToggle);
+  }
 
   // -- Health diagnosis modal ------------------------------------------------
   // Click any health card → fetch /v1/health/diagnose → render modal.
