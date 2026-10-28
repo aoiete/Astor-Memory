@@ -1,3 +1,4 @@
+# SYNC_HERMES_SCRIPT=True
 """Weekly: move what the private tier learned into the shared tier.
 
 The private tier is where the methods, patterns, models and workflows
