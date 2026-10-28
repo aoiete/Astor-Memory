@@ -439,7 +439,6 @@ function renderConnections(d) {
       if (aOp !== bOp) return aOp - bOp;
       return (a.user_id || '').localeCompare(b.user_id || '');
   });
-  _connPage = 0;
   _drawConnPage();
 }
 

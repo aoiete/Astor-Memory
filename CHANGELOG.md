@@ -1,3 +1,13 @@
+## v1.17.11 — 2026-10-28
+
+### The connections table forgot which page it was on
+
+Pressing a switch on the second page threw the operator back to the
+first one, which reads as a button that does nothing. The list is
+re-read after every switch, and the re-read set the page back to the
+first one. The page survives a re-read now, and the clamp that keeps
+it inside the list is still there.
+
 ## v1.17.10 — 2026-10-27
 
 ### The distiller was eating its own placeholders
