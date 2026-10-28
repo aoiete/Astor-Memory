@@ -292,6 +292,19 @@ def _eval_trend(metrics_dir: Path) -> dict:
         out["last_run_p95_ms"] = last.get("p95_latency_ms")
 
     baselines = [h for h in history if h.get("variant") == "baseline"]
+    # v1.17.13: only runs under the CURRENT scorer are comparable. A run
+    # from before the scorer was hashed describes a different measurement
+    # -- and before the cache fix, could not even execute a variant.
+    # tests/eval_trend.py applies the same rule; the dashboard must
+    # agree with it or the two report different truths.
+    _cur_scorer = None
+    for _h in reversed(baselines):
+        if _h.get("scorer_hash"):
+            _cur_scorer = _h["scorer_hash"]
+            break
+    _hashed = [h for h in baselines if h.get("scorer_hash") == _cur_scorer]
+    if _cur_scorer and _hashed:
+        baselines = _hashed
     recent = baselines[-30:]
     if recent:
         out["window_30d_baselines"] = {

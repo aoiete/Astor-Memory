@@ -56,6 +56,26 @@ On the live corpus the held-out gate passes 40/40 under the production
 config and **fails 8/40 under `vector_only`** — it discriminates, which
 is the property that makes it worth running.
 
+### The trend tools compared against numbers that no longer meant anything
+
+Recording the scorer hash is only half of it. The history file holds
+runs from before the hash existed, and those runs describe a different
+measurement — before the cache fix, a variant comparison could not
+execute a variant at all. Comparing the current run against them reads
+a measurement change as a recall regression: the first honest number
+after the fix (0.9352) looked like a 4.6-point drop against the old
+0.9811, and the trend tool called it `warm_cache_regression`.
+
+So both trend readers now scope the window to runs under the current
+scorer hash. `tests/eval_trend.py` and `astor_memory/dashboard_data.py`
+keep separate implementations of the same idea, so both were changed —
+they must not report different truths. A snapshot taken under a
+different scorer is re-seeded rather than compared against.
+
+The snapshot now reads 0.9352 with `scorer_hash` attached, and the
+history keeps the old rows for the record: they are the evidence of
+what the harness used to report.
+
 ### The control set had a placeholder in it
 
 `Q24` read `moomoo <PYTHON_ML> 迁移`, with `<PYTHON_ML>` unsubstituted

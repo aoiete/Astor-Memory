@@ -75,6 +75,19 @@ def _save_snapshot(snap: dict) -> None:
     SNAPSHOT_OUT.write_text(json.dumps(snap, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _current_scorer_hash(history: list[dict]) -> str | None:
+    """The scorer hash of the most recent baseline run.
+
+    None when no hashed run exists yet -- the history predates the
+    scorer hash, and an unhashed history cannot be compared against a
+    hashed one.
+    """
+    for h in reversed(history):
+        if h.get("variant") == "baseline" and h.get("scorer_hash"):
+            return h["scorer_hash"]
+    return None
+
+
 def _maybe_update_snapshot(history: list[dict]) -> tuple[dict | None, dict | None, str]:
     """Update last_good_snapshot.json based on last 7 baseline median.
 
@@ -89,6 +102,17 @@ def _maybe_update_snapshot(history: list[dict]) -> tuple[dict | None, dict | Non
     if not baselines:
         return _load_snapshot(), None, "no_baselines"
 
+    # v1.17.13 (2026-10-28): runs recorded before the scorer was hashed
+    # (scorer_hash absent) are NOT comparable with hashed runs -- the
+    # scoring rule may have changed, and until the fix the harness could
+    # not even execute a variant. Comparing across that boundary reads a
+    # measurement change as a recall regression. Restrict the window to
+    # runs that share the CURRENT scorer hash.
+    _cur_scorer = _current_scorer_hash(history)
+    hashed = [h for h in baselines if h.get("scorer_hash") == _cur_scorer]
+    if _cur_scorer and hashed:
+        baselines = hashed
+
     # Last 3 baselines = most recent sample. Median is robust to one outlier
     # but responsive to a real drift.
     window = baselines[-3:]
@@ -100,12 +124,36 @@ def _maybe_update_snapshot(history: list[dict]) -> tuple[dict | None, dict | Non
     recent_mrr = mrrs[med_idx]
     cur_snap = _load_snapshot()
 
+    # A snapshot taken under a different scorer is not a valid baseline
+    # either. A snapshot with NO scorer_hash is exactly that case -- it
+    # was taken before the scorer was hashed, when a variant comparison
+    # could not even be executed, so its number describes a different
+    # measurement. Re-seed from the current window rather than comparing
+    # across the boundary.
+    if cur_snap is not None and _cur_scorer and \
+            cur_snap.get("scorer_hash") != _cur_scorer:
+        snap = {
+            "hit_rate_at_k": recent_hr,
+            "mrr": recent_mrr,
+            "ts": window[-1]["ts"],
+            "n_baselines_seen": len(baselines),
+            "scorer_hash": _cur_scorer,
+            "frozen_at": datetime.now(timezone.utc).isoformat(),
+            "rationale": (
+                f"re-seeded: previous snapshot was taken under a different "
+                f"scorer ({cur_snap.get('scorer_hash') or 'unhashed'} -> "
+                f"{_cur_scorer}), so the old number is not a baseline"),
+        }
+        _save_snapshot(snap)
+        return snap, window[-1], "reseeded_scorer_changed"
+
     if cur_snap is None:
         snap = {
             "hit_rate_at_k": recent_hr,
             "mrr": recent_mrr,
             "ts": window[-1]["ts"],
             "n_baselines_seen": len(baselines),
+            "scorer_hash": _cur_scorer,
             "frozen_at": datetime.now(timezone.utc).isoformat(),
             "rationale": f"initial snapshot = median of last {len(window)} baselines",
         }
@@ -120,6 +168,7 @@ def _maybe_update_snapshot(history: list[dict]) -> tuple[dict | None, dict | Non
             "mrr": recent_mrr,
             "ts": window[-1]["ts"],
             "n_baselines_seen": len(baselines),
+            "scorer_hash": _cur_scorer,
             "frozen_at": datetime.now(timezone.utc).isoformat(),
             "previous_hit_rate": cur_snap["hit_rate_at_k"],
             "rationale": f"recent median {recent_hr:.4f} > current {cur_snap['hit_rate_at_k']:.4f}",
@@ -163,6 +212,16 @@ def main() -> int:
         return 0
 
     baselines = [h for h in history if h.get("variant") == "baseline"]
+    # v1.17.13: compare only runs made under the CURRENT scorer. A run
+    # from before the scorer was hashed describes a different measurement
+    # (and, before the cache fix, could not even execute a variant), so
+    # including it would read a measurement change as a recall
+    # regression. The snapshot logic applies the same rule; the window
+    # must match it or the two disagree.
+    _cur_scorer = _current_scorer_hash(history)
+    _hashed = [h for h in baselines if h.get("scorer_hash") == _cur_scorer]
+    if _cur_scorer and _hashed:
+        baselines = _hashed
     last_n = baselines[-args.window:]
 
     if not last_n:
