@@ -1197,7 +1197,16 @@ async function onPeerAction(ev) {
   const action = btn.dataset.action;
   if (!pid || !action) return;
   if (action === 'delete') {
+    // The confirm lives here, and the DELETE happens here too. It used
+    // to be the first branch of an if/else-if chain whose later
+    // `else if (action === 'delete')` could never run -- the chain had
+    // already matched -- so the button asked for confirmation and then
+    // did nothing. The peer stayed.
     if (!confirm('Delete peer ' + pid + '?')) return;
+    btn.disabled = true;
+    const r = await fetch('/v1/peer/' + encodeURIComponent(pid), {method: 'DELETE'});
+    btn.disabled = false;
+    if (!r.ok) { alert('delete failed: HTTP ' + r.status); return; }
   } else if (action === 'blacklist') {
     const reason = prompt('Optional reason for blocking:', '');
     if (reason === null) return;
@@ -1218,11 +1227,6 @@ async function onPeerAction(ev) {
     });
     btn.disabled = false;
     if (!r.ok) { alert('unblock failed: HTTP ' + r.status); return; }
-  } else if (action === 'delete') {
-    btn.disabled = true;
-    const r = await fetch('/v1/peer/' + encodeURIComponent(pid), {method: 'DELETE'});
-    btn.disabled = false;
-    if (!r.ok) { alert('delete failed: HTTP ' + r.status); return; }
   } else if (action === 'toggle-allow') {
     const next = btn.textContent.trim() !== 'ON';
     btn.disabled = true;
