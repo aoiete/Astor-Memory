@@ -1,3 +1,19 @@
+## v1.17.12 — 2026-10-28
+
+### The comment about the consent flag contradicted the schema
+
+`distill_opt_in` has three states: 1 is an explicit yes, 0 is an
+explicit no, and -1 is "never asked". The schema and the migration both
+default it to -1. A comment next to the column said the default was 0,
+and a reader who trusted that comment saw the -1 in the database and
+concluded it was a missing value that ought to be set. It was not
+missing; it was the documented "never asked" state, which for the
+operator's own tier means the automatic mining runs and for anyone
+else's tier means it does not.
+
+The comment now describes the three states, and a test checks that the
+comment, the CREATE and the ALTER all agree on the default.
+
 ## v1.17.11 — 2026-10-28
 
 ### The connections table forgot which page it was on

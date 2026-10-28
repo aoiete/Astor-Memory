@@ -118,15 +118,23 @@ def _init_schema(con: sqlite3.Connection) -> None:
             -- v1.17.5: whether this user's private tier may be mined
             -- into the shared tier, and whether they may write to it.
             --
-            -- distill_opt_in defaults to 0: a user who has not said
-            -- yes has not consented to their private facts being
-            -- promoted into the shared tier. The operator's own tier
-            -- is the exception -- running the mining command IS the
-            -- consent -- and the dashboard switch is how that consent
-            -- is withdrawn, so the command reads the flag for the
-            -- operator too.
+            -- distill_opt_in has THREE states, not two:
+            --    1  explicit yes
+            --    0  explicit no
+            --   -1  never asked  <- the default, in BOTH the schema and the ALTER
             --
-            -- allow_commons_write defaults to 1: writing to the shared
+            -- -1 is a real state, not a missing value. It reads differently
+            -- depending on whose tier is being mined:
+            --   the operator's own tier -- never asked is not a refusal, so the
+            --   automatic path runs (value != 0) and the manual path always runs
+            --   (running the command IS the consent);
+            --   somebody ELSE's tier -- their yes is required, so -1 does not
+            --   allow it (value == 1).
+            --
+            -- The dashboard switch is how the operator says no (0), so the
+            -- command reads the flag for the operator too.
+            --
+-- allow_commons_write defaults to 1: writing to the shared
             -- tier is the normal thing for a fact to be for.
             -- -1 means "never asked": the mining command treats it as
             -- the operator's own consent to mine their own tier, which
