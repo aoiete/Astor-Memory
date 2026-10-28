@@ -1,3 +1,31 @@
+## v1.17.14 — 2026-10-28
+
+### A fact could be counted but never traced
+
+`am recall-history` answered "what was asked". Nothing answered the
+other half: "which of my questions brought THIS memory back?" The
+recall log recorded the query, the tier, the result count and the top
+score -- and not which facts came back. So a fact had an
+`access_count` (how many times it was hit) but no history (what hit
+it), and 30,646 logged recalls carried no fact id at all.
+
+Every read now records a `hits` array: the fact ids that came back,
+how each was matched (`hybrid`, `bm25`, `session_neighbor`,
+`grep_verify`), its score and its kind. Capped at the first ten
+hits, because `top_k` can be large and this file grows by default.
+
+`am recall-trail <fact_id>` reads it back:
+
+```
+[OK] fact 5832 was brought back by 1 recall(s):
+  2026-10-28T20:13:55 tier=public   user=none     via=hybrid     conf=0.85 kind=fact
+    query: 'recall trail fact id'
+```
+
+Facts recalled before this version carry no hits array and cannot be
+traced. The log keeps those rows -- they are the record of what the
+harness used to report.
+
 ## v1.17.13 — 2026-10-28
 
 ### The cache was hiding the thing the eval harness measures

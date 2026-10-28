@@ -621,6 +621,18 @@ def main(argv: list[str] | None = None) -> int:
                         help='Show oldest first (default newest first)')
     hist_p.set_defaults(func=cmd_recall_history)
 
+    # am recall-trail <fact_id> (v1.17.14: which of my queries brought
+    # THIS memory back -- the fact-level half of recall-history).
+    trail_p = subparsers.add_parser(
+        'recall-trail',
+        help='Trace which recall queries brought a fact back')
+    trail_p.add_argument('fact_id', help='fact id to trace')
+    trail_p.add_argument('--hours', type=int, default=0,
+                         help='only the last N hours (0 = all time)')
+    trail_p.add_argument('--limit', type=int, default=20,
+                         help='cap rows shown (default 20)')
+    trail_p.set_defaults(func=cmd_recall_trail)
+
     # v1.16.x: am consult — reactive consult endpoint. Use when stuck on a
     # problem and want to see what worked/failed/was-learned before. Mirrors
     # POST /v1/consult but uses direct SQL (no HTTP layer).
@@ -4541,6 +4553,92 @@ def cmd_recall_history(args) -> int:
         lat_ms = r.get('latency_ms', '?')
         print(f"  {ts} tier={tier:<8} user={uid:<8} "
               f"hits={n_results:<3} lat={lat_ms}ms qhash={qhash}")
+        print(f"    query: {qtext!r}")
+    return 0
+
+
+def cmd_recall_trail(args) -> int:
+    """v1.17.14: trace where a fact came from.
+
+    `am recall-history` answers "what was asked". This answers the
+    other half -- "which of my questions brought THIS memory back?".
+    Reads the `hits` array the server writes on every /v1/read and
+    filters it by fact id.
+
+    Facts recalled before v1.17.14 have no hits recorded, so they
+    cannot be traced. The log keeps them; they are the record of what
+    the harness used to report.
+    """
+    import json as _jt
+    import datetime as _dt_t
+    from pathlib import Path as _Path_t
+
+    astor_dir = os.environ.get('ASTOR_DIR') or os.path.expanduser(os.path.join('~', '.astor'))  # cross-platform default
+    log_path = _Path_t(astor_dir) / 'astor' / 'metrics' / 'recall_log.jsonl'
+    if not log_path.exists():
+        print(f'[ERR] recall_log not found at {log_path}')
+        return 1
+    try:
+        fid = int(args.fact_id)
+    except (TypeError, ValueError):
+        print(f'[ERR] fact_id must be an integer, got {args.fact_id!r}')
+        return 2
+
+    cutoff = None
+    if args.hours and args.hours > 0:
+        cutoff = (_dt_t.datetime.now(_dt_t.timezone.utc)
+                  - _dt_t.timedelta(hours=args.hours)).isoformat()
+
+    rows = []
+    total_lines = 0
+    try:
+        with open(log_path, 'r', encoding='utf-8') as _ft:
+            for line in _ft:
+                line = line.strip()
+                if not line:
+                    continue
+                total_lines += 1
+                try:
+                    rec = _jt.loads(line)
+                except Exception:
+                    continue
+                if cutoff and rec.get('ts', '') < cutoff:
+                    continue
+                for h in (rec.get('hits') or []):
+                    try:
+                        hid = int(h.get('fact_id'))
+                    except (TypeError, ValueError):
+                        continue
+                    if hid == fid:
+                        rows.append((rec, h))
+                        break
+    except Exception as _exc:
+        print(f'[ERR] failed to read {log_path}: {_exc}')
+        return 1
+
+    rows.sort(key=lambda p: p[0].get('ts', ''), reverse=True)
+    rows = rows[:args.limit]
+    if not rows:
+        print(f'[OK] fact {fid} has no recorded trail in {log_path.name} '
+              f'({total_lines} log entries scanned).')
+        print('  Facts recalled before v1.17.14 carry no hits array, so')
+        print('  they cannot be traced. Only recalls after that version')
+        print('  are traceable.')
+        return 0
+
+    print(f'[OK] fact {fid} was brought back by {len(rows)} recall(s):')
+    for rec, h in rows:
+        ts = (rec.get('ts') or '')[:19]
+        qtext = (rec.get('query') or '').replace('\n', ' ')
+        if len(qtext) > 90:
+            qtext = qtext[:87] + '...'
+        tier = rec.get('tier', '?')
+        uid = rec.get('user_id', '?')
+        how = h.get('score_kind', '?')
+        conf = h.get('conf', '?')
+        kind = h.get('kind', '?')
+        print(f"  {ts} tier={tier:<8} user={uid:<8} "
+              f"via={how:<10} conf={conf} kind={kind}")
         print(f"    query: {qtext!r}")
     return 0
 

@@ -6195,6 +6195,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # Used by astor_self_eval to compute per-intent hit rate.
                 _top_score = float(enriched[0].get('confidence') or 0) if enriched else 0.0
                 _top_kind = str(enriched[0].get('kind') or '') if enriched else ''
+                # v1.17.14: the log said WHICH query was asked and how
+                # well it did, but not WHICH facts came back. So a fact
+                # could only be counted (access_count), never traced:
+                # "what work of mine brought this memory back?" had no
+                # answer. Record the hits -- the fact ids and how each
+                # one was matched -- so the trail is queryable.
+                # Capped at 10: top_k can be large and this file grows
+                # by default.
+                _hits = []
+                for _r in (enriched[:10] if enriched else []):
+                    _fid = _r.get('fact_id')
+                    if _fid is None:
+                        continue
+                    _hits.append({
+                        'fact_id': int(_fid),
+                        'score_kind': str(_r.get('score_kind') or '')[:24],
+                        'conf': round(float(_r.get('confidence') or 0), 4),
+                        'kind': str(_r.get('kind') or '')[:24],
+                    })
                 _logf.write(_j_u.dumps({
                     'ts': _ts_now,
                     'tier': tier,
@@ -6208,6 +6227,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     'n_results': len(enriched),
                     'top_hit_score': round(_top_score, 4),
                     'top_hit_kind': _top_kind[:32],
+                    # v1.17.14: the fact-level trail. `am recall-trail
+                    # <fact_id>` reads this back.
+                    'hits': _hits,
                     # v1.16.61: caller-set or server-classified.
                     'intent': _intent,
                     'used_hint': _used_hint,
