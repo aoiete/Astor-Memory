@@ -246,3 +246,35 @@ def test_the_placeholder_is_part_of_the_path():
     src = '[LESSON] grep -rn "def schedule" <home>/AppData/x/hermes_cli/'
     out, _removed, _report = distill(src)
     assert "<home>/AppData/x/hermes_cli/" in out
+
+
+def test_a_split_path_is_put_back_together():
+    """The sentence splitter used to cut a path in half, so a fact
+    that said "maker_pocket.py" read "maker_pocket. py". The
+    distiller is fixed, but the rows it already wrote stay broken --
+    and the mining skips a fact it has already promoted, so they would
+    never be rewritten. The scrub is what runs over the public tier,
+    and it can put the pieces back together."""
+    from astor_memory.nest.public_scrub import rejoin_split_tokens
+    out, ch = rejoin_split_tokens("run maker_pocket. py then read server. py")
+    assert "maker_pocket.py" in out, out
+    assert "server.py" in out, out
+    assert ch
+
+
+def test_a_split_domain_is_put_back_together():
+    from astor_memory.nest.public_scrub import rejoin_split_tokens
+    out, _ch = rejoin_split_tokens("see mp. weixin. qq. com for details")
+    assert "mp.weixin.qq.com" in out, out
+
+
+def test_a_sentence_is_not_mistaken_for_a_split():
+    """A period at the end of a sentence is not a broken path. The
+    repair joins a word with the next one only when the next one is a
+    file extension or the tail of a domain."""
+    from astor_memory.nest.public_scrub import rejoin_split_tokens
+    for s in ("the run finished. 5 items were left",
+              "it happened. A 2011 answer",
+              "no. 5 of them"):
+        out, _ch = rejoin_split_tokens(s)
+        assert out == s, (s, out)

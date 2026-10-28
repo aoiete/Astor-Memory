@@ -298,7 +298,12 @@ def scrub_values(values: dict) -> tuple[dict, list[dict]]:
             out[key] = new_v
             changes.extend(ch)
         else:
+            new_v = v
             out[key] = v
+        new_v, ch2 = rejoin_split_tokens(new_v)
+        if ch2:
+            out[key] = new_v
+            changes.extend(ch2)
     return out, changes
 
 
@@ -341,3 +346,43 @@ def _scrub_json(value, names: set[str]):
             changes.extend(c)
         return out, changes
     return value, []
+
+
+# v1.17.9: the sentence splitter used to cut a path in half, so a
+# fact that says "maker_pocket.py" read "maker_pocket. py". The
+# distiller is fixed, but the rows it already wrote stay broken --
+# and the mining skips a fact it has already promoted, so they would
+# never be rewritten. The scrub is what runs over the public tier,
+# and it can put the pieces back together.
+_SPLIT_FILE_RE = re.compile(
+    r'\b([a-z][a-z0-9_\-]{1,})\. '
+    r'(html?|py|js|json|md|sh|xml|csv|txt|log|ini|cfg|conf|css)\b')
+# The whole domain, not the last three labels: "mp. weixin. qq. com"
+# is one domain, and joining half of it leaves a label with a space
+# after its dot.
+_SPLIT_DOMAIN_RE = re.compile(
+    r'\b([a-z][a-z0-9\-]{1,}(?:\. [a-z][a-z0-9\-]{1,})*)\. '
+    r'(com|net|org|cn|io|dev|app|co|me|ai|info|biz)\b')
+
+
+def rejoin_split_tokens(text: str) -> tuple[str, list[dict]]:
+    """Put a path or a domain back together after the sentence
+    splitter cut it. Returns (text, changes)."""
+    if not text:
+        return text, []
+    changes: list[dict] = []
+
+    def _file(m: re.Match) -> str:
+        joined = '%s.%s' % (m.group(1), m.group(2))
+        changes.append({"kind": "split_file", "sample": m.group(0),
+                        "replacement": joined})
+        return joined
+
+    def _domain(m: re.Match) -> str:
+        joined = (m.group(1) + '. ' + m.group(2)).replace('. ', '.')
+        changes.append({"kind": "split_domain", "sample": m.group(0),
+                        "replacement": joined})
+        return joined
+
+    out = _SPLIT_DOMAIN_RE.sub(_domain, _SPLIT_FILE_RE.sub(_file, text))
+    return out, changes

@@ -1,3 +1,22 @@
+## v1.17.9 — 2026-10-27
+
+### The paths that were already broken got put back together
+
+The distiller fix in v1.17.8 stops the sentence splitter from cutting
+a path in half, but it only reaches facts mined from now on. The
+mining skips a fact it has already promoted, so the 73 public facts
+written by the old distiller would have stayed broken forever: a fact
+that said "maker_pocket.py" still read "maker_pocket. py".
+
+The public scrub is what runs over the shared tier, so it puts the
+pieces back together. 75 facts were rewritten, and every one of them
+differs only at the seam -- no other change, no other fact touched.
+
+A path is joined when the word after the period is a file extension,
+and a domain when the tail is a TLD. A sentence that ends in a
+period is not a broken path and is left alone: "it happened. A 2011
+answer" and "no. 5 of them" do not move.
+
 ## v1.17.8 — 2026-10-27
 
 ### The switch turns the automatic runs off, and only those
