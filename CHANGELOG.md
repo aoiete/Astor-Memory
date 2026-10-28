@@ -1,3 +1,59 @@
+## v1.17.8 — 2026-10-27
+
+### The switch turns the automatic runs off, and only those
+
+The operator said: "turn off automatic and it becomes manual". The
+switch did not do that. It refused the manual command as well, so
+turning it off did not make anything manual -- it made the mining
+impossible.
+
+The two paths are now separate, and the difference is what they are:
+
+- The automatic path -- the weekly job, the `distill_auto` endpoint
+  -- reads the switch. Off means it does not run.
+- The manual path -- somebody typing `am mine-public` -- does not.
+  The person typing the command is the consent.
+
+For somebody else's tier both paths need their yes, and the absence
+of an answer is not a yes. That did not change.
+
+### The switch was in the last column of a paginated table
+
+The operator could not find it, and then pressed the page buttons
+next to it, which do nothing on the first page. Two things were
+wrong.
+
+The table's scroll container was defined only inside the
+narrow-screen media query, so on a wide screen the table ran past
+the card and the last column was outside the card with no way to
+scroll to it. The rule now applies at every width.
+
+And the operator's own switch now has a switch of its own at the top
+of the panel. The per-row column answers a different question -- who
+else has agreed to be mined -- and reading your own switch should
+not mean finding your own row in a paginated table.
+
+### A path in the body came out in pieces
+
+The sentence splitter cuts on a period, so `wechat.html` became
+`wechat. html` in the body of the fact. The STATE-CONST block held
+the intact copy, but the body is what a reader reads.
+
+The token is now held as a placeholder while the split runs and put
+back afterwards, so the path survives the split and the reader sees
+the real path rather than a reference to a reference.
+
+Three more things the split was breaking:
+
+- A placeholder was only allowed to be ASCII, so `<临时目录>` was
+  dropped and the path that survived started at the slash -- which
+  reads as though the temp directory were part of the filesystem
+  rather than a stand-in for one.
+- A dotfile could not be matched at all, because the pattern could
+  not start on a dot.
+- A bare domain had no pattern, so `mp.weixin.qq.com` was cut into
+  `mp. weixin. qq. com`. A domain says which site a method is for.
+
 ## v1.17.7 — 2026-10-27
 
 The shared tier keeps the method and loses the machine.

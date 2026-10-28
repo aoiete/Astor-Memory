@@ -157,3 +157,52 @@ def test_a_private_write_keeps_its_path(tmp_path, monkeypatch):
     row = bus.conn.execute(
         "SELECT content FROM memory_canonical WHERE id = ?", (fid,)).fetchone()
     assert "D:/AI/.tmp_wechat.html" in row[0]
+
+
+def test_a_state_const_token_survives_the_body():
+    """A path in the body used to come out in pieces: the sentence
+    splitter cuts on a period, so "wechat.html" became "wechat. html".
+    The STATE-CONST block held the intact copy, but the body is what
+    a reader reads.
+
+    The token is now held as a placeholder while the split runs and
+    put back afterwards."""
+    from astor_memory.nest.distiller import distill
+    out, _removed, _rep = distill(
+        "[LESSON] curl -sS https://example.invalid/ -o <tmp>/wechat.html "
+        "then grep js_content")
+    assert "wechat. html" not in out, out
+    assert "<tmp>/wechat.html" in out, out
+
+
+def test_a_placeholder_is_not_limited_to_ascii():
+    """The operator's own placeholders are not always English. The
+    pattern only allowed [a-z-], so a Chinese placeholder was dropped
+    and the path that survived started at the slash -- which reads as
+    though the temp directory were part of the filesystem rather than
+    a stand-in for one."""
+    from astor_memory.nest.distiller import distill
+    out, _removed, _rep = distill(
+        "[LESSON] curl -sS https://example.invalid/ -o <\u4e34\u65f6\u76ee\u5f55>/wechat.html "
+        "then grep js_content")
+    assert "<\u4e34\u65f6\u76ee\u5f55>/wechat.html" in out, out
+
+
+def test_a_dotfile_is_a_path():
+    """A dotfile is a file like any other. The pattern could not start
+    on one, so the leading dot was lost."""
+    from astor_memory.nest.distiller import distill
+    out, _removed, _rep = distill(
+        "[LESSON] curl -sS https://example.invalid/ -o <root>/.tmp_x.html "
+        "then grep js_content")
+    assert "<root>/.tmp_x.html" in out, out
+
+
+def test_a_bare_domain_is_extracted():
+    """A domain says which site a method is for. Without a pattern for
+    it the splitter cut it into pieces nobody can use."""
+    from astor_memory.nest.distiller import distill
+    out, _removed, _rep = distill(
+        "[LESSON] \u4ece mp.weixin.qq.com \u62c9\u6587\u7ae0\uff0c\u5148\u62ff HTML \u518d\u53d6 js_content")
+    assert "mp. weixin" not in out, out
+    assert "mp.weixin.qq.com" in out, out

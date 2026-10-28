@@ -110,6 +110,27 @@ def main() -> int:
     env["PYTHONPATH"] = os.pathsep.join(
         [str(REPO)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
     env["PYTHONIOENCODING"] = "utf-8"
+
+    # v1.17.8: this is the AUTOMATIC run, so it reads the switch. The
+    # operator said "turn off automatic and it becomes manual" -- and
+    # this job is the automatic part. Off means this job does
+    # nothing; the manual command still works.
+    #
+    # The check runs in the interpreter that can import astor, because
+    # that is the one whose copy of the code is the one in force.
+    probe = subprocess.run(
+        [interpreter, "-c",
+         "import sys;from astor_memory._internal.bot_binding import "
+         "distill_auto_allowed;sys.stdout.write('1' if "
+         "distill_auto_allowed('admin', own=True) else '0')"],
+        env=env, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=120)
+    if probe.returncode == 0 and probe.stdout.strip() == "0":
+        print("mine-public-weekly: automatic mining is switched off in the "
+              "dashboard; nothing to do this week. The manual command "
+              "(`am mine-public --apply`) still works.")
+        return 0
+
     cmd = [interpreter, "-m", "astor_memory.cli.main", "mine-public", "--apply"]
     try:
         proc = subprocess.run(

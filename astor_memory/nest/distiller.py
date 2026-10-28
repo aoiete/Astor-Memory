@@ -107,9 +107,29 @@ _STATE_CONST_PATTERNS = [
     # pattern that starts at the first slash captures only the tail of
     # it -- the placeholder, which is the part that says "this was
     # somebody's machine", is what gets dropped.
-    re.compile(r'(?:<[a-z-]+>)?(?:[A-Za-z]:[/\\])?(?:[/\\])?[\w][\w./\\-]*\.(?:py|js|ts|tsx|jsx|java|go|rs|c|cpp|h|hpp|md|txt|json|yaml|yml|toml|sh|sql|html|css)(?::\d{1,5})?(?=\b|[\s.,])'),
+    # v1.17.8: a placeholder is <anything without a space or a
+    # bracket> -- the operator's own placeholders are not always
+    # ASCII. "<临时目录>/wechat.html" used to lose the placeholder
+    # because the pattern only allowed [a-z-], and the path that
+    # survived started at the slash, so the fact read as though the
+    # temp directory were part of the filesystem rather than a
+    # stand-in for one.
+    #
+    # A leading dot is allowed: a dotfile (".tmp_x.html") is a file
+    # like any other, and the old pattern could not start on one.
+    # The extension list carries the web assets -- a method that
+    # writes a .html file is the most common kind there is, and it
+    # was not in the list at all.
+    re.compile(r'(?:<[^<>\s]{1,24}>)?(?:[A-Za-z]:[/\\])?(?:[/\\])?(?:\.[\w-]+|[\w][\w./\\-]*)?\.(?:py|js|ts|tsx|jsx|java|go|rs|c|cpp|h|hpp|md|txt|json|yaml|yml|toml|sh|sql|html|htm|xml|csv|log|ini|cfg|conf|css)(?::\d{1,5})?(?=\b|[\s.,])'),
     # URL paths (preserve the path even when hostname is replaced)
-    re.compile(r'(?<!\w)(?:<[a-z-]+>)?/[a-zA-Z][\w./\-]{2,200}'),
+    re.compile(r'(?<!\w)(?:<[^<>\s]{1,24}>)?/[a-zA-Z.][\w./\-]{2,200}'),
+    # A bare domain: "mp.weixin.qq.com" says which site a method is
+    # for, and without this the sentence splitter cut it into
+    # "mp. weixin. qq. com" -- a domain nobody can use. The last
+    # label has to be alphabetic, so a version number does not match,
+    # and the leading lookbehind keeps a path from being read as a
+    # domain.
+    re.compile(r'(?<![\w@./-])(?:[a-z0-9-]+\.)+[a-z]{2,24}(?![\w-])'),
     # semantic version
     re.compile(r'\bv?\d+\.\d+\.\d+(?:[-+][\w.]+)?\b'),
     # HTTP status codes (200-599)
@@ -204,9 +224,17 @@ def distill(
     # means file paths like "src/api/v2/handler.py:142" get fragmented
     # otherwise. Extracting them whole up front avoids that.
     state_extractions = _extract_state_const(text)
-
-    # 1. Split into sentences
-    sentences = [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
+    # v1.17.8: protect the tokens in the body BEFORE the sentence
+    # split. The split cuts on a period, so "wechat.html" became
+    # "wechat. html" -- the method was broken in the body while the
+    # STATE-CONST block held the intact copy. The body is what a
+    # reader reads; a token in it has to survive the split.
+    _body_src = text
+    for _e in state_extractions:
+        _tok = _e.get('token') or ''
+        if _tok and _tok in _body_src:
+            _body_src = _body_src.replace(_tok, _e['placeholder'])
+    sentences = [s.strip() for s in _SENT_SPLIT.split(_body_src) if s.strip()]
     n_in = len(sentences)
 
     # 2. Per-sentence filter (PII / first-person / emotion).
@@ -335,6 +363,21 @@ def distill(
         sent = sent.strip()
         if not sent:
             continue
+        # v1.17.8: put the token back now that the split is done. The
+        # split ran on the placeholder-protected body, so the token
+        # came through it whole; the reader gets the real path
+        # instead of a reference to a reference. The PII check below
+        # runs on the restored text, so a token that carries
+        # something private is still caught.
+        for _e in state_extractions:
+            _ph = _e.get('placeholder') or ''
+            _tok = _e.get('token') or ''
+            if not _ph or not _tok:
+                continue
+            # A token that was inside brackets ("[LESSON]") reads
+            # back as "[" + token + "]", not as a doubled bracket.
+            sent = sent.replace('[' + _ph + ']', '[' + _tok + ']')
+            sent = sent.replace(_ph, _tok)
         if has_pii(sent) or has_first_person(sent) or has_emotion(sent):
             removed.append({'segment': sent, 'reason': 'residual_after_distill'})
             continue

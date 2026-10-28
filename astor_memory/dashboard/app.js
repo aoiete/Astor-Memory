@@ -417,10 +417,14 @@ function escapeHtml(s) {
 // function re-definition issues across page clicks.
 let _connPage = 0;
 let _connSorted = [];
+// v1.17.8: the whole payload, so the panel-header switch can read the
+// caller's own setting without a second request.
+let _connPayload = null;
 
 function renderConnections(d) {
   const tbody = document.querySelector('#connections-table tbody');
   if (!tbody) return;
+  _connPayload = d;
   const bindings = d.bindings || [];
     // Sort: plan priority (admin > power > vip > free) then user_id.
     // v1.16.70: admin plan ranks 0 so the operator row surfaces at the top.
@@ -440,6 +444,19 @@ function renderConnections(d) {
 }
 
 function _drawConnPage() {
+  // v1.17.8: the panel-header switch shows the operator's OWN
+  // automatic mining. The per-row column answers a different
+  // question -- who else has agreed to be mined -- and the operator
+  // does not have to find their own row in a paginated table to
+  // read their own switch.
+  const _selfBtn = document.getElementById('auto-distill-toggle');
+  if (_selfBtn) {
+    const _on = !!(_connPayload && _connPayload.self_distill_opt_in);
+    _selfBtn.textContent = 'Auto-distill: ' + (_on ? 'ON' : 'off');
+    _selfBtn.classList.toggle('peer-allow-on', _on);
+    _selfBtn.classList.toggle('peer-allow-off', !_on);
+    _selfBtn.dataset.uid = (_connPayload && _connPayload.self_user_id) || '';
+  }
   const tbody = document.querySelector('#connections-table tbody');
   const summary = document.getElementById('connections-summary');
   if (!tbody) return;
@@ -548,6 +565,38 @@ function _drawConnPage() {
   const _connTbody = document.querySelector('#connections-table tbody');
   if (_connTbody) {
     _connTbody.addEventListener('click', onConnDistillToggle);
+  }
+
+  // v1.17.8: the panel-header switch. It is the operator's own
+  // automatic mining: on means the weekly job runs, off means it does
+  // not. The manual command is unaffected either way -- the operator
+  // said "turn off automatic and it becomes manual".
+  const _autoBtn = document.getElementById('auto-distill-toggle');
+  if (_autoBtn) {
+    _autoBtn.addEventListener('click', async () => {
+      const uid = _autoBtn.dataset.uid
+        || (_connPayload && _connPayload.self_user_id) || 'admin';
+      const on = _autoBtn.textContent.indexOf('ON') !== -1;
+      _autoBtn.disabled = true;
+      try {
+        const r = await fetch('/v1/admin/user/' + encodeURIComponent(uid)
+          + '/toggle_distill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ allow_distill: !on }),
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          alert('Toggle failed: ' + (d.error || r.status));
+          return;
+        }
+        await fetchConnections();
+      } catch (e) {
+        alert('Toggle failed: ' + e);
+      } finally {
+        _autoBtn.disabled = false;
+      }
+    });
   }
 
   // -- Health diagnosis modal ------------------------------------------------

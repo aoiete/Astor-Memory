@@ -109,23 +109,25 @@ def test_the_switch_has_one_meaning(tmp_path, monkeypatch):
 
     # Fresh row: never asked.
     assert bot_binding.get_distill_opt_in("u1") == -1
-    # Their own fact: asking is the consent.
-    assert bot_binding.distill_auto_allowed("u1") is True
-    # The operator mining their tier: also consent (the command is
-    # the consent), but only for their own tier.
+    # Their own tier, automatic path: never asked means automatic.
+    assert bot_binding.distill_auto_allowed("u1", own=True) is True
+    # Their own tier, manual path: the command is the consent.
     assert bot_binding.distill_mining_allowed("u1", own=True) is True
-    # Somebody ELSE's tier: no consent, so no mining.
+    # Somebody ELSE's tier: no consent, so no mining -- and their
+    # "never asked" is not an answer to the operator's question.
     bot_binding.upsert_user(user_id="u2", short_alias="u2")
     assert bot_binding.distill_mining_allowed("u2") is False
+    assert bot_binding.distill_auto_allowed("u2") is False
 
-    # Explicit off refuses both directions.
+    # Explicit off stops the automatic run but not the manual one:
+    # "turn off automatic and it becomes manual".
     bot_binding.set_distill_opt_in("u1", False)
-    assert bot_binding.distill_auto_allowed("u1") is False
-    assert bot_binding.distill_mining_allowed("u1", own=True) is False
+    assert bot_binding.distill_auto_allowed("u1", own=True) is False
+    assert bot_binding.distill_mining_allowed("u1", own=True) is True
 
     # Explicit on allows both.
     bot_binding.set_distill_opt_in("u1", True)
-    assert bot_binding.distill_auto_allowed("u1") is True
+    assert bot_binding.distill_auto_allowed("u1", own=True) is True
     assert bot_binding.distill_mining_allowed("u1", own=True) is True
     assert bot_binding.distill_mining_allowed("u1") is True
     bot_binding.close()
@@ -170,10 +172,13 @@ def test_a_fresh_database_has_the_columns(tmp_path, monkeypatch):
 
 
 def test_the_operator_is_mined_unless_switched_off(tmp_path, monkeypatch):
-    """The operator's own tier is mined on "never asked" and skipped on
-    an explicit "off". That is what makes the dashboard switch a
-    switch: running the command is the consent, and the switch is how
-    the operator withdraws it."""
+    """The MANUAL command always mines the operator's own tier. The
+    switch governs the automatic runs, not the manual one: the
+    operator asked for "turn off automatic and it becomes manual",
+    and the person typing the command is the consent.
+
+    The automatic path is the one the switch moves, and that is
+    covered by the helper test."""
     monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
     monkeypatch.setenv("ASTOR_USER_ID", "admin")
     from astor_memory._internal import bot_binding
@@ -197,7 +202,9 @@ def test_the_operator_is_mined_unless_switched_off(tmp_path, monkeypatch):
 
     assert "admin" in _scopes()
     bot_binding.set_distill_opt_in("admin", False)
-    assert "mining disabled for admin" in _scopes()
+    # Still mined: the command was run on purpose.
+    assert "admin" in _scopes()
+    assert "mining disabled" not in _scopes()
     bot_binding.set_distill_opt_in("admin", -1)
     assert "admin" in _scopes()
     bot_binding.close()
@@ -339,3 +346,80 @@ def test_distill_auto_finds_the_users_own_fact(tmp_path, monkeypatch):
     # fact is there.
     assert resp.status_code != 404, resp.data[:300]
     bot_binding.close()
+
+
+def test_the_switch_governs_the_automatic_runs_only(tmp_path, monkeypatch):
+    """The operator said: "turn off automatic and it becomes manual".
+    So the switch has to stop the automatic runs -- the weekly job,
+    the distill_auto endpoint -- and it must NOT stop the manual
+    command. The person typing the command is the consent.
+
+    A switch that also forbade the manual run would not be a switch
+    between two modes; it would be a lock."""
+    from astor_memory._internal import bot_binding
+    monkeypatch.setattr(bot_binding, "_con", None)
+    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
+    bot_binding.upsert_user(user_id="admin", short_alias="admin", role="admin")
+
+    # Off.
+    bot_binding.set_distill_opt_in("admin", False)
+    # The automatic path stops.
+    assert bot_binding.distill_auto_allowed("admin", own=True) is False
+    # The manual path does not.
+    assert bot_binding.distill_mining_allowed("admin", own=True) is True
+    # Somebody else's tier is untouched by the operator's switch.
+    bot_binding.upsert_user(user_id="u2", short_alias="u2")
+    assert bot_binding.distill_mining_allowed("u2") is False
+    assert bot_binding.distill_auto_allowed("u2") is False
+
+    # On.
+    bot_binding.set_distill_opt_in("admin", True)
+    assert bot_binding.distill_auto_allowed("admin", own=True) is True
+    assert bot_binding.distill_mining_allowed("admin", own=True) is True
+
+    # Never asked: automatic by default for the operator's own tier.
+    bot_binding.set_distill_opt_in("admin", -1)
+    assert bot_binding.distill_auto_allowed("admin", own=True) is True
+    assert bot_binding.distill_mining_allowed("admin", own=True) is True
+    bot_binding.close()
+
+
+def test_the_weekly_job_reads_the_switch():
+    """The weekly job is the automatic run, so it has to look at the
+    switch before it mines anything. The check is a string in the
+    script -- a contract, not a runtime import, because the script
+    runs under whatever interpreter the scheduler bootstraps."""
+    from pathlib import Path as _P
+    script = (_P(__file__).resolve().parent.parent /
+              "scripts" / "mine_public_weekly.py").read_text(encoding="utf-8")
+    assert "distill_auto_allowed" in script
+    assert "nothing to do this week" in script
+
+
+def test_the_dashboard_has_a_switch_in_the_panel_header():
+    """A control the operator has to find by scrolling a paginated
+    table to its last column is a control they will not find. The
+    operator's own switch belongs at the top of the panel."""
+    from pathlib import Path as _P
+    root = _P(__file__).resolve().parent.parent / "astor_memory" / "dashboard"
+    html = (root / "index.html").read_text(encoding="utf-8")
+    app = (root / "app.js").read_text(encoding="utf-8")
+    assert 'id="auto-distill-toggle"' in html
+    assert "auto-distill-toggle" in app
+    # The table has to be scrollable at every width: the rule used
+    # to live inside the narrow-screen media query, so on a wide
+    # screen the last column was outside the card.
+    css = (root / "style.css").read_text(encoding="utf-8")
+    i = css.find(".table-scroll {")
+    assert i != -1
+    block = css[i:i+300]
+    assert "overflow-x: auto" in block
+    # And that block must not be inside a media query.
+    before = css[:i]
+    depth = 0
+    for ch in before:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+    assert depth == 0, "the scroll rule is nested in another block"

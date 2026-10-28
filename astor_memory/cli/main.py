@@ -1307,7 +1307,13 @@ def cmd_mine_public(args) -> int:
     # behaviour and the safe one, since the operator is running the
     # command in the first place.
     scopes = []
-    if _allow_commons.get(_own, 1) != 0 and _distill_mining_allowed(_own, own=True):
+    # v1.17.8: the switch turns the AUTOMATIC runs off. It does not
+    # forbid the MANUAL run -- the operator said "turn off automatic
+    # and it becomes manual", and the person typing the command is
+    # the consent. So the operator's own tier is always minable by
+    # hand; what the switch governs is the weekly job and the
+    # distill_auto endpoint.
+    if _distill_mining_allowed(_own, own=True):
         scopes.append(('private', _own))
     else:
         print(f'  mining disabled for {_own} (distill_opt_in=0)')

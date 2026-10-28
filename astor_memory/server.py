@@ -1680,7 +1680,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # state as consent. One switch, one meaning.
             try:
                 from ._internal.bot_binding import distill_auto_allowed
-                if not distill_auto_allowed(_owner):
+                if not distill_auto_allowed(_owner, own=(_owner == _caller)):
                     return jsonify({
                         'error': 'distill_opt_in_not_set',
                         'detail': 'automatic distillation is off for this '
@@ -9946,9 +9946,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _own = d.get('user_id') == _caller_id
                 d['distill_opt_in'] = (_v != 0) if _own else (_v == 1)
                 bindings.append(d)
+            # v1.17.8: the caller's OWN switch, so the panel header can
+            # show one switch for the operator's own automatic mining
+            # instead of making the operator find their own row in a
+            # paginated table to read it.
+            try:
+                from ._internal.bot_binding import distill_auto_allowed
+                _self_on = bool(distill_auto_allowed(_caller_id, own=True))
+            except Exception:
+                _self_on = False
             resp = jsonify({
                 'count': len(rows),
                 'bindings': bindings,
+                'self_user_id': _caller_id,
+                'self_distill_opt_in': _self_on,
             })
             # v1.16.25: never let CF edge cache operator-view endpoints.
             resp.headers['Cache-Control'] = 'no-store'

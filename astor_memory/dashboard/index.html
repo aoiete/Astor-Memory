@@ -10,7 +10,7 @@
 
 <title>Astor Dashboard</title>
 
-<link rel="stylesheet" href="/dashboard/style.css?v=1.17.17">
+<link rel="stylesheet" href="/dashboard/style.css?v=1.17.18">
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
@@ -123,6 +123,16 @@
     <h2>Connections <span class="subtitle">agents + users bound via bot-binding.db</span></h2>
 
     <div class="connections-summary" id="connections-summary">loading…</div>
+
+    <!-- v1.17.8: the operator's own switch, at the top of the panel
+         where it can be found. The per-row Distill column says who
+         ELSE has agreed to be mined; this one says whether the
+         operator's own tier is mined automatically. -->
+    <button id="auto-distill-toggle" type="button"
+            class="peer-allow-toggle peer-allow-on"
+            title="Automatic mining of your own tier. Off means the weekly job does nothing; the manual command still works.">
+      Auto-distill: ON
+    </button>
 
   </div>
 
@@ -543,7 +553,7 @@
 
 
 
-<script src="/dashboard/app.js?v=1.17.17"></script>
+<script src="/dashboard/app.js?v=1.17.18"></script>
 
 </body>
 

@@ -524,25 +524,40 @@ def get_distill_opt_in(user_id: str) -> int:
         return -1
 
 
-def distill_auto_allowed(user_id: str) -> bool:
-    """May this user have their OWN facts distilled automatically?
+def distill_auto_allowed(user_id: str, *, own: bool = False) -> bool:
+    """May this user's tier be distilled WITHOUT them asking?
 
-    This is the user asking for it, so the absence of a prior answer
-    is not a refusal: 1 and -1 both allow, 0 refuses.
-    """
-    return get_distill_opt_in(user_id) != 0
+    This is the AUTOMATIC path -- the weekly job, the distill_auto
+    endpoint. The switch means "run automatically", so for the
+    operator's own tier the absence of an answer is not a refusal:
+    never asked (-1) runs, turned off (0) does not, turned on (1)
+    does.
 
-
-def distill_mining_allowed(user_id: str, *, own: bool = False) -> bool:
-    """May this user's tier be promoted into the shared tier?
-
-    Somebody else's tier needs their yes (1). Their own tier does
-    not: running the command is the consent, so -1 -- never asked --
-    allows it, and only an explicit 0 refuses.
+    Somebody ELSE's tier is different: their yes is required, and
+    the absence of an answer is not a yes.
     """
     value = get_distill_opt_in(user_id)
     if own:
         return value != 0
+    return value == 1
+
+
+def distill_mining_allowed(user_id: str, *, own: bool = False) -> bool:
+    """May this user's tier be promoted into the shared tier BY A
+    COMMAND SOMEONE RAN?
+
+    This is the MANUAL path. The switch turns the AUTOMATIC runs
+    off, and the operator said exactly that: "turn off automatic and
+    it becomes manual". So turning the switch off must not also
+    forbid the manual run -- the person typing the command is the
+    consent.
+
+    Somebody else's tier still needs their yes (1). Their own tier
+    does not: running the command is the consent.
+    """
+    value = get_distill_opt_in(user_id)
+    if own:
+        return True
     return value == 1
 
 
