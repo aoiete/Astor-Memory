@@ -16,8 +16,23 @@ import json
 import os
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
+
+# Cloudflare's browser integrity check rejects urllib's default
+# "Python-urllib/3.x" with error 1010, and the 403 never reaches the
+# origin -- no server log, no explanation. A server behind a CDN needs
+# a User-Agent that looks like a client, not a script.
+USER_AGENT = "astor-memory/agent-plugin"
+
+
+def _headers(passcode: str = "", **extra: str) -> dict:
+    h = {"User-Agent": USER_AGENT}
+    if passcode:
+        h["X-Astor-Passcode"] = passcode
+    h.update(extra)
+    return h
 
 
 class AstorMemoryProvider:
@@ -27,13 +42,20 @@ class AstorMemoryProvider:
         self._server_url = os.environ.get("ASTOR_SERVER_URL", "http://127.0.0.1:7803").rstrip("/")
         self._user_id = os.environ.get("ASTOR_USER_ID", "admin")
         self._timeout_s = float(os.environ.get("ASTOR_TIMEOUT_S", "8"))
+        # A server exposed on a network needs the dashboard passcode.
+        # The peer protocol's public endpoints do not, but /v1/peer/search
+        # does -- it reads the relationship graph.
+        self._passcode = os.environ.get("ASTOR_PASSCODE", "")
         self._session_id: str = ""
         self._prefetch_lock = threading.Lock()
         self._last_recall: str = ""
 
     def is_available(self) -> bool:
         try:
-            req = urllib.request.Request(f"{self._server_url}/v1/health", method="GET")
+            req = urllib.request.Request(
+                f"{self._server_url}/v1/health",
+                headers=_headers(self._passcode),
+                method="GET")
             with urllib.request.urlopen(req, timeout=3) as r:
                 d = json.loads(r.read())
                 return d.get("status") == "ok" and d.get("facts", 0) > 0
@@ -52,8 +74,35 @@ class AstorMemoryProvider:
         req = urllib.request.Request(
             f"{self._server_url}{path}",
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
+            headers=_headers(self._passcode, **{
+                "Content-Type": "application/json"}),
         )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+
+    def peer_search(self, query: str, *, limit: int = 10) -> dict:
+        """Search the peer network, not just this node.
+
+        The local corpus is one node's view. When the answer lives on
+        another node in the federation, /v1/read only finds it if the
+        local recall came up short -- so a caller that wants the whole
+        network asks for it here.
+
+        Returns the merged peer results, or a dict with an "error" key
+        when no peer was reachable.
+        """
+        try:
+            return self._http_get(
+                f"/v1/peer/search?q={urllib.parse.quote(query)}&limit={limit}")
+        except Exception as e:
+            return {"error": str(e), "results": [], "count": 0}
+
+    def _http_get(self, path: str, timeout: float = 0.0) -> dict:
+        timeout = timeout or self._timeout_s
+        req = urllib.request.Request(
+            f"{self._server_url}{path}",
+            headers=_headers(self._passcode, **{"Accept": "application/json"}),
+            method="GET")
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
 
