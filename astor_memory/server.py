@@ -4654,12 +4654,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _kinds_key = tuple(sorted(str(_k) for _k in _kinds_key))
         elif _kinds_key is not None:
             _kinds_key = str(_kinds_key)
+        # v1.17.4: peer_fanout is part of the key. It changes the RESULT
+        # -- a fanout read returns peer results the plain read does not
+        # -- so a cached response from one must never be served to the
+        # other. Without it, the first peer_fanout:true read populated
+        # the cache and every later read of the same query got that
+        # response, including a peer_fanout:false one.
         _rcache_key = (
             query, body.get('tier', 'public'),
             body.get('user') or body.get('user_id') or '',
             body.get('top_k', 5),
             _kinds_key, body.get('wing'), body.get('session_id'),
             body.get('consult'),
+            body.get('peer_fanout'),
         )
         _rcache_hit = _READ_CACHE.get(_rcache_key)
         if _rcache_hit and (_rc_time.time() - _rcache_hit[0]) < 60:
