@@ -278,3 +278,25 @@ def test_a_sentence_is_not_mistaken_for_a_split():
               "no. 5 of them"):
         out, _ch = rejoin_split_tokens(s)
         assert out == s, (s, out)
+
+
+def test_the_other_shapes_the_splitter_breaks():
+    """The sentence splitter cut three more shapes, and each has a
+    tell that separates it from a sentence that ends in a period:
+    a binary extension, a dotted identifier with a leading
+    underscore, and a hidden directory."""
+    from astor_memory.nest.public_scrub import rejoin_split_tokens
+    out, _ch = rejoin_split_tokens("run python. exe and hermes. exe")
+    assert "python.exe" in out and "hermes.exe" in out, out
+    out, _ch = rejoin_split_tokens("see bus. _connect and self. _conn")
+    assert "bus._connect" in out and "self._conn" in out, out
+    out, _ch = rejoin_split_tokens("use hermes-agent/. venv and repo/. git")
+    assert ".venv" in out and ".git" in out, out
+
+
+def test_a_sentence_with_ordinary_words_is_not_joined():
+    from astor_memory.nest.public_scrub import rejoin_split_tokens
+    for s in ("the run finished. snapshot was taken",
+              "it failed. local retry then gave up"):
+        out, _ch = rejoin_split_tokens(s)
+        assert out == s, (s, out)

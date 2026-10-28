@@ -136,8 +136,13 @@ _STATE_CONST_PATTERNS = [
     re.compile(r'\b(?:[1-5]\d{2})\b(?=\s+(?:status|code|error|response))', re.I),
     # function/method calls: foo.bar() or Foo.bar()
     re.compile(r'\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){1,3}\(\)'),
-    # env-var like names (3+ caps + underscore)
-    re.compile(r'\b[A-Z][A-Z0-9_]{2,}\b'),
+    # env-var like names: caps WITH an underscore. The comment said
+    # "3+ caps + underscore" and the pattern did not ask for one, so
+    # every ordinary capitalised word -- STATE, CONST, PII, ASCII --
+    # became a state constant. A word like that in the body was then
+    # replaced a second time, because the placeholder it had already
+    # put there held the same letters.
+    re.compile(r'\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b'),
     # SHA / hex hashes 8+ chars
     re.compile(r'\b[0-9a-f]{8,}\b'),
     # UUID
@@ -230,10 +235,24 @@ def distill(
     # STATE-CONST block held the intact copy. The body is what a
     # reader reads; a token in it has to survive the split.
     _body_src = text
-    for _e in state_extractions:
-        _tok = _e.get('token') or ''
-        if _tok and _tok in _body_src:
-            _body_src = _body_src.replace(_tok, _e['placeholder'])
+    # One pass, longest token first. Replacing them one after
+    # another let a later token match the letters inside a
+    # placeholder an earlier one had already put there: the
+    # placeholder for "wechat.html" is "[STATE:1]", and a token
+    # "STATE" turned it into "[[STATE:5]:1]". One pass cannot do
+    # that, because it never looks at what it just wrote.
+    if state_extractions:
+        import re as _re_body
+        _by_text = {}
+        for _e in state_extractions:
+            _tok = _e.get('token') or ''
+            if _tok and _tok not in _by_text:
+                _by_text[_tok] = _e['placeholder']
+        if _by_text:
+            _rx = _re_body.compile('|'.join(
+                _re_body.escape(t) for t in
+                sorted(_by_text, key=len, reverse=True)))
+            _body_src = _rx.sub(lambda m: _by_text[m.group(0)], _body_src)
     sentences = [s.strip() for s in _SENT_SPLIT.split(_body_src) if s.strip()]
     n_in = len(sentences)
 
@@ -369,15 +388,23 @@ def distill(
         # instead of a reference to a reference. The PII check below
         # runs on the restored text, so a token that carries
         # something private is still caught.
-        for _e in state_extractions:
-            _ph = _e.get('placeholder') or ''
-            _tok = _e.get('token') or ''
-            if not _ph or not _tok:
-                continue
-            # A token that was inside brackets ("[LESSON]") reads
-            # back as "[" + token + "]", not as a doubled bracket.
-            sent = sent.replace('[' + _ph + ']', '[' + _tok + ']')
-            sent = sent.replace(_ph, _tok)
+        # One pass again, and the placeholder is used as it is. The
+        # old code built a doubled bracket out of it -- "[" +
+        # "[STATE:1]" + "]" -- which never matches anything, so the
+        # token that had been inside brackets never came back.
+        if state_extractions:
+            import re as _re_restore
+            _back = {}
+            for _e in state_extractions:
+                _ph = _e.get('placeholder') or ''
+                _tok = _e.get('token') or ''
+                if _ph and _tok and _ph not in _back:
+                    _back[_ph] = _tok
+            if _back:
+                _rx2 = _re_restore.compile('|'.join(
+                    _re_restore.escape(ph) for ph in
+                    sorted(_back, key=len, reverse=True)))
+                sent = _rx2.sub(lambda m: _back[m.group(0)], sent)
         if has_pii(sent) or has_first_person(sent) or has_emotion(sent):
             removed.append({'segment': sent, 'reason': 'residual_after_distill'})
             continue

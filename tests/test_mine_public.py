@@ -206,3 +206,40 @@ def test_a_bare_domain_is_extracted():
         "[LESSON] \u4ece mp.weixin.qq.com \u62c9\u6587\u7ae0\uff0c\u5148\u62ff HTML \u518d\u53d6 js_content")
     assert "mp. weixin" not in out, out
     assert "mp.weixin.qq.com" in out, out
+
+
+def test_a_capitalised_word_is_not_a_state_constant():
+    """The pattern said "env-var like names (3+ caps + underscore)"
+    and did not ask for one, so every ordinary capitalised word --
+    STATE, CONST, PII, ASCII -- became a state constant. A word like
+    that in the body was then replaced a second time, because the
+    placeholder it had already put there held the same letters.
+
+    A word that really is one (MAX_RETRIES, HTTP_STATUS) is still
+    a state constant, so the pattern now asks for the underscore."""
+    from astor_memory.nest.distiller import distill
+    out, _removed, _rep = distill(
+        "[LESSON] the STATE-CONST block holds HTTP_STATUS and MAX_RETRIES")
+    body = out.split("[STATE-CONST]")[0]
+    assert "[STATE:" not in body, body
+    assert "HTTP_STATUS" in body, body
+    assert "MAX_RETRIES" in body, body
+    # A word that really is a constant is still one.
+    assert "HTTP_STATUS" in out.split("[STATE-CONST]")[1], out
+
+
+def test_a_placeholder_is_not_eaten_by_a_later_token():
+    """The placeholder for "wechat.html" is "[STATE:1]", and a token
+    "STATE" turned it into "[[STATE:5]:1]". Replacing the tokens one
+    after another let a later one match the letters inside a
+    placeholder an earlier one had already put there. One pass cannot
+    do that, because it never looks at what it just wrote."""
+    from astor_memory.nest.distiller import distill
+    out, _removed, _rep = distill(
+        "[LESSON] the STATE-CONST block holds wechat.html and "
+        "v1.17.8 and mp.weixin.qq.com")
+    body = out.split("[STATE-CONST]")[0]
+    assert "[STATE:" not in body, body
+    assert "wechat.html" in body, body
+    assert "v1.17.8" in body, body
+    assert "mp.weixin.qq.com" in body, body

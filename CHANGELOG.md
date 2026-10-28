@@ -1,3 +1,57 @@
+## v1.17.10 — 2026-10-27
+
+### The distiller was eating its own placeholders
+
+A body that said "the STATE-CONST block holds wechat.html" came out
+with the placeholder still in it: "[[STATE:5]:1]". Two bugs, one
+after the other.
+
+The pattern for env-var style names said "3+ caps + underscore" and
+did not ask for the underscore, so every ordinary capitalised word --
+STATE, CONST, PII, ASCII -- became a state constant. The word "STATE"
+was then a token, and replacing the tokens one after another let it
+match the letters inside a placeholder an earlier one had already put
+there: the placeholder for "wechat.html" is "[STATE:1]", and "STATE"
+turned it into "[[STATE:5]:1]".
+
+The pattern now asks for the underscore, so a word that really is a
+constant (HTTP_STATUS, MAX_RETRIES) still is one and an ordinary
+capitalised word is not. And both the replacement and the restore are
+one pass now, which cannot look at what it just wrote.
+
+The restore also had a doubled bracket in it -- "[" + "[STATE:1]" +
+"]" -- which never matches anything, so a token that had been inside
+brackets never came back.
+
+### Three more shapes the sentence splitter breaks
+
+The repair in v1.17.9 joined a path whose extension it knew. Three
+shapes it did not know, and they were common enough to be worth the
+rules:
+
+- A binary: "python. exe" and "hermes. exe". The extension list
+  carried source files and documents, not executables.
+- A dotted identifier: "bus. _connect". The underscore is what tells
+  it apart from a sentence that happens to end in a period.
+- A hidden directory: "hermes-agent/. venv". The names here are
+  ordinary English words -- "local", "data", "config" all are -- so
+  the tell is the slash in front. Without it the rule joined "it
+  failed. local retry" into "it failed.local retry", which the test
+  caught before it shipped.
+
+18 more facts were rewritten, and the public tier now has no fact
+with a broken path left in it.
+
+### The cron ran last month's script
+
+The scheduler resolves a script by bare basename under the hermes
+scripts directory, so the file that ran was a copy -- and the copy
+was older than the source. The switch check added in v1.17.8 was in
+the repository and not in the copy the cron would have run on
+Sunday. The package's own scripts directory is now one of the roots
+the sync tool scans, and the weekly job's script carries the marker
+that makes it sync.
+
 ## v1.17.9 — 2026-10-27
 
 ### The paths that were already broken got put back together

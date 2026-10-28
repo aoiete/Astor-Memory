@@ -356,7 +356,19 @@ def _scrub_json(value, names: set[str]):
 # and it can put the pieces back together.
 _SPLIT_FILE_RE = re.compile(
     r'\b([a-z][a-z0-9_\-]{1,})\. '
-    r'(html?|py|js|json|md|sh|xml|csv|txt|log|ini|cfg|conf|css)\b')
+    r'(html?|py|js|json|md|sh|xml|csv|txt|log|ini|cfg|conf|css'
+    r'|exe|dll|so|whl|jar|bin)\b')
+# A dotted identifier: "bus. _connect" is one name, and the
+# underscore is what tells it apart from a sentence that happens to
+# end in a period.
+_SPLIT_IDENT_RE = re.compile(r'\b([a-z][a-z0-9_]*)\. (_[a-z][a-z0-9_]*)\b')
+# A hidden directory: ". venv" is ".venv". The names are ordinary
+# English words -- "local", "data", "config" all are -- so the
+# tell is the slash in front: a path component has one, and a
+# sentence that ends in a period does not. Without the slash this
+# joined "it failed. local retry" into "it failed.local retry".
+_SPLIT_DOTDIR_RE = re.compile(
+    r'(?<=/)\. (venv|git|config|local|data|cache|ssh|npm)\b')
 # The whole domain, not the last three labels: "mp. weixin. qq. com"
 # is one domain, and joining half of it leaves a label with a space
 # after its dot.
@@ -384,5 +396,23 @@ def rejoin_split_tokens(text: str) -> tuple[str, list[dict]]:
                         "replacement": joined})
         return joined
 
-    out = _SPLIT_DOMAIN_RE.sub(_domain, _SPLIT_FILE_RE.sub(_file, text))
+    def _ident(m: re.Match) -> str:
+        joined = '%s.%s' % (m.group(1), m.group(2))
+        changes.append({"kind": "split_identifier", "sample": m.group(0),
+                        "replacement": joined})
+        return joined
+
+    def _dotdir(m: re.Match) -> str:
+        joined = '.%s' % m.group(1)
+        changes.append({"kind": "split_dotdir", "sample": m.group(0),
+                        "replacement": joined})
+        return joined
+
+    out = _SPLIT_DOMAIN_RE.sub(
+        _domain,
+        _SPLIT_DOTDIR_RE.sub(
+            _dotdir,
+            _SPLIT_IDENT_RE.sub(
+                _ident,
+                _SPLIT_FILE_RE.sub(_file, text))))
     return out, changes
