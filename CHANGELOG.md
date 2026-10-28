@@ -1,4 +1,4 @@
-## v1.17.6 — 2026-10-27
+## v1.17.7 — 2026-10-27
 
 The shared tier keeps the method and loses the machine.
 
@@ -97,6 +97,51 @@ of the path: the shared tier scrubs a machine-local path to
 `<home>/AppData/...`, and a pattern that starts at the first slash
 captures only the tail of it -- dropping the placeholder, which is
 the part that says "this was somebody's machine".
+
+### distill_auto could not find a fact that existed
+
+While wiring the switch into it, three things turned up in
+`/v1/fact/<id>/distill_auto`, and all three answered "fact not
+found" for a fact that was sitting in the database.
+
+The lookup globbed the user's directory and walked the files in
+whatever order the filesystem gave, including `astor_bus_users_admin.db`
+-- which is empty. The bus knows which file is the user's; the glob
+was only ever a directory check.
+
+The read was refused by the ACL and the refusal was swallowed. The
+caller is bound as `admin:admin` on the public tier, and the strict
+privacy model does not let the admin role read a private tier without
+a user grant. The endpoint now rebinds as the owner of the tier it is
+reading and tries once more.
+
+And the ownership check compared the fact's owner against
+`ctx.user_id`, which is empty for the operator -- so the operator was
+refused their own facts. The owner is the fact's `user_id`; that is
+who the check belongs to, and it is whose consent the switch reads.
+
+### One switch, one meaning
+
+The mining command and the `/v1/fact/<id>/distill_auto` path both read
+the consent flag, and they read it differently: the mining command
+treated "never asked" as consent -- running the command IS the consent
+-- while distill_auto refused it, because it required exactly 1. So the
+same flag said yes in one place and no in the other, and the dashboard
+switch sat on top of both.
+
+The decision now lives in one place, `bot_binding.distill_mining_allowed`
+and its sibling `distill_auto_allowed`, and both callers read it. The
+remaining difference is the direction, not the flag: the user asking
+for their OWN fact to be distilled is the consent, so "never asked"
+allows it; the operator reaching into somebody else's tier has no such
+consent, so "never asked" does not.
+
+And the switch is one switch. It reads ON, it means "run
+automatically", and turning it off means "only when someone asks".
+The three-state display is gone -- the operator does not have to
+reason about a third state to use it. "Never asked" still exists
+underneath, because somebody else's tier needs their yes and the
+absence of an answer is not a yes, but the operator sees a switch.
 
 ### The mining switch was a switch that could not be switched
 

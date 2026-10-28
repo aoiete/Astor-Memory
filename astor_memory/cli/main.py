@@ -1271,6 +1271,7 @@ def cmd_mine_public(args) -> int:
         has_pii,
     )
 
+    from .._internal.bot_binding import distill_mining_allowed as _distill_mining_allowed
     from ..bus.store import astor_bus
 
     limit = int(getattr(args, 'limit', 0) or 0)
@@ -1282,7 +1283,7 @@ def cmd_mine_public(args) -> int:
     # flag that says yes, and allow_commons_write says no.
     _astor_dir = os.environ.get('ASTOR_DIR') or os.path.expanduser('~/.astor')
     _own = os.environ.get('ASTOR_USER_ID') or 'admin'
-    _meta = {}
+    _allow_commons = {}
     try:
         # bot_binding owns the schema, and its connect() migrates it, so
         # the two consent columns exist on a database from any version.
@@ -1291,15 +1292,8 @@ def cmd_mine_public(args) -> int:
         # the switch was not honoured and nobody was told.
         from .._internal import bot_binding as _bb
         for _r in _bb.list_users(active_only=False):
-            # -1 = never asked. 0 = explicitly off. 1 = on. The
-            # distinction matters for the operator's own tier: "never
-            # asked" still carries the consent that running the command
-            # has always meant, while "off" is a decision.
-            _opt = _r.get('distill_opt_in')
-            _opt = -1 if _opt is None else int(_opt)
-            _meta[_r['user_id']] = (
-                _opt,
-                int(_r.get('allow_commons_write') or 0))
+            _allow_commons[_r['user_id']] = int(
+                _r.get('allow_commons_write') or 0)
     except Exception as _e:
         print(f'  user_meta unavailable ({_e}); mining own tier only')
 
@@ -1312,9 +1306,8 @@ def cmd_mine_public(args) -> int:
     # operator's own row falls back to "on" -- which is the historical
     # behaviour and the safe one, since the operator is running the
     # command in the first place.
-    _own_opt, _own_allow = _meta.get(_own, (-1, 1))
     scopes = []
-    if _own_opt != 0 and _own_allow != 0:
+    if _allow_commons.get(_own, 1) != 0 and _distill_mining_allowed(_own, own=True):
         scopes.append(('private', _own))
     else:
         print(f'  mining disabled for {_own} (distill_opt_in=0)')
@@ -1324,8 +1317,7 @@ def cmd_mine_public(args) -> int:
         # Another user's tier needs their own consent: distill_opt_in=1
         # AND allow_commons_write. A user who has never been asked
         # defaults to not consenting.
-        _opt, _allow = _meta.get(_u, (-1, 0))
-        if _opt == 1 and _allow != 0:
+        if _allow_commons.get(_u, 0) != 0 and _distill_mining_allowed(_u):
             scopes.append(('private', _u))
     print(f'[mine-public] scopes: {[u for _t, u in scopes]}')
 

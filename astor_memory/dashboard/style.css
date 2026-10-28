@@ -873,12 +873,6 @@ body {
 .peer-allow-toggle.peer-allow-off {
   background: var(--bg); color: var(--text-dim);
 }
-/* v1.17.5: "auto" -- the absence of a decision, distinct from "off".
-   Dashed border says "not set" without inventing a colour for it. */
-.peer-allow-toggle.peer-allow-auto {
-  background: var(--bg); color: var(--text-dim);
-  border-style: dashed;
-}
 .peer-table .btn-refresh { padding: 2px 6px; font-size: 0.85em; margin-right: 2px; }
 
 /* v1.16.25: Connections panel */

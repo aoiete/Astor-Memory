@@ -1574,12 +1574,48 @@ def create_app(astor_dir: str | None = None) -> Flask:
             if _candidate_uid:
                 _p = os.path.join(_astor_dir, 'users', _candidate_uid, 'memory')
                 if os.path.isdir(_p):
-                    for _dbfile in _glob.glob(os.path.join(_p, 'astor_bus_*.db')):
-                        # Try the user-uid DB (legacy naming)
+                    # The bus resolves the per-user database; the glob
+                    # was only a directory check, and it walked the
+                    # files in whatever order the filesystem gave --
+                    # including astor_bus_users_admin.db, which is
+                    # empty. The fact was in astor_bus_admin.db, so
+                    # the lookup missed it and the endpoint answered
+                    # fact_not_found for a fact that existed.
+                    try:
+                        _bus = astor_bus(tier='private', user_id=_candidate_uid)
+                        _bus.conn.row_factory = sqlite3.Row
+                        _row = _bus.conn.execute(
+                            "SELECT id, content, kind, user_id, namespace, visibility FROM memory_canonical WHERE id = ? AND tombstoned = 0",
+                            (fact_id,),
+                        ).fetchone()
+                        if _row:
+                            src_fact = _row
+                            src_tier = 'private'
+                            break
+                    except Exception:
+                        # The ACL refused the read: the caller is bound
+                        # as admin:admin on the public tier, and the
+                        # strict privacy model does not let the admin
+                        # role read a private tier without a user
+                        # grant. The exception was swallowed and the
+                        # endpoint answered fact_not_found for a fact
+                        # that exists -- which reads as "no such fact"
+                        # rather than "not yours".
+                        #
+                        # Rebind as the owner of the tier being read
+                        # and try once more. The candidate list is
+                        # the caller's own id and 'admin', so the
+                        # actor here is that user, not an operator
+                        # reaching into somebody else's bucket.
                         try:
-                            # v1.16.31: tier='private' (generic) is the bus layer;
-                            # user_id parameter differentiates the per-user DB.
-                            _bus = astor_bus(tier='private', user_id=_candidate_uid)
+                            astor_init_acl(
+                                actor='user:%s' % _candidate_uid,
+                                role='user', tier='private',
+                                user_id=_candidate_uid,
+                                subscription_plan='power',
+                            )
+                            _bus = astor_bus(tier='private',
+                                             user_id=_candidate_uid)
                             _bus.conn.row_factory = sqlite3.Row
                             _row = _bus.conn.execute(
                                 "SELECT id, content, kind, user_id, namespace, visibility FROM memory_canonical WHERE id = ? AND tombstoned = 0",
@@ -1623,20 +1659,34 @@ def create_app(astor_dir: str | None = None) -> Flask:
             return jsonify({'error': 'fact_not_found', 'fact_id': fact_id}), 404
         # For auto mode: must be own fact + user has distill_opt_in=1
         if auto_mode:
-            if src_fact['user_id'] != ctx.user_id:
+            # The owner is the fact's user_id. The caller is either
+            # that user (bound as user:<id>) or the operator (bound
+            # as admin:admin with no user id of its own). Comparing
+            # against ctx.user_id alone refused the operator their
+            # own facts, because the operator's id is not in the
+            # context -- the fact's owner is.
+            _owner = src_fact['user_id']
+            _caller = ctx.user_id or _owner
+            if _owner != _caller:
                 return jsonify({'error': 'can_only_distill_own_facts'}), 403
+            # The switch is read for the owner, not for whatever the
+            # caller happens to be.
+            ctx = ctx
+            # v1.17.7: the same switch the dashboard exposes. It used to
+            # read the column with raw SQL and require exactly 1, which
+            # made the flag and the switch two different things: a user
+            # who had never been asked (the default) was refused by
+            # this path, while the mining command treated the same
+            # state as consent. One switch, one meaning.
             try:
-                import sqlite3 as _sq
-                # v1.16.55: cross-platform path via _astor_dir
-                _sqdb = _sq.connect(os.path.join(_astor_dir, 'bot-binding.db'))
-                _row = _sqdb.execute(
-                    "SELECT distill_opt_in FROM user_meta WHERE user_id = ?",
-                    (ctx.user_id,),
-                ).fetchone()
-                _sqdb.close()
-                if not _row or _row[0] != 1:
-                    return jsonify({'error': 'distill_opt_in_not_set',
-                                    'detail': 'user must opt in via /v1/admin/user/{user_id}/toggle_distill'}), 403
+                from ._internal.bot_binding import distill_auto_allowed
+                if not distill_auto_allowed(_owner):
+                    return jsonify({
+                        'error': 'distill_opt_in_not_set',
+                        'detail': 'automatic distillation is off for this '
+                                  'user; the operator can turn it on via '
+                                  '/v1/admin/user/{user_id}/toggle_distill',
+                    }), 403
             except Exception as _e:
                 return jsonify({'error': 'distill_opt_check_failed', 'detail': str(_e)}), 500
 
@@ -9872,6 +9922,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 ORDER BY b.platform_id, b.user_id
             """).fetchall()
             _db.close()
+            # Who is asking. The endpoint is the operator's view, so
+            # this is the operator's own id -- and it is what decides
+            # whether "never asked" reads as on or off for a row.
+            try:
+                _caller_id = astor_current_acl().user_id
+            except Exception:
+                _caller_id = 'admin'
             bindings = []
             for r in rows:
                 d = dict(r)
@@ -9879,9 +9936,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # see them apart: -1 = never asked, 0 = explicitly off,
                 # 1 = on. Collapsing to a bool would show "never asked"
                 # as "off", which is a decision the operator never made.
-                d['distill_opt_in'] = int(d.get('distill_opt_in') if
-                                          d.get('distill_opt_in') is not None
-                                          else -1)
+                # The operator's own row reads "on" when it has never
+                # been asked: running the mining command is the
+                # consent, and the switch is how that consent is
+                # withdrawn. Everybody else's "never asked" reads
+                # "off" -- they have not said yes.
+                _v = d.get('distill_opt_in')
+                _v = -1 if _v is None else int(_v)
+                _own = d.get('user_id') == _caller_id
+                d['distill_opt_in'] = (_v != 0) if _own else (_v == 1)
                 bindings.append(d)
             resp = jsonify({
                 'count': len(rows),

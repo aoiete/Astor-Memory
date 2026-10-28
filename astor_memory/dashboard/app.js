@@ -505,14 +505,10 @@ function _drawConnPage() {
   // tier is not mined. Showing it as "off" would claim a decision the
   // operator never made.
   function _distillText(v) {
-    if (v === 1) return 'ON';
-    if (v === 0) return 'off';
-    return 'auto';
+    return v ? 'ON' : 'off';
   }
   function _distillCls(v) {
-    if (v === 1) return 'peer-allow-on';
-    if (v === 0) return 'peer-allow-off';
-    return 'peer-allow-auto';
+    return v ? 'peer-allow-on' : 'peer-allow-off';
   }
 
   // v1.17.5: the mining consent switch. One click, no confirm: the
@@ -524,10 +520,10 @@ function _drawConnPage() {
     const action = btn.dataset.action;
     const uid = btn.dataset.uid;
     if (action === 'toggle-distill' && uid) {
-      // auto -> ON -> off -> auto. The three states cycle because a
-      // two-way switch cannot express "never asked".
-      const cur = btn.textContent.trim();
-      const want = cur === 'auto' ? true : (cur === 'ON' ? false : 'reset');
+    // ON -> off -> ON. One switch: on means "run automatically",
+    // off means "only when someone asks".
+    const cur = btn.textContent.trim();
+    const want = cur === 'ON' ? false : true;
       btn.disabled = true;
       try {
         const r = await fetch('/v1/admin/user/' + encodeURIComponent(uid)

@@ -88,11 +88,46 @@ def test_the_switch_turns_off(tmp_path, monkeypatch):
     assert bot_binding.get_user("u1")["distill_opt_in"] == 0
     assert bot_binding.set_distill_opt_in("u1", True) is True
     assert bot_binding.get_user("u1")["distill_opt_in"] == 1
-    # -1 is the third state: the absence of a decision, which a
-    # two-way switch could not express.
-    assert bot_binding.set_distill_opt_in("u1", -1) is True
-    assert bot_binding.get_user("u1")["distill_opt_in"] == -1
     assert bot_binding.set_distill_opt_in("nobody", False) is False
+    bot_binding.close()
+
+
+def test_the_switch_has_one_meaning(tmp_path, monkeypatch):
+    """One switch, one meaning. The mining command and the
+    distill_auto path used to read the flag differently -- the first
+    treated "never asked" as consent, the second refused it -- and two
+    readings of one flag is how they drift.
+
+    The remaining difference is the direction: the user asking for
+    their own fact to be distilled IS the consent, so "never asked"
+    allows it; the operator reaching into someone else's tier has no
+    such consent, so "never asked" does not."""
+    from astor_memory._internal import bot_binding
+    monkeypatch.setattr(bot_binding, "_con", None)
+    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
+    bot_binding.upsert_user(user_id="u1", short_alias="u1")
+
+    # Fresh row: never asked.
+    assert bot_binding.get_distill_opt_in("u1") == -1
+    # Their own fact: asking is the consent.
+    assert bot_binding.distill_auto_allowed("u1") is True
+    # The operator mining their tier: also consent (the command is
+    # the consent), but only for their own tier.
+    assert bot_binding.distill_mining_allowed("u1", own=True) is True
+    # Somebody ELSE's tier: no consent, so no mining.
+    bot_binding.upsert_user(user_id="u2", short_alias="u2")
+    assert bot_binding.distill_mining_allowed("u2") is False
+
+    # Explicit off refuses both directions.
+    bot_binding.set_distill_opt_in("u1", False)
+    assert bot_binding.distill_auto_allowed("u1") is False
+    assert bot_binding.distill_mining_allowed("u1", own=True) is False
+
+    # Explicit on allows both.
+    bot_binding.set_distill_opt_in("u1", True)
+    assert bot_binding.distill_auto_allowed("u1") is True
+    assert bot_binding.distill_mining_allowed("u1", own=True) is True
+    assert bot_binding.distill_mining_allowed("u1") is True
     bot_binding.close()
 
 
@@ -206,17 +241,16 @@ def test_another_user_needs_their_own_consent(tmp_path, monkeypatch):
     bot_binding.close()
 
 
-def test_the_dashboard_renders_the_three_states():
-    """The operator has to be able to tell "never asked" from "off" --
-    they are different, and a bool would show a decision the operator
-    never made."""
-    import re
+def test_the_dashboard_renders_the_switch():
+    """One switch: ON means run automatically, off means only when
+    someone asks. The operator does not have to reason about a third
+    state to use it."""
     from pathlib import Path as _P
     app = (_P(__file__).resolve().parent.parent /
            "astor_memory" / "dashboard" / "app.js").read_text(encoding="utf-8")
     assert "data-action=\"toggle-distill\"" in app
     assert "_distillText" in app
-    assert "'auto'" in app
+    assert "return v ? 'ON' : 'off';" in app
     html = (_P(__file__).resolve().parent.parent /
             "astor_memory" / "dashboard" / "index.html").read_text(encoding="utf-8")
     assert ">Distill<" in html
@@ -230,7 +264,7 @@ def test_the_binding_list_carries_the_flag():
     server = (_P(__file__).resolve().parent.parent /
               "astor_memory" / "server.py").read_text(encoding="utf-8")
     assert "m.distill_opt_in" in server
-    assert "d['distill_opt_in'] = int(" in server
+    assert "d['distill_opt_in'] = " in server
 
 
 def test_the_server_connection_does_not_close_the_singleton(tmp_path, monkeypatch):
@@ -247,4 +281,61 @@ def test_the_server_connection_does_not_close_the_singleton(tmp_path, monkeypatc
     db.close()
     # The singleton must still work after the caller's close.
     assert bot_binding.get_user("admin") is not None
+    bot_binding.close()
+
+
+def test_the_binding_list_endpoint_works(tmp_path, monkeypatch):
+    """The dashboard query reads the flag, so it has to work. It
+    resolved "never asked" against the caller's own id, and the
+    handler had no such variable -- the endpoint returned 500 and the
+    whole connections panel went blank."""
+    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
+    from astor_memory._internal import bot_binding
+    monkeypatch.setattr(bot_binding, "_con", None)
+    bot_binding.upsert_user(user_id="admin", short_alias="admin", role="admin")
+    from astor_memory.server import create_app
+    client = create_app(str(tmp_path)).test_client()
+    resp = client.get("/v1/binding/list")
+    assert resp.status_code == 200, resp.data[:200]
+    data = resp.get_json()
+    assert "bindings" in data
+    bot_binding.close()
+
+
+def test_distill_auto_finds_the_users_own_fact(tmp_path, monkeypatch):
+    """The endpoint looked for the fact by globbing the user's
+    directory, and it walked the files in filesystem order --
+    including astor_bus_users_admin.db, which is empty. The fact was
+    in astor_bus_admin.db, so the lookup missed it and the endpoint
+    answered fact_not_found for a fact that existed."""
+    monkeypatch.setenv("ASTOR_DIR", str(tmp_path))
+    from astor_memory._internal import bot_binding
+    monkeypatch.setattr(bot_binding, "_con", None)
+    bot_binding.upsert_user(user_id="admin", short_alias="admin", role="admin")
+    from astor_memory._internal.acl_layout import Tier, Store, ensure_layout
+    from astor_memory.bus.store import astor_bus
+    from astor_memory._internal.acl import astor_init_acl
+    for _store in Store:
+        ensure_layout(Tier.PRIVATE, _store, "admin")
+    astor_init_acl(actor="user:admin", role="user", tier="private",
+                   user_id="admin", subscription_plan="power")
+    bus = astor_bus(tier="private", user_id="admin")
+    # The canonical write path, so the foreign keys hold.
+    event_id = bus.append_event(
+        namespace="admin", agent_id="test", source="test",
+        action="write", content="a method worth sharing")
+    cand_id = bus.insert_candidate(
+        event_id=event_id, namespace="admin",
+        content="a method worth sharing", kind="lesson",
+        confidence=0.9, importance=0.7, tags=[])
+    fid = bus.promote_candidate(cand_id, promoted_by="test",
+                                user_id="admin", tier="private")
+
+    from astor_memory.server import create_app
+    client = create_app(str(tmp_path)).test_client()
+    resp = client.post("/v1/fact/%d/distill_auto" % fid, json={})
+    # Not 404: the fact exists and the endpoint has to find it. The
+    # switch state decides whether it may proceed, not whether the
+    # fact is there.
+    assert resp.status_code != 404, resp.data[:300]
     bot_binding.close()

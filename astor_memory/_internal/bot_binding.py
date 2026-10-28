@@ -500,6 +500,52 @@ def set_distill_opt_in(
     return True
 
 
+def get_distill_opt_in(user_id: str) -> int:
+    """The mining-consent flag for a user: 1 on, 0 off, -1 never asked.
+
+    The three states are different. -1 is the absence of a decision,
+    and it reads differently depending on who is asking: the user
+    themselves asking to have their own fact distilled IS the
+    consent, so -1 lets them; the operator reaching into someone
+    else's tier has no such consent, so -1 does not.
+    """
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT distill_opt_in FROM user_meta WHERE user_id = ?",
+            (user_id,)).fetchone()
+    except Exception:
+        return -1
+    if row is None or row[0] is None:
+        return -1
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return -1
+
+
+def distill_auto_allowed(user_id: str) -> bool:
+    """May this user have their OWN facts distilled automatically?
+
+    This is the user asking for it, so the absence of a prior answer
+    is not a refusal: 1 and -1 both allow, 0 refuses.
+    """
+    return get_distill_opt_in(user_id) != 0
+
+
+def distill_mining_allowed(user_id: str, *, own: bool = False) -> bool:
+    """May this user's tier be promoted into the shared tier?
+
+    Somebody else's tier needs their yes (1). Their own tier does
+    not: running the command is the consent, so -1 -- never asked --
+    allows it, and only an explicit 0 refuses.
+    """
+    value = get_distill_opt_in(user_id)
+    if own:
+        return value != 0
+    return value == 1
+
+
 def is_trusted_agent(user_id: str) -> bool:
     """Return True iff user_id has trusted_agent=1."""
     con = _connect()
