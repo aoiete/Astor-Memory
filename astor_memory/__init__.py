@@ -22,7 +22,7 @@ See: docs/architecture.md in this repository for the full architecture overview.
 
 
 
-__version__ = "1.17.3"
+__version__ = "1.17.4"
 # v1.17.0: the memory became readable. Astor stores facts in SQLite, which is good for querying and bad for reading -- you cannot open it, you cannot diff it, and you cannot hand it to another tool. The Agent Memory Repo format (Cognition, 2026-10-05) picks the opposite trade: plain Markdown in a Git repository. `am export` projects the database into that shape -- MEMORY.md as the short entry point, one bullet per memory with open [key: value] tags, [[wiki links]] between memories that share an entity, and a tombstoned.md that separates what was judged wrong from what was merely relocated. The database stays the source of truth; the files are a projection and the next export overwrites them. Two things the database already tracks and the plain format does not: provenance (where each memory came from, not just when) and time (validity window, whether a later revision replaced it), so a reader can tell a live rule from a stale one without trusting the prose.
 # v1.16.99: the Hermes installer promised four steps in the docs and did one.
 # `am install --ide=hermes` only rewrote memory.provider in config.yaml -- it never

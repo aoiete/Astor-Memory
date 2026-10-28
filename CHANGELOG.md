@@ -1,3 +1,51 @@
+## v1.17.4 — 2026-10-27
+
+A peer can be reachable at more than one address, and the version number
+now moves when the code does.
+
+**A peer has more than one address.** The endpoint column holds one
+address, and that was a choice nobody should have to make. A peer on the
+same LAN is fastest at `192.168.1.x`; the same peer reached from another
+network is only reachable by its public name. The peer row could only
+say one thing, so an operator had to decide which network they happened
+to be on.
+
+The endpoint column stays the primary address, and `metadata.endpoints`
+holds the full ordered list. The dispatcher tries them in order and
+stops at the first that answers, so the same configuration works from
+inside the LAN and from outside it. An unreachable address costs one
+timeout, not a failed search.
+
+```
+am peer endpoints astor:xxx http://192.168.1.185:7803 \
+    https://peer.example.com
+```
+
+The dashboard shows the whole list, `/v1/peer/list` returns it, and
+`POST /v1/peer/<peer_id>/endpoints` replaces it.
+
+**The provenance reader lost the evidence columns.** `dict(zip(keys,
+row))` truncates to the shorter side. The key tuple listed
+`evidence_quote`, `source_ref` and `source_hash` — the columns that
+carry the literal source text a fact was extracted from, and the reason
+a fact can be traced back to where it came from. The SELECT asked for
+none of them, so the three keys were dropped from every provenance
+response. Nothing crashed: the endpoint answered 200 and returned a
+fact dict with sixteen fields in it, which looks right until you ask
+for the one field that proves where the fact came from. On a live node
+22 public facts, 15 source facts and 11 admin facts have a non-empty
+evidence_quote, and none of them could be read back.
+
+Selecting a missing column is an error rather than an empty value, and
+a database created before v1.14.74 does not have these columns, so the
+reader asks the schema which of them exist and selects those.
+
+**The version number now tracks the code.** v1.17.3 was released, then
+two more changes landed under the same number. A node that reports
+1.17.3 cannot be distinguished from one that has them, which is what
+made it impossible to tell, from outside, whether a peer was running
+the current code.
+
 ## v1.17.3 — 2026-10-27
 
 The peer switch was on, the peers were configured, and nothing ever

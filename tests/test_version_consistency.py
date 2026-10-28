@@ -103,3 +103,20 @@ def test_missing_sections_do_not_crash(sync_mod, tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
     assert sync_mod._check_version_consistency(empty) is True
+
+
+def test_changelog_documents_the_current_version():
+    """The CHANGELOG must have a section for the version being shipped.
+
+    v1.17.3 was released, then two more changes landed under the same
+    number. Nothing caught it: the consistency test above only checks
+    that the three version sites agree with each other, and they agreed
+    -- they were just all still the old number. A node reporting
+    1.17.3 could not be told apart from one running the newer code,
+    which is exactly what an operator needs to know when asking a peer
+    to upgrade.
+    """
+    version = _versions_in(ROOT)["__init__"]
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert re.search(r"^##\s+v?%s\b" % re.escape(version), changelog, re.M), (
+        "CHANGELOG has no section for version %s" % version)
