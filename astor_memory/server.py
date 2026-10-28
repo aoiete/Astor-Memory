@@ -4748,6 +4748,42 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # other. Without it, the first peer_fanout:true read populated
         # the cache and every later read of the same query got that
         # response, including a peer_fanout:false one.
+        # v1.17.13 (2026-10-28): the cache key was still missing every
+        # knob that changes the RANKING. hybrid / bm25_weight /
+        # vec_weight / rerank / mmr_lambda / hyde were all absent, so a
+        # read with bm25_weight=0.4 was served the cached response of an
+        # earlier read with the default 0.6. Measured: identical fids and
+        # identical mrr across every variant, which made it look like the
+        # variants had no effect when in fact the second variant was
+        # never executed. That silently invalidates every variant
+        # comparison in eval_runner and eval_sweep.
+        # Rule: the key must cover every input that changes the RESULT.
+        #
+        # Every part must be HASHABLE. A list value (entity_filter,
+        # topics) would raise TypeError: unhashable type: 'list' on the
+        # cache lookup and turn a read into a 500 -- so each part is
+        # normalised to a hashable form first.
+        def _hashable(v):
+            if isinstance(v, (list, tuple)):
+                return tuple(_hashable(x) for x in v)
+            if isinstance(v, set):
+                return tuple(sorted(_hashable(x) for x in v))
+            if isinstance(v, dict):
+                return tuple(sorted((k, _hashable(x)) for k, x in v.items()))
+            return v
+
+        _rank_key = tuple(
+            _hashable(body.get(_p)) for _p in (
+                'hybrid', 'bm25_weight', 'vec_weight', 'rerank',
+                'mmr_lambda', 'hyde', 'use_rrf', 'rrf_k',
+                'query_adaptive', 'query_rewrite', 'query_rewrite_min_hits',
+                'time_boost', 'time_boost_days', 'time_boost_factor',
+                'time_parse', 'topic_boost_factor', 'topic_min_weight',
+                'topics', 'topics_str', 'topic',
+                'missing_hint', 'entity_filter', 'since_ts', 'until_ts',
+                'memory_class', 'intent', 'token_budget',
+            )
+        )
         _rcache_key = (
             query, body.get('tier', 'public'),
             body.get('user') or body.get('user_id') or '',
@@ -4755,6 +4791,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _kinds_key, body.get('wing'), body.get('session_id'),
             body.get('consult'),
             body.get('peer_fanout'),
+            _rank_key,
         )
         _rcache_hit = _READ_CACHE.get(_rcache_key)
         if _rcache_hit and (_rc_time.time() - _rcache_hit[0]) < 60:

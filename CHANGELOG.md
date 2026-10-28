@@ -1,3 +1,68 @@
+## v1.17.13 — 2026-10-28
+
+### The cache was hiding the thing the eval harness measures
+
+Every variant of the recall harness had been reporting the same number.
+The cause was not a weak effect — the variants were never executed.
+
+`/v1/read` keeps a 60-second cache of results. Its key covered the
+query, the tier, the user, `top_k`, and a handful of filters — but not
+the parameters that change the *ranking*: `hybrid`, `bm25_weight`,
+`vec_weight`, `rerank`, `mmr_lambda`, `hyde`. So a read asking for
+`bm25_weight=0.4` was handed the cached response of an earlier read
+that asked for the default `0.6`. The second variant never ran, and the
+harness measured the first one again.
+
+That is why the numbers looked so flat: identical `hit_rate`, identical
+`mrr`, identical fact ids for `baseline`, `vector_only`, `rerank_off`,
+`mmr_lambda_05`, `mmr_lambda_09`, `hyde_on` and `hyde_off`. It read as
+"the ranking knobs do nothing here". They do something — the comparison
+just never reached them.
+
+After the fix, the same query at two weights returns a different order,
+and two identical requests still hit the cache.
+
+The rule: **the cache key must cover every input that changes the
+result.** A cache that misses one is not a fast cache, it is a lie
+about the second measurement.
+
+### A held-out set, and an evaluator the candidate cannot edit
+
+RSIHub (ByteDance / SJTU / Berkeley, arXiv-adjacent work on recursive
+self-improvement) names the failure mode precisely: a score that rises
+while *unseen* tasks fall is not progress. Detecting it needs a set the
+tuning loop never touches, and an evaluator the candidate cannot edit.
+
+astor had neither. `eval_control_set.json` reuses 38 of `eval_set.jsonl`'s
+39 question texts — it is a second assertion (semantic keyword vs
+`min_hits`) over the same questions, not a held-out set. And the run
+summary recorded `eval_set_hash` but nothing about the scoring code
+itself, so loosening the scorer would have raised the score invisibly.
+
+Now:
+
+- `tests/eval_holdout_set.json` — 40 questions, built from facts whose
+  tokens do not overlap the tuning set's, and every one verified against
+  a live `/v1/read` before it was written. The generator
+  (`tests/_make_holdout_set.py`) is kept so the set can be audited.
+- `tests/holdout_gate.py` — runs it, refuses to run at all if the set
+  overlaps the tuning set, and locks both the set and the scoring rule
+  by hash. A delta is only computed against a previous run with the
+  same two hashes, so editing either one voids the baseline instead of
+  quietly improving the score.
+- `eval_runner.py` records `scorer_hash` next to `eval_set_hash`.
+
+On the live corpus the held-out gate passes 40/40 under the production
+config and **fails 8/40 under `vector_only`** — it discriminates, which
+is the property that makes it worth running.
+
+### The control set had a placeholder in it
+
+`Q24` read `moomoo <PYTHON_ML> 迁移`, with `<PYTHON_ML>` unsubstituted
+in both the query and the expected keywords, and its `qid` collided with
+`eval_set`'s `Q24` (same id, different text). Fixed: the real path
+`PY-314-ml`, and its own id `C24`.
+
 ## v1.17.12 — 2026-10-28
 
 ### The comment about the consent flag contradicted the schema

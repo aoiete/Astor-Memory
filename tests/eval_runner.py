@@ -90,6 +90,29 @@ def _eval_set_hash() -> str:
     return h.hexdigest()[:16]
 
 
+def _scorer_hash() -> str:
+    """SHA-256 of the scoring code itself (eval_runner.py + eval_oracle.py).
+
+    RSIHub's boundary condition: the evaluator is controlled by the
+    framework, so a candidate cannot raise its score by changing the
+    scoring rules. A run summary that records only the eval-set hash
+    cannot tell "the recall improved" from "the scorer was loosened" --
+    editing the set is only half the tampering surface.
+
+    Both files are hashed: eval_runner.py holds score_results(), and
+    eval_oracle.py holds the coverage/classify helpers whose verdict
+    feeds the gap decomposition.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    for _f in (Path(__file__).resolve(), Path(__file__).resolve().parent / "eval_oracle.py"):
+        try:
+            h.update(_f.read_bytes())
+        except OSError:
+            return "unknown"
+    return h.hexdigest()[:16]
+
+
 def recall(query: str, tier: str, user: str, top_k: int, **kwargs) -> tuple[list[dict], float]:
     body = {"query": query, "tier": tier, "user": user, "top_k": top_k, **kwargs}
     import time as _t
@@ -244,6 +267,9 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
     "astor_version": _astor_version(),
     "git_commit": _git_commit_hash(),
     "eval_set_hash": _eval_set_hash(),
+    # v1.17.13: hash the scorer too. eval_set_hash alone cannot tell
+    # "recall improved" from "the scoring rule was loosened".
+    "scorer_hash": _scorer_hash(),
     "n_queries": n,
     "hit_rate_at_k": round(hit_rate, 4),
     "mrr": round(mrr, 4),

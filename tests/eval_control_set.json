@@ -1,6 +1,6 @@
 {
-  "version": 11,
-  "description": "Control set for the ship gate. BUILT from live /v1/read on 2026-10-06. v1.16.74: the assertion is SEMANTIC, not id-based — a query passes when at least 34% of its expected_keywords appear in the top-K answer text. Locking baseline_top3_fids was a false-negative generator: memory_canonical grew from a few hundred to 4381 facts in 7 weeks, so every top-3 flipped while recall quality stayed the same (0/40 PASS on a healthy system). baseline_top3_fids survives as a REPORTED soft signal (fid_drift_count), never gating. Per-query `tier` overrides exist because the set spans tiers; private-tier reads need an actor identity (403 otherwise). | v6: dropped Q59 ('fit 健身 计划') — no such fact in corpus, so it could only ever FAIL. | v7: Q09 reads private (theme-color facts live there, not in source). Pattern from arxiv 2609.38021 (mp/-ula31Nw4kmDYPQooKPsGA).",
+  "version": 12,
+  "description": "Control set for the ship gate. BUILT from live /v1/read on 2026-10-06. v1.16.74: the assertion is SEMANTIC, not id-based — a query passes when at least 34% of its expected_keywords appear in the top-K answer text. Locking baseline_top3_fids was a false-negative generator: memory_canonical grew from a few hundred to 4381 facts in 7 weeks, so every top-3 flipped while recall quality stayed the same (0/40 PASS on a healthy system). baseline_top3_fids survives as a REPORTED soft signal (fid_drift_count), never gating. Per-query `tier` overrides exist because the set spans tiers; private-tier reads need an actor identity (403 otherwise). | v12 (2026-10-28): Q24 had an unsubstituted placeholder '<PYTHON_ML>' in both its query and its expected_keywords, and its qid collided with eval_set Q24 (same id, different query text). Fixed: real path PY-314-ml, own qid C24. NOTE: this set intentionally reuses eval_set's question texts — it is a SECOND ASSERTION over the same questions (semantic keyword vs min_hits), not a held-out set. The held-out set is tests/eval_holdout_set.json (RSIHub-style, disjoint). | Pattern from arxiv 2609.38021 (mp/-ula31Nw4kmDYPQooKPsGA).",
   "baseline_ts": "2026-10-06T20:00:00Z",
   "baseline_version": "1.16.71",
   "baseline_run": "live_run_at_baseline",
@@ -525,12 +525,12 @@
       "tier": "private"
     },
     {
-      "qid": "Q24",
-      "query": "moomoo <PYTHON_ML> 迁移",
+      "qid": "C24",
+      "query": "moomoo PY-314-ml 迁移",
       "category": "project",
       "expected_keywords": [
         "moomoo",
-        "<PYTHON_ML>"
+        "PY-314-ml"
       ],
       "baseline_top3_fids": [
         3216,

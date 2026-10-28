@@ -1,0 +1,567 @@
+{
+  "version": 1,
+  "description": "RSIHub-style HELD-OUT set. Disjoint from eval_set.jsonl by construction (candidate facts whose tokens overlap eval_set's covered tokens by >50% are skipped), and every query is verified against a live /v1/read before being written here. Purpose: detect 'the tuned score went up but unseen tasks went down' -- the failure mode a control set that reuses eval_set questions cannot detect. set_hash is recorded in the gate result so an edited set is visible.",
+  "built_at": "2026-10-28",
+  "queries": [
+    {
+      "qid": "H01",
+      "query": "壬子日主身强 推导逻辑 身强日主需克泄耗 身弱则反之",
+      "category": "fact",
+      "expected_keywords": [
+        "喜用神是八字推算的核心输出",
+        "1982-01-29",
+        "壬子日主身强",
+        "推导逻辑"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 13131
+    },
+    {
+      "qid": "H02",
+      "query": "壬水身强喜火 打牌时坐喜用神方位 坐忌神方位 1982-01-29 壬子日主身强 南红橙",
+      "category": "fact",
+      "expected_keywords": [
+        "八字打牌推算",
+        "喜用神对应方位",
+        "壬水身强喜火",
+        "打牌时坐喜用神方位"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 13130
+    },
+    {
+      "qid": "H03",
+      "query": "source store nest forge 有独立的 事实隔离通过",
+      "category": "fact",
+      "expected_keywords": [
+        "tier",
+        "public",
+        "source",
+        "store"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 3241
+    },
+    {
+      "qid": "H04",
+      "query": "GitHub super-hermes hermes-dojo hermes-workspace hermes-plugins",
+      "category": "fact",
+      "expected_keywords": [
+        "自进化方向",
+        "微信文章列出",
+        "GitHub",
+        "super-hermes"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 12276
+    },
+    {
+      "qid": "H05",
+      "query": "FF8C2E FFF3E6 FFD9B8",
+      "category": "fact",
+      "expected_keywords": [
+        "dashboard",
+        "的暖橙主题色",
+        "FF8C2E",
+        "FFF3E6"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 10535
+    },
+    {
+      "qid": "H06",
+      "query": "detail sessions 看全部按钮 list 管理页 eval",
+      "category": "fact",
+      "expected_keywords": [
+        "补录场次",
+        "event",
+        "detail",
+        "sessions"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 11465
+    },
+    {
+      "qid": "H07",
+      "query": "warm-orange peach mint-fresh 薄荷白底",
+      "category": "fact",
+      "expected_keywords": [
+        "当前定",
+        "套主题",
+        "warm-orange",
+        "peach"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 9122
+    },
+    {
+      "qid": "H08",
+      "query": "profit profitable ratio total hands",
+      "category": "fact",
+      "expected_keywords": [
+        "dashboard",
+        "个核心统计指标",
+        "profit",
+        "profitable"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 7592
+    },
+    {
+      "qid": "H09",
+      "query": "keys sess no_sessions create_one show_recent 中英文都加",
+      "category": "fact",
+      "expected_keywords": [
+        "补全缺失",
+        "i18n",
+        "keys",
+        "sess"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 11262
+    },
+    {
+      "qid": "H10",
+      "query": "place_order stock-momentum-scanner finance-analysis 10-agent",
+      "category": "fact",
+      "expected_keywords": [
+        "挂单相关技能列表",
+        "_run_moomoo",
+        "place_order",
+        "stock-momentum-scanner"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 7045
+    },
+    {
+      "qid": "H11",
+      "query": "fortune-daily-push 不再需要 discord",
+      "category": "fact",
+      "expected_keywords": [
+        "用户固定用",
+        "weixin",
+        "fortune-daily-push",
+        "不再需要"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 8046
+    },
+    {
+      "qid": "H12",
+      "query": "Jinja2Templates 默认不 cache 即时生效 不需要重启",
+      "category": "fact",
+      "expected_keywords": [
+        "FastAPI",
+        "Jinja2",
+        "Jinja2Templates",
+        "默认不"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 11435
+    },
+    {
+      "qid": "H13",
+      "query": "Add-Type here-string 跨行被 parser",
+      "category": "fact",
+      "expected_keywords": [
+        "守护脚本",
+        "Start-Job",
+        "Add-Type",
+        "here-string"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 12446
+    },
+    {
+      "qid": "H14",
+      "query": "cron_scheduler_watch sender_gateway_health_monitor hermes_gateway_watc",
+      "category": "fact",
+      "expected_keywords": [
+        "hermes_self_restart_watch",
+        "gateway_watchdog",
+        "cron_scheduler_watch",
+        "sender_gateway_health_monitor"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 1680
+    },
+    {
+      "qid": "H15",
+      "query": "base html root landing 仍硬编码绿黑未接主题",
+      "category": "fact",
+      "expected_keywords": [
+        "主题用",
+        "data-theme",
+        "base",
+        "html"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 9085
+    },
+    {
+      "qid": "H16",
+      "query": "目录前缀 标记当前在用 不被批量删除 命名约定 ACTIVE_smart_backup_ YYYY-MM-DD_HHMMSS",
+      "category": "fact",
+      "expected_keywords": [
+        "2026-09-08",
+        "locked",
+        "目录前缀",
+        "标记当前在用"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 9734
+    },
+    {
+      "qid": "H17",
+      "query": "自动启停 需手动 start Paused 状态时",
+      "category": "fact",
+      "expected_keywords": [
+        "CloudflaredAstor",
+        "不会随",
+        "自动启停",
+        "需手动"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 11188
+    },
+    {
+      "qid": "H18",
+      "query": "PY-311 venvs Astor-Memory-Runtime",
+      "category": "fact",
+      "expected_keywords": [
+        "目录架构",
+        "uv-python",
+        "PY-311",
+        "venvs"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 7550
+    },
+    {
+      "qid": "H19",
+      "query": "EARLY EXIT POST_PEAK 替代纯 monthly",
+      "category": "fact",
+      "expected_keywords": [
+        "3-signal",
+        "scan",
+        "EARLY",
+        "EXIT"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 1832
+    },
+    {
+      "qid": "H20",
+      "query": "自动反思 5-plugin wiki reflect-now slash",
+      "category": "fact",
+      "expected_keywords": [
+        "优先级",
+        "bus_reflect",
+        "自动反思",
+        "5-plugin"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 12320
+    },
+    {
+      "qid": "H21",
+      "query": "推送后 HEAD hash 8b82255 docs operator-specific",
+      "category": "fact",
+      "expected_keywords": [
+        "GitHub",
+        "remote",
+        "推送后",
+        "HEAD"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 8555
+    },
+    {
+      "qid": "H22",
+      "query": "CUDA 3090 真能用 服务于 fortune-model",
+      "category": "fact",
+      "expected_keywords": [
+        "ml-venv",
+        "torch",
+        "CUDA",
+        "3090"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 7044
+    },
+    {
+      "qid": "H23",
+      "query": "实际没有 install venv 副作用 certifi 2026",
+      "category": "fact",
+      "expected_keywords": [
+        "wrapper",
+        "注释错误说",
+        "实际没有",
+        "install"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 8416
+    },
+    {
+      "qid": "H24",
+      "query": "详情页 calendar sessions 看全部按钮",
+      "category": "fact",
+      "expected_keywords": [
+        "补录场次",
+        "event",
+        "详情页",
+        "calendar"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 11302
+    },
+    {
+      "qid": "H25",
+      "query": "修改代码后 子进程不会自动 reload kill 子进程或重启服务才能生效",
+      "category": "fact",
+      "expected_keywords": [
+        "部署在",
+        "服务下",
+        "修改代码后",
+        "子进程不会自动"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 9082
+    },
+    {
+      "qid": "H26",
+      "query": "推送目标 prompt 写错格式 openid 而不是 weixin",
+      "category": "fact",
+      "expected_keywords": [
+        "ielts",
+        "8ea891739331",
+        "推送目标",
+        "prompt"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 2806
+    },
+    {
+      "qid": "H27",
+      "query": "暖橙主题色 FF8C2E Hero 趋势图 per-user growth",
+      "category": "fact",
+      "expected_keywords": [
+        "dashboard",
+        "设计原则",
+        "暖橙主题色",
+        "FF8C2E"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 10549
+    },
+    {
+      "qid": "H28",
+      "query": "volatility harvesting trade risk 1500 multi-layer",
+      "category": "fact",
+      "expected_keywords": [
+        "交易策略",
+        "regime-adaptive",
+        "volatility",
+        "harvesting"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 4408
+    },
+    {
+      "qid": "H29",
+      "query": "SQLite FastAPI SvelteKit HTMX 单用户邀请码注册 支持手填",
+      "category": "fact",
+      "expected_keywords": [
+        "部署方案",
+        "Cloudflare",
+        "SQLite",
+        "FastAPI"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 7596
+    },
+    {
+      "qid": "H30",
+      "query": "chunk1 order_id reconcile cancel Insufficient funds",
+      "category": "fact",
+      "expected_keywords": [
+        "patch",
+        "ENTERED",
+        "chunk1",
+        "order_id"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 10341
+    },
+    {
+      "qid": "H31",
+      "query": "IDLE 1500 active entry check",
+      "category": "fact",
+      "expected_keywords": [
+        "make",
+        "主仓位处于",
+        "IDLE",
+        "1500"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 1872
+    },
+    {
+      "qid": "H32",
+      "query": "2026-07-11 5-dim Bazi reasoning 部署在 tianshu_api_v18",
+      "category": "fact",
+      "expected_keywords": [
+        "模型已",
+        "SHIPPED",
+        "2026-07-11",
+        "5-dim"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 3647
+    },
+    {
+      "qid": "H33",
+      "query": "auto_link gate regex promote reject 上下文管理",
+      "category": "fact",
+      "expected_keywords": [
+        "L1-L4",
+        "anti-hallucination",
+        "auto_link",
+        "gate"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 8928
+    },
+    {
+      "qid": "H34",
+      "query": "走的是 login create route 命令行流程 只需登录授权时碰浏览器",
+      "category": "fact",
+      "expected_keywords": [
+        "named",
+        "thenuts",
+        "走的是",
+        "login"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 7610
+    },
+    {
+      "qid": "H35",
+      "query": "chroma personal 可能需要 Qdrant pgvector 混合检索",
+      "category": "fact",
+      "expected_keywords": [
+        "用户在做",
+        "向量召回",
+        "chroma",
+        "personal"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 9559
+    },
+    {
+      "qid": "H36",
+      "query": "true send_weixin_ilink deliver bot-chat local",
+      "category": "fact",
+      "expected_keywords": [
+        "ielts",
+        "no_agent",
+        "true",
+        "send_weixin_ilink"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 2415
+    },
+    {
+      "qid": "H37",
+      "query": "config yaml system 当前配置 America Edmonton",
+      "category": "fact",
+      "expected_keywords": [
+        "时区来源",
+        "HERMES_TIMEZONE",
+        "config",
+        "yaml"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 5475
+    },
+    {
+      "qid": "H38",
+      "query": "prompt 末尾追加 调用指令",
+      "category": "fact",
+      "expected_keywords": [
+        "ielts",
+        "send_weixin_ilink",
+        "prompt",
+        "末尾追加"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 2343
+    },
+    {
+      "qid": "H39",
+      "query": "moomoo_api 7008 CUDA torch transformers peft",
+      "category": "fact",
+      "expected_keywords": [
+        "已装好",
+        "sxtwl",
+        "moomoo_api",
+        "7008"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 7021
+    },
+    {
+      "qid": "H40",
+      "query": "null sleep start",
+      "category": "lesson",
+      "expected_keywords": [
+        "LESSON",
+        "stop",
+        "null",
+        "sleep"
+      ],
+      "tier": "private",
+      "user": "admin",
+      "source_fid": 7698
+    }
+  ]
+}
