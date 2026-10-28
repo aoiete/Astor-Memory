@@ -113,8 +113,16 @@ Install from source (not yet published to PyPI) with a single
 command; `am` becomes available as a console script:
 
 ```bash
-pip install "astor-memory @ git+https://github.com/aoiete/Astor-Memory.git"
+git clone https://github.com/aoiete/Astor-Memory.git
+cd Astor-Memory
+pip install -e .
 ```
+
+Install it editable. A non-editable install puts a copy of the package
+in site-packages, and then a checkout, a site-packages copy and a
+runtime tree all hold code, and the question "which one is the server
+running" has no good answer. Editable makes the checkout the only
+copy: `git pull` is the upgrade.
 
 Optional `[muse]` extra installs the Muse adapter package. Once the
 project is published to PyPI this becomes plain `pip install
@@ -187,10 +195,12 @@ directions, so a client cannot reach another user's memory.
 ## Quick start
 
 ```bash
-# Install (not yet on PyPI — install from source)
-pip install "astor-memory @ git+https://github.com/aoiete/Astor-Memory.git"
+# Install (not yet on PyPI — install from a checkout, editable)
+git clone https://github.com/aoiete/Astor-Memory.git
+cd Astor-Memory
+pip install -e .
 # or, with the Muse adapter
-pip install "astor-memory[muse] @ git+https://github.com/aoiete/Astor-Memory.git"
+pip install -e ".[muse]"
 
 # Windows: check the host can run astor BEFORE starting anything.
 # Takes a second. If the Visual C++ runtime is too old for onnxruntime,

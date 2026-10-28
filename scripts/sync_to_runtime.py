@@ -8,11 +8,20 @@ runtime picks up the new code.
 Why this script exists:
 - Astor source SSoT = the git-tracked repository
 - Astor runtime SSoT = the deployment tree (not git)
-- Server.py imports resolve via PYTHONPATH pointing at the runtime tree,
-  so runtime must mirror source for the server to see the latest code.
+- A deployment that runs the code from the runtime tree has to have the
+  runtime tree mirror the source, or the server serves old code.
 - Without this helper, the operator must manually copy each changed file
   AND restart the NSSM-wrapped server, which is error-prone (missed
   files, drift between source and runtime).
+
+When the install is editable (`pip install -e .`), the checkout IS the
+runtime: the package resolves to the source tree, and `git pull` is the
+whole upgrade. Running this script then copies the source onto a second
+copy of itself, and the server may still be importing the first one --
+which is the copy the editable install points at, so the copy is
+pointless and the drift it creates is invisible. Check how the server
+is started before running it: if it runs from the checkout, do not run
+this.
 
 Usage:
     python scripts/sync_to_runtime.py                  # dry-run (default)
@@ -287,6 +296,27 @@ def _check_version_consistency(src: Path) -> bool:
     return True
 
 
+def _is_editable_install(src) -> bool:
+    """Is astor_memory installed editable from `src` in this interpreter?"""
+    import sys
+    try:
+        import astor_memory
+    except Exception:
+        return False
+    try:
+        mod_path = Path(astor_memory.__file__).resolve()
+    except Exception:
+        return False
+    try:
+        src_res = Path(src).resolve()
+    except Exception:
+        src_res = Path(src)
+    try:
+        return mod_path.is_relative_to(src_res)
+    except AttributeError:
+        return str(mod_path).startswith(str(src_res))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--src', type=Path, default=None,
@@ -344,6 +374,22 @@ def main() -> int:
 
     _log(f'src     = {args.src}')
     _log(f'runtime = {args.runtime}')
+
+    # An editable install points the package at the source tree, so a
+    # server started from the checkout is already running the source.
+    # Copying the source onto the runtime then creates a second copy
+    # that nothing imports, and the operator believes the runtime is
+    # what the server runs -- which is no longer true. Say so instead
+    # of quietly making the tree drift.
+    if _is_editable_install(args.src):
+        _log('WARNING: this interpreter has astor_memory installed '
+              'editable from the source tree.')
+        _log('         The source tree IS the runtime for a server '
+              'started from it.')
+        _log('         Use `git pull` + restart. If the server runs '
+              'from the runtime tree,')
+        _log('         set ASTOR_DIR to the runtime and install '
+              'non-editable there instead.')
 
     if not _check_version_consistency(args.src):
         _log('ERROR: refusing to sync a tree whose version declarations disagree')
