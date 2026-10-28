@@ -464,7 +464,7 @@ limited per caller, and it creates no friendships. `source` and
 `private` are unreachable — the public store is the only file opened,
 so the boundary is structural rather than a filter.
 | List peers | `GET /v1/peer/list` |
-| Tune trust | `POST /v1/peer/<peer_id>/trust` (0–100, default 30) |
+| Tune trust | `POST /v1/peer/<peer_id>/trust` (0–100, default 60) |
 | Block a peer | `POST /v1/peer/<peer_id>/blacklist` |
 | Review quarantine | `GET /v1/peer/quarantine/list` → `POST /v1/peer/unquarantine` |
 | Adopt a pending peer | `POST /v1/peer/adopt` |
@@ -479,6 +479,59 @@ quarantine instead of being able to write.
 **Try it in 60 seconds:** start two nodes locally, add each as the
 other's peer, `POST /v1/write` a fact with `"tier": "public"` on node A,
 then `/v1/read` it from node B.
+
+---
+
+## The shared tier keeps the method and loses the machine
+
+A `public`-tier fact is readable by every peer in the federation. That
+is the point of the tier: one node works out how to fetch a page, and
+the next one inherits the method instead of spending the day again.
+
+It is also the reason the tier needs a boundary. A method is worth
+sharing; the working directory, the user profile, the host name and the
+LAN address of the machine that learned it are not. A peer reading the
+public tier should learn the method, not the map of the host that found
+it.
+
+So a public write is scrubbed on the way in. The rules are structural,
+not a list of one operator's paths:
+
+```
+C:\Users\someone\AppData   ->  <home>\AppData
+D:\work\project\file.py     ->  <root>\project\file.py
+/home/someone/x               ->  <home>/x
+\\HOST\share                ->  \\<host>\share
+<private-ip>                  ->  <private-host>
+丙子/丙申/壬辰/乙巳          ->  <birth-pillars>
+birthday 1996-08-23          ->  <birth-date>
+```
+
+A path names its owner, so the name goes too — the names are learned
+from the text before the paths are rewritten, because after that there
+is nothing left to learn them from.
+
+The scrub is in `promote_candidate`, the one funnel every write path
+goes through: the HTTP API, `am write`, the extractor, the learner.
+The `private` and `source` tiers are untouched — a local path is
+useful there, and neither tier leaves the machine.
+
+| Command | What it does |
+|---|---|
+| `am scrub-public` | Rewrite the facts that are already in the public tier (dry run; `--apply` writes) |
+| `am mine-public` | Move what the private tier learned into the public tier (dry run; `--apply` writes) |
+
+Mining keeps the facts that are methods rather than history — a lesson,
+a success pattern, a failure pattern, a method — and drops the ones
+that are about a person: first person, emotion, geography, anything the
+visibility classifier reads as private. What survives is scrubbed,
+distilled and tagged `distilled_by=am.mine-public`, so the origin of a
+shared fact stays visible.
+
+`scripts/mine_public_weekly.py` runs the mining once a week. It is a
+script and not a prompt on purpose: the mining is deterministic, and a
+weekly job that wakes a model to run a query costs money and can still
+be wrong.
 
 ---
 

@@ -470,6 +470,22 @@ class AstorBus:
             if cand_row is None:
                 raise ValueError(f"Candidate {candidate_id} not found")
             _candidate_content = cand_row[0]
+            # v1.17.5: the shared tier keeps the method and loses the
+            # machine. This is the one funnel every write path goes
+            # through -- the HTTP API, the CLI, the extractor, the
+            # learner -- so the scrub belongs here rather than in each
+            # caller. A public-tier fact is readable by every peer in
+            # the federation, and a path that only exists on this host
+            # is private data in a shared place. The private and source
+            # tiers are untouched: a local path is useful there, and
+            # neither tier leaves the node.
+            if tier == 'public' and _candidate_content:
+                try:
+                    from ..nest.public_scrub import (
+                        scrub_local_identifiers as _scrub_pub)
+                    _candidate_content = _scrub_pub(_candidate_content)[0]
+                except Exception:
+                    pass
             existing = c.execute(
                 "SELECT id, content FROM memory_canonical WHERE candidate_id = ?",
                 (candidate_id,),
@@ -515,8 +531,28 @@ class AstorBus:
                         metadata = json.dumps(meta_dict, ensure_ascii=False)
                     except Exception:
                         pass
+                if tier == 'public':
+                    try:
+                        from ..nest.public_scrub import (
+                            scrub_local_identifiers as _scrub_pub)
+                        content = _scrub_pub(str(content or ''))[0]
+                        metadata = _scrub_pub(str(metadata or ''))[0]
+                        try:
+                            meta_dict = json.loads(metadata) if metadata else {}
+                        except Exception:
+                            meta_dict = {}
+                    except Exception:
+                        pass
                 kw_json = json.dumps(meta_dict.get('__keywords__') or [])
                 ctx_text = str(meta_dict.get('__context__') or '')[:500]
+                if tier == 'public':
+                    try:
+                        from ..nest.public_scrub import (
+                            scrub_local_identifiers as _scrub_pub)
+                        kw_json = _scrub_pub(kw_json)[0]
+                        ctx_text = _scrub_pub(ctx_text)[0][:500]
+                    except Exception:
+                        pass
                 # v1.10.0: extract event_date from metadata JSON (legacy path).
                 # Fresh facts come from /v1/write which already threads
                 # event_date through insert_candidate params, so the column

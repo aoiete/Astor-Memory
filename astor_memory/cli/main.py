@@ -45,10 +45,20 @@ def main(argv: list[str] | None = None) -> int:
     # truncated/empty in Hermes terminal even though rc=0. Python 3.7+
     # supports reconfigure() for this exact case. See fact 10795
     # (Hermes client stdout truncation) — server-side mitigation.
+    #
+    # v1.17.5: also force the encoding. A Windows console defaults to
+    # GBK, and reconfigure() without an encoding keeps it — so a fact
+    # holding an arrow, an emoji or a piece of CJK punctuation killed
+    # the print with UnicodeEncodeError. In a cron that is a job that
+    # fails on content that had nothing wrong with it. `errors` is
+    # 'replace' rather than 'strict' on purpose: a character that
+    # cannot be shown should not stop the run.
     try:
-        sys.stdout.reconfigure(line_buffering=True)
-        sys.stderr.reconfigure(line_buffering=True)
-    except (AttributeError, ValueError):
+        sys.stdout.reconfigure(line_buffering=True, encoding='utf-8',
+                               errors='replace')
+        sys.stderr.reconfigure(line_buffering=True, encoding='utf-8',
+                                errors='replace')
+    except (AttributeError, ValueError, TypeError):
         # Older Python or non-text stream — fall back to flush=True in
         # individual print() calls (already done in ship D v1.1.0 by_reflect).
         pass
@@ -198,6 +208,26 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument('--apply', action='store_true',
                      help='With --migrate-user-meta, apply the repair')
     sub.set_defaults(func=cmd_doctor)
+
+    # am scrub-public
+    sub = subparsers.add_parser(
+        'scrub-public',
+        help='Replace machine-local identifiers in shared-tier facts')
+    sub.add_argument('--apply', action='store_true',
+                     help='Actually rewrite (default: dry-run)')
+    sub.set_defaults(func=cmd_scrub_public)
+
+    # am mine-public
+    sub = subparsers.add_parser(
+        'mine-public',
+        help='Promote reusable private-tier facts to the shared tier')
+    sub.add_argument('--apply', action='store_true',
+                     help='Actually promote (default: dry-run)')
+    sub.add_argument('--limit', type=int, default=0,
+                     help='Stop after N promotions (0: no limit)')
+    sub.add_argument('--min-length', type=int, default=40,
+                     help='Shortest fact worth sharing (default: 40)')
+    sub.set_defaults(func=cmd_mine_public)
 
     # am config
     sub = subparsers.add_parser('config', help='View / modify config')
@@ -1100,6 +1130,301 @@ def main(argv: list[str] | None = None) -> int:
 
     return args.func(args)
 
+
+def cmd_scrub_public(args) -> int:
+    """Make the shared tier portable: replace machine-local identifiers.
+
+    The public tier is what peers read. A method fact belongs there --
+    how to fetch a page, which port a service listens on -- but a path
+    that only exists on this host is private data in a shared place, and
+    a peer searching the tier learns it.
+
+    This rewrites the facts that are already there. New public writes
+    are scrubbed at the door, so this is a one-time cleanup.
+
+    EVERY text column is scrubbed, not just the content: a path turns
+    up in the context, in the keywords, in the entities and in the
+    metadata, and a peer reads the whole row.
+
+    Facts that change get their content hash, their stable id and their
+    embedding recomputed -- a fact whose text changed but whose vector
+    did not is a fact that can no longer be found by what it says.
+
+    Dry-run by default. --apply writes.
+    """
+    import hashlib
+
+    from .._internal.acl import astor_init_acl
+    from ..nest.public_scrub import scrub_values
+
+    try:
+        astor_init_acl(actor='admin:admin', role='admin', tier='public')
+    except Exception:
+        pass
+
+    from ..bus.store import astor_bus
+    from ..nest.vector_store import astor_nest
+
+    bus = astor_bus(tier='public')
+    nest = astor_nest(tier='public')
+
+    # Columns that are not free text: an id, a hash, a timestamp.
+    skip = {'id', 'stable_id', 'created_at', 'promoted_at', 'valid_until',
+            'expires_at', 'tombstoned_at', 'invalidated_at', 'event_id',
+            'candidate_id', 'namespace', 'user_id', 'scope_type', 'kind',
+            'memory_class', 'provenance_kind', 'provenance_agent',
+            'event_date', 'event_date_precision'}
+    text_cols = [r[1] for r in bus.conn.execute(
+        "PRAGMA table_info(memory_canonical)")
+        if (r[2] or '').upper() in ('TEXT', '') and r[1] not in skip]
+
+    rows = bus.conn.execute(
+        "SELECT id, content, scope_type, %s FROM memory_canonical "
+        "WHERE tombstoned = 0" % ", ".join(text_cols)).fetchall()
+
+    changed = []
+    for row in rows:
+        fid = row[0]
+        vals = {col: row[3 + idx] for idx, col in enumerate(text_cols)}
+        new_vals, ch = scrub_values(vals)
+        if not ch:
+            continue
+        new_vals = {k: v for k, v in new_vals.items() if vals.get(k) != v}
+        changed.append((fid, new_vals, len(ch)))
+
+    print(f'[scrub-public] {len(changed)} of {len(rows)} public facts carry '
+          f'machine-local identifiers')
+    for fid, vals, n in changed[:20]:
+        print(f'  id={fid} columns={sorted(vals)} ({n} identifiers)')
+    if len(changed) > 20:
+        print(f'  ... and {len(changed) - 20} more')
+    if not changed:
+        return 0
+    if not args.apply:
+        print('(Dry-run. Pass --apply to rewrite.)')
+        return 0
+
+    written = 0
+    for fid, vals, _n in changed:
+        sets = ", ".join("%s = ?" % c for c in vals)
+        args_row = list(vals.values())
+        try:
+            new_content = vals.get('content')
+            if new_content is None:
+                row = bus.conn.execute(
+                    "SELECT content, scope_type FROM memory_canonical WHERE id = ?",
+                    (fid,)).fetchone()
+                new_content = row[0] if row else ''
+                scope = row[1] if row else 'long_term'
+            else:
+                scope = bus.conn.execute(
+                    "SELECT scope_type FROM memory_canonical WHERE id = ?",
+                    (fid,)).fetchone()[0] or 'long_term'
+            new_hash = hashlib.sha256(
+                new_content.encode('utf-8', errors='ignore')).hexdigest()[:16]
+            bus.conn.execute(
+                "UPDATE memory_canonical SET %s, stable_id = ? WHERE id = ?" % sets,
+                args_row + [f'public:_:{scope}:{new_hash}', fid])
+            bus.conn.commit()
+        except Exception as e:
+            print(f'  id={fid} update failed: {e}')
+            continue
+        try:
+            nest.store(fid, new_content)
+        except Exception as e:
+            print(f'  id={fid} re-embed failed: {e}')
+        written += 1
+    print(f'[scrub-public] rewrote {written} facts')
+    return 0
+
+
+def cmd_mine_public(args) -> int:
+    """Move what the private tier learned into the shared tier.
+
+    The private tier is where the work happens, and it is where the
+    methods, patterns, models and workflows accumulate. The public tier
+    is what peers read. Between them there is a bridge, and this is
+    the bridge: it looks for private facts that are true on every
+    machine, cleans them of everything that is true on this one, and
+    promotes them to the shared tier.
+
+    A fact qualifies when its kind is one of the reusable kinds, when
+    it carries no personal content, and when enough of it survives the
+    cleaning to be worth sharing. A fact already promoted is skipped,
+    so this is safe to run again.
+
+    Dry-run by default. --apply writes.
+    """
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+
+    import os
+    import sqlite3 as _sq
+
+    from .._internal.acl import astor_init_acl
+    from .._internal.acl_layout import list_user_ids
+    from ..nest.distiller import clear_tool_results as _clear_tools
+    from ..nest.distiller import distill as _distill
+    from ..nest.public_scrub import scrub_local_identifiers
+    from ..nest.visibility_classifier import (
+        AUTO_COMMONS_KINDS, has_emotion, has_first_person, has_geographic,
+        has_pii,
+    )
+
+    from ..bus.store import astor_bus
+
+    limit = int(getattr(args, 'limit', 0) or 0)
+    min_len = int(getattr(args, 'min_length', 40) or 40)
+
+    # Whose facts may be mined. The operator's own tier is theirs to
+    # share -- running the command is the consent. Another user's tier
+    # is theirs, and they have to have said yes: distill_opt_in is the
+    # flag that says yes, and allow_commons_write says no.
+    _astor_dir = os.environ.get('ASTOR_DIR') or os.path.expanduser('~/.astor')
+    _own = os.environ.get('ASTOR_USER_ID') or 'admin'
+    _meta = {}
+    try:
+        _db = _sq.connect(os.path.join(_astor_dir, 'bot-binding.db'))
+        _db.row_factory = _sq.Row
+        for _r in _db.execute(
+                "SELECT user_id, distill_opt_in, allow_commons_write "
+                "FROM user_meta"):
+            _meta[_r['user_id']] = (
+                int(_r['distill_opt_in'] or 0),
+                int(_r['allow_commons_write'] or 0))
+        _db.close()
+    except Exception as _e:
+        print(f'  user_meta unavailable ({_e}); mining own tier only')
+
+    scopes = [('private', _own)]
+    for _u in list_user_ids():
+        if _u == _own:
+            continue
+        _opt, _allow = _meta.get(_u, (0, 0))
+        if _opt == 1 and _allow != 0:
+            scopes.append(('private', _u))
+    print(f'[mine-public] scopes: {[u for _t, u in scopes]}')
+
+    candidates = []
+    for tier, user_id in scopes:
+        try:
+            # Reading a private tier is the owner's business. Act as
+            # them for the read; the write to the shared tier happens
+            # as the operator.
+            astor_init_acl(actor='user:%s' % user_id, role='user',
+                           tier='private', user_id=user_id,
+                           subscription_plan='power')
+            bus = astor_bus(tier=tier, user_id=user_id)
+        except Exception as e:
+            print(f'  scope {tier}/{user_id}: {e}')
+            continue
+        rows = bus.conn.execute(
+            "SELECT id, kind, content, namespace, importance "
+            "FROM memory_canonical WHERE tombstoned = 0").fetchall()
+        for fid, kind, content, namespace, imp in rows:
+            if kind not in AUTO_COMMONS_KINDS:
+                continue
+            c = content or ''
+            if len(c) < min_len:
+                continue
+            if (has_pii(c) or has_first_person(c) or has_emotion(c)
+                    or has_geographic(c)):
+                continue
+            candidates.append((tier, user_id, fid, kind, namespace, c))
+
+    # A fact that was already promoted is not promoted again. The write
+    # to the shared tier happens as the operator, not as the owner of
+    # the fact it came from.
+    try:
+        astor_init_acl(actor='admin:admin', role='admin', tier='public')
+    except Exception:
+        pass
+    pub = astor_bus(tier='public', user_id=None)
+    already = set()
+    for (meta,) in pub.conn.execute(
+            "SELECT metadata FROM memory_canonical WHERE tombstoned = 0 "
+            "AND metadata LIKE '%distilled_from%'"):
+        # A row whose metadata is not valid JSON would make json_extract
+        # fail the whole query, and one bad row is enough to take the
+        # scan down.
+        try:
+            v = json.loads(meta or '{}').get('distilled_from')
+            if v is not None:
+                already.add(int(v))
+        except Exception:
+            continue
+    candidates = [c for c in candidates if c[2] not in already]
+
+    print(f'[mine-public] {len(candidates)} candidate facts in the private '
+          f'tier ({len(already)} already promoted)')
+
+    promoted = []
+    for tier, user_id, fid, kind, namespace, content in candidates:
+        scrubbed, _ident_changes = scrub_local_identifiers(content)
+        cleared, _blocks = _clear_tools(scrubbed, keep_recent_n=3)
+        cleaned, removed, report = _distill(cleared)
+        if not cleaned or len(cleaned) < min_len // 2:
+            continue
+
+        if (has_pii(cleaned) or has_first_person(cleaned)
+                or has_emotion(cleaned) or has_geographic(cleaned)):
+            continue
+        promoted.append((tier, user_id, fid, kind, namespace, cleaned,
+                         removed, report))
+        if limit and len(promoted) >= limit:
+            break
+
+    print(f'[mine-public] {len(promoted)} of them survive cleaning')
+    for tier, user_id, fid, kind, namespace, cleaned, removed, report in promoted[:10]:
+        print(f'  {tier}/{user_id} id={fid} {kind} -> {cleaned[:90]}')
+    if len(promoted) > 10:
+        print(f'  ... and {len(promoted) - 10} more')
+    if not promoted:
+        return 0
+    if not args.apply:
+        print('(Dry-run. Pass --apply to promote.)')
+        return 0
+
+    written = 0
+    for tier, user_id, fid, kind, namespace, cleaned, removed, report in promoted:
+        try:
+            event_id = pub.append_event(
+                namespace=namespace or 'distillation',
+                agent_id='am.mine-public',
+                source='am.mine-public',
+                action='write',
+                content=cleaned,
+            )
+            cand = pub.insert_candidate(
+                event_id=event_id,
+                namespace=namespace or 'distillation',
+                content=cleaned,
+                kind=kind or 'method',
+                confidence=0.9,
+                importance=0.7,
+                tags=['distilled', 'from_personal', 'mined'],
+            )
+            meta = {
+                'distilled_from': fid,
+                'distilled_by': 'am.mine-public',
+                'source_tier': tier,
+                'source_user_id': user_id,
+                'removed_segments': removed,
+                'distill_report': report,
+                'mined_at': _dt.now(_tz.utc).isoformat(),
+            }
+            pub.promote_candidate(
+                cand, promoted_by='am.mine-public',
+                user_id=None, tier='public', scope_type='long_term',
+                provenance_kind='user_distilled',
+                visibility='commons',
+                extra_metadata=_json.dumps(meta, ensure_ascii=False),
+            )
+            written += 1
+        except Exception as e:
+            print(f'  id={fid} promote failed: {e}')
+    print(f'[mine-public] promoted {written} facts to the public tier')
+    return 0
 
 def cmd_seed(args) -> int:
     """Populate a fresh install with demo facts.
@@ -4674,7 +4999,7 @@ def cmd_peer_endpoints(args) -> int:
     A peer on the LAN and the same peer reachable by its public name can
     both be configured:
 
-        am peer endpoints astor:xxx http://192.168.1.185:7803 \
+        am peer endpoints astor:xxx http://192.168.1.x:7803 \
             https://peer.example.com
     """
     from .._internal.peer_relationships import (

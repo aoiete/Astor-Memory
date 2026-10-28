@@ -48,6 +48,11 @@ from .visibility_classifier import (
 #     (1) ASCII comma followed by space + Chinese char: "我今天心情不好, 微信"
 #         -> split before the Chinese char.
 #     (2) CN comma between two Chinese chars (no space): "我,他说" -> split.
+# The state-const block is appended to the cleaned text and is carried
+# across the final sentence split whole, so the split never has to
+# understand a path.
+_STATE_BLOCK_MARK = '\n\n[STATE-CONST] '
+
 _SENT_SPLIT = re.compile(
     r'(?<=[。！？？！])\s*'
     r'|(?<=[.!?])(?!\d)\s*'
@@ -96,9 +101,15 @@ _METHOD_KEYWORDS = re.compile(
 _STATE_CONST_PATTERNS = [
     # file paths with line numbers: src/api/v2/handler.py:142 OR C:\path\file.py:42
     # Match drive+absolute, root-relative, or relative (no leading /)
-    re.compile(r'(?:[A-Za-z]:[/\\])?(?:[/\\])?[\w][\w./\\-]*\.(?:py|js|ts|tsx|jsx|java|go|rs|c|cpp|h|hpp|md|txt|json|yaml|yml|toml|sh|sql|html|css)(?::\d{1,5})?(?=\b|[\s.,])'),
+    #
+    # v1.17.5: the leading placeholder is part of the path. The shared
+    # tier scrubs a machine-local path to "<home>/AppData/...", and a
+    # pattern that starts at the first slash captures only the tail of
+    # it -- the placeholder, which is the part that says "this was
+    # somebody's machine", is what gets dropped.
+    re.compile(r'(?:<[a-z-]+>)?(?:[A-Za-z]:[/\\])?(?:[/\\])?[\w][\w./\\-]*\.(?:py|js|ts|tsx|jsx|java|go|rs|c|cpp|h|hpp|md|txt|json|yaml|yml|toml|sh|sql|html|css)(?::\d{1,5})?(?=\b|[\s.,])'),
     # URL paths (preserve the path even when hostname is replaced)
-    re.compile(r'(?<!\w)/[a-zA-Z][\w./\-]{2,200}'),
+    re.compile(r'(?<!\w)(?:<[a-z-]+>)?/[a-zA-Z][\w./\-]{2,200}'),
     # semantic version
     re.compile(r'\bv?\d+\.\d+\.\d+(?:[-+][\w.]+)?\b'),
     # HTTP status codes (200-599)
@@ -291,16 +302,19 @@ def distill(
     # position-based insertion. Instead, summarize all preserved state
     # tokens as a single [STATE-CONST] block at the end.
     if state_extractions:
-        # Use a placeholder that the next sentence-split pass will treat
-        # as opaque (we don't want the inner dots/paths to fragment).
-        # Strategy: replace inner dots in tokens with full-width dot
-        # since the sentence split regex looks for [.!?] ASCII only.
-        # Original is restored at read-time downstream if needed.
+        # The block is carried across the final split untouched (see
+        # below), so the tokens go in verbatim.
+        #
+        # v1.17.5: they used to go in with their dots and dashes
+        # rewritten to full-width, so that the sentence split would not
+        # cut a path in half. Nothing restored them afterwards, and the
+        # shared tier ended up with "hermes－agent" and "file．py" in
+        # it -- a path that no longer resolves anywhere. The block is
+        # now kept out of the split instead of being mangled to fit it.
         state_tokens = []
         for e in state_extractions[:20]:
-            tok_safe = e['token'].replace('.', '．').replace('-', '－')
-            state_tokens.append(f'{e["placeholder"]}={tok_safe}')
-        state_block = '[STATE-CONST] ' + ', '.join(state_tokens)
+            state_tokens.append(f'{e["placeholder"]}={e["token"]}')
+        state_block = _STATE_BLOCK_MARK + ', '.join(state_tokens)
         if cleaned:
             cleaned = cleaned + '\n\n' + state_block
         else:
@@ -311,7 +325,13 @@ def distill(
     # 4. Re-run PII/first-person check on cleaned (defense in depth — if any
     # placeholder replacement leaked, we drop the segment instead of leaking).
     final_clean: list[str] = []
-    for sent in _SENT_SPLIT.split(cleaned):
+    # v1.17.5: the state-const block is split off before the final
+    # pass. A token holds ASCII dots -- "scripts/handler.py" -- and the
+    # split regex cuts on those, so a block that went through the split
+    # came out in pieces. It is privacy-checked here as one unit and
+    # then carried across whole.
+    _body, _sep, _state_block = cleaned.partition(_STATE_BLOCK_MARK)
+    for sent in _SENT_SPLIT.split(_body):
         sent = sent.strip()
         if not sent:
             continue
@@ -320,6 +340,8 @@ def distill(
             continue
         final_clean.append(sent)
     cleaned = ' '.join(final_clean)
+    if _sep:
+        cleaned = (cleaned + _sep + _state_block).strip()
 
     # 5. Verify the cleaned text still has at least one method/flow keyword.
     # If not, distill didn't preserve actionable content -> abort (empty).

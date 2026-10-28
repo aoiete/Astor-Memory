@@ -1,3 +1,113 @@
+## v1.17.5 — 2026-10-27
+
+The shared tier keeps the method and loses the machine.
+
+A public-tier fact is readable by every peer in the federation. A
+method belongs there -- how to fetch a page, which port a service
+listens on -- but a path that only exists on this host is private data
+in a shared place. A peer searching the public tier learns the working
+directory, the user profile, the host name and the LAN address of the
+machine that wrote the fact.
+
+Public writes are now scrubbed on the way in, and `am scrub-public`
+rewrites the facts that are already there.
+
+The rules are structural, not a list of one operator's paths -- a rule
+that named a working directory would be the same private data in a
+different file, and it would not generalise to the next operator:
+
+    C:\Users\someone\AppData   ->  <home>\AppData
+    D:\work\project\file.py     ->  <root>\project\file.py
+    /home/someone/x              ->  <home>/x
+    \\HOST\share               ->  \\<host>\share
+    <private-ip>               ->  <private-host>
+
+Loopback stays: 127.0.0.1 is a convention, not a location.
+
+The private and source tiers are untouched. A local path is useful
+there, and neither tier leaves the machine.
+
+
+### Mining: the private tier feeds the shared tier
+
+The scrub is the boundary; mining is what crosses it. `am mine-public`
+reads the private tier, keeps the facts that are methods rather than
+history -- a lesson, a success pattern, a failure pattern, a method --
+and drops the ones that are about a person: first person, emotion,
+geography, anything the visibility classifier reads as private. What
+survives is scrubbed, distilled and written to the public tier, tagged
+`distilled_by=am.mine-public` so the origin stays visible.
+
+The command is a dry run by default. `--apply` writes. `--limit` keeps
+the run small when you want to look before you commit to it.
+
+    am mine-public                 # what would move
+    am mine-public --apply         # move it
+    am mine-public --apply --limit 20
+
+The weekly job is `scripts/mine_public_weekly.py`. It is a script and
+not a prompt on purpose: the mining is deterministic, and a weekly job
+that wakes a model to run a query costs money and can still be wrong. It
+resolves the runtime the way astor resolves it everywhere else --
+ASTOR_DIR, then install.json, then the default next to the source -- and
+refuses to run on a relative path, because the working directory of a
+scheduled job is not the one the operator would have typed.
+
+### The scrub is at the funnel, not at the callers
+
+A public-tier fact is written by the HTTP API, by `am write`, by the
+extractor, by the learner, by the failure detector. Scrubbing in each
+of those is five places to forget. `promote_candidate` is the one
+funnel every one of them goes through, so the scrub lives there -- and
+the private and source tiers are untouched, because a local path is
+useful there and neither tier leaves the node.
+
+A path names its owner, so the name goes too. The names are learned
+from the text before the paths are rewritten, because after that there
+is nothing left to learn them from: "someone ran the script" and
+"X:/Users/someone/run.py" identify the same person, and one path in a
+paragraph is enough to connect them.
+
+### Birth data is not a path, and it is still private
+
+A birth chart -- 丙子/丙申/壬辰/乙巳 -- is the most identifying thing a
+person can carry into a sentence, and the PII scanner does not know
+about it: no digits, no @, no card number, just four characters. A
+method fact can quote one as an example, and the example is the part
+that has to go.
+
+The rule asks for at least two different heavenly stems, because
+Qimen spells its "six officers" as 甲子、甲辰、甲申、甲午 -- every one
+of them an 甲. That is a list of stems in a classical text, not
+somebody's date, and rewriting it would damage a fact that has
+nothing to do with a person.
+
+### The distiller was breaking the paths it was protecting
+
+A state-const token is a path, a version, a hash. The distiller used
+to rewrite its dots and dashes to full-width so the sentence split
+would not cut it in half -- and nothing restored them, so the shared
+tier carried `hermes-agent` as `hermes\uff0dagent` and `file.py` as
+`file\uff0epy`. A path that no longer resolves anywhere is not a
+method.
+
+The block is now kept out of the split instead of being mangled to fit
+it. And the path pattern learned to read a leading placeholder as part
+of the path: the shared tier scrubs a machine-local path to
+`<home>/AppData/...`, and a pattern that starts at the first slash
+captures only the tail of it -- dropping the placeholder, which is
+the part that says "this was somebody's machine".
+
+### The CLI could not print its own output
+
+`reconfigure(line_buffering=True)` was missing the encoding, so the
+stream kept the Windows console default of GBK. A fact holding an arrow
+or a piece of CJK punctuation then died with UnicodeEncodeError
+halfway through a run -- in a cron, a job that fails on content that
+had nothing wrong with it. The reconfigure now names `utf-8` with
+`errors='replace'`, and a character that cannot be shown no longer
+stops the run.
+
 ## v1.17.4 — 2026-10-27
 
 A peer can be reachable at more than one address, and the version number
@@ -17,7 +127,7 @@ inside the LAN and from outside it. An unreachable address costs one
 timeout, not a failed search.
 
 ```
-am peer endpoints astor:xxx http://192.168.1.185:7803 \
+am peer endpoints astor:xxx http://192.168.1.x:7803 \
     https://peer.example.com
 ```
 

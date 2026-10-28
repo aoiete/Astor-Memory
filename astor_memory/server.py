@@ -2890,6 +2890,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     _safe_stderr_write('[MEMORY_DEFENSE] audit log failed: ' + repr(_md_audit_exc) + chr(10))
                 text = _processed_text  # use redacted content for the actual write
                 _pii_gate_stats['redact_count'] += 1  # v1.16.x: lifetime redact counter
+        # v1.17.4: the shared tier keeps the method and loses the machine.
+        # A public-tier fact is readable by every peer in the federation,
+        # so a path that only exists on this host -- a working directory,
+        # a user profile, a private LAN address -- is private data in a
+        # shared place. The private tier keeps them: a local path is
+        # useful there.
+        _scrub_changes: list[dict] = []
+        if tier == 'public' and text:
+            try:
+                from .nest.public_scrub import scrub_local_identifiers as _scrub
+                text, _scrub_changes = _scrub(text)
+            except Exception as _scrub_exc:
+                _safe_stderr_write(f'[astor.server] public scrub failed (non-fatal): {_scrub_exc}\n')
         # v1.16.x: Layer 2 personal content sniff (warn only, never block).
         # Runs on public tier writes only — private tier carries no
         # cross-user leakage risk so sniffing is skipped. Categories are

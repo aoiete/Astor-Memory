@@ -146,11 +146,11 @@ class TestMultiEndpointPeer(unittest.TestCase):
 
     def test_endpoints_helper_orders_primary_first(self):
         from astor_memory._internal.peer_search import _endpoints_for
-        f = {'endpoint': 'http://192.168.1.185:7803',
-             'metadata': {'endpoints': ['http://192.168.1.185:7803',
+        f = {'endpoint': 'http://192.168.1.x:7803',
+             'metadata': {'endpoints': ['http://192.168.1.x:7803',
                                         'https://peer.example.com']}}
         eps = _endpoints_for(f)
-        self.assertEqual(eps[0], 'http://192.168.1.185:7803')
+        self.assertEqual(eps[0], 'http://192.168.1.x:7803')
         self.assertIn('https://peer.example.com', eps)
         # no duplicates
         self.assertEqual(len(eps), len(set(eps)))

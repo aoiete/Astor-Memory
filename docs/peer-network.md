@@ -503,6 +503,80 @@ curl -X POST 'http://127.0.0.1:7803/v1/peer/rate-limit/reset' \
 
 ---
 
+## What the shared tier is allowed to carry (v1.17.5)
+
+A `public`-tier fact is readable by every peer in the federation. That
+is the whole point of the tier — one node works out how to fetch a
+page, and the next one inherits the method instead of spending the day
+again.
+
+It is also the reason the tier needs a boundary. The method travels.
+The machine does not. A peer reading the public tier should learn how
+the thing was done, not the working directory, the user profile, the
+host name and the LAN address of the host that learned it.
+
+Public writes are scrubbed on the way in, and `am scrub-public`
+rewrites the facts that are already there. The rules are structural, so
+they generalise to the next operator instead of encoding this one's
+paths:
+
+```
+C:\Users\someone\AppData   ->  <home>\AppData
+D:\work\project\file.py     ->  <root>\project\file.py
+/home/someone/x               ->  <home>/x
+\\HOST\share                ->  \\<host>\share
+<private-ip>                  ->  <private-host>
+丙子/丙申/壬辰/乙巳          ->  <birth-pillars>
+birthday 1996-08-23          ->  <birth-date>
+```
+
+Loopback stays — 127.0.0.1 is a convention, not a location.
+
+A path names its owner, so the name goes too. The names are learned
+from the text before the paths are rewritten, because after that there
+is nothing left to learn them from: "someone ran the script" and
+"X:/Users/someone/run.py" identify the same person, and one path in a
+paragraph is enough to connect them.
+
+A birth chart is not a path, and it is still private: four pillars
+carry no digits, no @ and no card number, so the PII scanner does not
+know about them. A method fact can quote one as an example, and the
+example is the part that has to go. The rule asks for at least two
+different heavenly stems, because Qimen spells its "six officers" as
+甲子、甲辰、甲申、甲午 — every one of them an 甲 — and that is a list
+of stems in a classical text, not somebody's date.
+
+The scrub is in `promote_candidate`, the one funnel every write path
+goes through. The `private` and `source` tiers are untouched. A local
+path is useful there, and neither tier leaves the node.
+
+### Mining: the private tier feeds the shared tier
+
+The scrub is the boundary; mining is what crosses it. `am mine-public`
+reads the private tier, keeps the facts that are methods rather than
+history — a lesson, a success pattern, a failure pattern, a method —
+and drops the ones that are about a person: first person, emotion,
+geography, anything the visibility classifier reads as private. What
+survives is scrubbed, distilled and written to the public tier, tagged
+`distilled_by=am.mine-public` so the origin stays visible.
+
+```bash
+am mine-public                 # dry run: what would move
+am mine-public --apply         # move it
+am mine-public --apply --limit 20
+```
+
+`scripts/mine_public_weekly.py` runs the mining once a week. It is a
+script and not a prompt on purpose: the mining is deterministic, and a
+weekly job that wakes a model to run a query costs money and can still
+be wrong. It resolves the runtime the way astor resolves it everywhere
+else — `ASTOR_DIR`, then `install.json`, then the default next to the
+source — and refuses to run on a relative path, because the working
+directory of a scheduled job is not the one the operator would have
+typed.
+
+---
+
 ## Anti-spam and abuse (proven in practice)
 
 The PPS path was designed specifically to resist the following attack
