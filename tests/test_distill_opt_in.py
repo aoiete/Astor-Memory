@@ -306,6 +306,12 @@ def test_the_binding_list_endpoint_works(tmp_path, monkeypatch):
     assert resp.status_code == 200, resp.data[:200]
     data = resp.get_json()
     assert "bindings" in data
+    # The operator's own switch comes back, and the operator's own id
+    # is in the payload -- the admin role is bound without a per-user
+    # id, so reading ctx.user_id alone found no row and the switch
+    # read as "never asked" whatever it was set to.
+    assert data.get("self_user_id"), data
+    assert "self_distill_opt_in" in data
     bot_binding.close()
 
 

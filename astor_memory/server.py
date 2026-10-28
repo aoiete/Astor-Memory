@@ -9925,8 +9925,22 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # Who is asking. The endpoint is the operator's view, so
             # this is the operator's own id -- and it is what decides
             # whether "never asked" reads as on or off for a row.
+            # Who is asking. The endpoint is the operator's view, so
+            # this is the operator's own id -- and it is what decides
+            # whether "never asked" reads as on or off for a row.
+            #
+            # The operator's context carries no user_id: the admin
+            # role is bound as "admin:admin" on the public tier, and
+            # there is no per-user id in it. The id is in the actor.
+            # Reading ctx.user_id alone gave None, and every lookup
+            # with None found no row -- so the operator's own switch
+            # read as "never asked" no matter what it was set to.
             try:
-                _caller_id = astor_current_acl().user_id
+                _ctx = astor_current_acl()
+                _caller_id = _ctx.user_id
+                if not _caller_id:
+                    _actor = getattr(_ctx, 'actor', '') or ''
+                    _caller_id = _actor.split(':', 1)[-1] or 'admin'
             except Exception:
                 _caller_id = 'admin'
             bindings = []
