@@ -621,3 +621,50 @@ __all__ = [
     "astor_check_read", "astor_check_write", "astor_check_bot_admin",
     "astor_actor_id", "astor_user_id",
 ]
+
+
+"""Opening a user's own private bucket from a server/admin context.
+
+The ACL for a request is bound with `user_id=body_user`, and that is
+None when the body carries no user field -- a cron write, a local API
+call, a platform write with no binding. R365 locked that on purpose:
+falling back to 'admin' let any caller delete any admin's public fact.
+
+With ctx.user_id None, admin cannot open private_<admin> either -- the
+strict-privacy model wants a grant even for the operator's own bucket.
+So a fact the operator owns could not be routed out of the public tier
+at all. The fact is the operator's own in that case -- there is no
+other owner it could be -- so the route binds as the owner, the same
+pattern the distill endpoint uses to read a user's own bucket
+(server.py:1611), and restores the previous identity afterwards so the
+rest of the request sees what it saw before.
+"""
+
+
+def open_own_private(user_id: str):
+    """Open `user_id`'s own private bucket, binding as the owner."""
+    from .acl import astor_current_acl, astor_init_acl
+    from ..bus.store import astor_bus
+    try:
+        return astor_bus(tier='private', user_id=user_id)
+    except Exception:
+        pass
+    try:
+        _prev = astor_current_acl()
+    except Exception:
+        _prev = None
+    try:
+        astor_init_acl(actor=f'user:{user_id}', role='user',
+                       tier='private', user_id=user_id,
+                       subscription_plan='power')
+        return astor_bus(tier='private', user_id=user_id)
+    finally:
+        if _prev is not None:
+            try:
+                astor_init_acl(
+                    actor=_prev.actor, role=_prev.role, tier=_prev.tier,
+                    user_id=_prev.user_id,
+                    subscription_plan=_prev.subscription_plan,
+                )
+            except Exception:
+                pass

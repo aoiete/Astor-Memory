@@ -66,7 +66,7 @@ class FakeBus:
         return int(cur.lastrowid)
 
     def promote_candidate(self, *, candidate_id, promoted_by,
-                          user_id=None, tier="public", scope_type="long_term",
+                          user_id=None, tier="public", visibility='commons', scope_type="long_term",
                           verdict="settled", origin_session_id=None,
                           stable_id=None, provenance_kind=None,
                           provenance_agent=None, evidence_quote="",

@@ -3328,9 +3328,48 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             f'{len(_w_text)} chars kept as 1 fact\n')
                     _w_bus = _w_bus_factory(tier=_w_tier, user_id=_w_user)
                     _w_fact_ids = []
+                    # v1.17.15: this path is a second implementation of
+                    # the write rule, and two implementations of one rule
+                    # is how they drift. It had no visibility
+                    # classification at all, so a personal fact would
+                    # have landed in the public tier. Classify here, and
+                    # route a personal fact to the caller's own private
+                    # bucket -- the same place the synchronous path
+                    # puts it.
+                    _w_priv_bus = None
+                    _w_priv_event = None
                     for _w_f in _w_facts:
-                        _w_cand = _w_bus.insert_candidate(
-                            event_id=_w_event_id, namespace=_w_namespace,
+                        _w_vis = 'personal'
+                        if _w_tier != 'private':
+                            try:
+                                from .nest.visibility_classifier import (
+                                    classify_visibility as _w_cv,
+                                )
+                                _w_vis = (_w_cv(
+                                    text=_w_f.content, kind=_w_f.kind,
+                                    hint='auto', admin_allow_commons=True,
+                                    confidence=_w_f.confidence,
+                                ).get('visibility') or 'personal')
+                            except Exception:
+                                _w_vis = 'personal'
+                        _w_target_bus = _w_bus
+                        _w_target_tier = _w_tier
+                        _w_target_event = _w_event_id
+                        if _w_vis != 'commons' and _w_tier != 'private':
+                            if _w_priv_bus is None:
+                                _w_priv_bus = _w_bus_factory(
+                                    tier='private', user_id=_w_user or user)
+                                _w_priv_event = _w_priv_bus.append_event(
+                                    namespace=_w_namespace,
+                                    agent_id=agent_ctx['agent_id'] or 'rest_api',
+                                    source=agent_ctx['source'] or 'rest.write',
+                                    action='write', content=_w_text,
+                                )
+                            _w_target_bus = _w_priv_bus
+                            _w_target_tier = 'private'
+                            _w_target_event = _w_priv_event
+                        _w_cand = _w_target_bus.insert_candidate(
+                            event_id=_w_target_event, namespace=_w_namespace,
                             content=_w_f.content, kind=_w_f.kind,
                             confidence=_w_f.confidence,
                             importance=_w_f.importance,
@@ -3339,9 +3378,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             context=_w_f.context or '',
                             entities=getattr(_w_f, 'entities', None),
                         )
-                        _w_cid = _w_bus.promote_candidate(
+                        _w_cid = _w_target_bus.promote_candidate(
                             _w_cand, promoted_by='rest.write.async',
-                            user_id=_w_user, tier=_w_tier, scope_type='long_term',
+                            user_id=_w_user, tier=_w_target_tier,
+                            scope_type='long_term', visibility=_w_vis,
                             # v1.16.33: thread conflict_kind + entities through
                             # so the auto-resolver can match against old facts.
                         )
@@ -3636,15 +3676,66 @@ def create_app(astor_dir: str | None = None) -> Flask:
         fact_ids = []
         facts_entities: list[list[dict]] = []
         _async_embed_count = 0
+        # v1.17.15: how many facts the routing moved to the private tier.
+        _routed_private_count = 0
         # 2026-08-16 opt1: hook BM25 lex index — every promoted fact gets
         # tokenized and indexed for exact-match keyword recall. Failures
         # are logged but never block the write (lex is a redundant store).
         from .nest.lex_index import astor_lex as _astor_lex_for_write
         _lex = _astor_lex_for_write(tier=tier, user_id=bus_user_id)
+        # v1.17.15: a fact classified `personal` must not sit in a tier a
+        # peer can read. The write tier is chosen BEFORE the facts are
+        # extracted, so a fact the classifier calls `personal` used to
+        # land in the public store anyway -- and the public store holds
+        # both commons and personal rows, separated only by `visibility`.
+        # The peer search paths read that store, so a personal row there
+        # was a personal row any peer could read. Measured on the live
+        # corpus: 509 of 732 public rows were `personal`, 479 of them
+        # with no copy anywhere else.
+        #
+        # The private tier is where personal facts belong. `am
+        # mine-public` reads private and promotes the ones that are safe
+        # to share, so the share decision stays the distiller's rather
+        # than the write path's. Those facts get their own event, bus
+        # and lex index in the caller's own bucket.
+        _priv_target = None
+
+        def _private_target():
+            """(bus, event_id, lex, user_id) for the caller's private bucket."""
+            nonlocal _priv_target
+            if _priv_target is None:
+                _priv_uid = bus_user_id or user
+                from ._internal.acl import open_own_private as _own_priv
+                _priv_bus = _own_priv(_priv_uid)
+                _priv_event = _priv_bus.append_event(
+                    namespace=_resolve_namespace(
+                        agent_ctx, fallback=user,
+                        session_id=_write_session_id,
+                    ),
+                    agent_id=agent_ctx['agent_id'] or 'rest_api',
+                    source=agent_ctx['source'] or 'rest.write',
+                    action='write',
+                    content=text,
+                )
+                _priv_lex = _astor_lex_for_write(tier='private',
+                                                 user_id=_priv_uid)
+                _priv_target = (_priv_bus, _priv_event, _priv_lex, _priv_uid)
+            return _priv_target
+
         _w_stages['promote_start'] = _w_t.perf_counter()
         for f in facts:
-            cand_id = bus.insert_candidate(
-                event_id=event_id,
+            # Route per fact: a personal fact goes to the private tier,
+            # a commons fact stays where the caller asked for it.
+            _f_bus, _f_event, _f_lex = bus, event_id, _lex
+            _f_tier = tier
+            _f_uid = bus_user_id
+            if (getattr(f, 'visibility', None) == 'personal'
+                    and tier != 'private'):
+                _f_bus, _f_event, _f_lex, _f_uid = _private_target()
+                _f_tier = 'private'
+                _routed_private_count += 1
+            cand_id = _f_bus.insert_candidate(
+                event_id=_f_event,
                 namespace=_resolve_namespace(
                     agent_ctx,
                     fallback=(bus_user_id or user),
@@ -3715,8 +3806,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     _scope_type = scope
                     _scope_expires = None
                     _scope_reason = 'policy fallback'
-            canon_id = bus.promote_candidate(
-                cand_id, promoted_by='rest.write', user_id=bus_user_id or user, tier=tier,
+            canon_id = _f_bus.promote_candidate(
+                cand_id, promoted_by='rest.write', user_id=_f_uid or user, tier=_f_tier,
                 scope_type=_scope_type,  # v1.16.92: evidence-gated (was: scope)
                 expires_at=_scope_expires,  # v1.16.92: short_term 的到期时间
                 # v1.11.0: thread session_id for agentic neighbor-expand.
@@ -3744,7 +3835,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # back to the caller (avoids a 2nd /v1/read round trip).
             # Best-effort: read failure -> empty list (caller can retry).
             try:
-                _ents_row = bus.conn.execute(
+                _ents_row = _f_bus.conn.execute(
                     "SELECT entities_json FROM memory_canonical WHERE id = ?",
                     (int(canon_id),),
                 ).fetchone()
@@ -3771,7 +3862,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 facts_entities.append([])
             # Index for BM25 keyword recall — best-effort
             try:
-                _lex.index_fact(int(canon_id), f.content)
+                _f_lex.index_fact(int(canon_id), f.content)
             except Exception as _lex_exc:
                 _safe_stderr_write(
                     f'[astor.server] lex index_fact failed (continuing): {_lex_exc}\n'
@@ -3784,9 +3875,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
             try:
                 from .nest.auto_link import auto_link_for_fact as _auto_link
                 _auto_link(
-                    bus, new_fact_id=int(canon_id),
+                    _f_bus, new_fact_id=int(canon_id),
                     content=f.content, kind=f.kind,
-                    tier=tier, user_id=bus_user_id,
+                    tier=_f_tier, user_id=_f_uid,
                 )
             except Exception as _auto_link_exc:
                 _safe_stderr_write(
@@ -3815,6 +3906,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         _nest_path = str(get_db_path(
                             Tier.PUBLIC if _tier_v == 'public' else Tier.PRIVATE,
                             Store.NEST,
+                            None if _tier_v == 'public' else _uid_v,
                         ))
                         import sqlite3 as _sq2
                         _cn = _sq2.connect(_nest_path)
@@ -3832,7 +3924,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         )
                 _t = _thr.Thread(
                     target=_embed_async,
-                    args=(int(canon_id), f.content, bus, tier, bus_user_id),
+                    args=(int(canon_id), f.content, _f_bus, _f_tier, _f_uid),
                     daemon=True,
                 )
                 _t.start()
@@ -4142,6 +4234,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # visibility_report shows what visibility each fact was classified
             # to (commons/personal) and why (kind / hint / admin toggle).
             'visibility_report': body.get('_visibility_report') or {},
+            # v1.17.15: how many facts were routed out of the requested
+            # tier because they are personal. `tier` above is what the
+            # caller asked for; this is where the personal ones actually
+            # landed. A caller that needs to know where its facts went
+            # reads this.
+            'routed_to_private': _routed_private_count,
         }
         resp = jsonify(resp_body)
         # v1.16.x Layer 2: attach personal content sniff to response (warn only).
@@ -6556,6 +6654,28 @@ def create_app(astor_dir: str | None = None) -> Flask:
                                  and str(r["valid_until"]) <=
                                  _v186_now_iso())]
 
+        # v1.17.15: one fact, one hit. The scored path and the
+        # injection channels find facts independently, so a fact both
+        # channels match came back twice. The scored copy is the better
+        # one -- it carries the similarity and the score_kind, and the
+        # injected copy adds no field the scored row does not already
+        # have -- so the scored copy wins and the injected duplicate is
+        # dropped. Before this, the Hermes adapter's "every result says
+        # how it was scored" assertion failed on a response whose
+        # scored copy was right there.
+        if enriched:
+            _dedup = {}
+            for _r in enriched:
+                _fid = _r.get('fact_id')
+                if _fid is None:
+                    _dedup[('__raw__', id(_r))] = _r
+                    continue
+                _prev = _dedup.get(_fid)
+                if _prev is None or (not _prev.get('score_kind')
+                                     and _r.get('score_kind')):
+                    _dedup[_fid] = _r
+            enriched = list(_dedup.values())
+
         # v1.16.20: cache store (before return).
         try:
             _READ_CACHE[_rcache_key] = (_rc_time.time(), enriched)
@@ -8426,8 +8546,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     namespace='failure_loop', content=_prom_text,
                     kind='lesson', confidence=0.8, importance=0.7,
                     tags=['failure_loop', 'recurring'])
-                bus.promote_candidate(_fl_cand, promoted_by='rest.failure_loop',
-                                      user_id=user_id, tier=tier)
+                bus.promote_candidate(
+                    _fl_cand, promoted_by='rest.failure_loop',
+                    user_id=user_id, tier=tier,
+                    # v1.17.15: sharing is explicit. A recurring
+                    # failure is a lesson -- one of the things the
+                    # public tier is for.
+                    visibility=('commons' if tier == 'public' else 'personal'),
+                )
                 _promoted.append(_r['topic'])
             except Exception:
                 continue
@@ -10648,11 +10774,16 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 truncated = True
                 break
             row = bus.conn.execute(
-                "SELECT id, content, kind, tags, created_at, tombstoned "
-                "FROM memory_canonical WHERE id = ?",
+                "SELECT id, content, kind, tags, created_at, tombstoned, "
+                "visibility FROM memory_canonical WHERE id = ?",
                 (fact_id,),
             ).fetchone()
             if row is None or int(row[5] or 0) != 0:
+                continue
+            # v1.17.15: only `commons` rows are shareable. The public
+            # store holds personal rows too -- `visibility` is what
+            # separates them -- and this endpoint answers a remote node.
+            if (row[6] or 'commons') != 'commons':
                 continue
             try:
                 import json as _j_pps
@@ -10758,11 +10889,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
             )
             for fid, sim in merged:
                 row = bus.conn.execute(
-                    "SELECT id, content, kind, tags, created_at, tombstoned "
-                    "FROM memory_canonical WHERE id = ?",
+                    "SELECT id, content, kind, tags, created_at, tombstoned, "
+                    "visibility FROM memory_canonical WHERE id = ?",
                     (fid,),
                 ).fetchone()
                 if row is None or int(row[5] or 0) != 0:
+                    continue
+                # v1.17.15: a peer reads the public tier, so it reads
+                # the shareable part of it. /v1/peer/public_search
+                # already filtered visibility='commons' in its SQL;
+                # this makes the recall path match it, instead of
+                # relying on the tier happening to hold only commons
+                # rows today.
+                if str(row[6] or 'commons') != 'commons':
                     continue
                 try:
                     import json as _j_lcl
@@ -11521,6 +11660,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     user_id='admin',
                     tier=target_tier,
                     scope_type='long_term',
+                    # v1.17.15: sharing is explicit. The adopted fact
+                    # came out of a peer's public tier, so it is
+                    # shareable by construction.
+                    visibility=('commons' if target_tier == 'public'
+                                else 'personal'),
                     verdict='settled',
                     provenance_kind='peer_search',
                     provenance_agent=f'peer:{src_peer}',

@@ -1849,7 +1849,15 @@ def cmd_write(args) -> int:
     # admin authoring). Use --tier public/source for cross-user writes.
     tier = getattr(args, 'tier', 'private')
     user_id = args.user if tier == 'private' else None
-    bus = astor_bus(tier=tier, user_id=user_id)
+    # v1.17.15: the operator writing their own private bucket. The
+    # CLI binds the ACL as admin:admin, and admin cannot open
+    # private_<admin> -- the strict-privacy model wants a grant even
+    # there. Bind as the owner to take the bus.
+    if tier == 'private':
+        from .._internal.acl import open_own_private as _own_priv
+        bus = _own_priv(user_id)
+    else:
+        bus = astor_bus(tier=tier, user_id=user_id)
     # 1. Append event
     event_id = bus.append_event(
         namespace=args.user,
@@ -1878,8 +1886,44 @@ def cmd_write(args) -> int:
             keywords=f.keywords or [],
             context=f.context or '',
         )
+        # v1.17.15: a fact that belongs in the public tier has to be
+        # shareable. The store refuses a personal fact there, so the
+        # command decides where it goes: a personal fact is written to
+        # the caller's own private bucket, and `am mine-public` mines
+        # the private tier back into the public one later. The write
+        # succeeds either way; nothing is lost by going private first.
+        _vis = 'personal'
+        if tier == 'public':
+            try:
+                from ..nest.visibility_classifier import (
+                    classify_visibility as _cv,
+                )
+                _vis = (_cv(text=f.content, kind=f.kind, hint='auto',
+                            admin_allow_commons=True,
+                            confidence=f.confidence).get('visibility')
+                        or 'personal')
+            except Exception:
+                _vis = 'personal'
+            if _vis != 'commons':
+                _priv = astor_bus(tier='private', user_id=args.user)
+                _pev = _priv.append_event(
+                    namespace=args.user, agent_id='cli', source='cli.write',
+                    action='write', content=args.text,
+                )
+                _pcand = _priv.insert_candidate(
+                    event_id=_pev, namespace=args.user, content=f.content,
+                    kind=f.kind, confidence=f.confidence,
+                    importance=f.importance, tags=f.tags or [],
+                    keywords=f.keywords or [], context=f.context or '',
+                )
+                fact_ids.append(_priv.promote_candidate(
+                    _pcand, promoted_by='cli.write', user_id=args.user,
+                    tier='private', visibility='personal',
+                ))
+                continue
         canon_id = bus.promote_candidate(
-            cand_id, promoted_by='cli.write', user_id=args.user, tier=args.tier,
+            cand_id, promoted_by='cli.write', user_id=args.user, tier=tier,
+            visibility=_vis,
         )
         fact_ids.append(canon_id)
     print(f'[OK] Wrote {len(fact_ids)} fact(s): {fact_ids}')
@@ -1919,7 +1963,15 @@ def cmd_learn(args) -> int:
     # 2-3. Write the fact via bus.
     tier = getattr(args, 'tier', 'private')
     user_id = args.user if tier == 'private' else None
-    bus = astor_bus(tier=tier, user_id=user_id)
+    # v1.17.15: the operator writing their own private bucket. The
+    # CLI binds the ACL as admin:admin, and admin cannot open
+    # private_<admin> -- the strict-privacy model wants a grant even
+    # there. Bind as the owner to take the bus.
+    if tier == 'private':
+        from .._internal.acl import open_own_private as _own_priv
+        bus = _own_priv(user_id)
+    else:
+        bus = astor_bus(tier=tier, user_id=user_id)
 
     event_id = bus.append_event(
         namespace=args.user,
@@ -1956,6 +2008,11 @@ def cmd_learn(args) -> int:
             promoted_by='cli.learn',
             user_id=args.user if tier == 'private' else None,
             tier=tier,
+            # v1.17.15: sharing is explicit. This path publishes
+            # curated knowledge -- a success pattern is a method that
+            # worked, and that is what the public tier is for. The
+            # store refuses a fact it cannot see, so say so.
+            visibility=('commons' if tier == 'public' else 'personal'),
         )
         fact_ids.append(canon_id)
 
@@ -2069,6 +2126,11 @@ def cmd_fail(args) -> int:
             cand_id, promoted_by='cli.fail',
             user_id=args.user if tier == 'private' else None,
             tier=tier,
+            # v1.17.15: sharing is explicit. This path publishes
+            # curated knowledge -- a success pattern is a method that
+            # worked, and that is what the public tier is for. The
+            # store refuses a fact it cannot see, so say so.
+            visibility=('commons' if tier == 'public' else 'personal'),
         )
         fact_ids.append(canon_id)
 
@@ -2112,7 +2174,15 @@ def cmd_postmortem(args) -> int:
 
     tier = getattr(args, 'tier', 'private')
     user_id = args.user if tier == 'private' else None
-    bus = astor_bus(tier=tier, user_id=user_id)
+    # v1.17.15: the operator writing their own private bucket. The
+    # CLI binds the ACL as admin:admin, and admin cannot open
+    # private_<admin> -- the strict-privacy model wants a grant even
+    # there. Bind as the owner to take the bus.
+    if tier == 'private':
+        from .._internal.acl import open_own_private as _own_priv
+        bus = _own_priv(user_id)
+    else:
+        bus = astor_bus(tier=tier, user_id=user_id)
 
     # v1.13.1 fix (Ship E): LESSON prefix per iron rule. Detect existing
     # prefix to avoid double-prefix when user already wrote 'LESSON '.
@@ -2162,6 +2232,11 @@ def cmd_postmortem(args) -> int:
             cand_id, promoted_by='cli.postmortem',
             user_id=args.user if tier == 'private' else None,
             tier=tier,
+            # v1.17.15: sharing is explicit. This path publishes
+            # curated knowledge -- a success pattern is a method that
+            # worked, and that is what the public tier is for. The
+            # store refuses a fact it cannot see, so say so.
+            visibility=('commons' if tier == 'public' else 'personal'),
         )
         print(f'[astor] postmortem: lesson={is_lesson} strength={strength:.2f}')
         print(f'   tier={tier} fact_ids=[{canon_id}]')
@@ -2184,6 +2259,11 @@ def cmd_postmortem(args) -> int:
             cand_id, promoted_by='cli.postmortem',
             user_id=args.user if tier == 'private' else None,
             tier=tier,
+            # v1.17.15: sharing is explicit. This path publishes
+            # curated knowledge -- a success pattern is a method that
+            # worked, and that is what the public tier is for. The
+            # store refuses a fact it cannot see, so say so.
+            visibility=('commons' if tier == 'public' else 'personal'),
         )
         fact_ids.append(canon_id)
 
@@ -2216,6 +2296,30 @@ def cmd_recall(args) -> int:
     # land in the wrong zone. Cap at 100 to avoid runaway queries.
     limit = min(args.top_k * 4, 100) if args.kinds else args.top_k
     results = nest.search(query_emb, limit=limit)
+
+    # v1.17.15: search the caller's own private bucket as well.
+    # `am write` puts a personal fact in the user's private tier, and
+    # a recall that reads only the public tier cannot see what was
+    # just written -- the two commands did not compose. The tier
+    # split is right; the recall just was not looking in the half of
+    # the store that belongs to the caller.
+    _priv_bus = None
+    _recall_user = getattr(args, 'user', None)
+    if _recall_user:
+        try:
+            from .._internal.acl import open_own_private as _own_priv
+            _priv_bus = _own_priv(_recall_user)
+            _priv_nest = astor_nest(tier='private', user_id=_recall_user)
+            _priv_hits = _priv_nest.search(query_emb, limit=limit)
+            if _priv_hits:
+                _merged = {fid: sim for fid, sim in results}
+                for fid, sim in _priv_hits:
+                    if fid not in _merged or sim > _merged[fid]:
+                        _merged[fid] = sim
+                results = sorted(_merged.items(), key=lambda kv: -kv[1])[:limit]
+        except Exception as e:
+            print(f'[WARN] private recall failed: {e}',
+                  file=sys.stderr, flush=True)
 
     # v1.15.4 (2026-09-22, jev pass e): opt-in jev relevance rerank.
     # When --jev-relevance=on, take the top-*N* hits and ask jev to score
@@ -2322,22 +2426,30 @@ def cmd_recall(args) -> int:
     elif getattr(args, 'zone', None) and args.zone != 'none':
         kinds_filter = set(k.strip() for k in ZONE_KINDS[args.zone].split(',') if k.strip())
     if kinds_filter and results:
-        bus = astor_bus(tier='public')
         fact_ids = [r[0] for r in results]
         placeholders = ','.join('?' for _ in fact_ids)
         fact_kind_map = {}
-        try:
-            # v1.13.1 fix (post-Ship G re-verification): AstorBus exposes
-            # `conn` (sqlite3 connection) directly, not `_connect`. Use
-            # the public attribute — bus.conn is the canonical accessor
-            # in astor_memory/bus/store.py:75.
-            _c = bus.conn.cursor()
-            for row in _c.execute(
-                f"SELECT id, kind FROM memory_canonical WHERE id IN ({placeholders})",
-                fact_ids,
-            ).fetchall():
-                fact_kind_map[row[0]] = row[1]
-        except Exception as e:
+        # v1.17.15: look in both tiers. A private fact has a kind too,
+        # and the filter used to be blind to it -- a fact the caller
+        # could recall but not filter.
+        _buses = [astor_bus(tier='public')]
+        if _priv_bus is not None:
+            _buses.append(_priv_bus)
+        for bus in _buses:
+            try:
+                # v1.13.1 fix (post-Ship G re-verification): AstorBus exposes
+                # `conn` (sqlite3 connection) directly, not `_connect`. Use
+                # the public attribute -- bus.conn is the canonical accessor
+                # in astor_memory/bus/store.py:75.
+                _c = bus.conn.cursor()
+                for row in _c.execute(
+                    f"SELECT id, kind FROM memory_canonical WHERE id IN ({placeholders})",
+                    fact_ids,
+                ).fetchall():
+                    fact_kind_map[row[0]] = row[1]
+            except Exception as e:
+                print(f'[WARN] --kinds filter lookup failed: {e}',
+                      file=sys.stderr, flush=True)
             print(f'[WARN] --kinds filter lookup failed: {e}', file=sys.stderr,
                   flush=True)
         results = [(fid, sim) for fid, sim in results

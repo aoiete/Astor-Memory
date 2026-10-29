@@ -63,6 +63,9 @@ def client(tmp_path, monkeypatch):
 def _write(client, text: str, tier: str = "public") -> dict:
     resp = client.post("/v1/write", json={
         "text": text, "tier": tier, "mode": "regex", "user": "admin",
+        # v1.17.15: only a shareable kind lands in the public tier, and
+        # these tests read the fact back from there.
+        "kind": "lesson",
     })
     return resp.get_json() or {}
 

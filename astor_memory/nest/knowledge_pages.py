@@ -154,6 +154,9 @@ def upsert_knowledge_page(
         tier=tier,
         scope_type="long_term",
         verdict="settled",
+        # v1.17.15: sharing is explicit. A knowledge page is exactly
+        # what the public tier is for.
+        visibility=("commons" if tier == "public" else "personal"),
         origin_session_id=None,
         stable_id=f"kp:{slug[:64]}",
         provenance_kind="operator",

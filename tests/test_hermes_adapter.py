@@ -73,7 +73,7 @@ class HermesAdapterToolTest(unittest.TestCase):
             data=json.dumps({
                 'text': ('astor memory retrieval keeps durable facts findable '
                          + _marker),
-                'tier': 'public',
+                'tier': 'public', 'kind': 'lesson',
                 'user': 'admin',
             }).encode('utf-8'),
             headers={'Content-Type': 'application/json'},
@@ -155,7 +155,13 @@ class HermesAdapterToolTest(unittest.TestCase):
             _base + '/v1/write',
             data=json.dumps({
                 'text': 'adapter verification record with %s' % unique,
+                # v1.17.15: 'lesson' is a shareable kind, so the record
+                # lands in the public tier -- which is the tier the
+                # forget below queries. A plain 'fact' is personal and
+                # goes to the caller's private bucket, and the public
+                # BM25 index correctly knows nothing about it.
                 'tier': 'public', 'mode': 'regex', 'user': 'admin',
+                'kind': 'lesson',
             }).encode('utf-8'),
             headers={'Content-Type': 'application/json'},
         )

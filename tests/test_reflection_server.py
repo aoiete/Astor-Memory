@@ -26,7 +26,7 @@ def _insert_canonical(bus, *, content, kind='fact', importance=0.5, confidence=0
     )
     return bus.promote_candidate(
         candidate_id=cand_id, promoted_by='pytest',
-        user_id=None, tier='public', scope_type='long_term',
+        user_id=None, tier='public', visibility='commons', scope_type='long_term',
     )
 
 

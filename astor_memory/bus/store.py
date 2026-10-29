@@ -393,8 +393,16 @@ class AstorBus:
         evidence_quote: str = '',
         source_ref: str = '',
         source_hash: str = '',
-        # v1.16.29 visibility tier (commons/personal). Default 'personal'
-        # so server-side visibility classifier can override per fact.
+        # v1.16.29 visibility tier (commons/personal).
+        #
+        # v1.17.15: sharing is explicit. The default stays 'personal'
+        # (fail-safe), and a caller that means to share has to say
+        # visibility='commons'. The store does not guess: the write
+        # paths classify, and the paths that publish curated knowledge
+        # declare it. A store that inferred shareability from the kind
+        # broke the internal publishers -- reflection, knowledge pages,
+        # mental models -- whose kinds are not on the shareable list
+        # but whose content is exactly what the public tier is for.
         visibility: str = 'personal',
         # v1.16.32 distill metadata: caller may pass a JSON-encoded dict to
         # be stored on the canonical row for audit (e.g. distilled_from).
@@ -452,6 +460,28 @@ class AstorBus:
                 except Exception:
                     return {}
             return {}
+        # v1.17.15: `visibility` says whether a row may be shared and
+        # `tier` says where it lives. The public tier is what every peer
+        # in the federation can read, so the two have to agree.
+        #
+        # This is the one funnel every write path goes through -- the
+        # HTTP API, the CLI, the extractor, the learner -- so the check
+        # lives here rather than at each call site: a check every write
+        # passes through cannot be forgotten by the next caller.
+        #
+        # The asymmetry is deliberate. A public-worthy fact that was
+        # classified personal is recoverable: `am mine-public` mines the
+        # private tier back into the public one. A personal fact that
+        # reached the public tier is readable by every peer, and nothing
+        # mines it back.
+        if tier == 'public' and visibility != 'commons':
+            raise ValueError(
+                "a personal fact cannot be promoted into the public tier: "
+                "tier='public' requires visibility='commons'. Write it to "
+                "tier='private' instead -- `am mine-public` mines the "
+                "private tier back into the public one, so a fact that "
+                "belongs in public is not lost by going there first.")
+
         # P0-fix 2026-08-15: dedup check BEFORE INSERT.
         # P1-fix 2026-08-16: **content-aware** dedup. We only treat the
         # existing canonical row as idempotent if its content matches the

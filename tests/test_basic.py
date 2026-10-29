@@ -78,6 +78,7 @@ def test_promote_candidate(temp_bus):
     )
     canon_id = temp_bus.promote_candidate(
         cand_id, promoted_by='test', user_id='admin', tier='public',
+        visibility='commons',
     )
     assert canon_id > 0
     row = temp_bus.conn.execute(
@@ -432,7 +433,7 @@ def test_rest_read_missing_hint(tmp_path, monkeypatch):
     # Write a fact (neutral content: just method/rule/model pattern stays public)
     client.post('/v1/write', json={
         'text': 'Use morning drink scheduling for coffee brewing methods',
-        'user': 'admin', 'tier': 'public',
+        'user': 'admin', 'tier': 'public', 'kind': 'lesson',
     })
     # Read WITH missing_hint (gap-style)
     r = client.post('/v1/read', json={
@@ -701,10 +702,14 @@ def test_e2e_integration(tmp_path, monkeypatch):
     assert 'fact_id=' in output
     assert 'similarity=' in output
 
-    # 4. Python API: read fact back via astor_nest + astor_bus
-    from astor_memory import astor_nest, astor_bus
-    bus = astor_bus()
-    nest = astor_nest()
+    # 4. Python API: read fact back via astor_nest + astor_bus.
+    # v1.17.15: `am write` defaults to the private tier, and a personal
+    # fact stays there -- the fact is in the operator's own bucket, not
+    # in the public one. So the read-back reads that bucket.
+    from astor_memory import astor_nest
+    from astor_memory._internal.acl import open_own_private
+    bus = open_own_private('admin')
+    nest = astor_nest(tier='private', user_id='admin')
 
     # Verify fact was stored in bus
     n_facts = bus.conn.execute('SELECT count(*) FROM memory_canonical').fetchone()[0]
@@ -953,7 +958,7 @@ def test_rest_write_provenance_backward_compat(tmp_path, monkeypatch):
     client = app.test_client()
     r = client.post('/v1/write', json={
         'text': 'LESSON Ship I backward compat no provenance defaults extracted',
-        'user': 'admin', 'tier': 'public',
+        'user': 'admin', 'tier': 'public', 'kind': 'lesson',
         'provenance_kind': 'extracted',
     })
     assert r.status_code == 200, f"got {r.status_code}: {r.get_data(as_text=True)}"

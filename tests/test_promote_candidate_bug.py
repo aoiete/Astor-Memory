@@ -53,7 +53,7 @@ def test_promote_candidate_inserts_new_canonical_with_fresh_content(fresh_bus):
     cid = _insert_candidate(fresh_bus, content='baseline test')
     fid = fresh_bus.promote_candidate(
         candidate_id=cid, promoted_by='pytest',
-        user_id=None, tier='public', scope_type='long_term',
+        user_id=None, tier='public', visibility='commons', scope_type='long_term',
     )
     assert fid > 0
     # Verify canonical row exists with matching content
@@ -70,12 +70,12 @@ def test_promote_candidate_idempotent_on_same_content(fresh_bus):
     cid = _insert_candidate(fresh_bus, content='same content')
     fid1 = fresh_bus.promote_candidate(
         candidate_id=cid, promoted_by='pytest',
-        user_id=None, tier='public', scope_type='long_term',
+        user_id=None, tier='public', visibility='commons', scope_type='long_term',
     )
     # Re-call with same candidate_id (true retry)
     fid2 = fresh_bus.promote_candidate(
         candidate_id=cid, promoted_by='pytest',
-        user_id=None, tier='public', scope_type='long_term',
+        user_id=None, tier='public', visibility='commons', scope_type='long_term',
     )
     assert fid1 == fid2
 
@@ -124,7 +124,7 @@ def test_promote_candidate_handles_stale_orphan_canonical(fresh_bus):
     # The new canonical_id should be DIFFERENT from the stale id.
     fid = fresh_bus.promote_candidate(
         candidate_id=cid, promoted_by='pytest',
-        user_id=None, tier='public', scope_type='long_term',
+        user_id=None, tier='public', visibility='commons', scope_type='long_term',
     )
     # The returned canonical_id should map to the NEW content, not stale.
     row = fresh_bus.conn.execute(
@@ -165,7 +165,7 @@ def test_promote_candidate_writes_audit_on_stale_restore(fresh_bus):
     # Promote
     fid = fresh_bus.promote_candidate(
         candidate_id=cid, promoted_by='test',
-        user_id=None, tier='public', scope_type='long_term',
+        user_id=None, tier='public', visibility='commons', scope_type='long_term',
     )
     # We should see at least one audit row for this promote
     # (specifically the custom write_audit or the orphan tombstone).

@@ -1,3 +1,113 @@
+## v1.17.15 — 2026-10-29
+
+### Private meant private, and the public tier meant shareable
+
+The public tier is what every peer can read. It also holds both
+commons and personal rows -- `visibility` is what separates them --
+and four defects let the personal ones out.
+
+Measured on the live corpus: **509 of 732 public rows were `personal`,
+and 479 of them existed nowhere else.** Among them were the operator's
+own operating rules ("the assistant must not restart the gateway",
+"TFSA and CASH stay strictly separate", "no emoji in code") and three
+facts belonging to other users.
+
+The write path chose its tier *before* the facts were extracted, so a
+fact the classifier called `personal` still landed in the public store.
+The private tier is where personal facts belong: `am mine-public`
+reads private and promotes the ones that are safe to share, so the
+share decision stays the distiller's rather than the write path's.
+Those facts now get their own event, bus and lex index in the caller's
+own bucket.
+
+Both peer read paths took the whole public table with no visibility
+filter -- the open-search path in `peer_open_search.py` and the friend
+path in `server.py`. Both now restrict to `commons`.
+
+`has_pii()` had no platform names in its keyword table, so
+`telegram 555000111` was not flagged: the id was found by the id
+pattern and then dropped for want of context, and the six-character
+context window had truncated `telegram` past its own word boundary.
+The platform names are in the table now, and the window is 24
+characters.
+
+The `hint=commons` branch of the visibility classifier bypassed the
+kind whitelist, so three `fact` rows reached the public tier. The
+whitelist (`AUTO_COMMONS_KINDS`: lessons, methods, workflows, models,
+patterns) is the design's rule for what may be shared, and an explicit
+hint does not get to promote a kind that is not shareable by design.
+
+One row belonged to a user and was filed under a chat id: a fact about
+sunday with sunday's wechat open id in both `namespace` and `user_id`,
+sitting in admin's bucket. It is in sunday's bucket now.
+
+The migration moved 509 rows into their owners' private tiers and
+tombstoned the public copies rather than deleting them -- the audit
+trail keeps the fact that they were there. The public tier went from
+732 rows to 223, every one of them a lesson, a success or failure
+pattern, or a mental model.
+
+Sharing is explicit. The store refuses a personal fact in the public
+tier, so a caller that means to publish says `visibility='commons'`.
+The store does not guess: guessing broke the internal publishers --
+the reflection pipeline, knowledge pages, mental models, failure
+patterns, peer adoption -- whose kinds are not on the shareable list
+but whose content is exactly what the public tier is for. Six source
+call sites and seventeen test helpers declared their visibility; the
+rest already did.
+
+`am write` could not write to the operator's own private bucket. The
+CLI binds the ACL as `admin:admin`, and admin cannot open
+`private_<admin>` -- the strict-privacy model wants a grant even
+there. The same was true of a request whose body carried no user
+field: a cron write, a local API call, a platform write with no
+binding. R365 locked that on purpose (falling back to `admin` let any
+caller delete any admin's public fact), so the route binds as the
+owner instead and restores the previous identity afterwards -- the
+pattern the distill endpoint already uses to read a user's own bucket.
+
+`am recall` could not see what `am write` had just written. `am
+write` puts a personal fact in the user's private bucket; `am recall`
+only searched the public tier. The two commands did not compose. The
+recall now searches the caller's own private bucket as well, and the
+`--kinds` / `--zone` filter looks in both tiers -- a fact in the
+private bucket has a kind, and the filter used to be blind to it.
+
+An earlier iteration of the routing wrote the fact to the right
+database but left the lexical and vector index behind. A read still
+found the row -- the meta LIKE path scans `memory_canonical`
+directly -- and returned no scored hit at all: a fact that is stored
+but not indexed is a fact the recall cannot score, and it looked like
+a working recall to anyone reading the response. The routing now
+carries the index with it, and a test checks the scored path rather
+than the tier alone.
+
+The migration moved the rows but not the indexes: 506 of the personal
+facts were still in the public lexical index and 518 still had an
+embedding in the public vector store. Both read paths re-check the bus
+for every candidate, so the content did not leak -- but a stale index
+entry still competes for a top-k slot before it is dropped, so the
+public tier answered with fewer results than it was asked for, and the
+index disagreed with the tier it indexes. The indexes are cleaned
+through the same API the forget path uses.
+
+`/v1/peer/recall` now filters `visibility = 'commons'` like
+`/v1/peer/public_search` already did. It re-checked the bus for every
+merged hit and skipped a tombstoned row, so the moved rows did not
+leak through it -- but it did not look at `visibility`, so the path
+relied on the public tier happening to hold only commons rows. That
+is a data property, not a code guarantee.
+
+A fact came back twice. The scored path and the injection channels
+find facts independently, so a fact both channels match was in one
+response twice: once with a similarity and a `score_kind`, once
+without. The Hermes adapter asserts every result says how it was
+scored, so the duplicate broke it -- and the adapter test had been
+failing for a while for exactly that reason, showing up only once
+the corpus was big enough for both channels to match the same fact.
+The scored copy is the better one, so it wins and the duplicate is
+dropped.
+
 ## v1.17.14 — 2026-10-28
 
 ### A fact could be counted but never traced

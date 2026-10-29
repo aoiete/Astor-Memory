@@ -64,6 +64,7 @@ def _insert_one_canonical(bus) -> int:
         promoted_by='pytest',
         user_id=None,
         tier='public',
+        visibility='commons',
         scope_type='long_term',
     )
 
@@ -318,6 +319,7 @@ def test_promote_candidate_enqueues_on_embed_failure(tmp_path, monkeypatch):
         promoted_by='pytest',
         user_id=None,
         tier='public',
+        visibility='commons',
         scope_type='long_term',
     )
     assert canonical_id > 0

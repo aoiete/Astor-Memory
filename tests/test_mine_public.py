@@ -124,7 +124,7 @@ def test_a_public_write_is_scrubbed_at_the_bus(tmp_path, monkeypatch):
         kind="lesson", confidence=0.9, importance=0.7, tags=[],
     )
     fid = bus.promote_candidate(cand_id, promoted_by="test", user_id="admin",
-                                tier="public")
+                                tier="public", visibility='commons')
     row = bus.conn.execute(
         "SELECT content FROM memory_canonical WHERE id = ?", (fid,)).fetchone()
     content = row[0]

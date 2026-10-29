@@ -58,6 +58,7 @@ def _insert_with_keywords_context(bus, *, content: str, keywords: list[str], con
         promoted_by='pytest',
         user_id=None,
         tier='public',
+        visibility='commons',
         scope_type='long_term',
     )
 
@@ -197,7 +198,7 @@ def test_promote_handles_missing_keywords_with_defaults(fresh_bus):
     # Promote — should default keywords=[] and context=''
     canon_id = bus.promote_candidate(
         candidate_id=cand_id, promoted_by='pytest',
-        user_id=None, tier='public', scope_type='long_term',
+        user_id=None, tier='public', visibility='commons', scope_type='long_term',
     )
     row = bus.conn.execute(
         "SELECT keywords, context FROM memory_canonical WHERE id = ?",

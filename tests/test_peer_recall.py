@@ -25,7 +25,14 @@ from astor_memory.server import create_app
 from astor_memory._internal.test_state import astor_close_all_test_state
 
 
-def _seed_public_fact(client, content, kind="fact", namespace="peer_recall_test"):
+def _seed_public_fact(client, content, kind="lesson", namespace="peer_recall_test"):
+    """Seed a fact into the public tier and return its fact_id.
+
+    v1.17.15: the default kind is 'lesson', a shareable kind, because
+    only a shareable fact lands in the public tier. A 'fact' is
+    personal and goes to the caller's private bucket -- which is
+    right, and is why this helper says what it means.
+    """
     """Helper: write a fact and return the fact_id (or None on failure)."""
     resp = client.post("/v1/write",
         json={"text": content, "kind": kind, "tier": "public", "namespace": namespace},

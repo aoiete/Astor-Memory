@@ -171,6 +171,11 @@ def test_set_status_endpoint_marks_inactive(tmp_astor_home):
     )
     fact_id = bus.promote_candidate(
         candidate_id=cid, promoted_by='admin-test',
+        # v1.17.15: the bus above is the caller's PRIVATE bucket, so the
+        # tier has to say so. promote_candidate's default tier is
+        # 'public', which put the row in a private database with a
+        # public tier column.
+        tier='private',
     )
     assert fact_id > 0
     # Default status is active

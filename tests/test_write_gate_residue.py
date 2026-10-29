@@ -86,6 +86,10 @@ def test_real_knowledge_still_lands_in_public(app_and_client):
         "text": KNOWLEDGE,
         "user": "admin",
         "tier": "public",
+        # v1.17.15: only a shareable kind lands in the public tier.
+        # "lesson" is on the shareable list, so real knowledge goes
+        # there and a personal fact does not.
+        "kind": "lesson",
     })
     assert r.status_code == 200, r.get_data(as_text=True)
     public = _tier_rows(runtime, "public")

@@ -247,6 +247,9 @@ def upsert_mental_model(bus: Any, question: str, answer: str,
         tier=tier,
         scope_type="long_term",
         verdict="settled",
+        # v1.17.15: sharing is explicit. A mental model is a model --
+        # one of the things the public tier is for.
+        visibility=("commons" if tier == "public" else "personal"),
         origin_session_id=None,
         stable_id=f"mm:{question[:64]}",
         provenance_kind="operator",

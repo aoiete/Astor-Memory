@@ -181,7 +181,9 @@ class TestReadBodyPeerFanout(_Tmp, unittest.TestCase):
         # Seed a fact so local recall finds something
         self.client.post("/v1/write", json={
             "text": "PPS auto-trigger test fact 8+ chars",
-            "tier": "public", "kind": "fact", "namespace": "ship_h",
+            # v1.17.15: 'lesson' is a shareable kind, so the fact lands
+            # in the public tier where this test looks for it.
+            "tier": "public", "kind": "lesson", "namespace": "ship_h",
         }, headers={"Content-Type": "application/json"})
         resp = self.client.post("/v1/read",
             json={"query": "PPS auto-trigger", "top_k": 3},
@@ -198,7 +200,9 @@ class TestReadBodyPeerFanout(_Tmp, unittest.TestCase):
         """body.peer_fanout=false: same as default."""
         self.client.post("/v1/write", json={
             "text": "PPS auto-trigger false flag test 8+ chars",
-            "tier": "public", "kind": "fact", "namespace": "ship_h",
+            # v1.17.15: 'lesson' is a shareable kind, so the fact lands
+            # in the public tier where this test looks for it.
+            "tier": "public", "kind": "lesson", "namespace": "ship_h",
         }, headers={"Content-Type": "application/json"})
         resp = self.client.post("/v1/read", json={
             "query": "PPS auto-trigger false",
@@ -216,7 +220,9 @@ class TestReadBodyPeerFanout(_Tmp, unittest.TestCase):
         """
         self.client.post("/v1/write", json={
             "text": "PPS fanout gate test local hits found 8+ chars",
-            "tier": "public", "kind": "fact", "namespace": "ship_h",
+            # v1.17.15: 'lesson' is a shareable kind, so the fact lands
+            # in the public tier where this test looks for it.
+            "tier": "public", "kind": "lesson", "namespace": "ship_h",
         }, headers={"Content-Type": "application/json"})
         resp = self.client.post("/v1/read", json={
             "query": "PPS fanout gate test",

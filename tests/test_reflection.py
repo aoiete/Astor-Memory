@@ -37,7 +37,7 @@ def _insert_canonical(bus, *, content: str, kind: str = 'fact',
     )
     return bus.promote_candidate(
         candidate_id=cand_id, promoted_by='pytest',
-        user_id=None, tier='public', scope_type=scope_type,
+        user_id=None, tier='public', visibility='commons', scope_type=scope_type,
     )
 
 

@@ -122,7 +122,7 @@ def run_eval(verbose=False):
             namespace='eval', content=content, kind='fact',
             confidence=0.95, importance=0.5, tags=['eval'],
         )
-        fid = bus.promote_candidate(cand, promoted_by='eval', user_id=None, tier='public')
+        fid = bus.promote_candidate(cand, promoted_by='eval', user_id=None, tier='public', visibility='commons')
         fact_ids.append(fid)
     write_time = time.time() - t_write0
 

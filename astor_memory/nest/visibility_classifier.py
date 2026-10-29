@@ -92,6 +92,17 @@ _PII_KEYWORDS_EN = re.compile(
     r'bank account|passport|driver.{0,3}license'
 )
 
+# v1.17.15: a chat id needs its platform, but the platform name alone
+# is not a signal -- "wechat.html" is a filename, and the distiller
+# would drop the whole sentence about it. So the platform name and the
+# digits have to be adjacent. The generic keyword tables above stay
+# free of platform names for the same reason.
+_RE_NAMED_CHAT_ID = re.compile(
+    r'(?:telegram|discord|wechat|slack|whatsapp|微信|电报|飞书)'
+    r'\s*(?:chat[_\s-]?id|user[_\s-]?id)?\s*[:=]?\s*\d{6,}',
+    re.I,
+)
+
 
 def has_pii(text: str) -> list[dict]:
     """Return list of PII matches. Empty list = clean.
@@ -123,11 +134,21 @@ def has_pii(text: str) -> list[dict]:
     for m in _RE_TG_CHAT.finditer(text):
         # Don't flag 8-12 digit numbers generically — too noisy. Use as 'review'
         # only when adjacent to a PII keyword.
-        start = max(0, m.start() - 6)
-        end = min(len(text), m.end() + 6)
+        # v1.17.15: the window was 6 characters, which cut "telegram
+        # <chat_id>" down to "egram <chat_id>" -- the keyword was
+        # truncated past its own word boundary, so even a keyword table
+        # containing "telegram" would not have matched. 24 characters
+        # covers a platform name plus the word before it.
+        start = max(0, m.start() - 24)
+        end = min(len(text), m.end() + 24)
         ctx = text[start:end]
         if _PII_KEYWORDS_ZH.search(ctx) or _PII_KEYWORDS_EN.search(ctx):
             out.append({'name': 'telegram_chat_id', 'severity': 'redact', 'sample': m.group()})
+    # The platform name has to be next to the digits. This is what
+    # catches "deliver=origin->telegram <chat_id>" without catching
+    # "wechat.html", which is a filename and not an identifier.
+    for m in _RE_NAMED_CHAT_ID.finditer(text):
+        out.append({'name': 'telegram_chat_id', 'severity': 'redact', 'sample': m.group()})
     return out
 
 
@@ -238,6 +259,20 @@ def classify_visibility(
             return {
                 'visibility': 'personal',
                 'reason': 'hint_commons_blocked_by_signals',
+                'signals': signals,
+                'override_allowed': False,
+            }
+        # v1.17.15: the kind whitelist is the design's rule for what may
+        # be shared -- AUTO_COMMONS_KINDS is lessons, methods, workflows,
+        # models and patterns. An explicit hint must not promote a kind
+        # that is not shareable by design: three `fact` rows reached the
+        # public tier this way, and the public tier is what every peer
+        # can read. `am mine-public` enforces the same whitelist when it
+        # promotes, so the write path has to agree with it.
+        if kind and kind not in AUTO_COMMONS_KINDS:
+            return {
+                'visibility': 'personal',
+                'reason': 'kind_not_shareable',
                 'signals': signals,
                 'override_allowed': False,
             }

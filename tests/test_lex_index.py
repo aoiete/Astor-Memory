@@ -232,7 +232,7 @@ class ServerIntegrationTests(unittest.TestCase):
         # pre-score_kind payload.
         import time as _t
         r = self._post('/v1/read', {'query': 'astor memory_' + str(int(_t.time()*1000)),
-                                    'tier': 'public', 'top_k': 3})
+                                    'tier': 'public', 'kind': 'lesson', 'top_k': 3})
         self.assertGreater(len(r['results']), 0)
         for res in r['results']:
             self.assertIn('score_kind', res)
@@ -272,14 +272,14 @@ class ServerIntegrationTests(unittest.TestCase):
         # write unique fact
         w = self._post('/v1/write', {
             'text': 'delete_me_quokka_42 unique test fact.',
-            'tier': 'public', 'mode': 'regex', 'user': 'admin',
+            'tier': 'public', 'kind': 'lesson', 'mode': 'regex', 'user': 'admin',
         })
         self.assertEqual(w['count'], 1)
         fid = w['fact_ids'][0]
         # forget it
         r = self._post('/v1/forget', {
             'query': 'delete_me_quokka_42',
-            'tier': 'public', 'forget_threshold': 0.5,
+            'tier': 'public', 'kind': 'lesson', 'forget_threshold': 0.5,
         })
         self.assertEqual(len(r['forgotten']), 1)
         self.assertEqual(r['forgotten'][0]['fact_id'], fid)

@@ -246,8 +246,14 @@ def _recall_public(query: str, limit: int) -> list[dict]:
     if sum(len(t) for t in tokens) < 3:
         return []          # a single 1-2 char token would match most of the tier
 
-    where = 'COALESCE(tombstoned, 0) = 0 AND ' + ' AND '.join(
-        'LOWER(content) LIKE ?' for _ in tokens)
+    # v1.17.15: only `commons` rows are shareable. The public store
+    # holds personal rows as well -- `visibility` is what separates
+    # them -- and this function answers a remote node, so reading the
+    # whole table handed out private facts. Measured on the live corpus:
+    # 509 of 732 public rows were `personal`.
+    where = ('COALESCE(tombstoned, 0) = 0 '
+             "AND COALESCE(visibility, 'commons') = 'commons' AND ") + \
+        ' AND '.join('LOWER(content) LIKE ?' for _ in tokens)
     params: list = [f'%{t}%' for t in tokens]
     params.append(max(1, min(20, limit)))
 
