@@ -22,7 +22,7 @@
 | D8 | **审计日志持久化**：只存「谁搜了谁」的元数据，**保留 7 天** | 滥用追溯需要；不含任何内容 |
 | D9 | **公钥只在好友请求链路交换**，不做公开目录 | 公开目录 = 给 Sybil 攻击者一份可冒充名单 |
 | D10 | **新增 `key_id = sha256(public_key)[:16]` 作为真正身份**，peer_id 降级为「本机实例标识」 | peer_id 与公钥无密码学绑定 → 可被冒充 |
-| D11 | **fanout 与 trust 解耦**：陌生人 trust 封顶 40 + 独立 `receive_fanout` 开关（默认关） | 「我信他」和「让他看到我在搜什么」是两件事 |
+| D11 | **fanout 与 trust 解耦**：已有的 `outbound_search` 开关**默认值改成 False** + 陌生人 trust 封顶 40 | 「我信他」和「让他看到我在搜什么」是两件事；开关已存在且 v1.17.3 已接进广播选择，只是默认开着 |
 | D12 | **E2E 用临时密钥交换**（ephemeral X25519 + NaCl Box） | 零预共享、无需新增 identity 文件、前向保密 |
 | D13 | **公共 relay 治理进本期**：ToS + 举报 + 手动封禁 | 公开就要能治理 |
 | D14 | **支持多个 relay 地址**，按顺序 failover | relay 是单点；机制已存在 |
@@ -277,7 +277,7 @@ PyNaCl(已在依赖里),避免自己实现曲线运算与随机数。
 A: 本地 fanout 决策 → 选中 peer B(connect_mode=relay)
 A → relay:  POST /send {msg_type: public_search, payload: <密文>, to: B.key_id}
 relay → B:  B 的 poll 请求返回这个密文
-B:  解密 → 验签(A 的 ed25519) → 判授权(trust / allow_search / receive_fanout)
+B:  解密 → 验签(A 的 ed25519) → 判授权(trust / allow_search / outbound_search)
 B:  查自己的 public tier(只出 commons)
 B → relay:  POST /send {msg_type: friend_pps, payload: <密文>, to: A.key_id, reply_to: <原 id>}
 relay → A:  A 的 poll 请求返回结果
@@ -340,18 +340,27 @@ send(peer, msg):
 **验签复用现有的 `verify_friend_request` / `verify_rekey_message`** —— relay
 送来的消息和直连来的走同一条验证路径,relay 拿不到任何额外的信任。
 
-### 6.4 身份与 fanout 的两个新字段
+### 6.4 身份与 fanout 的两处改动
 
 **D10 的 key_id**:新增列 `key_id`,在 `add_peer` / `update_peer` 时与
 `public_key` 一起记录。旧的 peer 行(没有 key_id)在首次交互时自动补齐
 (用对方上报的公钥算),不破坏现有关系。
 
-**D11 的 receive_fanout**:新增列 `receive_fanout INTEGER DEFAULT 0`。
+**D11:已有的 `outbound_search` 开关,只改默认值 —— 不新增开关。**
+
+这个开关**已经存在**(`metadata.outbound_search`,`peer_relationships.py:1107`),
+**v1.17.3 已经把它接进广播选择**(`peer_search.py:374-390`):CLI 有
+`am peer outbound-search`,REST 有 `/v1/peer/<id>/outbound-search`,dashboard
+面板也在显示这一列。**所以不需要新增第三个开关** —— 要改的只有两处:
+
+1. **默认值 True → False**。现状是 `_meta.get('outbound_search', True)`,
+   于是新加的 peer **默认就在广播范围内**。
+2. **陌生人 trust 封顶 40**(第二道)。
 
 ```
 本地没命中 → 广播给哪些 peer?
-  trust >= 50                      (现有的第一道)
-  AND receive_fanout = 1           (D11 新增,默认关)
+  AND outbound_search != False      (现有的第二道, D11 把默认值改成关)
+  AND trust >= 50                   (现有的第一道)
   AND endpoint 非空
   AND kind != 'blacklist'
 ```
@@ -361,8 +370,13 @@ send(peer, msg):
 peer 立刻进入广播范围**,你的每一次本地未命中查询都会发给他。通过 dashboard
 加的则不会。**同一个操作,两条路径安全边界不一样。**
 
-修法:陌生人一律 trust 封顶 40;`receive_fanout` 独立于 trust,默认关;
-UI 上明确显示「此 peer 会收到你的未命中查询」。
+还有第二处:`outbound_search` 的**默认值是 True**(`peer_search.py:389`
+的 `_meta.get('outbound_search', True)`),所以**新加的 peer 默认就在广播
+范围内** —— 哪怕它 trust 只有 30,只要对方把 trust 提上去就会开始收广播。
+
+修法:`outbound_search` 默认改成 False(仅对**新加**的 peer;已有的行保持
+用户原来的选择,不能替他决定);陌生人一律 trust 封顶 40;UI 上明确显示
+「此 peer 会收到你的未命中查询」。
 
 顺带修:CLI `--trust` 的 help 文字写着 "default 30",实际是 60 —— 文档与实现
 不符。
@@ -451,7 +465,7 @@ mode 只是「选这个 peer 行的哪套地址」,不是「传一个地址给�
 │                                            │
 │  地址  https://b.trycloudflare.com          │
 │  [ 测试直连 ]   ● 通 · 42ms · 3 条           │
-│  ⓘ 收到我的未命中查询: 否                    │  ← receive_fanout 独立显示
+│  ⓘ 收到我的未命中查询: 否                    │  ← outbound_search
 │                                            │
 │  ── 或 ──                                  │
 │                                            │
@@ -514,7 +528,7 @@ peer_conn.send(payload)
 | R9 | relay 被当 spam 跳板 | 结构 + 兜底 | §8.2 + §5.1 验签 + 限流 + 审计 | relay |
 | R10 | 测试按钮被当内网扫描器 | 结构 | §7.3:地址只能来自 DB | 节点侧 |
 | R11 | 测试污染对方 access_count / recall_log | 输入 | 测试 query 用 `__peertest__` 前缀,接收侧识别后跳过统计 | 节点侧 |
-| R12 | 加了陌生人后自己的查询泄漏给他 | 结构 | D11:trust 封顶 40 + 独立 `receive_fanout` 开关 | 节点侧 |
+| R12 | 加了陌生人后自己的查询泄漏给他 | 结构 | D11:`outbound_search` 默认关 + trust 封顶 40 | 节点侧 |
 | R13 | 客户端被入侵 / 端点被 MITM | 外部 | E2E 只保护「传输中」,不保护端点。TLS + 证书校验是底线 | 部署 |
 | R14 | relay 投毒骗客户端降级成明文 | 输入 | 客户端只接受加密模式,收到明文 payload 直接拒 | 节点侧 |
 | R15 | 公钥目录被灌满 / 通讯图暴露 | 输入 | D9:公钥只在好友请求链路交换,不做公开目录 | 协议 |
@@ -593,7 +607,7 @@ relay 的价值在于「对方什么都不用装,只要能出网」。
 | **P1** | 身份:`key_id` 字段 + 派生 + 交换;peer 表加列 | 指纹能人工核对 |
 | **P2** | 节点侧:peer 行加 `connect_mode`;UI 模式二选一 | 面板能切模式并落盘 |
 | **P3** | 节点侧:`POST /v1/peer/<key_id>/test` + stage 分类 + SSRF 防护 + 限流 + audit | 点按钮得到 stage 与红字 |
-| **P4** | fanout 解耦:`receive_fanout` 开关 + 陌生人 trust 封顶 + CLI `--trust` 默认修正 | 陌生人收不到未命中查询 |
+| **P4** | fanout 解耦:`outbound_search` 默认值改 False(新 peer)+ 陌生人 trust 封顶 + CLI `--trust` 默认修正 | 陌生人收不到未命中查询 |
 | **P5** | E2E 加密:临时 X25519 + NaCl Box,加解密模块 + 单测 | 密文往返;拒绝明文降级 |
 | **P6** | Relay 服务端:register(挑战验签)/ lookup(online)/ send / poll / ack + 审计日志 + 限流 + 黑名单 | curl 跑通 5 个端点;错签名被拒 |
 | **P7** | 客户端 relay client:发送按 mode 分流 + 轮询线程 + 解密验签 + 应答回程 | A 经 relay 发,B 弹窗 |
@@ -616,7 +630,7 @@ relay 的价值在于「对方什么都不用装,只要能出网」。
 - [ ] relay 转发途中不落盘(重启 relay 后路由表为空,邮箱只剩未 ack 的)
 - [ ] relay 磁盘上除审计日志与黑名单外无任何数据(断言)
 - [ ] 客户端拒绝明文 payload(降级保护)
-- [ ] 陌生 peer 默认收不到本地未命中查询(trust 封顶 + receive_fanout 默认关)
+- [ ] 陌生 peer 默认收不到本地未命中查询(trust 封顶 + outbound_search 默认关)
 - [ ] key_id 与公钥匹配才被接受(冒充测试)
 
 ### 11.2 风险
