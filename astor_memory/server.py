@@ -5056,6 +5056,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
         oversample = max(top_k * 2, 20)
         nest = astor_nest(tier=tier, user_id=user_id)
         bus = astor_bus(tier=tier, user_id=user_id)
+        # v1.17.16: the public tier is the shared layer -- every peer in
+        # the federation reads it. Only commons are readable from it. A
+        # personal row that reached the shared DB (a promote path, a
+        # mirror, a bug nobody wrote yet) must not be served here, and
+        # must not reach the reranker, which sends the text to a model.
+        # The source tier is left alone on purpose: its ACL is
+        # admin+system, so a personal row there is the admin's own data.
+        _vis_where = (" AND visibility = 'commons'"
+                      if tier == 'public' else "")
         from .nest.embeddings import astor_get_embedding_model, astor_get_model_name_for_ram
 
         # v1.16.95 (2026-10-23): the embedding stack can be unavailable —
@@ -5416,7 +5425,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     _placeholders = ",".join("?" * len(_mmr_fids))
                     _content_rows = bus.conn.execute(
                         f"SELECT id, content FROM memory_canonical "
-                        f"WHERE id IN ({_placeholders})",
+                        f"WHERE id IN ({_placeholders}){_vis_where}",
                         _mmr_fids,
                     ).fetchall()
                     _content_map = {int(r[0]): r[1] or "" for r in _content_rows}
@@ -5467,7 +5476,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             # fact's text must not feed the LLM reranker.
                             _rows = bus.conn.execute(
                                 f"SELECT id, content FROM memory_canonical "
-                                f"WHERE id IN ({_ph}) AND tombstoned = 0",
+                                f"WHERE id IN ({_ph}) AND tombstoned = 0{_vis_where}",
                                 _fids,
                             ).fetchall()
                             _fid_text = {int(r[0]): (r[1] or '') for r in _rows}
@@ -5502,7 +5511,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         _ph2 = ','.join('?' * len(candidate_fids))
                         _rtext = bus.conn.execute(
                             f"SELECT id, content FROM memory_canonical "
-                            f"WHERE id IN ({_ph2})",
+                            f"WHERE id IN ({_ph2}){_vis_where}",
                             list(candidate_fids),
                         ).fetchall()
                         _cand_text = {int(r[0]): (r[1] or '') for r in _rtext}
@@ -5665,7 +5674,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # v1.16.92: 再加 expires_at 过滤 —— 临时层到期的 fact
                 # 在被 demote_expired 清理之前就已经不该出现在召回里
                 # (那条清理是批量任务, 读路径不能等它跑)。
-                "FROM memory_canonical WHERE id = ? AND tombstoned = 0 "
+                f"FROM memory_canonical WHERE id = ? AND tombstoned = 0 {_vis_where}"
                 "AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
                 "AND (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
                 (fact_id,),
@@ -5876,7 +5885,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         _row = bus.conn.execute(
                             "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
                             "event_date, event_date_precision, origin_session_id, provenance_kind, valid_until "
-                            "FROM memory_canonical WHERE id = ? AND tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                            f"FROM memory_canonical WHERE id = ? AND tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')){_vis_where}",
                             (_fid,),
                         ).fetchone()
                         if _row is None:
@@ -5941,7 +5950,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     _rows = bus.conn.execute(
                         "SELECT id, content, kind, origin_session_id, event_date, provenance_kind, valid_until "
                         "FROM memory_canonical "
-                        "WHERE origin_session_id = ? AND id != ? AND tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                        f"WHERE origin_session_id = ? AND id != ? AND tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) {_vis_where}"
                         "ORDER BY ABS(id - ?) LIMIT 2",
                         (_sid, int(_r['fact_id']), int(_r['fact_id'])),
                     ).fetchall()

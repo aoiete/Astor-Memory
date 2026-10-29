@@ -376,6 +376,16 @@ def _action_promote(
                 "PRAGMA table_info(memory_canonical)"
             ).fetchall()]
             row = dict(zip(cols, src))
+            # v1.17.16: promote copies the row verbatim -- content included --
+            # so a personal row would put raw private text in the shared
+            # tier. Its source query did not even select visibility, so
+            # there was nothing to check. A fact that is already marked
+            # shareable but sits in a private tier is what promote is for;
+            # turning a private fact into a shareable one is the
+            # distiller's job, and it writes a new row rather than
+            # copying this one.
+            if (row.get("visibility") or "personal") != "commons":
+                continue
             # Skip if already promoted (stable_id collision in public).
             existing = pub_conn.execute(
                 "SELECT id FROM memory_canonical WHERE stable_id = ?",

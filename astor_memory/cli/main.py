@@ -2447,7 +2447,8 @@ def cmd_recall(args) -> int:
                 _cand_ids = [r[0] for r in results[:_top_n]]
                 _ph = ','.join('?' for _ in _cand_ids)
                 _rows = _bus.conn.execute(
-                    f"SELECT id, content FROM memory_canonical WHERE id IN ({_ph})",
+                    f"SELECT id, content FROM memory_canonical "
+                    f"WHERE id IN ({_ph}) AND visibility = 'commons'",
                     _cand_ids,
                 ).fetchall()
                 _facts = {r[0]: (r[1] or '')[:200] for r in _rows}
@@ -4649,10 +4650,15 @@ def cmd_consult(args) -> int:
     top_k = args.top_k
 
     # Success + failure (kind IN list)
+    # v1.17.16: the shared tier serves commons only. The CLI binds the
+    # admin role, so this is not a cross-user leak -- but the same rule
+    # as the server read path keeps one answer to "what is in public".
+    _vis_where = (" AND visibility = 'commons'"
+                  if tier == 'public' else "")
     rows = bus.conn.execute(
         f"SELECT id, kind, content, importance FROM memory_canonical "
         f"WHERE tombstoned=0 AND kind IN ('success_pattern','failure_pattern') "
-        f"AND ({like_clauses}) "
+        f"AND ({like_clauses}) {_vis_where} "
         f"ORDER BY importance DESC, created_at DESC LIMIT ?",
         tuple(like_params) + (top_k * 2,),
     ).fetchall()

@@ -1,3 +1,35 @@
+## v1.17.16
+
+The shared tier serves commons only.
+
+The public tier is what every peer in the federation reads. The write
+side was already closed -- the store guard (v1.17.15) refuses a public
+write that is not commons. Two things were still open.
+
+**The read path did not check visibility.** A local read of the public
+tier took whatever the bus had. So a personal row that reached the
+shared DB was served to whoever asked, and its text reached the
+reranker, which sends it to a model. Every content query in the read
+path now carries the filter -- the MMR content map, the LLM rerank, the
+stage recall, the main path, the grep-verify path and the
+session-neighbour path -- and the CLI's two public content reads (the
+jev rerank and `am consult`) do the same. The source tier is left
+alone on purpose: it is the admin agent's own tier, so a personal row
+there is the admin's own data.
+
+**consolidate._action_promote copied private rows into the shared tier.**
+It copies a row verbatim, content included, and its source query did
+not even select the visibility column, so there was nothing to check.
+Promote is for publishing a fact that is already marked shareable but
+sits in a private tier; it now refuses anything else. Turning a private
+fact into a shareable one is the distiller's job, and the distiller
+writes a new row rather than copying this one.
+
+The proof is a planted row, not an argument: a personal row indexed
+into the public tier exactly the way the write path indexes one, so it
+is the top vector candidate -- and the read path does not serve it.
+With the filter turned off the same query serves it twice.
+
 ## v1.17.15 — 2026-10-29
 
 ### Private meant private, and the public tier meant shareable
