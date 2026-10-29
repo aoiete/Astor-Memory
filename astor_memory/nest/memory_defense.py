@@ -73,7 +73,20 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
 
     # WeChat chat IDs — operator's specific concern (R-class 1152, 8983)
     ("wechat_chat_id", re.compile(r"\bo[A-Za-z0-9_-]{20,}@im\.wechat\b"), "block"),
-    ("telegram_chat_id", re.compile(r"(?<!\w)-\d{6,12}(?!\d)"), "redact"),  # v1.16.40: negative + 6-12 digits + not followed by another digit (epoch 13+ digit guard)  # broad — high false-positive risk; redact by default
+    # v1.17.15: the hyphenated form only. The common form is a bare
+    # id next to the platform name -- "telegram 555000111", "chat id
+    # 555000111" -- and the gate did not see those, so a public-tier
+    # write could carry a chat id past Memory Defense. The platform
+    # name has to be adjacent: a bare 6-12 digit number is far too
+    # common to treat as an identifier on its own, which is why the
+    # hyphen anchor was there. Same rule as
+    # visibility_classifier._RE_NAMED_CHAT_ID -- the two scanners were
+    # separate implementations and they disagreed.
+    ("telegram_chat_id", re.compile(
+        r"(?<!\w)-\d{6,12}(?!\d)|"
+        r"(?:telegram|discord|slack|whatsapp|wechat|weixin|\u5fae\u4fe1|\u7535\u62a5|\u98de\u4e66)"
+        r"\s*(?:chat[_ -]?id|user[_ -]?id)?\s*(?:is\s*)?[:=]?\s*\d{6,}|"
+        r"(?:chat[_ -]?id|user[_ -]?id)\s*(?:is\s*)?[:=]?\s*\d{6,}", re.I), "redact"),  # not followed by another digit (epoch 13+ digit guard)
 
     # Discord IDs (snowflakes)
     ("discord_snowflake", re.compile(r"\b\d{17,20}\b"), "redact"),

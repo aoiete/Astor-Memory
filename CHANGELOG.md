@@ -108,6 +108,33 @@ the corpus was big enough for both channels to match the same fact.
 The scored copy is the better one, so it wins and the duplicate is
 dropped.
 
+The CLI publish paths go through the same door as the HTTP one. The
+public tier is what every peer in the federation reads, and the HTTP
+write path has protected it since v1.16 (the PII gate, which refuses a
+public write containing PII) and v1.17.4 (the host-local path scrub,
+which keeps the method and drops the machine). The CLI publish paths
+had neither -- and `am write` defaults to `--tier public`, while `am
+learn` and `am fail` publish there by design. An unqualified write, or
+any published lesson, landed in the shared tier with whatever it
+carried. That is how a path like `~/.tmp_wechat.html` reached the
+public tier in v1.17.5.
+
+All three CLI publish paths now apply the same two protections -- the
+same `scan_policy` and the same `scrub_local_identifiers` the server
+calls -- plus an `--allow-pii` escape hatch matching the HTTP path's
+`pii_scan=False` override.
+
+The gate itself had a hole: the telegram chat id pattern matched only
+the hyphenated form, `-1001234567890`. The common form is a bare id
+next to the platform name -- "telegram 555000111", "chat id
+555000111" -- and the gate did not see those, so a public-tier write
+could carry a chat id past Memory Defense. The pattern now takes the
+platform name (or an explicit chat-id label) next to the digits. A
+bare 6-12 digit number still does not match: "the run took 1790806090
+ms" and "version 20261029" stay clean. This is the rule
+`visibility_classifier._RE_NAMED_CHAT_ID` already used -- the two
+scanners were separate implementations and they disagreed.
+
 CI was red on every matrix leg since the held-out set landed, and the
 reason was a file the repository does not have. Two of the tests read
 `tests/eval_set.jsonl` -- the local tuning set, gitignored because it

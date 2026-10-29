@@ -160,6 +160,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument('--user', default='admin', help='User ID')
     sub.add_argument('--mode', default=None, help='Extract mode: auto|none|regex|llm')
     sub.add_argument('--tier', default='public', help='Tier: public|source|private_<user>')
+    # v1.17.15: the escape hatch the HTTP path has as pii_scan=False.
+    # A public-tier fact is readable by every peer, so the CLI refuses
+    # one containing PII -- unless the operator says otherwise.
+    sub.add_argument('--allow-pii', action='store_true',
+                     help='Write to the public tier even if it contains PII')
     sub.set_defaults(func=cmd_write)
 
     # am recall
@@ -290,6 +295,8 @@ def main(argv: list[str] | None = None) -> int:
                      help='Auto-promote to public if similar success facts >= threshold (default 3)')
     sub.add_argument('--no-promote', action='store_true',
                      help='Skip auto-promotion; just write with outcome=success')
+    sub.add_argument('--allow-pii', action='store_true',
+                     help='Write to the public tier even if it contains PII')
     sub.set_defaults(func=cmd_learn)
 
     # v1.13.1 (2026-09-14, Ship E): am fail — mirror of `am learn` for
@@ -310,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument('--user', default='admin', help='User ID')
     sub.add_argument('--tier', default='public',
                     help='Tier: public|source|private_<user> (default public)')
+    sub.add_argument('--allow-pii', action='store_true',
+                     help='Write to the public tier even if it contains PII')
     sub.set_defaults(func=cmd_fail)
 
     # v1.13.1 (2026-09-14, Ship E): am postmortem — for severe error +
@@ -1849,6 +1858,32 @@ def cmd_write(args) -> int:
     # admin authoring). Use --tier public/source for cross-user writes.
     tier = getattr(args, 'tier', 'private')
     user_id = args.user if tier == 'private' else None
+
+    # v1.17.15: a public-tier write goes through the same door as an
+    # HTTP one -- the PII gate and the host-local path scrub. The
+    # server has had both since v1.16 and v1.17.4; the CLI publish
+    # paths had neither, and `am write` defaults to --tier public
+    # while `am learn` and `am fail` publish there by design. An
+    # unqualified write, or any published lesson, landed in the shared
+    # tier with whatever it carried. That is how a path like
+    # ~/.tmp_wechat.html reached the public tier in v1.17.5.
+    if tier == 'public' and os.environ.get('ASTOR_PII_PUBLIC_FORCE', '1') == '1':
+        from ..nest.memory_defense import scan_policy as _md_scan
+        from ..nest.public_scrub import scrub_local_identifiers as _scrub_pub
+        _md_text, _md_matches = _md_scan(args.text, policy='block')
+        if (_md_matches and not getattr(args, 'allow_pii', False)
+                and any(m.severity in ('block', 'redact') for m in _md_matches)):
+            _names = sorted({m.name for m in _md_matches
+                             if m.severity in ('block', 'redact')})
+            print(f'[write] refused: {len(_md_matches)} PII match(es) '
+                  f'including {_names}. A public-tier fact is readable by '
+                  f'every peer. Write it to your own tier, or pass '
+                  f'--allow-pii to override.', file=sys.stderr)
+            return 1
+        args.text, _scrub_changes = _scrub_pub(_md_text)
+        for _c in _scrub_changes:
+            print('[write] scrubbed a machine-local identifier from the '
+                  'public fact')
     # v1.17.15: the operator writing their own private bucket. The
     # CLI binds the ACL as admin:admin, and admin cannot open
     # private_<admin> -- the strict-privacy model wants a grant even
@@ -1963,6 +1998,32 @@ def cmd_learn(args) -> int:
     # 2-3. Write the fact via bus.
     tier = getattr(args, 'tier', 'private')
     user_id = args.user if tier == 'private' else None
+
+    # v1.17.15: a public-tier write goes through the same door as an
+    # HTTP one -- the PII gate and the host-local path scrub. The
+    # server has had both since v1.16 and v1.17.4; the CLI publish
+    # paths had neither, and `am write` defaults to --tier public
+    # while `am learn` and `am fail` publish there by design. An
+    # unqualified write, or any published lesson, landed in the shared
+    # tier with whatever it carried. That is how a path like
+    # ~/.tmp_wechat.html reached the public tier in v1.17.5.
+    if tier == 'public' and os.environ.get('ASTOR_PII_PUBLIC_FORCE', '1') == '1':
+        from ..nest.memory_defense import scan_policy as _md_scan
+        from ..nest.public_scrub import scrub_local_identifiers as _scrub_pub
+        _md_text, _md_matches = _md_scan(args.text, policy='block')
+        if (_md_matches and not getattr(args, 'allow_pii', False)
+                and any(m.severity in ('block', 'redact') for m in _md_matches)):
+            _names = sorted({m.name for m in _md_matches
+                             if m.severity in ('block', 'redact')})
+            print(f'[write] refused: {len(_md_matches)} PII match(es) '
+                  f'including {_names}. A public-tier fact is readable by '
+                  f'every peer. Write it to your own tier, or pass '
+                  f'--allow-pii to override.', file=sys.stderr)
+            return 1
+        args.text, _scrub_changes = _scrub_pub(_md_text)
+        for _c in _scrub_changes:
+            print('[write] scrubbed a machine-local identifier from the '
+                  'public fact')
     # v1.17.15: the operator writing their own private bucket. The
     # CLI binds the ACL as admin:admin, and admin cannot open
     # private_<admin> -- the strict-privacy model wants a grant even
@@ -2174,6 +2235,32 @@ def cmd_postmortem(args) -> int:
 
     tier = getattr(args, 'tier', 'private')
     user_id = args.user if tier == 'private' else None
+
+    # v1.17.15: a public-tier write goes through the same door as an
+    # HTTP one -- the PII gate and the host-local path scrub. The
+    # server has had both since v1.16 and v1.17.4; the CLI publish
+    # paths had neither, and `am write` defaults to --tier public
+    # while `am learn` and `am fail` publish there by design. An
+    # unqualified write, or any published lesson, landed in the shared
+    # tier with whatever it carried. That is how a path like
+    # ~/.tmp_wechat.html reached the public tier in v1.17.5.
+    if tier == 'public' and os.environ.get('ASTOR_PII_PUBLIC_FORCE', '1') == '1':
+        from ..nest.memory_defense import scan_policy as _md_scan
+        from ..nest.public_scrub import scrub_local_identifiers as _scrub_pub
+        _md_text, _md_matches = _md_scan(args.text, policy='block')
+        if (_md_matches and not getattr(args, 'allow_pii', False)
+                and any(m.severity in ('block', 'redact') for m in _md_matches)):
+            _names = sorted({m.name for m in _md_matches
+                             if m.severity in ('block', 'redact')})
+            print(f'[write] refused: {len(_md_matches)} PII match(es) '
+                  f'including {_names}. A public-tier fact is readable by '
+                  f'every peer. Write it to your own tier, or pass '
+                  f'--allow-pii to override.', file=sys.stderr)
+            return 1
+        args.text, _scrub_changes = _scrub_pub(_md_text)
+        for _c in _scrub_changes:
+            print('[write] scrubbed a machine-local identifier from the '
+                  'public fact')
     # v1.17.15: the operator writing their own private bucket. The
     # CLI binds the ACL as admin:admin, and admin cannot open
     # private_<admin> -- the strict-privacy model wants a grant even
