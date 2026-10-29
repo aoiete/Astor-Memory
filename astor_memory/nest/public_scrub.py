@@ -62,6 +62,13 @@ _USER_IN_PATH = re.compile(
     r'|(?<![\w.>])/(?:home|Users|users)/)([A-Za-z0-9_.-]+)', re.IGNORECASE)
 # A UNC path: \\host\share\...
 _UNC = re.compile(r'\\\\([A-Za-z0-9_.-]+)((?:\\[^\s\\]*)+)')
+# A bare home path: "~/file". The POSIX rule below needs a user
+# segment ("/home/<name>/...") and the Windows rule needs a drive
+# letter, so a tilde path passed straight through -- and that is the
+# shape the v1.17.5 leak was written in ("~/.tmp_wechat.html"). The
+# one-time cleanup rewrote the row that was already there; the door
+# could not catch a new one.
+_TILDE_HOME = re.compile(r'(?<![\w.>~])~((?:/' + _SEG + r')+)')
 
 # An MSYS path: /c/Users/someone/AppData. The first segment is a
 # single letter -- the drive -- and the rest is the same path the
@@ -183,6 +190,15 @@ def scrub_local_identifiers(text: str) -> tuple[str, list[dict]]:
         })
         return out
 
+    def _sub_tilde(m: re.Match) -> str:
+        out = HOME + (m.group(1) or "")
+        changes.append({
+            "kind": "tilde_home",
+            "sample": m.group(0),
+            "replacement": out,
+        })
+        return out
+
     def _sub_unc(m: re.Match) -> str:
         out = "\\\\%s%s" % (HOST, m.group(2) or "")
         changes.append({
@@ -246,6 +262,7 @@ def scrub_local_identifiers(text: str) -> tuple[str, list[dict]]:
         nxt = _MSYS_PATH.sub(_sub_msys, nxt)
         nxt = _POSIX_HOME.sub(_sub_posix, nxt)
         nxt = _UNC.sub(_sub_unc, nxt)
+        nxt = _TILDE_HOME.sub(_sub_tilde, nxt)
         nxt = _PRIVATE_IP.sub(_sub_ip, nxt)
         if nxt == out:
             break
