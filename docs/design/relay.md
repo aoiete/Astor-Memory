@@ -22,7 +22,7 @@
 | D8 | **审计日志持久化**：只存「谁搜了谁」的元数据，**保留 7 天** | 滥用追溯需要；不含任何内容 |
 | D9 | **公钥只在好友请求链路交换**，不做公开目录 | 公开目录 = 给 Sybil 攻击者一份可冒充名单 |
 | D10 | **新增 `key_id = sha256(public_key)[:16]` 作为真正身份**，peer_id 降级为「本机实例标识」 | peer_id 与公钥无密码学绑定 → 可被冒充 |
-| D11 | **fanout 与 trust 解耦**：已有的 `outbound_search` 开关**默认值改成 False** + 陌生人 trust 封顶 40 | 「我信他」和「让他看到我在搜什么」是两件事；开关已存在且 v1.17.3 已接进广播选择，只是默认开着 |
+| D11 | **fanout 与 trust 解耦**：已有的 `outbound_search` 开关**对新增 peer 默认改成 False** | 「我信他」和「让他看到我在搜什么」是两件事；开关已存在且 v1.17.3 已接进广播选择，只是默认开着。**「陌生人 trust 封顶 40」不可实现 —— 朋友与陌生人走同一条批准路径,机制上分不出来**;能分出来的只有「这条 peer 记录是不是新加的」 |
 | D12 | **E2E 用临时密钥交换**（ephemeral X25519 + NaCl Box） | 零预共享、无需新增 identity 文件、前向保密 |
 | D13 | **公共 relay 治理进本期**：ToS + 举报 + 手动封禁 | 公开就要能治理 |
 | D14 | **支持多个 relay 地址**，按顺序 failover | relay 是单点；机制已存在 |
@@ -355,7 +355,9 @@ send(peer, msg):
 
 1. **默认值 True → False**。现状是 `_meta.get('outbound_search', True)`,
    于是新加的 peer **默认就在广播范围内**。
-2. **陌生人 trust 封顶 40**(第二道)。
+2. ~~**陌生人 trust 封顶 40**(第二道)~~ —— **做不出来**: 朋友与陌生人都走同一条
+   friend_request 批准路径, 机制上分不出来。能分出来的只有「这条 peer 记录
+   是不是新加的」, 所以封堵点只能是**新增 peer 默认不进广播范围**。
 
 ```
 本地没命中 → 广播给哪些 peer?
@@ -374,9 +376,17 @@ peer 立刻进入广播范围**,你的每一次本地未命中查询都会发给
 的 `_meta.get('outbound_search', True)`),所以**新加的 peer 默认就在广播
 范围内** —— 哪怕它 trust 只有 30,只要对方把 trust 提上去就会开始收广播。
 
-修法:`outbound_search` 默认改成 False(仅对**新加**的 peer;已有的行保持
-用户原来的选择,不能替他决定);陌生人一律 trust 封顶 40;UI 上明确显示
-「此 peer 会收到你的未命中查询」。
+修法:**`outbound_search` 对新增 peer 默认改成 False**(已有的行保持用户原本
+的选择, 不能替他决定);UI 上明确显示「此 peer 会收到你的未命中查询」。
+
+**「陌生人 trust 封顶 40」这一条做不出来** —— 朋友和陌生人都走同一条
+friend_request 批准路径,机制上分不出来。能分出来的只有「这条 peer 记录
+是不是新加的」, 所以封堵点只能是**新增 peer 默认不进广播范围**。
+
+**已实现 (v1.17.17)**: `add_peer` 在**新增**时把 `outbound_search=False`
+写进 metadata;已有行不动;`add_peer` 的 UPDATE 路径改为合并 metadata,
+不再整体覆盖(否则一次带 metadata 的更新会把 `allow_search` /
+`outbound_search` 一起抹掉)。
 
 顺带修:CLI `--trust` 的 help 文字写着 "default 30",实际是 60 —— 文档与实现
 不符。

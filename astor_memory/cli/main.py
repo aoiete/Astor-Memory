@@ -699,7 +699,7 @@ def main(argv: list[str] | None = None) -> int:
                                    '(astor:<hex>@host)')
     peer_connect.add_argument('--alias', help='Human-readable name for it')
     peer_connect.add_argument('--trust', type=int, default=60,
-                              help='Trust score 0-100 (default 30)')
+                              help='Trust score 0-100 (default 60)')
     peer_connect.add_argument('--note', default='', help='Note sent with the request')
     peer_connect.add_argument('--send', action='store_true',
                               help='Also send a signed friend request')
@@ -759,7 +759,7 @@ def main(argv: list[str] | None = None) -> int:
     friend_add.add_argument('peer_id', help='Peer ID (astor:<32-hex>)')
     friend_add.add_argument('--alias', help='Human-readable alias')
     friend_add.add_argument('--trust', type=int, default=60,
-        help='Trust score 0-100 (default 30 = new peer default)')
+        help='Trust score 0-100 (default 60 = new peer default)')
     friend_add.add_argument('--pubkey', help='Base64 public key for verify')
     friend_add.add_argument('--endpoint', help='HTTP endpoint URL (Phase 3)')
     friend_add.add_argument('--note', default='',
@@ -788,7 +788,7 @@ def main(argv: list[str] | None = None) -> int:
         help='Accept a pending inbound friend request by id')
     friend_accept.add_argument('request_id', type=int)
     friend_accept.add_argument('--trust', type=int, default=60,
-        help='Trust score to assign on accept (0-100, default 30)')
+        help='Trust score to assign on accept (0-100, default 60)')
     friend_accept.add_argument('--alias', help='Override the alias '
         'displayed in the friend list')
     friend_accept.set_defaults(func=cmd_peer_friend_accept)

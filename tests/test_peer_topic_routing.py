@@ -78,16 +78,19 @@ class TestSelectSearchTargetsTopic(_Tmp, unittest.TestCase):
             "astor:" + "a" * 32, kind="friend", trust=80,
             alias="alice", endpoint="http://alice.example.com:7803",
             public_key="k", metadata={"allow_search": True},
+            outbound_search=True,
         )
         add_peer(
             "astor:" + "b" * 32, kind="friend", trust=80,
             alias="bob", endpoint="http://bob.example.com:7803",
             public_key="k", metadata={"allow_search": True},
+            outbound_search=True,
         )
         add_peer(
             "astor:" + "c" * 32, kind="friend", trust=80,
             alias="charlie", endpoint="http://charlie.example.com:7803",
             public_key="k", metadata={"allow_search": True},
+            outbound_search=True,
         )
         # alice knows "poker" (weight 0.8), bob knows "fortune" (0.7),
         # charlie knows both (0.6 + 0.9)
@@ -161,11 +164,13 @@ class TestDispatchPeerFanoutTopic(_Tmp, unittest.TestCase):
             "astor:" + "a" * 32, kind="friend", trust=80,
             alias="alice", endpoint="http://alice.example.com:7803",
             public_key="k", metadata={"allow_search": True},
+            outbound_search=True,
         )
         add_peer(
             "astor:" + "b" * 32, kind="friend", trust=80,
             alias="bob", endpoint="http://bob.example.com:7803",
             public_key="k", metadata={"allow_search": True},
+            outbound_search=True,
         )
         set_topic("poker", "astor:" + "a" * 32, weight=0.9)
 
@@ -210,6 +215,7 @@ class TestPeerRecallEndpointTopic(_Tmp, unittest.TestCase):
             "astor:" + "a" * 32, kind="friend", trust=80,
             alias="alice", endpoint="http://alice.example.com:7803",
             public_key="k", metadata={"allow_search": True},
+            outbound_search=True,
         )
         self.app = create_app(astor_dir=str(self.tmpdir))
         self.client = self.app.test_client()

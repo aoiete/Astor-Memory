@@ -1,3 +1,31 @@
+## v1.17.17
+
+A peer you added does not start inside the broadcast range.
+
+The automatic fanout sends every query that misses locally to the
+peers `select_search_targets` picks. The pick was trust >= 50, an
+endpoint, and not blacklisted -- plus `outbound_search`, which has
+meant "may I search that peer" since v1.17.3.
+
+Its default was True, so a peer added an hour ago was already a
+broadcast target. That is the trap: a peer you added deliberately is
+not necessarily someone you want reading every query you type, and the
+node-level fanout switch is on by default, so nothing else stopped it.
+
+The fix is not a new switch. `add_peer` now writes an explicit
+`outbound_search=False` for a **new** peer; rows that predate it keep
+what they had, because absent means on and the operator's choice is not
+ours to overwrite. The dashboard already had the toggle, and the CLI
+already had `am peer outbound-search`.
+
+`add_peer`'s UPDATE path now merges the metadata dict instead of
+replacing it. A caller that passed a partial dict was silently wiping
+the flags that live in it -- `allow_search` and `outbound_search` --
+which is the same class of bug as the one above, one call earlier.
+
+Also: the CLI's `--trust` help text said "default 30" while the code
+said 60, in three places.
+
 ## v1.17.16
 
 The shared tier serves commons only.

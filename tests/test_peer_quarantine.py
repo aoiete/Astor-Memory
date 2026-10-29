@@ -73,8 +73,7 @@ class TestQuarantineHelper(_Tmp, unittest.TestCase):
         add_peer(
             "astor:" + "a" * 32, kind="friend", trust=80,
             alias="alice", endpoint="http://alice.example.com:7803",
-            public_key="k", metadata={"allow_search": True},
-        )
+            public_key="k", metadata={"allow_search": True}, outbound_search=True)
 
     def tearDown(self):
         self.tearDown_tmp()
@@ -159,8 +158,7 @@ class TestQuarantineHelper(_Tmp, unittest.TestCase):
         add_peer(
             "astor:" + "b" * 32, kind="friend", trust=50,
             endpoint="http://b:7803", public_key="k",
-            metadata={"allow_search": True},
-        )
+            metadata={"allow_search": True}, outbound_search=True)
         quarantine_peer("astor:" + "a" * 32, reason="r1")
         quarantine_peer("astor:" + "b" * 32, reason="r2")
         rows = list_quarantined_peers()
@@ -182,13 +180,11 @@ class TestSelectSearchTargetsExcludesQuarantine(_Tmp, unittest.TestCase):
         add_peer(
             "astor:" + "a" * 32, kind="friend", trust=80,
             endpoint="http://a:7803", public_key="k",
-            metadata={"allow_search": True},
-        )
+            metadata={"allow_search": True}, outbound_search=True)
         add_peer(
             "astor:" + "b" * 32, kind="friend", trust=80,
             endpoint="http://b:7803", public_key="k",
-            metadata={"allow_search": True},
-        )
+            metadata={"allow_search": True}, outbound_search=True)
         quarantine_peer("astor:" + "a" * 32, reason="test")
 
     def tearDown(self):
@@ -213,8 +209,7 @@ class TestPeerHealthQuarantine(_Tmp, unittest.TestCase):
         add_peer(
             "astor:" + "a" * 32, kind="friend", trust=80,
             endpoint="http://a:7803", public_key="k",
-            metadata={"allow_search": True},
-        )
+            metadata={"allow_search": True}, outbound_search=True)
         quarantine_peer("astor:" + "a" * 32, reason="r1")
 
     def tearDown(self):
@@ -237,8 +232,7 @@ class TestQuarantineEndpoint(_Tmp, unittest.TestCase):
         add_peer(
             "astor:" + "a" * 32, kind="friend", trust=80,
             alias="alice", endpoint="http://alice.example.com:7803",
-            public_key="k", metadata={"allow_search": True},
-        )
+            public_key="k", metadata={"allow_search": True}, outbound_search=True)
         self.app = create_app(astor_dir=str(self.tmpdir))
         self.client = self.app.test_client()
 
@@ -300,8 +294,7 @@ class TestCliPeerQuarantine(_Tmp, unittest.TestCase):
         add_peer(
             "astor:" + "a" * 32, kind="friend", trust=80,
             alias="alice", endpoint="http://alice.example.com:7803",
-            public_key="k", metadata={"allow_search": True},
-        )
+            public_key="k", metadata={"allow_search": True}, outbound_search=True)
 
     def tearDown(self):
         self.tearDown_tmp()

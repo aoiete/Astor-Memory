@@ -213,12 +213,12 @@ class TestTargetSelection(_Tmp, unittest.TestCase):
     def test_select_by_trust_and_endpoint(self):
         with mock.patch.dict(os.environ, {"ASTOR_DIR": str(self.tmpdir)}):
             good = add_peer(_fake_peer_id("1"), trust=80,
-                            endpoint="https://a.example.com")
+                            endpoint="https://a.example.com", outbound_search=True)
             lowtrust = add_peer(_fake_peer_id("2"), trust=20,
-                                endpoint="https://b.example.com")
-            noendpoint = add_peer(_fake_peer_id("3"), trust=90)
+                                endpoint="https://b.example.com", outbound_search=True)
+            noendpoint = add_peer(_fake_peer_id("3"), trust=90, outbound_search=True)
             black = add_peer(_fake_peer_id("4"), kind="blacklist", trust=100,
-                             endpoint="https://c.example.com")
+                             endpoint="https://c.example.com", outbound_search=True)
             targets = select_search_targets(list_peers_all())
         ids = {t["peer_id"] for t in targets}
         self.assertIn(good["peer_id"], ids)
@@ -231,10 +231,10 @@ class TestTargetSelection(_Tmp, unittest.TestCase):
         # the real opt-in). But allow_search=True kept too.
         with mock.patch.dict(os.environ, {"ASTOR_DIR": str(self.tmpdir)}):
             p1 = add_peer(_fake_peer_id("1"), trust=80,
-                          endpoint="https://a.example.com")
+                          endpoint="https://a.example.com", outbound_search=True)
             set_allow_search(p1["peer_id"], False)
             p2 = add_peer(_fake_peer_id("2"), trust=80,
-                          endpoint="https://b.example.com")
+                          endpoint="https://b.example.com", outbound_search=True)
             set_allow_search(p2["peer_id"], True)
             targets = select_search_targets(list_peers_all())
         ids = {t["peer_id"] for t in targets}
@@ -258,7 +258,7 @@ class TestPublicSearchEndpoint(_Tmp, unittest.TestCase):
             init_identity(str(self.tmpdir))
             # Register the requestor as a trusted, opted-in friend.
             self.requestor_id = _fake_peer_id("b")
-            add_peer(self.requestor_id, trust=80, alias="bob")
+            add_peer(self.requestor_id, trust=80, alias="bob", outbound_search=True)
             set_allow_search(self.requestor_id, True)
 
     def tearDown(self):
@@ -325,7 +325,7 @@ class TestPublicSearchEndpoint(_Tmp, unittest.TestCase):
     def test_blacklisted_peer_403(self):
         me = init_identity(str(self.tmpdir))
         foe = _fake_peer_id("e")
-        add_peer(foe, kind="blacklist", trust=0)
+        add_peer(foe, kind="blacklist", trust=0, outbound_search=True)
         set_allow_search(foe, True)
         req = _make_signed_request(foe, astor_dir=str(self.tmpdir))
         resp = self._get(_req_query_string(req))
@@ -335,7 +335,7 @@ class TestPublicSearchEndpoint(_Tmp, unittest.TestCase):
     def test_trust_below_threshold_403(self):
         me = init_identity(str(self.tmpdir))
         acquaintance = _fake_peer_id("c")
-        add_peer(acquaintance, trust=MIN_TRUST_FOR_SEARCH - 1)
+        add_peer(acquaintance, trust=MIN_TRUST_FOR_SEARCH - 1, outbound_search=True)
         set_allow_search(acquaintance, True)
         req = _make_signed_request(acquaintance, astor_dir=str(self.tmpdir))
         resp = self._get(_req_query_string(req))
@@ -345,7 +345,7 @@ class TestPublicSearchEndpoint(_Tmp, unittest.TestCase):
     def test_not_opted_in_403(self):
         me = init_identity(str(self.tmpdir))
         friend = _fake_peer_id("d")
-        add_peer(friend, trust=80)
+        add_peer(friend, trust=80, outbound_search=True)
         # allow_search NOT set (default off) → must reject.
         req = _make_signed_request(friend, astor_dir=str(self.tmpdir))
         resp = self._get(_req_query_string(req))
@@ -355,7 +355,7 @@ class TestPublicSearchEndpoint(_Tmp, unittest.TestCase):
     def test_opt_in_then_revoke_changes_result(self):
         me = init_identity(str(self.tmpdir))
         friend = _fake_peer_id("d")
-        add_peer(friend, trust=80)
+        add_peer(friend, trust=80, outbound_search=True)
         req = _make_signed_request(friend, astor_dir=str(self.tmpdir))
         # Before opt-in: 403
         self.assertEqual(self._get(_req_query_string(req)).status_code, 403)
@@ -380,7 +380,7 @@ class TestAllowSearchFlag(_Tmp, unittest.TestCase):
 
     def test_roundtrip(self):
         with mock.patch.dict(os.environ, {"ASTOR_DIR": str(self.tmpdir)}):
-            p = add_peer(_fake_peer_id("1"), trust=50)
+            p = add_peer(_fake_peer_id("1"), trust=50, outbound_search=True)
             self.assertTrue(set_allow_search(p["peer_id"], True))
             row = get_peer(p["peer_id"])
             self.assertTrue((row["metadata"] or {}).get("allow_search"))
@@ -391,7 +391,7 @@ class TestAllowSearchFlag(_Tmp, unittest.TestCase):
     def test_preserves_other_metadata(self):
         with mock.patch.dict(os.environ, {"ASTOR_DIR": str(self.tmpdir)}):
             p = add_peer(_fake_peer_id("1"), trust=50,
-                         metadata={"note": "college friend"})
+                         metadata={"note": "college friend"}, outbound_search=True)
             set_allow_search(p["peer_id"], True)
             row = get_peer(p["peer_id"])
             self.assertEqual(row["metadata"].get("note"), "college friend")

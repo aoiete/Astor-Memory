@@ -417,9 +417,23 @@ def add_peer(
     endpoint: str | None = None,
     topic_weights: dict | None = None,
     metadata: dict | None = None,
+    outbound_search: bool | None = None,
     astor_dir: str | None = None,
 ) -> dict:
-    """Add or update a peer relationship. Returns the row."""
+    """Add or update a peer relationship. Returns the row.
+
+    v1.17.16 (D11): a peer added from now on does not receive this
+    node's automatic fanout broadcasts until the operator turns it on.
+    The switch is not new -- outbound_search has meant "may I search
+    that peer" since v1.17.3, and select_search_targets already reads
+    it -- but its default was True, so every newly added peer landed
+    inside the broadcast range. A peer you added deliberately is not
+    necessarily someone you want reading every query you type.
+
+    Only peers added from now on get the explicit False. A row that
+    predates this keeps what it had: absent means on, and the
+    operator's choice is not ours to overwrite.
+    """
     if not peer_id.startswith("astor:"):
         raise ValueError(f"peer_id must start with 'astor:'; got {peer_id!r}")
     if not 0 <= trust <= 100:
@@ -434,6 +448,28 @@ def add_peer(
             "SELECT * FROM peer_relationships WHERE peer_id = ?",
             (peer_id,)
         ).fetchone()
+        # v1.17.16 (D11): see the docstring. New peers are opt-in for
+        # the automatic broadcast; existing rows keep their own value.
+        _meta_new = dict(metadata) if metadata else {}
+        if existing:
+            try:
+                _meta_old = (json.loads(existing["metadata"])
+                             if existing["metadata"] else {})
+            except Exception:
+                _meta_old = {}
+            if not isinstance(_meta_old, dict):
+                _meta_old = {}
+            # An update that passes a partial metadata dict must not
+            # wipe the flags that live in it.
+            for _k in (_ALLOW_SEARCH_KEY, _OUTBOUND_SEARCH_KEY):
+                if _k not in _meta_new and _k in _meta_old:
+                    _meta_new[_k] = _meta_old[_k]
+        else:
+            _meta_new.setdefault(
+                _OUTBOUND_SEARCH_KEY,
+                False if outbound_search is None else bool(outbound_search),
+            )
+        _meta_json = json.dumps(_meta_new) if _meta_new else None
         if existing:
             # Update — preserve added_at, refresh updated_at
             con.execute("""
@@ -454,7 +490,7 @@ def add_peer(
                 public_key,
                 endpoint,
                 json.dumps(topic_weights) if topic_weights else None,
-                json.dumps(metadata) if metadata else None,
+                _meta_json,
                 now,
                 peer_id,
             ))
@@ -474,7 +510,7 @@ def add_peer(
                 now,
                 now,
                 json.dumps(topic_weights) if topic_weights else None,
-                json.dumps(metadata) if metadata else None,
+                _meta_json,
             ))
         con.commit()
     return get_peer(peer_id, astor_dir=astor_dir) or {}
