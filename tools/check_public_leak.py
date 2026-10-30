@@ -41,7 +41,7 @@ METHOD_PAYLOAD = "下载页面到 scratch 文件，然后抽取 js_content div"
 
 LEAKS = {
     "windows user path": "TestUser",
-    "wechat user id": "o9cq",
+    "wechat user id": "@im.wechat",
     "telegram chat id": "1234567890",
     "real email": "someone@example.invalid",
 }

@@ -40,7 +40,7 @@ CONTENT = (
 LEAKS = {
     "windows user path": "TestUser",
     "private runtime path": "D:/AI/users",
-    "wechat user id": "o9cq",
+    "wechat user id": "@im.wechat",
     "telegram chat id": "1234567890",
     "real email": "someone@example.invalid",
 }
