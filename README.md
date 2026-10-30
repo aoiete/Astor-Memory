@@ -19,8 +19,6 @@ private memory stays on your machine, while knowledge you choose to
 share gossips across a network of trusted peers — no central server, no
 single custodian of the commons.
 
-Run one node for yourself, or join the network.
-
 ```
 [node A — your server] <== gossip (public tier only) ==> [node B — peer's server]
 
@@ -28,29 +26,55 @@ private_<you>, source    private_<peer>, source
 (never leave this machine) (never leave this machine)
 ```
 
-- **Private stays private.** Per-user SQLite databases; ACL enforced at
-  the matrix level before any read or write. `private` and `source`
-  tiers never cross the peer boundary.
-- **Public becomes shared.** Facts published to `public` propagate to
-  peers you trust; their public facts become readable by your agents.
-  Per-peer trust (0–100, default 30) plus per-topic weights decide what
-  flows where.
-- **Trust is explicit, not assumed.** Unknown peers land in quarantine
-  for operator review instead of being rejected outright, and peer
-  traffic is rate-limited per peer so one noisy node cannot flood the
-  commons.
+### 1. One machine, many users, many bots
 
-Inside a single node the same three-tier layout still separates users:
-each user gets their own SQLite database, their own ACL grants, and
-their own bot binding. The admin sees `source` (operator-only patterns)
-plus any `private` tier a user has explicitly granted.
+Not only a single-user install. A node serves several users at once:
+each gets their own SQLite database, their own ACL grants and their own
+bot bindings (Telegram, Discord, WeChat, Feishu, MCP clients, plain
+HTTP). The ACL is enforced at the matrix level before any read or
+write, so users cannot see each other's memory and one user's bot
+cannot reach another user's tier. The operator sees `source` plus
+whatever a user has explicitly granted.
 
-The same server also acts as the spoke endpoint for external agent
-platforms (Muse, custom HTTP clients, Slack adapters) that need a
-persistent memory backend with ACL-enforced user isolation and per-call
-audit logging. Privacy is enforced by ACL at the matrix level
-(see [ACL hardening](docs/acl-v1.2-hardening.md)), not by trusting
-each user to behave.
+### 2. Public and private are different things, and the code knows it
+
+The tiers are separated in the store, not by convention: a personal
+fact cannot be promoted into the public tier at all. What reaches the
+public tier is the shareable part — methods, patterns, models,
+workflows, lessons, successes and failures — while what is personal
+stays in its owner's private tier, with paths and identifiers scrubbed
+on the way out. Distillation mines the private tier for what is worth
+publishing; nothing leaks by accident.
+
+### 3. Peers search each other's public tier
+
+A node can search the public memory of peers it trusts, and the
+results come back the way a local search would. A method, a model or a
+pattern found on one node becomes available on the others — that is the
+point of the network.
+
+Trust is explicit, not assumed: unknown peers land in quarantine for
+operator review instead of being rejected outright, and peer traffic is
+rate-limited per peer so one noisy node cannot flood the commons.
+Per-peer trust (0–100, default 30) plus per-topic weights decide what
+flows where.
+
+### 4. And a relay for the nodes behind NAT
+
+Two nodes that cannot reach each other directly can still talk through
+a relay. The relay is a postman, not a reader: messages are sealed
+before they arrive, and it has no way to read them or to call anybody
+else. A public relay can carry traffic without being able to see it.
+
+### Interfaces
+
+CLI (`am`), REST (`/v1/...`), MCP tools, and a dashboard. The same
+server also acts as the endpoint for external agent platforms (Muse,
+custom HTTP clients, Slack adapters), giving them a persistent memory
+backend with ACL-enforced user isolation and per-call audit logging.
+Privacy is enforced by the ACL at the matrix level (see
+[ACL hardening](docs/acl-v1.2-hardening.md)), not by trusting each user
+to behave.
 
 ---
 

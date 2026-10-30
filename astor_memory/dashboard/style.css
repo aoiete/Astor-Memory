@@ -888,6 +888,60 @@ body {
 }
 .peer-table .btn-refresh { padding: 2px 6px; font-size: 0.85em; margin-right: 2px; }
 
+/* v1.17.26: the connection test. One column, one width, so the rows
+   line up: the result on top (a coloured pill once it has run), the
+   direct test under it, and the relay route under that. */
+.peer-test-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+  min-width: 104px;
+}
+.peer-test-result {
+  display: block;
+  text-align: center;
+  font-size: 0.78em;
+  font-weight: 600;
+  padding: 3px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.peer-test-result.peer-test-ok {
+  background: var(--good);
+  color: #fff;
+}
+.peer-test-result.peer-test-fail {
+  background: var(--warn);
+  color: #fff;
+}
+.peer-test-btn {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 0.82em;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.peer-test-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.peer-test-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.peer-test-btn.peer-test-relay {
+  color: var(--text-dim);
+}
+
 /* v1.16.25: Connections panel */
 .connections-summary {
   font-size: 0.9em;

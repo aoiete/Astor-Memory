@@ -1272,8 +1272,10 @@ function renderPeerRows(rows, sectionKey) {
     const tCell = (p.kind === 'blacklist' || p.kind === 'quarantine')
       ? '<span class="recall-hint">blocked</span>'
       : (tRes
-        ? ('<span class="recall-hint" title="' + escapeHtml(tRes.detail || '') + '">'
-           + (tRes.ok ? '✓ ' : '✗ ') + escapeHtml(tRes.stage) + '</span>')
+        ? ('<span class="peer-test-result ' + (tRes.ok ? 'peer-test-ok' : 'peer-test-fail')
+           + '" title="' + escapeHtml(tRes.detail || '') + '">'
+           + (tRes.ok ? '✓ ' : '✗ ') + escapeHtml(tRes.stage)
+           + (tRes.latency_ms ? ' ' + tRes.latency_ms + 'ms' : '') + '</span>')
         : '');
     html += '<tr>'
       + '<td class="peer-pid" title="' + escapeHtml(p.peer_id) + '">'
@@ -1296,9 +1298,9 @@ function renderPeerRows(rows, sectionKey) {
       + '<td class="recall-hint">' + escapeHtml(updated) + '</td>'
       + '<td class="peer-test-cell">' + tCell
       + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="test-peer" '
-      + 'data-mode="direct" class="btn-refresh">test</button>'
+      + 'data-mode="direct" class="peer-test-btn">test</button>'
       + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="test-peer" '
-      + 'data-mode="relay" class="btn-refresh">via relay</button>'
+      + 'data-mode="relay" class="peer-test-btn peer-test-relay">via relay</button>'
       + '</td>'
       + '<td>'
       + (p.kind === 'blacklist'

@@ -1,3 +1,37 @@
+## Unreleased
+
+The repository's git hygiene, and a history that does not name the
+operator.
+
+**Deterministic line endings.** With `core.autocrlf=true` on Windows
+and nothing set anywhere else, the same file ended up with different
+bytes in every clone, and every commit warned about it. `.gitattributes`
+pins the repository to LF and keeps `.bat` files on CRLF, which is what
+cmd.exe wants. The index was already LF, so no content changed -- only
+the drift and the noise stopped.
+
+**The history no longer carries the operator's private identifiers.**
+The repository is public. Two things were in it that should not have
+been: the operator's Telegram chat id and their Windows home path, in
+a commit message and in a changelog entry. Both are gone now -- the
+whole history was rewritten, not just the working tree.
+
+**The contributor list.** The co-author trailers on the commits named
+an AI account and a third-party account; GitHub turns those into
+contributor entries. The trailers are gone from the history, so the
+list shows only the people who actually own the work. New commits
+carry a generic co-author line rather than a vendor's name, so the
+list stays a list of people and not of tools.
+
+Rewriting history is not free: every commit SHA changed and every tag
+had to be recreated. The bundle at
+`D:/AI/astor-memory-backup-pre-filter.bundle` holds the old history
+exactly as it was, in case it is ever wanted.
+
+**Also**: the README has badges now, the CI matrix covers 3.14 (the
+local runtime), and the release workflow defaults to the current
+version instead of v0.3.0.
+
 ## v1.17.25
 
 One relay going down should not take the node with it.
