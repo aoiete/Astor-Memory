@@ -80,6 +80,15 @@ class TestRelayEndToEnd(unittest.TestCase):
         self.b_dir = tempfile.mkdtemp(prefix="astor_node_b_")
         self.a_pub, _ = _write_identity(self.a_dir)
         self.b_pub, _ = _write_identity(self.b_dir)
+        # both sides register, and each keeps its credential
+        out_a = client.register(self.base, self.a_dir)
+        out_b = client.register(self.base, self.b_dir)
+        client.write_config(self.base, astor_dir=self.a_dir,
+                            key_id=out_a.get("key_id"),
+                            token=out_a.get("token"))
+        client.write_config(self.base, astor_dir=self.b_dir,
+                            key_id=out_b.get("key_id"),
+                            token=out_b.get("token"))
         self.a_key = rc.key_id_for(self.a_pub)
         self.b_key = rc.key_id_for(self.b_pub)
         self.b_x_pub, self.b_x_priv = rc.node_x25519_keys(self.b_dir)
@@ -89,40 +98,41 @@ class TestRelayEndToEnd(unittest.TestCase):
         shutil.rmtree(self.b_dir, ignore_errors=True)
 
     def test_a_message_goes_out_sealed_and_comes_back_open(self):
-        # both sides register
-        client.register(self.base, self.a_dir)
-        client.register(self.base, self.b_dir)
-
         # the sender needs the recipient's encryption key -- it comes
         # from the friend exchange, never from the relay
         secret = {"type": "public_search", "query": "the secret question"}
         client.send(self.base, to_key_id=self.b_key,
                     to_x25519_pub=self.b_x_pub, from_key_id=self.a_key,
-                    message=secret, msg_type="public_search")
+                    message=secret, msg_type="public_search",
+                    astor_dir=self.a_dir)
 
         # the relay's own memory holds nothing but the envelope
         blob = json.dumps(self.app.astor_state.mailboxes)
         self.assertNotIn("the secret question", blob)
 
         # the recipient opens it
-        got = client.poll(self.base, self.b_key, self.b_x_priv)
+        got = client.poll(self.base, self.b_key, self.b_x_priv,
+                          astor_dir=self.b_dir)
         self.assertEqual(len(got), 1)
         self.assertEqual(got[0]["message"], secret)
         self.assertEqual(got[0]["from_key_id"], self.a_key)
 
         # and the relay drops it once we say we have it
-        client.ack(self.base, self.b_key, [got[0]["msg_id"]])
-        again = client.poll(self.base, self.b_key, self.b_x_priv)
+        client.ack(self.base, self.b_key, [got[0]["msg_id"]],
+                   astor_dir=self.b_dir)
+        again = client.poll(self.base, self.b_key, self.b_x_priv,
+                            astor_dir=self.b_dir)
         self.assertEqual(again, [])
 
     def test_a_message_for_someone_else_stays_closed(self):
-        client.register(self.base, self.a_dir)
         c_x_pub, _ = rc.generate_x25519_keypair()
-        client.send(self.base, to_key_id="someone-else",
+        # the message goes to B, but sealed to a key nobody holds
+        client.send(self.base, to_key_id=self.b_key,
                     to_x25519_pub=c_x_pub, from_key_id=self.a_key,
-                    message={"secret": "not for us"})
-        # we hold a different key, so it does not open
-        got = client.poll(self.base, "someone-else", self.b_x_priv)
+                    message={"secret": "not for us"}, astor_dir=self.a_dir)
+        # B holds a different key, so it does not open
+        got = client.poll(self.base, self.b_key, self.b_x_priv,
+                          astor_dir=self.b_dir)
         self.assertEqual(got, [])
 
     def test_lookup_says_whether_a_peer_is_on_the_relay(self):

@@ -51,6 +51,11 @@ def read_config(astor_dir: str | None = None) -> dict:
         return {}
 
 
+def read_token(astor_dir: str | None = None) -> str:
+    """This node's credential at the relay."""
+    return str(read_config(astor_dir).get("token") or "")
+
+
 def write_config(base_url: str, astor_dir: str | None = None,
                  **extra) -> dict:
     """Remember the relay this node uses."""
@@ -76,8 +81,10 @@ def _url(relay_base: str, path: str) -> str:
     return f"{base}{path}"
 
 
-def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
-    req = urllib.request.Request(url, method="GET")
+def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT,
+              token: str = "") -> dict:
+    headers = {"X-Relay-Token": token} if token else {}
+    req = urllib.request.Request(url, method="GET", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -88,11 +95,14 @@ def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
         raise RelayClientError(f"relay unreachable: {exc}") from exc
 
 
-def _post_json(url: str, payload: dict, timeout: int = DEFAULT_TIMEOUT) -> dict:
+def _post_json(url: str, payload: dict, timeout: int = DEFAULT_TIMEOUT,
+               token: str = "") -> dict:
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=data, method="POST",
-        headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["X-Relay-Token"] = token
+    req = urllib.request.Request(url, data=data, method="POST",
+                                 headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -144,7 +154,8 @@ def register(relay_base: str, astor_dir: str | None = None,
 def send(relay_base: str, to_key_id: str, to_x25519_pub: str,
          from_key_id: str, message: Any, msg_type: str = "public_search",
          reply_to: str | None = None,
-         timeout: int = DEFAULT_TIMEOUT) -> dict:
+         timeout: int = DEFAULT_TIMEOUT,
+         astor_dir: str | None = None) -> dict:
     """Seal a message for a peer and hand it to the relay."""
     plaintext = json.dumps(message, ensure_ascii=False).encode("utf-8")
     envelope = rc.seal(to_x25519_pub, plaintext)
@@ -154,7 +165,7 @@ def send(relay_base: str, to_key_id: str, to_x25519_pub: str,
         "to_key_id": to_key_id,
         "from_key_id": from_key_id,
         "reply_to": reply_to,
-    }, timeout)
+    }, timeout, token=read_token(astor_dir))
     if not body.get("ok"):
         raise RelayClientError(
             f"relay refused the message: {body.get('error')}")
@@ -176,7 +187,7 @@ def poll(relay_base: str, key_id: str, x25519_priv: str,
         timeout = DEFAULT_TIMEOUT + wait + 5
     body = _get_json(
         _url(relay_base, f"/v1/relay/poll/{key_id}") + f"?wait={int(wait)}",
-        timeout)
+        timeout, token=read_token(astor_dir))
     out: list[dict] = []
     for msg in body.get("messages") or []:
         envelope = msg.get("payload")
@@ -203,10 +214,12 @@ def poll(relay_base: str, key_id: str, x25519_priv: str,
 
 
 def ack(relay_base: str, key_id: str, msg_ids: list[str],
-        timeout: int = DEFAULT_TIMEOUT) -> dict:
+        timeout: int = DEFAULT_TIMEOUT,
+        astor_dir: str | None = None) -> dict:
     """Tell the relay we have these, so it can drop them."""
     return _post_json(_url(relay_base, "/v1/relay/ack"), {
-        "key_id": key_id, "msg_ids": list(msg_ids)}, timeout)
+        "key_id": key_id, "msg_ids": list(msg_ids)}, timeout,
+        token=read_token(astor_dir))
 
 
 def lookup(relay_base: str, key_id: str,

@@ -90,6 +90,8 @@ class TestRelaySearchEndToEnd(unittest.TestCase):
         self.b_dir = tempfile.mkdtemp(prefix="astor_node_b_")
         self.a_ident = _bootstrap_node(self.a_dir, PEER_A)
         self.b_ident = _bootstrap_node(self.b_dir, PEER_B)
+        self._register(self.a_dir)
+        self._register(self.b_dir)
         self._env_saved = dict(os.environ)
         os.environ["ASTOR_DIR"] = self.a_dir
 
@@ -151,6 +153,15 @@ class TestRelaySearchEndToEnd(unittest.TestCase):
         set_peer_x25519_key(other_peer_id, other_x_pub,
                             astor_dir=owner_dir)
         return get_peer(other_peer_id, astor_dir=owner_dir)
+
+    def _register(self, node_dir: str):
+        """Register a node with the relay and keep its credential."""
+        from astor_memory._internal import relay_client as client
+        out = client.register(self.base, node_dir)
+        client.write_config(self.base, astor_dir=node_dir,
+                            key_id=out.get('key_id'),
+                            token=out.get('token'))
+        return out
 
     def _request(self, node_dir: str, query: str):
         from astor_memory._internal.peer_search import build_search_request

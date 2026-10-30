@@ -76,6 +76,19 @@ class TestRelayServer(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def _token(self):
+        """The credential the relay handed out.
+
+        Registered once per test: registering again would hand out a
+        new credential and make the old one useless, and the relay
+        limits registrations per address on purpose.
+        """
+        if getattr(self, "_tok", None) is None:
+            r = self._register()
+            self.assertEqual(r.status_code, 200, r.get_json())
+            self._tok = r.get_json()["token"]
+        return self._tok
+
     def _register(self, key_id=None, public_key=None, signature=None):
         chal = self.client.post("/v1/relay/challenge").get_json()
         nonce = chal["nonce"]
@@ -164,12 +177,13 @@ class TestRelayServer(unittest.TestCase):
         r = self.client.post("/v1/relay/send", json={
             "msg_type": "public_search",
             "payload": env,
-            "to_key_id": "recipient-1",
+            "to_key_id": self.key_id,
             "from_key_id": self.key_id,
-        })
+        }, headers={"X-Relay-Token": self._token()})
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.get_json()["queued"])
-        got = self.client.get("/v1/relay/poll/recipient-1").get_json()
+        got = self.client.get("/v1/relay/poll/" + self.key_id,
+                              headers={"X-Relay-Token": self._token()}).get_json()
         self.assertEqual(len(got["messages"]), 1)
         self.assertEqual(got["messages"][0]["payload"], env)
 
@@ -179,9 +193,9 @@ class TestRelayServer(unittest.TestCase):
         self.client.post("/v1/relay/send", json={
             "msg_type": "public_search",
             "payload": env,
-            "to_key_id": "recipient-2",
+            "to_key_id": self.key_id,
             "from_key_id": self.key_id,
-        })
+        }, headers={"X-Relay-Token": self._token()})
         # the mailbox holds the envelope and nothing else
         box = self.app.astor_state.mailboxes.get("recipient-2") or []
         blob = json.dumps(box)
@@ -192,44 +206,48 @@ class TestRelayServer(unittest.TestCase):
         r = self.client.post("/v1/relay/send", json={
             "msg_type": "public_search",
             "payload": "just a plain string",
-            "to_key_id": "recipient-3",
+            "to_key_id": self.key_id,
             "from_key_id": self.key_id,
-        })
+        }, headers={"X-Relay-Token": self._token()})
         self.assertEqual(r.status_code, 400)
 
     def test_acking_removes_the_message(self):
         env = self._sealed()
         r = self.client.post("/v1/relay/send", json={
             "msg_type": "public_search", "payload": env,
-            "to_key_id": "recipient-4", "from_key_id": self.key_id,
-        })
+            "to_key_id": self.key_id, "from_key_id": self.key_id,
+        }, headers={"X-Relay-Token": self._token()})
         msg_id = r.get_json()["msg_id"]
-        got = self.client.get("/v1/relay/poll/recipient-4").get_json()
+        got = self.client.get("/v1/relay/poll/" + self.key_id,
+                              headers={"X-Relay-Token": self._token()}).get_json()
         self.assertEqual(len(got["messages"]), 1)
         ack = self.client.post("/v1/relay/ack", json={
-            "key_id": "recipient-4", "msg_ids": [msg_id]})
+            "key_id": self.key_id, "msg_ids": [msg_id]},
+            headers={"X-Relay-Token": self._token()})
         self.assertTrue(ack.get_json()["ok"])
-        got2 = self.client.get("/v1/relay/poll/recipient-4").get_json()
+        got2 = self.client.get("/v1/relay/poll/" + self.key_id,
+                               headers={"X-Relay-Token": self._token()}).get_json()
         self.assertEqual(got2["messages"], [])
 
     def test_a_message_expires(self):
         env = self._sealed()
         self.client.post("/v1/relay/send", json={
             "msg_type": "public_search", "payload": env,
-            "to_key_id": "recipient-5", "from_key_id": self.key_id,
-        })
+            "to_key_id": self.key_id, "from_key_id": self.key_id,
+        }, headers={"X-Relay-Token": self._token()})
         # age the queue past its TTL
-        box = self.app.astor_state.mailboxes["recipient-5"]
+        box = self.app.astor_state.mailboxes[self.key_id]
         box[0]["expires_at"] = time.time() - 1
-        got = self.client.get("/v1/relay/poll/recipient-5").get_json()
+        got = self.client.get("/v1/relay/poll/" + self.key_id,
+                              headers={"X-Relay-Token": self._token()}).get_json()
         self.assertEqual(got["messages"], [])
 
     def test_the_audit_records_the_graph_but_not_the_content(self):
         env = self._sealed(b"a secret question")
         self.client.post("/v1/relay/send", json={
             "msg_type": "public_search", "payload": env,
-            "to_key_id": "recipient-6", "from_key_id": self.key_id,
-        })
+            "to_key_id": self.key_id, "from_key_id": self.key_id,
+        }, headers={"X-Relay-Token": self._token()})
         # read the row, not the file: the audit db runs in WAL mode and
         # the bytes may still be in the sidecar file
         import sqlite3
@@ -238,7 +256,7 @@ class TestRelayServer(unittest.TestCase):
             "SELECT from_key_id, to_key_id, msg_type FROM relay_audit"
         ).fetchall()
         con.close()
-        self.assertIn((self.key_id, "recipient-6", "public_search"), rows)
+        self.assertIn((self.key_id, self.key_id, "public_search"), rows)
         # the row has no content column at all
         con = sqlite3.connect(str(self.app.astor_audit.path))
         cols = [c[1] for c in con.execute("PRAGMA table_info(relay_audit)")]
@@ -252,8 +270,8 @@ class TestRelayServer(unittest.TestCase):
         for _ in range(70):
             last = self.client.post("/v1/relay/send", json={
                 "msg_type": "public_search", "payload": env,
-                "to_key_id": "recipient-7", "from_key_id": self.key_id,
-            })
+                "to_key_id": self.key_id, "from_key_id": self.key_id,
+            }, headers={"X-Relay-Token": self._token()})
         self.assertEqual(last.status_code, 429)
 
 

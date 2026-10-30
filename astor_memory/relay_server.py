@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 from ._internal import relay_crypto as rc
 
@@ -54,6 +54,52 @@ SEND_PER_KEY_PER_MINUTE = 60
 AUDIT_RETENTION_DAYS = 7
 MAX_WAIT_SECONDS = 30
 
+
+_INDEX_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>astor relay</title>
+<style>
+ body{font:15px/1.6 system-ui,sans-serif;max-width:44rem;margin:3rem auto;
+      padding:0 1.2rem;color:#222;background:#faf9f7}
+ h1{font-size:1.4rem} code{background:#eee;padding:.1em .35em;border-radius:3px}
+ li{margin:.35rem 0} .k{font-weight:600}
+</style></head><body>
+<h1>astor relay</h1>
+<p>A relay moves messages between astor nodes that cannot reach each
+other directly. It is a postman, not a reader.</p>
+
+<p><span class="k">What it keeps</span></p>
+<ul>
+  <li><b>Nothing in memory that is readable.</b> Messages are sealed
+      before they arrive here. The relay has no private key and cannot
+      open one.</li>
+  <li><b>A routing table</b> of who is connected right now. It lives in
+      memory and is gone when the relay restarts.</li>
+  <li><b>A short log</b> of who contacted whom, kept for 7 days. It
+      holds no content -- only the two key ids, the kind of message and
+      the time. This is the communication graph, and it cannot be
+      avoided by something in the middle of a conversation.</li>
+  <li><b>A ban list</b>, so a node that misbehaves can be removed.</li>
+</ul>
+
+<p><span class="k">What it will not do</span></p>
+<ul>
+  <li>Fetch a URL you give it. The relay has no way to call a third
+      party at all, so it cannot be used to reach anything else.</li>
+  <li>Hold your messages. If you have the keys, you have the content;
+      the relay has neither.</li>
+</ul>
+
+<p><span class="k">Reporting</span>: post to
+<code>/v1/relay/report</code> with a key id and a reason.</p>
+
+<p><span class="k">API</span>: <code>/v1/relay/register</code>,
+<code>/v1/relay/lookup/&lt;key_id&gt;</code>,
+<code>/v1/relay/send</code>, <code>/v1/relay/poll/&lt;key_id&gt;</code>,
+<code>/v1/relay/ack</code>.</p>
+</body></html>
+"""
 
 def _now() -> float:
     return time.time()
@@ -137,6 +183,68 @@ class _Audit:
                 "SELECT COUNT(*) FROM relay_audit").fetchone()[0]
 
 
+class _Bans:
+    """Who the relay refuses to serve.
+
+    A public relay with no way to remove somebody is not a public
+    relay. A key id is what a node is known by; an address is what it
+    comes from, and a banned node that simply makes a new key still
+    comes from the same place -- so both can be banned, and both are
+    checked before a registration is accepted.
+
+    The list is the one thing on the relay's disk that is not a log:
+    it has to survive a restart, or a restart would be a way out.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        with self._connect() as con:
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS relay_bans ("
+                " who TEXT PRIMARY KEY,"
+                " kind TEXT NOT NULL,"
+                " reason TEXT NOT NULL DEFAULT '',"
+                " at REAL NOT NULL)")
+
+    def _connect(self):
+        con = sqlite3.connect(str(self.path), timeout=10)
+        con.execute("PRAGMA journal_mode=WAL")
+        return con
+
+    def add(self, who: str, kind: str = "key_id",
+            reason: str = "") -> dict:
+        with self._lock, self._connect() as con:
+            con.execute(
+                "INSERT INTO relay_bans (who, kind, reason, at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(who) DO UPDATE SET "
+                "reason = excluded.reason, at = excluded.at",
+                (who, kind, reason, _now()))
+            con.commit()
+        return {"who": who, "kind": kind, "reason": reason}
+
+    def remove(self, who: str) -> bool:
+        with self._lock, self._connect() as con:
+            cur = con.execute("DELETE FROM relay_bans WHERE who = ?", (who,))
+            con.commit()
+            return cur.rowcount > 0
+
+    def is_banned(self, who: str) -> bool:
+        with self._lock, self._connect() as con:
+            row = con.execute(
+                "SELECT 1 FROM relay_bans WHERE who = ?", (who,)).fetchone()
+            return row is not None
+
+    def list(self) -> list[dict]:
+        with self._lock, self._connect() as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT who, kind, reason, at FROM relay_bans "
+                "ORDER BY at DESC").fetchall()
+            return [dict(r) for r in rows]
+
+
 def create_relay_app(state_dir: str | None = None,
                      audit_path: str | None = None) -> Flask:
     """Build the relay service.
@@ -144,14 +252,23 @@ def create_relay_app(state_dir: str | None = None,
     state_dir/audit_path default next to the rest of the runtime, so a
     relay deployment is a directory and a command.
     """
+    # the relay's files live next to the rest of the node's runtime,
+    # so the CLI and the service look in the same place without either
+    # of them having to be told
     base = (state_dir or os.environ.get("ASTOR_RELAY_DIR")
-            or os.path.join(os.path.expanduser("~"), ".astor-relay"))
+            or os.path.join(
+                os.environ.get("ASTOR_DIR")
+                or os.path.join(os.path.expanduser("~"), ".astor"),
+                "relay"))
     app = Flask("astor_relay")
     app.config["JSON_SORT_KEYS"] = False
     st = _State()
-    audit = _Audit(Path(audit_path or os.path.join(base, "relay_audit.db")))
+    db_path = Path(audit_path or os.path.join(base, "relay_audit.db"))
+    audit = _Audit(db_path)
+    bans = _Bans(db_path)
     app.astor_state = st
     app.astor_audit = audit
+    app.astor_bans = bans
 
     def _client_ip() -> str:
         # the relay is meant to sit behind a reverse proxy, so the
@@ -204,13 +321,18 @@ def create_relay_app(state_dir: str | None = None,
             return jsonify({"ok": False,
                             "error": "key_id does not match public_key"}), 400
 
+        ip = _client_ip()
+        if bans.is_banned(key_id):
+            return jsonify({"ok": False, "error": "banned"}), 403
+        if bans.is_banned(ip):
+            return jsonify({"ok": False, "error": "banned"}), 403
+
         with st.lock:
             st.sweep()
             if nonce not in st.nonces:
                 return jsonify({"ok": False,
                                 "error": "unknown or expired nonce"}), 400
             del st.nonces[nonce]
-            ip = _client_ip()
             if not st.rate_ok(st.register_hits, f"ip:{ip}",
                               REGISTER_PER_IP_PER_HOUR, 3600):
                 return jsonify({"ok": False,
@@ -234,14 +356,33 @@ def create_relay_app(state_dir: str | None = None,
                                      "public_key"}), 401
 
         expires = _now() + max(60, min(ttl, MAX_REGISTRATION_TTL))
+        # The token is the node's credential at the relay. Knowing a
+        # key id is not enough to read or discard that node's mail:
+        # without this, anybody could pull another node's mailbox or
+        # acknowledge its messages away.
+        token = secrets.token_hex(24)
         with st.lock:
             st.routes[key_id] = {
                 "key_id": key_id,
                 "peer_id": peer_id,
                 "public_key": public_key,
+                "token": token,
                 "expires_at": expires,
             }
-        return jsonify({"ok": True, "expires_at": _now_iso(expires)})
+        return jsonify({"ok": True, "expires_at": _now_iso(expires),
+                        "token": token})
+
+    def _token_ok(key_id: str) -> bool:
+        """Does the caller hold the token for this key id?"""
+        given = (request.headers.get("X-Relay-Token") or "").strip()
+        if not given:
+            return False
+        with st.lock:
+            route = st.routes.get(key_id)
+            if not route:
+                return False
+            return secrets.compare_digest(str(route.get("token") or ""),
+                                          given)
 
     @app.get("/v1/relay/lookup/<key_id>")
     def lookup(key_id: str):
@@ -280,6 +421,12 @@ def create_relay_app(state_dir: str | None = None,
             return jsonify({"ok": False,
                             "error": "payload must be a sealed envelope"}), 400
 
+        # the sender must hold the token for the key id it claims, so
+        # a made-up sender cannot use the relay as a free pipe
+        if not _token_ok(from_key_id):
+            return jsonify({"ok": False,
+                            "error": "not registered, or bad token"}), 403
+
         with st.lock:
             st.sweep()
             if not st.rate_ok(st.send_hits, from_key_id,
@@ -312,6 +459,10 @@ def create_relay_app(state_dir: str | None = None,
             wait = 0.0
         wait = max(0.0, min(wait, MAX_WAIT_SECONDS))
 
+        if not _token_ok(key_id):
+            return jsonify({"ok": False,
+                            "error": "not registered, or bad token"}), 403
+
         deadline = _now() + wait
         with st.lock:
             st.sweep()
@@ -339,6 +490,9 @@ def create_relay_app(state_dir: str | None = None,
         if not (key_id and isinstance(msg_ids, list)):
             return jsonify({"ok": False,
                             "error": "key_id and msg_ids are required"}), 400
+        if not _token_ok(key_id):
+            return jsonify({"ok": False,
+                            "error": "not registered, or bad token"}), 403
         with st.lock:
             box = st.mailboxes.get(key_id) or []
             keep = [m for m in box if m["msg_id"] not in set(msg_ids)]
@@ -349,8 +503,43 @@ def create_relay_app(state_dir: str | None = None,
                 st.mailboxes.pop(key_id, None)
         return jsonify({"ok": True, "acked": removed})
 
+    @app.post("/v1/relay/report")
+    def report():
+        """Report a node. The report is recorded and the node is
+        refused from then on -- an operator can lift the ban.
+
+        A report that only wrote a line somewhere would not stop
+        anything, and a report that banned silently would be a weapon
+        against anyone the relay did not like. So the report bans, and
+        the ban is visible and reversible.
+        """
+        body = request.get_json(silent=True) or {}
+        who = str(body.get("key_id") or body.get("who") or "").strip()
+        reason = str(body.get("reason") or "").strip()
+        if not who:
+            return jsonify({"ok": False, "error": "who is required"}), 400
+        kind = "key_id" if body.get("key_id") else "address"
+        bans.add(who, kind=kind, reason=reason)
+        return jsonify({"ok": True, "banned": who})
+
+    @app.get("/v1/relay/bans")
+    def list_bans():
+        return jsonify({"bans": bans.list()})
+
     @app.get("/")
     def index():
+        """What this service is, and what it keeps.
+
+        A public service should say plainly what it stores. This one
+        keeps two things: a routing table that lives in memory and
+        disappears on restart, and a short log of who contacted whom.
+        It never sees the content -- that is encrypted before it gets
+        here.
+        """
+        return Response(_INDEX_HTML, mimetype="text/html")
+
+    @app.get("/v1/relay/health")
+    def health_json():
         return jsonify({
             "service": "astor-relay",
             "ok": True,

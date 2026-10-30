@@ -1,3 +1,51 @@
+## v1.17.24
+
+Knowing a key id is not enough to read that node's mail.
+
+The relay was about to go on the internet, and until now anybody who
+guessed or learned a key id could pull that node's mailbox, or
+acknowledge its messages away so the owner never saw them. A made-up
+sender could also use the relay as a free pipe.
+
+The token is the node's credential: the relay hands it out at
+registration and expects it on every poll, ack and send. It lives with
+the route, so a restart invalidates it and the node registers again --
+which it already does when the relay has forgotten it.
+
+The ban list came with it, because a public relay that cannot remove
+somebody is not a public relay. Both a key id and an address can be
+banned: a banned node that makes a new key still comes from the same
+place, so banning the address is what actually stops it. A report
+bans, and the ban is visible and reversible.
+
+The relay also says plainly what it keeps, on its front page: a
+routing table that disappears on restart, a seven-day log of who
+contacted whom with no content in it, and a ban list. And what it
+will not do -- it has no way to call a third party at all.
+
+## v1.17.23
+
+A public relay has to be able to say no.
+
+Without a way to remove somebody, a public relay is not a public relay
+-- it is a service everyone may use and nobody may stop. The ban list
+is the one thing on the relay's disk that is not a log: it has to
+survive a restart, or a restart would be a way out.
+
+Both a key id and an address can be banned. A banned node that simply
+makes a new key still comes from the same place, so banning the
+address is what actually stops it.
+
+A report bans, and the ban is visible and reversible: a report that
+only wrote a line somewhere would not stop anything, and a report that
+banned silently would be a weapon against anyone the relay did not
+like.
+
+The relay now also says plainly what it keeps, on its front page: a
+routing table that disappears on restart, a seven-day log of who
+contacted whom with no content in it, and a ban list. And what it
+will not do -- it has no way to call a third party at all.
+
 ## v1.17.22
 
 The connection test button, and a relay that runs.

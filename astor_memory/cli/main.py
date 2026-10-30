@@ -691,6 +691,16 @@ def main(argv: list[str] | None = None) -> int:
     relay_reg.add_argument('--ttl', type=int, default=3600)
     relay_reg.set_defaults(func=cmd_relay_register)
 
+    relay_ban = relay_sub.add_parser(
+        'ban', help='Ban a node from the relay, or list and lift bans')
+    relay_ban.add_argument('action', choices=['add', 'unban', 'list'])
+    relay_ban.add_argument('who', nargs='?', default='',
+                           help='The key id or the address to ban')
+    relay_ban.add_argument('--reason', default='')
+    relay_ban.add_argument('--state-dir', default=None,
+                           help="Where the relay keeps its files")
+    relay_ban.set_defaults(func=cmd_relay_ban)
+
     relay_poll = relay_sub.add_parser(
         'poll', help='Take what the relay has for us and answer it')
     relay_poll.add_argument('--url', default='',
@@ -1557,9 +1567,34 @@ def cmd_relay_register(args) -> int:
     # need the address on the command line every time
     from .._internal.relay_client import write_config
     write_config(args.url, key_id=out.get('key_id'),
-                 expires_at=out.get('expires_at'))
+                 token=out.get('token'), expires_at=out.get('expires_at'))
     print(f'[OK] registered with {args.url} '
           f'(key_id {out.get("key_id")}, expires {out.get("expires_at")})')
+    return 0
+
+
+def cmd_relay_ban(args) -> int:
+    """Ban a node from the relay: by key id, or by the address it comes from."""
+    from ..relay_server import create_relay_app
+    app = create_relay_app(state_dir=getattr(args, 'state_dir', None) or None)
+    bans = app.astor_bans
+    if args.action == 'list':
+        rows = bans.list()
+        if not rows:
+            print('  no bans')
+            return 0
+        for r in rows:
+            print(f"  {r['who']} ({r['kind']}) {r['reason']}")
+        return 0
+    if args.action == 'unban':
+        if bans.remove(args.who):
+            print(f'[OK] unbanned {args.who}')
+            return 0
+        print(f'[ERR] {args.who} is not banned', file=sys.stderr)
+        return 1
+    kind = 'address' if args.who.replace('.', '').isdigit() else 'key_id'
+    bans.add(args.who, kind=kind, reason=getattr(args, 'reason', '') or '')
+    print(f'[OK] banned {args.who} ({kind})')
     return 0
 
 
@@ -1595,6 +1630,7 @@ def cmd_relay_poll(args) -> int:
         if not _here.get('found'):
             _out = register(url)
             write_config(url, key_id=_out.get('key_id'),
+                         token=_out.get('token'),
                          expires_at=_out.get('expires_at'))
             print(f"[astor] relay registration renewed (key_id "
                   f"{_out.get('key_id')})")

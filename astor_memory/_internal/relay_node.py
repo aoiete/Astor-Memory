@@ -77,7 +77,8 @@ def send_search_via_relay(relay_url: str, peer: dict, request,
     try:
         sent = client.send(relay_url, to_key_id=to_key,
                             to_x25519_pub=peer_x, from_key_id=my_key,
-                            message=request.to_dict(), msg_type=MSG_SEARCH)
+                            message=request.to_dict(), msg_type=MSG_SEARCH,
+                            astor_dir=astor_dir)
     except client.RelayClientError as exc:
         return {"error": "relay_send_failed", "detail": str(exc)}
 
@@ -85,7 +86,8 @@ def send_search_via_relay(relay_url: str, peer: dict, request,
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            messages = client.poll(relay_url, my_key, x_priv, wait=2)
+            messages = client.poll(relay_url, my_key, x_priv, wait=2,
+                                   astor_dir=astor_dir)
         except client.RelayClientError:
             messages = []
         for msg in messages:
@@ -163,6 +165,7 @@ def poll_and_dispatch(relay_url: str, astor_dir: str | None = None,
                         message=answer,
                         msg_type=MSG_SEARCH_REPLY,
                         reply_to=msg_id,
+                        astor_dir=astor_dir,
                     )
                     summary["answered"] += 1
             elif kind == MSG_FRIEND_REQUEST:
@@ -180,7 +183,7 @@ def poll_and_dispatch(relay_url: str, astor_dir: str | None = None,
 
     if ack_ids:
         try:
-            client.ack(relay_url, my_key, ack_ids)
+            client.ack(relay_url, my_key, ack_ids, astor_dir=astor_dir)
             summary["acked"] = len(ack_ids)
         except client.RelayClientError as exc:
             summary["dropped"].append({"why": "ack_failed",
