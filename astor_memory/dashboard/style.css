@@ -897,9 +897,28 @@ body {
 /* the row's block/delete pair. Not .peer-actions -- that class belongs
    to the add-peer form and it wraps, which pushed this row's last cell
    onto a second band. */
+/* block/unblock and the x. The label decides the width -- a fixed
+   width clipped "unblock" -- and the x gets a minimum so the glyph is
+   never cut off. */
 .peer-row-actions-inner { display: flex; gap: 4px; align-items: center; flex-wrap: nowrap; }
-.peer-row-actions .btn-refresh { text-align: center; }
-.peer-row-actions .btn-refresh:last-child { width: 26px; flex: none; }
+/* .btn-refresh is a 28x28 square icon button (the reload glyph), so its
+   width has to be released here -- "unblock" was clipped inside it. */
+.peer-row-actions .btn-refresh {
+  width: auto;
+  min-width: 30px;
+  height: 26px;
+  line-height: 18px;
+  text-align: center;
+  white-space: nowrap;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.peer-row-actions .btn-refresh:last-child {
+  min-width: 30px;
+  flex: none;
+  padding-left: 2px;
+  padding-right: 2px;
+}
 
 /* v1.17.26: the connection test. One column, one width, so the rows
    line up: the result on top (a coloured pill once it has run), the

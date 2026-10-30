@@ -46,6 +46,11 @@ Three separate things were wrong and they compounded:
   depends on: the buttons ended up at six different heights, from 69px
   to 103px within one row
 
+The block/unblock button is a `.btn-refresh`, which is a 28x28 square
+icon button for the reload glyph -- so the word was being clipped
+inside a fixed 28px box. The width is released there now and the
+labels get their natural width.
+
 So: 11px table, 10px headers, 11px buttons at a uniform 26px height.
 The endpoint cell is one line with the full list in the tooltip. The
 flex lives on a div inside the cell, not on the cell itself. The route
