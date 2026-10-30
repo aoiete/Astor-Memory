@@ -1,3 +1,42 @@
+## v1.17.21
+
+The relay can carry a search now.
+
+The relay service existed; nothing used it. A node in relay mode now
+asks its peers through the relay and answers the requests that come
+back, so two nodes that cannot reach each other directly still find
+each other's public tier.
+
+The receiver's authorization rules moved out of the Flask endpoint
+into `peer_search_service.answer_search_request`, because the relay
+answers the same question and must not get a laxer answer than a
+direct request. A copy of an authorization check is a copy that can
+drift; there is now one copy, and the HTTP endpoint and the relay
+both go through it.
+
+The answer is sealed to the encryption key already held for that
+peer, never to a key the request carries. If the reply went to a key
+from the request, the relay could swap that key and read the answer
+on the way past.
+
+A peer row carries `connect_mode` (direct or relay) and the peer's
+x25519 public key. The two modes are not mixed and there is no
+automatic fallback between them: when a search does not come back,
+the log has to say which path was tried.
+
+Two smaller things fell out of the work:
+
+- `build_search_request` took a private key and then ignored it,
+  signing with whatever identity was on disk. Every in-tree caller
+  passed its own key, so nothing changed, but the function now does
+  what its signature says.
+- the receiving tick binds an ACL when it runs on its own, and only
+  when nothing is bound yet. Inside the server the process is already
+  acting as whoever it is, and rebinding it there would change the
+  identity the whole server runs under.
+
+`am relay poll` is the receiving half, and it is what a timer runs.
+
 ## v1.17.20
 
 The relay: a postman that cannot read the mail.

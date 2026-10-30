@@ -180,9 +180,14 @@ class PeerSearchRequest:
         except Exception:
             return False
 
-    def to_query_string(self) -> str:
-        """Encode as URL query parameter for GET endpoint."""
-        payload = {
+    def to_dict(self) -> dict:
+        """The request as a plain document.
+
+        The relay carries this shape: it is the same document the GET
+        endpoint base64s, so the receiver answers a relayed request
+        with exactly the code that answers a direct one.
+        """
+        return {
             "requestor_peer_id": self.requestor_peer_id,
             "requestor_pubkey": self.requestor_pubkey,
             "query": self.query,
@@ -191,8 +196,11 @@ class PeerSearchRequest:
             "timestamp": self.timestamp,
             "signature": self.signature,
         }
+
+    def to_query_string(self) -> str:
+        """Encode as URL query parameter for GET endpoint."""
         return base64.urlsafe_b64encode(
-            json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            json.dumps(self.to_dict(), separators=(",", ":")).encode("utf-8")
         ).decode("ascii")
 
 
@@ -306,7 +314,11 @@ def build_search_request(
         timestamp=now,
         signature='A' * 86 + '==',  # placeholder: 88 chars base64 → exactly 64 bytes
     )
-    sig = sign(temp.canonical_payload())
+    # sign with the key the caller handed in, not with whatever identity
+    # happens to be on disk -- for every in-tree caller those are the
+    # same key, but the function should do what its signature says
+    sig = sign(temp.canonical_payload(),
+               private_key=requestor_private_key)
     # Build real object with real signature
     return PeerSearchRequest(
         requestor_peer_id=requestor_peer_id,
@@ -400,6 +412,76 @@ def select_search_targets(
     return targets
 
 
+def _connect_mode_of(f: dict) -> str:
+    """How we reach this peer: 'direct' or 'relay'.
+
+    A peer row that says nothing is direct -- that is what every peer
+    meant before the relay existed.
+    """
+    try:
+        meta = f.get("metadata") or {}
+        if isinstance(meta, str):
+            import json as _json
+            meta = _json.loads(meta)
+        mode = (meta or {}).get("connect_mode", "direct")
+    except Exception:
+        mode = "direct"
+    return mode if mode in ("direct", "relay") else "direct"
+
+
+def _dispatch_via_relay(request, peer: dict,
+                        per_peer_timeout: float = 25.0) -> PeerSearchResponse:
+    """Ask one peer through the relay and wait for the answer.
+
+    The relay is a postman, not a reader: the request goes out sealed
+    and the answer comes back sealed. The relay changes how the bytes
+    travel, not what they mean.
+    """
+    from .relay_node import send_search_via_relay
+    relay_url = (peer.get("endpoint") or "").rstrip("/")
+    if not relay_url:
+        return PeerSearchResponse(
+            requestor_peer_id=request.requestor_peer_id,
+            results=(),
+            error="no_endpoint",
+        )
+    out = send_search_via_relay(relay_url, peer, request,
+                                 timeout=per_peer_timeout)
+    if not isinstance(out, dict):
+        return PeerSearchResponse(
+            requestor_peer_id=request.requestor_peer_id,
+            results=(),
+            error="relay_bad_answer",
+        )
+    if out.get("error"):
+        return PeerSearchResponse(
+            requestor_peer_id=request.requestor_peer_id,
+            results=(),
+            error=out.get("error"),
+        )
+    # the answer is the same document the direct path returns
+    results = []
+    for r in (out.get("results") or []):
+        try:
+            results.append(PeerSearchResult(
+                source_peer_id=r.get("source_peer_id", ""),
+                source_trust=int(r.get("source_trust", 0)),
+                fact_id=int(r.get("fact_id", 0)),
+                content=str(r.get("content", "")),
+                kind=str(r.get("kind", "fact")),
+                tags=tuple(r.get("tags") or ()),
+                created_at=str(r.get("created_at", "")),
+                relevance=float(r.get("relevance", 0.0)),
+            ))
+        except (TypeError, ValueError):
+            continue
+    return PeerSearchResponse(
+        requestor_peer_id=request.requestor_peer_id,
+        results=tuple(results),
+        truncated=bool(out.get("truncated")),
+    )
+
+
 def _endpoints_for(f: dict) -> list[str]:
     """Every address a peer row lists, in the order to try them.
 
@@ -446,6 +528,14 @@ def dispatch_search_to_peers(
     import urllib.error
     responses = []
     for f in targets:
+        # v1.17.21: a peer in relay mode is reached through the relay.
+        # The two modes are not mixed and there is no automatic
+        # fallback between them: when a search does not come back, the
+        # log has to say which path was tried.
+        if _connect_mode_of(f) == 'relay':
+            responses.append(_dispatch_via_relay(
+                request, f, per_peer_timeout=per_peer_timeout))
+            continue
         # v1.17.3: a peer can have several addresses -- the LAN one and
         # the public one. Try them in order and stop at the first that
         # answers, so an operator on the LAN gets the fast path and an

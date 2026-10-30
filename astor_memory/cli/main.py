@@ -691,6 +691,14 @@ def main(argv: list[str] | None = None) -> int:
     relay_reg.add_argument('--ttl', type=int, default=3600)
     relay_reg.set_defaults(func=cmd_relay_register)
 
+    relay_poll = relay_sub.add_parser(
+        'poll', help='Take what the relay has for us and answer it')
+    relay_poll.add_argument('--url', required=True,
+                             help='Relay base url (http://host:port)')
+    relay_poll.add_argument('--wait', type=int, default=0,
+                             help='Seconds to wait for a message (default 0)')
+    relay_poll.set_defaults(func=cmd_relay_poll)
+
     relay_look = relay_sub.add_parser(
         'lookup', help='Check whether a peer is on the relay')
     relay_look.add_argument('--url', required=True,
@@ -1537,6 +1545,34 @@ def cmd_relay_register(args) -> int:
         return 1
     print(f'[OK] registered with {args.url} '
           f'(key_id {out.get("key_id")}, expires {out.get("expires_at")})')
+    return 0
+
+
+def cmd_relay_poll(args) -> int:
+    """Take what the relay has for us and answer what needs answering.
+
+    This is the receiving half. A node that wants to be reachable
+    through a relay runs this on a timer: the search requests that
+    arrive sealed are opened, checked against the same rules a direct
+    request goes through, and answered.
+    """
+    from .._internal.relay_node import poll_and_dispatch
+    try:
+        summary = poll_and_dispatch(args.url, wait=int(getattr(args, 'wait', 0) or 0))
+    except Exception as exc:
+        print(f'[ERR] {exc}', file=sys.stderr)
+        return 1
+    if summary.get('error'):
+        print(f"[ERR] {summary.get('error')}: {summary.get('detail', '')}",
+              file=sys.stderr)
+        return 1
+    print(f"[astor] relay: {summary['received']} received, "
+          f"{summary['answered']} answered, "
+          f"{summary['friend_requests']} friend requests, "
+          f"{summary['acked']} acked")
+    for d in summary.get('dropped') or []:
+        print(f"  dropped {d.get('msg_id', '')}: {d.get('why')} "
+              f"{d.get('detail', '')}")
     return 0
 
 

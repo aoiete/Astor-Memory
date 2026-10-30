@@ -10732,6 +10732,16 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception as e:
             return jsonify({'error': 'bad_req_encoding', 'detail': str(e)}), 400
 
+        # v1.17.21: the receiver half of a peer search lives in one
+        # place, because the relay answers the same question and must
+        # not get a laxer answer than a direct request.
+        from ._internal.peer_search_service import answer_search_request
+        _status, _body = answer_search_request(d)
+        if _status == 429:
+            return jsonify(_body), 429, {
+                'Retry-After': str(_body.get('retry_after_seconds', 60)),
+            }
+        return jsonify(_body), _status
         # Construct-time validation — raises on malformed/stale input.
         try:
             req = PeerSearchRequest(
@@ -10744,11 +10754,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 signature=d['signature'],
             )
         except KeyError as e:
-            return jsonify({'error': 'missing_field', 'field': str(e)}), 400
+            return 400, {'error': 'missing_field', 'field': str(e)}
         except ValueError as e:
-            return jsonify({'error': 'invalid_request', 'detail': str(e)}), 400
+            return 400, {'error': 'invalid_request', 'detail': str(e)}
         except Exception as e:
-            return jsonify({'error': 'invalid_request', 'detail': str(e)}), 400
+            return 400, {'error': 'invalid_request', 'detail': str(e)}
 
         # Self-search guard: a peer searching itself via this endpoint is a
         # topology error, not an attack — reject cleanly.
@@ -10756,7 +10766,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             from ._internal.peer_identity import get_identity as _pp_get_identity
             _me = _pp_get_identity()
             if _me and req.requestor_peer_id == _me.get('peer_id'):
-                return jsonify({'error': 'self_search_not_allowed'}), 400
+                return 400, {'error': 'self_search_not_allowed'}
         except Exception:
             pass
 
@@ -10773,19 +10783,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 )
             except Exception:
                 pass
-            return jsonify({'error': 'bad_signature'}), 403
+            return 403, {'error': 'bad_signature'}
 
         # Receiver-side opt-in chain: known peer, not blacklisted,
         # trust >= 50, allow_search=True.
         peer_row = _pp_get_peer(req.requestor_peer_id)
         if not peer_row:
-            return jsonify({'error': 'unknown_peer',
-                            'detail': 'friend must add you first (am peer add)'}), 403
+            return 403, {'error': 'unknown_peer',
+                            'detail': 'friend must add you first (am peer add)'}
         if (peer_row.get('kind') or 'friend') == 'blacklist':
-            return jsonify({'error': 'peer_blacklisted'}), 403
+            return 403, {'error': 'peer_blacklisted'}
         if int(peer_row.get('trust') or 0) < 50:
-            return jsonify({'error': 'trust_below_threshold',
-                            'detail': 'trust must be >= 50'}), 403
+            return 403, {'error': 'trust_below_threshold',
+                            'detail': 'trust must be >= 50'}
         _meta = peer_row.get('metadata') or {}
         if isinstance(_meta, str):
             try:
@@ -10793,9 +10803,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
             except Exception:
                 _meta = {}
         if not isinstance(_meta, dict) or not _meta.get('allow_search'):
-            return jsonify({'error': 'search_not_allowed',
+            return 403, {'error': 'search_not_allowed',
                             'detail': 'friend has not opted in '
-                                      '(am peer allow-search <requestor_peer_id>)'}), 403
+                                      '(am peer allow-search <requestor_peer_id>)'}
         # v1.15.22 Ship E: per-peer rate limit (R12593 lock — PPS path is
         # its own budget, separate from per-actor limits). Enforce BEFORE
         # doing any expensive search work so a runaway peer doesn't trigger
@@ -10806,14 +10816,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
         )
         _allowed, _rl_count, _rl_retry = _prl_check(req.requestor_peer_id)
         if not _allowed:
-            return jsonify({
+            return 429, {
                 'error': 'peer_rate_limit_exceeded',
                 'detail': (f'this peer has exceeded the '
                            f'{_PRL_DEFAULT} req/24h PPS budget'),
                 'count_in_window': _rl_count,
                 'retry_after_seconds': _rl_retry,
-            }), 429, {
-                'Retry-After': str(_rl_retry),
             }
 
         # Clamp limit (already validated 1..20 at construction, but be safe).
@@ -10839,7 +10847,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 limit=limit,
             )
         except Exception as e:
-            return jsonify({'error': 'search_backend_failed', 'detail': str(e)}), 500
+            return 500, {'error': 'search_backend_failed', 'detail': str(e)}
 
         # Enrich from bus, drop tombstoned, cap bytes defensively.
         me_row = _me or {}
@@ -10899,7 +10907,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             results=tuple(results),
             truncated=truncated,
         )
-        return jsonify(resp.to_dict())
+        return 200, resp.to_dict()
 
     # ------------------------------------------------------------------
     # v1.15.21 (2026-09-28) — Ship D: PPS-augmented recall.

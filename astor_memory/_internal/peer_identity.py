@@ -262,16 +262,27 @@ def get_identity(astor_dir: str | None = None) -> dict:
     }
 
 
-def sign(data: bytes, astor_dir: str | None = None) -> str:
+def sign(data: bytes, astor_dir: str | None = None,
+         private_key: str | None = None) -> str:
     """Sign data with this peer's private key. Returns base64 signature.
 
     Caller must ensure identity is initialized (call init_identity first).
     Works with both PyNaCL (preferred) and cryptography (fallback) backends.
+
+    v1.17.21: private_key signs with a key that was handed in rather
+    than the one on disk. The peer-search request builder already
+    carried the requestor's private key and then ignored it, signing
+    with whatever identity happened to be on disk -- the same key in
+    every in-tree caller, so nothing changed, but it made the function
+    unusable for any other identity.
     """
-    identity = get_identity(astor_dir)
-    if not identity:
-        identity = init_identity(astor_dir)
-    priv_raw = base64.b64decode(identity["private_key"])
+    if private_key:
+        priv_raw = base64.b64decode(private_key)
+    else:
+        identity = get_identity(astor_dir)
+        if not identity:
+            identity = init_identity(astor_dir)
+        priv_raw = base64.b64decode(identity["private_key"])
     # v1.16.81: coerce at the boundary instead of trusting the caller.
     #
     # Only the PyNaCl branch accepted a str — it hashes whatever it is given —
