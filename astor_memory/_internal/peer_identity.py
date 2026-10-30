@@ -252,6 +252,12 @@ def get_identity(astor_dir: str | None = None) -> dict:
         "first_run_ts": _read_first_run_ts(iddir),
         "public_key": keypair.get("public_key", ""),
         "private_key": keypair.get("private_key", ""),
+        # the encryption key, for the relay. The signing key cannot do
+        # key agreement, so a node has two. It may be empty on an
+        # identity that was created before the relay existed -- nothing
+        # here generates it, because reading an identity must not
+        # write to disk.
+        "x25519_public_key": keypair.get("x25519_public_key", ""),
         "db_path": _db_path(astor_dir),
     }
 

@@ -11312,9 +11312,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
             code = local_friend_code()
         except Exception:
             pass
+        # the relay needs this node's encryption key: the signing key
+        # cannot do key agreement, so a node has two public keys
+        x_pub = ident.get('x25519_public_key') or ''
+        if not x_pub:
+            try:
+                from ._internal.relay_crypto import node_x25519_keys
+                x_pub = node_x25519_keys()[0]
+            except Exception:
+                x_pub = ''
         return jsonify({
             'peer_id': ident.get('peer_id'),
             'public_key': ident.get('public_key'),
+            'x25519_public_key': x_pub,
             'first_run_ts': ident.get('first_run_ts'),
             'friend_code': code,
         })

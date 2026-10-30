@@ -1048,6 +1048,25 @@ def main(argv: list[str] | None = None) -> int:
         help='Addresses, most preferred first')
     peer_endpoints.set_defaults(func=cmd_peer_endpoints)
 
+    # v1.17.21: relay mode for a peer.
+    peer_cmode = peer_sub.add_parser(
+        'connect-mode',
+        help='Put a peer in direct or relay mode')
+    peer_cmode.add_argument('peer_id')
+    peer_cmode.add_argument('mode', choices=['direct', 'relay'])
+    peer_cmode.set_defaults(func=cmd_peer_connect_mode)
+
+    peer_rkey = peer_sub.add_parser(
+        'relay-key', help="Record a peer's encryption key")
+    peer_rkey.add_argument('peer_id')
+    peer_rkey.add_argument('public_key',
+                           help="The peer's x25519 public key (base64)")
+    peer_rkey.set_defaults(func=cmd_peer_relay_key)
+
+    peer_rstat = peer_sub.add_parser(
+        'relay-status', help='Show the relay state of every peer')
+    peer_rstat.set_defaults(func=cmd_peer_relay_status)
+
     peer_outbound = peer_sub.add_parser('outbound-search',
         help='Set whether I may search a peer (default: yes)')
     peer_outbound.add_argument('peer_id', help='Peer ID')
@@ -5623,6 +5642,85 @@ def cmd_peer_endpoints(args) -> int:
     for i, ep in enumerate(get_peer_endpoints(args.peer_id)):
         print(f'  {i + 1}. {ep}')
     print('     they are tried in this order; the first that answers wins')
+    return 0
+
+
+def cmd_peer_connect_mode(args) -> int:
+    """v1.17.21: direct or relay.
+
+    A peer's endpoint means two different things depending on the mode:
+    in direct mode it is the peer's own address, in relay mode it is
+    the relay's base url. The two are not mixed and there is no
+    automatic fallback -- when a search does not come back, the log has
+    to say which path was tried.
+    """
+    from .._internal.peer_relationships import (
+        set_connect_mode, get_peer, _read_connect_mode,
+    )
+    row = get_peer(args.peer_id)
+    if not row:
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        return 1
+    try:
+        set_connect_mode(args.peer_id, args.mode)
+    except ValueError as e:
+        print(f'[ERR] {e}', file=sys.stderr)
+        return 2
+    if args.mode == 'relay':
+        ep = (row.get('endpoint') or '').strip()
+        if not ep:
+            print(f'[ERR] relay mode needs the relay url as the endpoint: '
+                  f'am peer endpoint {args.peer_id} <relay-url>',
+                  file=sys.stderr)
+            return 2
+        if not (ep.startswith('http://') or ep.startswith('https://')):
+            print(f'[ERR] the relay url must be http(s): {ep}',
+                  file=sys.stderr)
+            return 2
+        from .._internal.peer_relationships import _read_x25519_public_key
+        if not _read_x25519_public_key(row):
+            print(f'[WARN] this peer has no encryption key yet -- relay '
+                  f'messages to it cannot be sealed. Fetch it from the '
+                  f'peer: am peer relay-key {args.peer_id} <x25519-pubkey>')
+    print(f'[OK] {args.peer_id} is now in {args.mode} mode')
+    return 0
+
+
+def cmd_peer_relay_key(args) -> int:
+    """Record a peer's encryption key (the one that is not the signing key)."""
+    from .._internal.peer_relationships import set_peer_x25519_key, get_peer
+    if not get_peer(args.peer_id):
+        print(f'[ERR] peer not found: {args.peer_id}', file=sys.stderr)
+        return 1
+    set_peer_x25519_key(args.peer_id, args.public_key.strip())
+    print(f'[OK] encryption key recorded for {args.peer_id}')
+    return 0
+
+
+def cmd_peer_relay_status(args) -> int:
+    """Show the relay-related state of every peer."""
+    from .._internal.peer_relationships import (
+        list_peers, _read_connect_mode, _read_x25519_public_key,
+    )
+    from .._internal.relay_crypto import key_id_for
+    rows = list_peers()
+    if not rows:
+        print('  no peers')
+        return 0
+    print(f'  {"peer":<34} {"mode":<7} {"key_id":<17} enc-key')
+    for row in rows:
+        pid = row.get('peer_id') or ''
+        mode = _read_connect_mode(row)
+        x_pub = _read_x25519_public_key(row)
+        kid = ''
+        pk = row.get('public_key') or ''
+        if pk:
+            try:
+                kid = key_id_for(pk)
+            except Exception:
+                kid = ''
+        print(f'  {pid[:34]:<34} {mode:<7} {kid:<17} '
+              f'{"yes" if x_pub else "no"}')
     return 0
 
 

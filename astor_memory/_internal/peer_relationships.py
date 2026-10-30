@@ -1131,6 +1131,105 @@ _ALLOW_SEARCH_KEY = "allow_search"
 # while A does not want to search B -- that is a normal relationship
 # (one side is a library, the other is a reader).
 #
+# ---------------------------------------------------------------------------
+# v1.17.21: connect_mode and the peer's encryption key.
+#
+# A peer's endpoint means two different things depending on how we
+# reach it, so the mode is explicit rather than inferred from the shape
+# of the URL:
+#
+#   direct -- the endpoint is the peer's own reachable address
+#   relay  -- the endpoint is the relay's base url, and the peer is
+#             reached through it
+#
+# Mixing the two in one list and failing over automatically was
+# dropped on purpose: when a search does not come back, an automatic
+# fallback leaves nothing in the log to say which path was tried.
+#
+# The encryption key lives next to it in the same JSON column: a node
+# has two public keys, one for signing and one for key agreement, and
+# the second one is what we seal a relay message to.
+# ---------------------------------------------------------------------------
+
+CONNECT_MODE_DIRECT = "direct"
+CONNECT_MODE_RELAY = "relay"
+_CONNECT_MODE_KEY = "connect_mode"
+_X25519_KEY = "x25519_public_key"
+
+
+def _read_connect_mode(row) -> str:
+    """How we reach this peer. Unknown peers are direct: that is what
+    every peer row meant before the relay existed."""
+    try:
+        meta = row.get("metadata") or "{}"
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        mode = (meta or {}).get(_CONNECT_MODE_KEY, CONNECT_MODE_DIRECT)
+    except Exception:
+        mode = CONNECT_MODE_DIRECT
+    return mode if mode in (CONNECT_MODE_DIRECT, CONNECT_MODE_RELAY) \
+        else CONNECT_MODE_DIRECT
+
+
+def _read_x25519_public_key(row) -> str:
+    """The peer's encryption key, or "" if we never learned it."""
+    try:
+        meta = row.get("metadata") or "{}"
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        return (meta or {}).get(_X25519_KEY, "") or ""
+    except Exception:
+        return ""
+
+
+def _merge_peer_metadata(peer_id: str, key: str, value,
+                         astor_dir: str | None = None) -> dict:
+    """Write one key into a peer's metadata without touching the rest."""
+    import json as _json
+    con = _get_conn(astor_dir)
+    with _RELATIONSHIPS_LOCK:
+        row = con.execute(
+            "SELECT metadata FROM peer_relationships WHERE peer_id = ?",
+            (peer_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"no such peer: {peer_id}")
+        try:
+            meta = _json.loads(row["metadata"]) if row["metadata"] else {}
+        except Exception:
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta[key] = value
+        con.execute(
+            "UPDATE peer_relationships SET metadata = ?, updated_at = ? "
+            "WHERE peer_id = ?",
+            (_json.dumps(meta, ensure_ascii=False), _now_iso(), peer_id),
+        )
+        con.commit()
+    return meta
+
+
+def set_connect_mode(peer_id: str, mode: str, astor_dir: str | None = None
+                      ) -> dict:
+    """Put a peer in direct or relay mode."""
+    if mode not in (CONNECT_MODE_DIRECT, CONNECT_MODE_RELAY):
+        raise ValueError(
+            f"connect_mode must be {CONNECT_MODE_DIRECT!r} or "
+            f"{CONNECT_MODE_RELAY!r}, got {mode!r}")
+    meta = _merge_peer_metadata(peer_id, _CONNECT_MODE_KEY, mode, astor_dir)
+    return {"peer_id": peer_id, "connect_mode": mode,
+            "metadata": meta}
+
+
+def set_peer_x25519_key(peer_id: str, public_key: str,
+                        astor_dir: str | None = None) -> dict:
+    """Record the peer's encryption key."""
+    meta = _merge_peer_metadata(peer_id, _X25519_KEY, public_key, astor_dir)
+    return {"peer_id": peer_id, "x25519_public_key": public_key,
+            "metadata": meta}
+
+
 # Stored in metadata.outbound_search, same JSON column, same reason:
 # no schema change.
 #

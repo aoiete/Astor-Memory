@@ -140,6 +140,7 @@ def _extract_identity(data: dict) -> dict:
         return {
             "peer_id": pid,
             "public_key": data.get("public_key") or data.get("pubkey") or "",
+            "x25519_public_key": data.get("x25519_public_key") or "",
             "first_run_ts": data.get("first_run_ts") or "",
         }
     # A status-shaped response.
