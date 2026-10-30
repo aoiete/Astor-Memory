@@ -34,11 +34,11 @@ version instead of v0.3.0.
 
 The peer table in the dashboard was unreadable: the table rendered at
 12px, its headers at 9.5px, and its buttons at 2px padding, with six
-buttons sharing one row. It now renders at 13px with 11px headers,
-buttons at 12px and 32px tall, the connection test stacked in one
-column (result, direct, relay) and the block/delete pair stacked in
-another, inside a scroll container so a narrow window does not squash
-the row.
+buttons sharing one row. It now renders at 12px with 10px headers and
+11px buttons, the two connection routes side by side under the result
+pill (equal width, so the columns line up), and the block/delete pair
+side by side beside them, inside a scroll container so a narrow window
+does not squash the row. The route labels are upper case.
 
 ## v1.17.25
 

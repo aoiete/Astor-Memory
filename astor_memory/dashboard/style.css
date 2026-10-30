@@ -863,12 +863,12 @@ body {
   text-transform: uppercase; letter-spacing: 0.05em; margin: 12px 0 6px;
   padding-bottom: 4px; border-bottom: 1px solid var(--border); }
 .peer-section-label.peer-blacklist { color: var(--danger); }
-.peer-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.peer-table th { text-align: left; padding: 9px 10px;
+.peer-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.peer-table th { text-align: left; padding: 7px 8px;
   border-bottom: 1px solid var(--border); color: var(--text-dim);
-  font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em;
+  font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em;
   white-space: nowrap; }
-.peer-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.peer-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .peer-pid { font-family: monospace; color: var(--accent); }
 .peer-alias { color: var(--text); }
 .peer-endpoint { font-family: monospace; font-size: 0.8em; color: var(--text-dim); }
@@ -878,7 +878,7 @@ body {
 .peer-trust-input.peer-trust-saved {
   background: var(--good); color: white; border-color: var(--good);
 }
-.peer-allow-toggle { padding: 5px 10px; font-size: 12px;
+.peer-allow-toggle { padding: 4px 8px; font-size: 11px;
   border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
   background: var(--bg); color: var(--text); }
 .peer-allow-toggle.peer-allow-on {
@@ -887,12 +887,13 @@ body {
 .peer-allow-toggle.peer-allow-off {
   background: var(--bg); color: var(--text-dim);
 }
-.peer-table .btn-refresh { padding: 5px 9px; font-size: 12px; margin-right: 0;
+.peer-table .btn-refresh { padding: 4px 8px; font-size: 11px; margin-right: 0;
   white-space: nowrap; }
-/* the two destructive-ish buttons sit in their own column instead of
-   fighting the rest of the row for horizontal space */
-.peer-actions { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
-.peer-actions .btn-refresh { width: 100%; text-align: center; }
+/* block and delete sit side by side, the delete a fixed narrow square so
+   the pair reads as one control instead of two loose buttons */
+.peer-actions { display: flex; gap: 4px; align-items: stretch; }
+.peer-actions .btn-refresh { text-align: center; }
+.peer-actions .btn-refresh:last-child { width: 26px; flex: none; }
 
 /* v1.17.26: the connection test. One column, one width, so the rows
    line up: the result on top (a coloured pill once it has run), the
@@ -900,10 +901,11 @@ body {
 .peer-test-cell {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   align-items: stretch;
-  min-width: 112px;
+  min-width: 124px;
 }
+.peer-test-routes { display: flex; gap: 4px; }
 .peer-test-result {
   display: block;
   text-align: center;
@@ -925,9 +927,11 @@ body {
 }
 .peer-test-btn {
   display: block;
-  width: 100%;
-  padding: 7px 10px;
-  font-size: 12px;
+  flex: 1;
+  padding: 4px 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
   font-family: inherit;
   color: var(--text);
   background: var(--bg);

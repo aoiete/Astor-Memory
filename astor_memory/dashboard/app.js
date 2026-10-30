@@ -1297,10 +1297,12 @@ function renderPeerRows(rows, sectionKey) {
       + '<td>' + search + '</td>'
       + '<td class="recall-hint">' + escapeHtml(updated) + '</td>'
       + '<td class="peer-test-cell">' + tCell
+      + '<div class="peer-test-routes">'
       + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="test-peer" '
       + 'data-mode="direct" class="peer-test-btn">test</button>'
       + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="test-peer" '
       + 'data-mode="relay" class="peer-test-btn peer-test-relay">via relay</button>'
+      + '</div>'
       + '</td>'
       + '<td class="peer-actions">'
       + (p.kind === 'blacklist'
