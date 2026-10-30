@@ -691,6 +691,12 @@ def main(argv: list[str] | None = None) -> int:
     relay_reg.add_argument('--ttl', type=int, default=3600)
     relay_reg.set_defaults(func=cmd_relay_register)
 
+    relay_add = relay_sub.add_parser(
+        'add', help='Add another relay this node can use')
+    relay_add.add_argument('--url', required=True,
+                           help='Relay base url (http://host:port)')
+    relay_add.set_defaults(func=cmd_relay_add)
+
     relay_ban = relay_sub.add_parser(
         'ban', help='Ban a node from the relay, or list and lift bans')
     relay_ban.add_argument('action', choices=['add', 'unban', 'list'])
@@ -700,6 +706,10 @@ def main(argv: list[str] | None = None) -> int:
     relay_ban.add_argument('--state-dir', default=None,
                            help="Where the relay keeps its files")
     relay_ban.set_defaults(func=cmd_relay_ban)
+
+    relay_list = relay_sub.add_parser(
+        'list', help='Show the relays this node uses, in order')
+    relay_list.set_defaults(func=cmd_relay_list)
 
     relay_poll = relay_sub.add_parser(
         'poll', help='Take what the relay has for us and answer it')
@@ -1565,11 +1575,42 @@ def cmd_relay_register(args) -> int:
         return 1
     # remember it, so `am relay poll` and the timer that runs it do not
     # need the address on the command line every time
-    from .._internal.relay_client import write_config
-    write_config(args.url, key_id=out.get('key_id'),
-                 token=out.get('token'), expires_at=out.get('expires_at'))
+    from .._internal.relay_client import write_relay_entry
+    write_relay_entry(args.url, out.get('key_id'), out.get('token'),
+                      primary=not getattr(args, 'add', False))
     print(f'[OK] registered with {args.url} '
           f'(key_id {out.get("key_id")}, expires {out.get("expires_at")})')
+    return 0
+
+
+def cmd_relay_list(args) -> int:
+    """The relays this node uses, in the order they are tried."""
+    from .._internal.relay_client import read_relay_entries
+    entries = read_relay_entries()
+    if not entries:
+        print('  no relay configured for this node')
+        return 1
+    for i, e in enumerate(entries):
+        print(f"  {i + 1}. {e['base_url']}  key_id={e.get('key_id', '')}")
+    return 0
+
+
+def cmd_relay_add(args) -> int:
+    """Add another relay this node can use.
+
+    The node tries its relays in order, so a second one is what keeps
+    the node reachable when the first goes down or is blocked.
+    """
+    from .._internal.relay_client import register, write_relay_entry
+    from .._internal.relay_client import RelayClientError
+    try:
+        out = register(args.url)
+    except RelayClientError as exc:
+        print(f'[ERR] {exc}', file=sys.stderr)
+        return 1
+    write_relay_entry(args.url, out.get('key_id'), out.get('token'),
+                      primary=False)
+    print(f'[OK] {args.url} added (key_id {out.get("key_id")})')
     return 0
 
 

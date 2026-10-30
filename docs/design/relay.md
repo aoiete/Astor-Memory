@@ -581,7 +581,7 @@ peer_conn.send(payload)
 - **技术栈**:Python + Flask(和 astor 同栈,复用依赖管理)
 - **状态**:路由表纯内存(D7);**磁盘上只有两样东西** —— 审计日志(7 天)与封禁
   黑名单。**没有任何业务数据落盘。**
-- **代码位置**:`astor_memory/_internal/relay_server.py`(可独立部署)
+- **代码位置**:`astor_memory/relay_server.py`(可独立部署,`python -m astor_memory.relay_server` 或 `am relay serve`)
 - **运行**:NSSM(Windows)或 systemd(Linux VPS)
 
 ### 10.2 VPS 需求
@@ -612,7 +612,7 @@ relay 的价值在于「对方什么都不用装,只要能出网」。
 
 ## 11. 实施计划
 
-> **状态 (2026-10-30)**:P1-P3、P5-P8 已 ship —— relay 服务端(v1.17.20,含结构性约束测试)、peer 模式与加密公钥(v1.17.21)、relay 传搜索的完整往返(v1.17.21)、连接测试按钮(v1.17.22)、以及一个真的在跑的 relay(Windows 服务 `astor-relay` + 定时器 `astor-relay-poll-2min`)。**还欠**:P9 治理(ToS/举报/封禁)、P10 剩余(多 relay failover)、以及把 relay 暴露到公网(隧道 ingress + DNS —— 需要你决定,因为公共 relay 的服务器会看到通讯图,那是 R7 接受但应由你知情)。
+> **状态 (2026-10-30)**:P1-P3、P5-P10 全部已 ship —— relay 服务端(v1.17.20,含结构性约束测试)、peer 模式与加密公钥(v1.17.21)、relay 传搜索的完整往返(v1.17.21)、连接测试按钮(v1.17.22)、以及一个真的在跑的 relay(Windows 服务 `astor-relay` + 定时器 `astor-relay-poll-2min`)。**还欠的只有一件事**:把 relay 暴露到公网(隧道 ingress + DNS —— 需要你点头,因为公共 relay 的服务器会看到通讯图,那是 R7 接受但应由你知情)。(隧道 ingress + DNS —— 需要你决定,因为公共 relay 的服务器会看到通讯图,那是 R7 接受但应由你知情)。
 
 | 阶段 | 内容 | 可独立验证 |
 |---|---|---|
@@ -624,8 +624,8 @@ relay 的价值在于「对方什么都不用装,只要能出网」。
 | **P6** | Relay 服务端:register(挑战验签)/ lookup(online)/ send / poll / ack + 审计日志 + 限流 + 黑名单 | **已实现 (v1.17.20)**:register(挑战验签,nonce 单次)/ lookup(online 与 found 分开,不返回公钥)/ send(拒绝非密文 payload)/ poll(60s TTL 队列)/ ack / 内存路由表 / 注册与发送限流 / 审计只记通讯图不记内容;黑名单属 P9 未做 |
 | **P7** | 客户端 relay client:发送按 mode 分流 + 轮询线程 + 解密验签 + 应答回程 | A 经 relay 发 | **已实现 (v1.17.21)**:发送按 connect_mode 分流;`relay_node.poll_and_dispatch` 收信解密分发并应答;定时器 `astor-relay-poll-2min` 每 2 分钟跑一次;节点会在 relay 忘记它时自动重登记 |
 | **P8** | 搜索经 relay 完整往返 + fanout 走 relay | 两个 NAT 后节点互相搜到 | **已实现 (v1.17.21)**:两个节点各自独立 runtime(无直连地址)通过 relay 互相搜到;personal fact 不走;未 opt-in 的 peer 被拒且给出原因 |
-| **P9** | 治理:ToS + 举报入口 + 手动封禁 UI | 封禁后该 key_id 无法注册 |
-| **P10** | relay 实现约束的 grep 测试 + 多 relay failover | 断言锁死 | **部分已实现 (v1.17.20)**:grep 断言已锁死(relay 模块不得出现 requests./httpx./urlopen/socket.create_connection);多 relay failover 未做 |
+| **P9** | 治理:ToS + 举报入口 + 手动封禁 UI | 封禁后该 key_id 无法注册 | **已完成 (v1.17.23)**:举报即封禁(`POST /v1/relay/report`),封禁名单落盘(key_id 与地址都能封,地址才是真封禁),`am relay ban add/unban/list`;首页明说存了什么与不做什么(ToS 即该页) |
+| **P10** | relay 实现约束的 grep 测试 + 多 relay failover | 断言锁死 | **已完成 (v1.17.20 / v1.17.25)**:grep 断言锁死(relay 模块不得出现 requests./httpx./urlopen/socket.create_connection);多 relay failover —— 节点按顺序试,每个 relay 带自己的凭据,`am relay add` / `am relay list` |
 
 **P1~P4 不依赖 relay**,可以先单独 ship(测试按钮 + 模式分离立刻提升排错效率)。
 

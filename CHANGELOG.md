@@ -1,3 +1,20 @@
+## v1.17.25
+
+One relay going down should not take the node with it.
+
+The node keeps an ordered list of relays and tries them in order. The
+peer's own endpoint comes first when it names one -- that is the relay
+the two of them agreed on -- and the node's own list is the fallback
+for when that one is gone. Each relay carries its own credential, so
+a second relay is not the first one with a stale token.
+
+`am relay add` registers with another relay and puts it in the list;
+`am relay list` shows the order.
+
+The test for it is the honest one: two relays, the first one alive
+when it was configured and dead by the time the search runs. A relay
+that was never reachable could not be in the list in the first place.
+
 ## v1.17.24
 
 Knowing a key id is not enough to read that node's mail.

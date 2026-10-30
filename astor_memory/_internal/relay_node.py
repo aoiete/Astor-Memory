@@ -32,6 +32,14 @@ MSG_SEARCH_REPLY = "public_search_reply"
 MSG_FRIEND_REQUEST = "friend_request"
 
 
+def _token_for(relay_url: str, astor_dir: str | None = None) -> str:
+    """The credential for one particular relay."""
+    for entry in client.read_relay_entries(astor_dir):
+        if entry["base_url"] == (relay_url or "").rstrip("/"):
+            return entry.get("token") or ""
+    return client.read_token(astor_dir)
+
+
 def _my_keys(astor_dir: str | None = None) -> tuple[str, str, str]:
     """(key_id, x25519_public, x25519_private) for this node."""
     from .peer_identity import get_identity
@@ -74,29 +82,52 @@ def send_search_via_relay(relay_url: str, peer: dict, request,
     except client.RelayClientError as exc:
         return {"error": "no_peer_key", "detail": str(exc)}
 
-    try:
-        sent = client.send(relay_url, to_key_id=to_key,
-                            to_x25519_pub=peer_x, from_key_id=my_key,
-                            message=request.to_dict(), msg_type=MSG_SEARCH,
-                            astor_dir=astor_dir)
-    except client.RelayClientError as exc:
-        return {"error": "relay_send_failed", "detail": str(exc)}
+    # The relays this node knows, in the order to try them. The peer's
+    # own endpoint comes first when it names one -- that is the relay
+    # the two of them agreed on -- and the node's own list is the
+    # fallback for when that one is gone.
+    relays = []
+    if relay_url:
+        relays.append({"base_url": relay_url,
+                       "token": client.read_token(astor_dir)})
+    for entry in client.read_relay_entries(astor_dir):
+        if entry["base_url"] not in {r["base_url"] for r in relays}:
+            relays.append(entry)
+    if not relays:
+        return {"error": "no_relay",
+                "detail": "this node has no relay to use"}
 
-    msg_id = sent.get("msg_id")
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    last = "no relay answered"
+    for entry in relays:
+        url = entry["base_url"]
         try:
-            messages = client.poll(relay_url, my_key, x_priv, wait=2,
-                                   astor_dir=astor_dir)
-        except client.RelayClientError:
-            messages = []
-        for msg in messages:
-            if msg.get("reply_to") == msg_id:
-                return msg.get("message") or {}
-        if not messages:
-            time.sleep(0.2)
-    return {"error": "relay_timeout",
-            "detail": f"no answer through {relay_url} within {timeout:.0f}s"}
+            sent = client.send(url, to_key_id=to_key,
+                                to_x25519_pub=peer_x, from_key_id=my_key,
+                                message=request.to_dict(),
+                                msg_type=MSG_SEARCH,
+                                astor_dir=astor_dir,
+                                token=entry.get("token") or "")
+        except client.RelayClientError as exc:
+            last = f"{url}: {exc}"
+            continue
+        msg_id = sent.get("msg_id")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                messages = client.poll(url, my_key, x_priv, wait=2,
+                                       astor_dir=astor_dir,
+                                       token=entry.get("token") or "")
+            except client.RelayClientError as exc:
+                last = f"{url}: {exc}"
+                break
+            for msg in messages:
+                if msg.get("reply_to") == msg_id:
+                    return msg.get("message") or {}
+            if not messages:
+                time.sleep(0.2)
+        else:
+            last = f"no answer through {url} within {timeout:.0f}s"
+    return {"error": "relay_timeout", "detail": last}
 
 
 def poll_and_dispatch(relay_url: str, astor_dir: str | None = None,
@@ -124,10 +155,26 @@ def poll_and_dispatch(relay_url: str, astor_dir: str | None = None,
         astor_init_acl(actor='admin:admin', role='admin', tier='public')
 
     my_key, _x_pub, x_priv = _my_keys(astor_dir)
-    try:
-        messages = client.poll(relay_url, my_key, x_priv, wait=wait)
-    except client.RelayClientError as exc:
-        return {"error": "relay_unreachable", "detail": str(exc)}
+    relays = []
+    if relay_url:
+        relays.append({"base_url": relay_url,
+                       "token": client.read_token(astor_dir)})
+    for entry in client.read_relay_entries(astor_dir):
+        if entry["base_url"] not in {r["base_url"] for r in relays}:
+            relays.append(entry)
+    messages: list[dict] = []
+    last = "no relay answered"
+    for entry in relays:
+        try:
+            messages = client.poll(entry["base_url"], my_key, x_priv,
+                                   wait=wait, astor_dir=astor_dir,
+                                   token=entry.get("token") or "")
+            break
+        except client.RelayClientError as exc:
+            last = f"{entry['base_url']}: {exc}"
+            continue
+    else:
+        return {"error": "relay_unreachable", "detail": last}
 
     summary: dict[str, Any] = {"received": len(messages), "answered": 0,
                                 "friend_requests": 0, "dropped": [],
@@ -166,6 +213,7 @@ def poll_and_dispatch(relay_url: str, astor_dir: str | None = None,
                         msg_type=MSG_SEARCH_REPLY,
                         reply_to=msg_id,
                         astor_dir=astor_dir,
+                        token=_token_for(relay_url, astor_dir),
                     )
                     summary["answered"] += 1
             elif kind == MSG_FRIEND_REQUEST:

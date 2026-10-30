@@ -56,6 +56,66 @@ def read_token(astor_dir: str | None = None) -> str:
     return str(read_config(astor_dir).get("token") or "")
 
 
+def read_relay_entries(astor_dir: str | None = None) -> list[dict]:
+    """The relays this node uses, in the order to try them.
+
+    One relay is the usual case. The list is there for the case where
+    one relay is down or blocked and another is not: the node tries
+    them in order and uses the first that answers, so a single relay
+    going away does not take the node's reachability with it.
+    """
+    cfg = read_config(astor_dir)
+    out: list[dict] = []
+    if cfg.get("base_url"):
+        out.append({"base_url": str(cfg["base_url"]).rstrip("/"),
+                    "key_id": cfg.get("key_id") or "",
+                    "token": cfg.get("token") or ""})
+    for entry in cfg.get("relays") or []:
+        if isinstance(entry, dict) and entry.get("base_url"):
+            out.append({"base_url": str(entry["base_url"]).rstrip("/"),
+                        "key_id": entry.get("key_id") or "",
+                        "token": entry.get("token") or ""})
+    return out
+
+
+def write_relay_entry(base_url: str, key_id: str, token: str,
+                      astor_dir: str | None = None,
+                      primary: bool = True) -> dict:
+    """Remember a relay this node uses.
+
+    primary=True makes it the first one tried; otherwise it joins the
+    list behind the current one.
+    """
+    path = config_path(astor_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cfg = read_config(astor_dir)
+    entry = {"base_url": (base_url or "").rstrip("/"),
+             "key_id": key_id or "", "token": token or ""}
+    others = [r for r in (cfg.get("relays") or [])
+              if isinstance(r, dict) and r.get("base_url")
+              and r.get("base_url") != entry["base_url"]]
+    if primary:
+        old_primary = cfg.get("base_url")
+        old_token = cfg.get("token")
+        old_key = cfg.get("key_id")
+        if old_primary and old_primary != entry["base_url"]:
+            others = [r for r in others
+                      if r.get("base_url") != old_primary]
+            others.insert(0, {"base_url": old_primary,
+                               "key_id": old_key or "",
+                               "token": old_token or ""})
+        cfg["base_url"] = entry["base_url"]
+        cfg["key_id"] = entry["key_id"]
+        cfg["token"] = entry["token"]
+    else:
+        others = [r for r in others if r.get("base_url") != entry["base_url"]]
+        others.append(entry)
+    cfg["relays"] = others
+    path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False),
+                    encoding="utf-8")
+    return cfg
+
+
 def write_config(base_url: str, astor_dir: str | None = None,
                  **extra) -> dict:
     """Remember the relay this node uses."""
@@ -155,7 +215,7 @@ def send(relay_base: str, to_key_id: str, to_x25519_pub: str,
          from_key_id: str, message: Any, msg_type: str = "public_search",
          reply_to: str | None = None,
          timeout: int = DEFAULT_TIMEOUT,
-         astor_dir: str | None = None) -> dict:
+         astor_dir: str | None = None, token: str = "") -> dict:
     """Seal a message for a peer and hand it to the relay."""
     plaintext = json.dumps(message, ensure_ascii=False).encode("utf-8")
     envelope = rc.seal(to_x25519_pub, plaintext)
@@ -165,7 +225,7 @@ def send(relay_base: str, to_key_id: str, to_x25519_pub: str,
         "to_key_id": to_key_id,
         "from_key_id": from_key_id,
         "reply_to": reply_to,
-    }, timeout, token=read_token(astor_dir))
+    }, timeout, token=token or read_token(astor_dir))
     if not body.get("ok"):
         raise RelayClientError(
             f"relay refused the message: {body.get('error')}")
@@ -176,7 +236,7 @@ def send(relay_base: str, to_key_id: str, to_x25519_pub: str,
 
 def poll(relay_base: str, key_id: str, x25519_priv: str,
          wait: int = 0, timeout: int | None = None,
-         astor_dir: str | None = None) -> list[dict]:
+         astor_dir: str | None = None, token: str = "") -> list[dict]:
     """Take the messages addressed to us and open them.
 
     A message that does not open is dropped, not returned: an
@@ -187,7 +247,7 @@ def poll(relay_base: str, key_id: str, x25519_priv: str,
         timeout = DEFAULT_TIMEOUT + wait + 5
     body = _get_json(
         _url(relay_base, f"/v1/relay/poll/{key_id}") + f"?wait={int(wait)}",
-        timeout, token=read_token(astor_dir))
+        timeout, token=token or read_token(astor_dir))
     out: list[dict] = []
     for msg in body.get("messages") or []:
         envelope = msg.get("payload")
@@ -215,11 +275,11 @@ def poll(relay_base: str, key_id: str, x25519_priv: str,
 
 def ack(relay_base: str, key_id: str, msg_ids: list[str],
         timeout: int = DEFAULT_TIMEOUT,
-        astor_dir: str | None = None) -> dict:
+        astor_dir: str | None = None, token: str = "") -> dict:
     """Tell the relay we have these, so it can drop them."""
     return _post_json(_url(relay_base, "/v1/relay/ack"), {
         "key_id": key_id, "msg_ids": list(msg_ids)}, timeout,
-        token=read_token(astor_dir))
+        token=token or read_token(astor_dir))
 
 
 def lookup(relay_base: str, key_id: str,
