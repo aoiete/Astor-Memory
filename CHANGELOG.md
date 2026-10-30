@@ -1,3 +1,29 @@
+## v1.17.19
+
+A fact that was written but never promoted must be visible.
+
+The store refuses to promote a personal fact into the public tier. The
+candidate row is already inserted by then, so the refusal left a row in
+`memory_candidates` that nobody could explain: the fact looked written
+and was not. The live corpus had 13 such rows, including a real lesson
+that had been stuck there since the day it was written.
+
+The queue was never missing -- `memory_candidates.review_state`
+defaults to 'pending' and only `promote_candidate` moves it. What was
+missing was the reason and anyone who could see the queue.
+
+- the refusal now records why it stopped, in `rejected_reason`
+- `am pending` lists the queue, with the reason
+- `am confirm <id> --force` promotes one on purpose (the public-tier
+  path scrub still runs -- a forced promotion does not get a free pass
+  on host-local paths). Promoting into the public tier also requires
+  `--kind`: that tier holds lessons, methods, workflows, models and
+  patterns, and a candidate keeps the kind it was created with, so the
+  operator has to name the kind it is published as
+- `am reject <id> --reason "..."` drops one
+- `/v1/read` carries `pending_count`, so the caller learns the size of
+  the queue without a second round trip
+
 ## v1.17.18
 
 Two facts that contradict each other must not both be reinforced.

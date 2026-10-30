@@ -6202,6 +6202,28 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _conflicts = []
             _conflict_ids = set()
 
+        # v1.17.19: how many candidates are waiting for an operator's
+        # decision. A fact that was written but never promoted is
+        # invisible otherwise -- it looks written and is not. The count
+        # rides along with the recall so the caller does not need a
+        # second round trip.
+        _pending_count = 0
+        try:
+            _pending_count = int(bus.conn.execute(
+                "SELECT COUNT(*) FROM memory_candidates "
+                "WHERE review_state = 'pending'").fetchone()[0] or 0)
+            if tier != 'public':
+                # the shared tier is where the refusals pile up: a
+                # personal fact aimed at public is refused there
+                from .bus.store import astor_bus as _pb_pending
+                _pbus = _pb_pending(tier='public', user_id=None)
+                _pending_count += int(_pbus.conn.execute(
+                    "SELECT COUNT(*) FROM memory_candidates "
+                    "WHERE review_state = 'pending'").fetchone()[0] or 0)
+        except Exception as _pc_exc:
+            _safe_stderr_write(
+                f'[astor.server] pending count failed (continuing): {_pc_exc}\n')
+
         # v1.14.x (2026-09-13): bump access_count + last_confirmed_at for
         # every fact that actually surfaced in this recall. Per wechat
         # article 3-layer memory best practice (long-term memory decay):
@@ -6792,6 +6814,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # contradiction instead of surfacing it.
             'conflicts': _conflicts,
             'conflict_note': _conflict_note,
+            # v1.17.19: candidates waiting for an operator decision.
+            'pending_count': _pending_count,
             'count': len(enriched),
             # 2026-10-21: 本次响应里被 tombstone 防线剔除的死数据条数
             'dropped_tombstoned': _dropped_tombstoned,

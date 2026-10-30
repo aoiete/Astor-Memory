@@ -671,6 +671,43 @@ def main(argv: list[str] | None = None) -> int:
     # am peer ... (v1.14.67 Phase 1: peer_id + keypair + status)
     # Full peer network ships Phase 2-5 (friend list, topic routing,
     # gossip, rekey, anti-spam). Phase 1 ships just identity + status CLI.
+    # v1.17.19: the pending-candidate queue -- facts that were written
+    # but never promoted, so the operator can see and decide.
+    pending_p = subparsers.add_parser(
+        'pending', help='List candidates that were written but never promoted')
+    pending_p.add_argument('--limit', type=int, default=20,
+                            help='How many to list (default 20)')
+    pending_p.add_argument('--tier', default='all',
+                            help="Which tier to look in: all | public | private")
+    pending_p.add_argument('--user', default='admin',
+                            help="Whose private tier to look in (default admin)")
+    pending_p.set_defaults(func=cmd_pending)
+
+    confirm_p = subparsers.add_parser(
+        'confirm', help='Promote a pending candidate')
+    confirm_p.add_argument('candidate_id', help='Candidate id')
+    confirm_p.add_argument('--force', action='store_true',
+                            help='Required: publishes the fact as commons')
+    confirm_p.add_argument('--kind', default='',
+                            help="Kind to publish as (public only holds "
+                                 "lessons/methods/workflows/models/patterns)")
+    confirm_p.add_argument('--tier', default='all',
+                            help="Which tier to look in: all | public | private")
+    confirm_p.add_argument('--user', default='admin',
+                            help="Whose private tier to look in (default admin)")
+    confirm_p.set_defaults(func=cmd_confirm)
+
+    reject_p = subparsers.add_parser(
+        'reject', help='Drop a pending candidate')
+    reject_p.add_argument('candidate_id', help='Candidate id')
+    reject_p.add_argument('--reason', default='',
+                           help='Why it is dropped')
+    reject_p.add_argument('--tier', default='all',
+                           help="Which tier to look in: all | public | private")
+    reject_p.add_argument('--user', default='admin',
+                           help="Whose private tier to look in (default admin)")
+    reject_p.set_defaults(func=cmd_reject)
+
     peer_p = subparsers.add_parser('peer', help='Peer network identity + relationships (Phase 1: status only)')
     peer_sub = peer_p.add_subparsers(dest='peer_command', required=True)
 
@@ -1256,6 +1293,165 @@ def cmd_scrub_public(args) -> int:
             print(f'  id={fid} re-embed failed: {e}')
         written += 1
     print(f'[scrub-public] rewrote {written} facts')
+    return 0
+
+
+# --- v1.17.19: the pending-candidate queue --------------------------
+#
+# A fact that the store refused (a personal fact aimed at the public
+# tier) leaves a candidate row behind: it was inserted, then the
+# promotion was rejected. Until now nobody could see those rows, so a
+# fact that looked written and was not simply vanished.
+#
+# The queue already existed -- memory_candidates.review_state defaults
+# to 'pending' and only promote_candidate moves it -- so this is a read
+# side, not a new subsystem.
+
+def _pending_buses(args):
+    """The buses a pending candidate can sit in: the shared public tier
+    and the caller's own private tier."""
+    from ..bus.store import astor_bus
+    out = []
+    want = (getattr(args, 'tier', 'all') or 'all').lower()
+    if want in ('all', 'public'):
+        try:
+            out.append(('public', astor_bus(tier='public', user_id=None)))
+        except Exception as _e:
+            print(f'[WARN] public tier unavailable: {_e}', file=sys.stderr)
+    if want in ('all', 'private'):
+        u = getattr(args, 'user', None) or 'admin'
+        try:
+            from .._internal.acl import open_own_private
+            out.append(('private', open_own_private(u)))
+        except Exception as _e:
+            print(f'[WARN] private tier unavailable: {_e}', file=sys.stderr)
+    return out
+
+
+def cmd_pending(args) -> int:
+    """List the candidates that were written but never promoted."""
+    limit = int(getattr(args, 'limit', 20) or 20)
+    rows = []
+    for label, bus in _pending_buses(args):
+        try:
+            for r in bus.conn.execute(
+                "SELECT id, kind, content, confidence, importance, "
+                "created_at, rejected_reason FROM memory_candidates "
+                "WHERE review_state = 'pending' "
+                "ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall():
+                # the bus connection hands back plain tuples
+                rows.append((label, {
+                    'id': r[0], 'kind': r[1], 'content': r[2],
+                    'confidence': r[3], 'importance': r[4],
+                    'created_at': r[5], 'rejected_reason': r[6]}))
+        except Exception as _e:
+            print(f'[WARN] {label}: {_e}', file=sys.stderr)
+    if not rows:
+        print('[OK] no pending candidates')
+        return 0
+    print(f'[astor] {len(rows)} pending candidate(s):')
+    for label, r in rows:
+        reason = r['rejected_reason'] or ''
+        print(f"  #{r['id']} [{label}] {r['kind']} conf={r['confidence']} "
+              f"{str(r['created_at'])[:10]}")
+        print(f"      {str(r['content'])[:160]}")
+        if reason:
+            print(f"      why: {reason[:200]}")
+    print()
+    print('  promote one:  am confirm <id> --force')
+    print('  drop one:     am reject <id> --reason "..."')
+    return 0
+
+
+def cmd_confirm(args) -> int:
+    """Promote a pending candidate that the store refused."""
+    from ..bus.store import astor_bus
+    try:
+        cid = int(str(args.candidate_id).strip())
+    except Exception:
+        print(f'[ERR] candidate id must be an integer: {args.candidate_id!r}',
+              file=sys.stderr)
+        return 2
+    target = None
+    for label, bus in _pending_buses(args):
+        row = bus.conn.execute(
+            "SELECT id, event_id, namespace, content, kind, confidence, "
+            "importance, tags, metadata, scene FROM memory_candidates "
+            "WHERE id = ? AND review_state = 'pending'", (cid,)).fetchone()
+        if row:
+            target = (label, bus, {
+                'id': row[0], 'event_id': row[1], 'namespace': row[2],
+                'content': row[3], 'kind': row[4], 'confidence': row[5],
+                'importance': row[6], 'tags': row[7], 'metadata': row[8],
+                'scene': row[9]})
+            break
+    if target is None:
+        print(f'[ERR] no pending candidate with id {cid}', file=sys.stderr)
+        return 1
+    label, bus, row = target
+    if not getattr(args, 'force', False):
+        print('[ERR] confirming needs --force: it publishes the fact as '
+              'commons. Read it first:', file=sys.stderr)
+        print(f"       #{cid} {str(row['content'])[:160]}", file=sys.stderr)
+        return 2
+    tier = 'public' if label == 'public' else 'private'
+    uid = getattr(args, 'user', None) or 'admin'
+    # The public tier holds lessons, methods, workflows, models and
+    # patterns -- a raw 'fact' does not belong there, however the
+    # operator feels about it. The candidate keeps the kind it was
+    # created with, so promoting into public means naming the kind it
+    # is published as.
+    kind = getattr(args, 'kind', None) or row['kind']
+    if tier == 'public':
+        from ..nest.visibility_classifier import AUTO_COMMONS_KINDS
+        if kind not in AUTO_COMMONS_KINDS:
+            print(f'[ERR] the public tier only holds '
+                  f'{sorted(AUTO_COMMONS_KINDS)}; this candidate is a '
+                  f'"{kind}". Name the kind it is published as: '
+                  f'--kind lesson', file=sys.stderr)
+            return 2
+        bus.conn.execute(
+            "UPDATE memory_candidates SET kind = ? WHERE id = ?",
+            (kind, cid))
+        bus.conn.commit()
+    try:
+        canon_id = bus.promote_candidate(
+            candidate_id=cid, promoted_by='operator', user_id=uid,
+            tier=tier, scope_type='long_term',
+            visibility='commons' if tier == 'public' else 'personal',
+            verdict='settled', force=True)
+    except Exception as _e:
+        print(f'[ERR] promote failed: {_e}', file=sys.stderr)
+        return 1
+    print(f'[OK] candidate #{cid} promoted to fact #{canon_id} ({tier})')
+    return 0
+
+
+def cmd_reject(args) -> int:
+    """Drop a pending candidate."""
+    try:
+        cid = int(str(args.candidate_id).strip())
+    except Exception:
+        print(f'[ERR] candidate id must be an integer: {args.candidate_id!r}',
+              file=sys.stderr)
+        return 2
+    reason = getattr(args, 'reason', '') or 'rejected by operator'
+    done = 0
+    for label, bus in _pending_buses(args):
+        try:
+            cur = bus.conn.execute(
+                "UPDATE memory_candidates SET review_state = 'rejected', "
+                "rejected_reason = ? WHERE id = ? AND review_state = 'pending'",
+                (reason, cid))
+            if cur.rowcount:
+                bus.conn.commit()
+                done += cur.rowcount
+                print(f'[OK] candidate #{cid} rejected ({label}): {reason}')
+        except Exception as _e:
+            print(f'[WARN] {label}: {_e}', file=sys.stderr)
+    if not done:
+        print(f'[ERR] no pending candidate with id {cid}', file=sys.stderr)
+        return 1
     return 0
 
 

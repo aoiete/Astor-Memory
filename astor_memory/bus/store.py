@@ -404,6 +404,11 @@ class AstorBus:
         # mental models -- whose kinds are not on the shareable list
         # but whose content is exactly what the public tier is for.
         visibility: str = 'personal',
+        # v1.17.19: an operator can look at a pending candidate and say
+        # "promote it anyway" -- `am confirm <id> --force`. The content
+        # still goes through the public-tier path scrub; only the
+        # personal/commons rule is overridden.
+        force: bool = False,
         # v1.16.32 distill metadata: caller may pass a JSON-encoded dict to
         # be stored on the canonical row for audit (e.g. distilled_from).
         extra_metadata: str = '',
@@ -474,13 +479,33 @@ class AstorBus:
         # private tier back into the public one. A personal fact that
         # reached the public tier is readable by every peer, and nothing
         # mines it back.
+        if tier == 'public' and visibility != 'commons' and force:
+            # The operator decided. The public-tier scrub below still
+            # runs -- a forced promotion does not get a free pass on
+            # host-local paths.
+            visibility = 'commons'
         if tier == 'public' and visibility != 'commons':
-            raise ValueError(
+            _reason = (
                 "a personal fact cannot be promoted into the public tier: "
                 "tier='public' requires visibility='commons'. Write it to "
                 "tier='private' instead -- `am mine-public` mines the "
                 "private tier back into the public one, so a fact that "
                 "belongs in public is not lost by going there first.")
+            # v1.17.19: the candidate is already inserted by the time
+            # this check runs, so the refusal would leave a row in
+            # memory_candidates that nobody can explain -- the fact
+            # looked written and was not. Record why it stopped here so
+            # `am pending` can show it, and leave the candidate pending
+            # rather than rejected: an operator can still confirm it.
+            try:
+                self._conn.execute(
+                    "UPDATE memory_candidates SET rejected_reason = ? "
+                    "WHERE id = ?",
+                    (_reason, candidate_id))
+                self._conn.commit()
+            except Exception:
+                pass
+            raise ValueError(_reason)
 
         # P0-fix 2026-08-15: dedup check BEFORE INSERT.
         # P1-fix 2026-08-16: **content-aware** dedup. We only treat the
