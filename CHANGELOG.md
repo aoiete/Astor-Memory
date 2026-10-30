@@ -1,6 +1,24 @@
 ## Unreleased
 
-The repository's own leak checks, and a history that names nobody.
+Python 3.14 support, and a CI matrix that stops killing itself.
+
+**3.14's argparse validates help strings.** A literal percent in a
+help text raised ValueError while the parser was being built, which
+took the whole CLI down -- not one command, every command, because the
+parser is constructed before dispatch. One help string had a bare `%`
+in it. It is now written `%%`, and `--help` renders the same text.
+
+**The CI matrix got 3.14 and the matrix stopped being green.** Five
+parallel legs on the runner pool exhausted the memory: pytest died at
+about two minutes with an empty output file, so there was no FAILED
+line and no annotation to read -- a failure with no evidence in it.
+The four legs that ran alone took 126-178 seconds each; the five that
+ran together all died at 126.
+
+So 3.14 runs as its own job after the matrix rather than beside it.
+Four parallel legs and then one, instead of five at once.
+
+**The repository's own leak checks, and a history that names nobody.
 
 **Three scripts that answer "can private data reach the shared tier?"
 with evidence instead of assertion.** `tools/check_public_leak.py`

@@ -914,7 +914,7 @@ def main(argv: list[str] | None = None) -> int:
     peer_audit = peer_sub.add_parser('audit',
         help='Show audit log feed for a peer (Ship I)')
     peer_audit.add_argument('peer_id', help='Peer ID (astor:<32-hex>)')
-    peer_audit.add_argument('--action', help='Filter by action (exact or LIKE pattern, e.g. peer_recall or peer_%)')
+    peer_audit.add_argument('--action', help='Filter by action (exact or LIKE pattern, e.g. peer_recall or peer_%%)')
     peer_audit.add_argument('--since', help='ISO timestamp lower bound (e.g. 2026-09-28T00:00:00Z)')
     peer_audit.add_argument('--until', help='ISO timestamp upper bound')
     peer_audit.add_argument('--limit', type=int, default=50, help='Max rows (default 50, max 200)')

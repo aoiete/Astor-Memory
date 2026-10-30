@@ -31,13 +31,22 @@ class TestPythonRange(unittest.TestCase):
 
     def test_supported_versions_pass(self):
         spec = _requires_python_range()
-        for v in ('3.10', '3.11', '3.12', '3.13'):
+        for v in ('3.10', '3.11', '3.12', '3.13', '3.14'):
             self.assertTrue(_python_in_range(v, spec), v)
 
-    def test_314_is_out_of_range(self):
-        # Hermes 0.22 ships on 3.14; astor-memory declares <3.14.
+    def test_314_is_in_range(self):
+        # 2026-10-30: 3.14 is supported. Python 3.14's argparse validates
+        # help strings, so a literal percent in a help text raised
+        # ValueError at parser-build time and took the whole CLI down --
+        # that is what kept 3.14 out of range. The one offending help
+        # string is fixed (a literal percent is now written %%), and the
+        # 3.14 leg of CI runs the suite.
         spec = _requires_python_range()
-        self.assertFalse(_python_in_range('3.14', spec))
+        self.assertTrue(_python_in_range('3.14', spec), spec)
+
+    def test_315_is_out_of_range(self):
+        spec = _requires_python_range()
+        self.assertFalse(_python_in_range('3.15', spec))
 
     def test_39_is_out_of_range(self):
         spec = _requires_python_range()
