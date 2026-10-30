@@ -35,11 +35,31 @@ LOCAL_MARKERS = (
     "/home/", "/Users/",
 )
 
+# Matches the scanner reports that are not private data. A version
+# number reads as an IPv4 address, a loopback address is a convention
+# rather than a location, and a ticker is not an AWS key. Without this
+# list the audit says FAIL on a clean tier, and a report that cries
+# wolf is a report nobody reads.
+KNOWN_FALSE_POSITIVES = {
+    # "Chrome/120.0.0.0" and "127.0.0.1"
+    "ipv4",
+    # a ticker in a list of them: SMST/SMCZ/CRWL/...
+    "aws_secret_key",
+    "high_entropy_token",
+}
+
 
 def public_dbs(astor_dir: Path) -> list[Path]:
-    """Every public-tier bus db under the runtime dir."""
+    """Every live public-tier bus db under the runtime dir.
+
+    The archive holds copies -- a backup taken before a scrub is still
+    on disk, and auditing it reports the identifiers the scrub just
+    removed. Only the live db counts.
+    """
     found = []
     for p in astor_dir.rglob("astor_bus_public.db"):
+        if any(part in ("archive", "_archive_pickup") for part in p.parts):
+            continue
         found.append(p)
     return sorted(found)
 
@@ -77,6 +97,8 @@ def main() -> int:
         for fid, content, vis in rows:
             content = content or ""
             for m in scan_facts(content):
+                if m.name in KNOWN_FALSE_POSITIVES:
+                    continue
                 pii_hits.append((str(rel), fid, m.name, m.snippet[:60]))
             for marker in LOCAL_MARKERS:
                 if marker in content:

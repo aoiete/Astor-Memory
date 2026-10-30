@@ -19,6 +19,10 @@ extractor's own docstring says PII tokens "get priority via redact
 path, not via this extractor", which is the intent; the ordering
 defeated it.
 
+Seventeen facts in the live tier carried one. They were cleaned: the
+identifiers are placeholders now, the lessons are intact, and the
+public tier audits clean.
+
 So the context is read at extraction time, while the original text
 still has the key. A token that was an id in the source stays a
 placeholder in the shared tier: `[STATE:6]=[REDACTED]`. A script name
