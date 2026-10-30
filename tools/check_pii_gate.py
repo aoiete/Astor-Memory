@@ -20,10 +20,10 @@ from astor_memory.nest.visibility_classifier import (  # noqa: E402
     classify_visibility, has_pii)
 
 SAMPLES = {
-    "wechat user id": "微信 user_id 是 o9cq80632-REHf6fG55epPMPCreM@im.wechat",
-    "bare chat id": "Telegram 448594240",
-    "real email": "邮箱 aoiete@gmail.com",
-    "windows path": "C:\\Users\\TheNuts\\AppData\\Local\\hermes\\config.yaml",
+    "wechat user id": "微信 user_id 是 wxid0000abcd1234@im.wechat",
+    "bare chat id": "Telegram 1234567890",
+    "real email": "邮箱 someone@example.invalid",
+    "windows path": "C:\\Users\\TestUser\\AppData\\Local\\hermes\\config.yaml",
     "phone": "打 13800138000 找我",
     "id card": "身份证 11010119900307231X",
 }
@@ -37,9 +37,9 @@ def main() -> int:
 
     print()
     payload = (
-        "排查的时候发现 C:\\Users\\TheNuts\\AppData\\Local\\hermes\\config.yaml "
-        "里有 o9cq80632-REHf6fG55epPMPCreM@im.wechat，Telegram 448594240，"
-        "邮箱 aoiete@gmail.com"
+        "排查的时候发现 C:\\Users\\TestUser\\AppData\\Local\\hermes\\config.yaml "
+        "里有 wxid0000abcd1234@im.wechat，Telegram 1234567890，"
+        "邮箱 someone@example.invalid"
     )
     r = classify_visibility(payload, kind="fact", hint="commons")
     print("classify_visibility(kind=fact, hint=commons):")

@@ -33,17 +33,17 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 PRIVATE_PAYLOAD = (
-    "排查的时候发现 C:\\Users\\TheNuts\\AppData\\Local\\hermes\\config.yaml "
-    "里有 o9cq80632-REHf6fG55epPMPCreM@im.wechat，Telegram 448594240，"
-    "邮箱 aoiete@gmail.com"
+    "排查的时候发现 C:\\Users\\TestUser\\AppData\\Local\\hermes\\config.yaml "
+    "里有 wxid0000abcd1234@im.wechat，Telegram 1234567890，"
+    "邮箱 someone@example.invalid"
 )
 METHOD_PAYLOAD = "下载页面到 scratch 文件，然后抽取 js_content div"
 
 LEAKS = {
-    "windows user path": "TheNuts",
+    "windows user path": "TestUser",
     "wechat user id": "o9cq",
-    "telegram chat id": "448594240",
-    "real email": "aoiete@gmail.com",
+    "telegram chat id": "1234567890",
+    "real email": "someone@example.invalid",
 }
 
 

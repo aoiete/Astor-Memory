@@ -31,18 +31,18 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 CONTENT = (
-    "排查的时候发现 C:\\Users\\TheNuts\\AppData\\Local\\hermes\\config.yaml "
+    "排查的时候发现 C:\\Users\\TestUser\\AppData\\Local\\hermes\\config.yaml "
     "里有 D:/AI/users/admin 的配置，微信 user_id 是 "
-    "o9cq80632-REHf6fG55epPMPCreM@im.wechat，Telegram 448594240，"
-    "邮箱 aoiete@gmail.com，仓库在 git@github.com:aoiete/ASTOR-Memory。"
+    "wxid0000abcd1234@im.wechat，Telegram 1234567890，"
+    "邮箱 someone@example.invalid，仓库在 git@github.com:aoiete/ASTOR-Memory。"
 )
 
 LEAKS = {
-    "windows user path": "TheNuts",
+    "windows user path": "TestUser",
     "private runtime path": "D:/AI/users",
     "wechat user id": "o9cq",
-    "telegram chat id": "448594240",
-    "real email": "aoiete@gmail.com",
+    "telegram chat id": "1234567890",
+    "real email": "someone@example.invalid",
 }
 
 
