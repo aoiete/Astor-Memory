@@ -32,6 +32,14 @@ exactly as it was, in case it is ever wanted.
 local runtime), and the release workflow defaults to the current
 version instead of v0.3.0.
 
+The peer table in the dashboard was unreadable: the table rendered at
+12px, its headers at 9.5px, and its buttons at 2px padding, with six
+buttons sharing one row. It now renders at 13px with 11px headers,
+buttons at 12px and 32px tall, the connection test stacked in one
+column (result, direct, relay) and the block/delete pair stacked in
+another, inside a scroll container so a narrow window does not squash
+the row.
+
 ## v1.17.25
 
 One relay going down should not take the node with it.

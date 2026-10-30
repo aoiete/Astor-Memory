@@ -1221,7 +1221,7 @@ function renderPeerRows(rows, sectionKey) {
   const page = _peer_page[sectionKey] || 0;
   const total = rows.length;
   const slice = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-  let html = '<table class="peer-table"><thead><tr>'
+  let html = '<div class="table-scroll"><table class="peer-table"><thead><tr>'
     + '<th>peer_id</th><th>alias</th><th>trust</th>'
     + '<th>endpoint</th><th>pubkey</th>'
     + '<th title="inbound: that peer may search my public tier">allow</th>'
@@ -1302,15 +1302,15 @@ function renderPeerRows(rows, sectionKey) {
       + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="test-peer" '
       + 'data-mode="relay" class="peer-test-btn peer-test-relay">via relay</button>'
       + '</td>'
-      + '<td>'
+      + '<td class="peer-actions">'
       + (p.kind === 'blacklist'
         ? '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="unblacklist" class="btn-refresh">unblock</button>'
         : '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="blacklist" class="btn-refresh">block</button>')
-      + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="delete" class="btn-refresh">×</button>'
+      + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="delete" class="btn-refresh">&times;</button>'
       + '</td>'
       + '</tr>';
   });
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   if (total > PAGE_SIZE) {
     const pageCount = Math.ceil(total / PAGE_SIZE);
     html += '<div class="peer-pager">'
