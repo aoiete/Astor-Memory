@@ -20,13 +20,48 @@ to be able to reach it.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from . import relay_crypto as rc
 
 DEFAULT_TIMEOUT = 30
+
+# Where this node keeps the address of the relay it uses. One file, in
+# the node's own runtime directory, so a node that does not use a relay
+# simply does not have one.
+_CONFIG_NAME = "relay.json"
+
+
+def config_path(astor_dir: str | None = None) -> Path:
+    base = astor_dir or os.environ.get("ASTOR_DIR") or os.path.expanduser("~/.astor")
+    return Path(base) / _CONFIG_NAME
+
+
+def read_config(astor_dir: str | None = None) -> dict:
+    """The relay this node uses, or {} when it does not use one."""
+    path = config_path(astor_dir)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def write_config(base_url: str, astor_dir: str | None = None,
+                 **extra) -> dict:
+    """Remember the relay this node uses."""
+    path = config_path(astor_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = read_config(astor_dir)
+    data["base_url"] = (base_url or "").rstrip("/")
+    data.update(extra)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False),
+                    encoding="utf-8")
+    return data
 
 
 class RelayClientError(Exception):

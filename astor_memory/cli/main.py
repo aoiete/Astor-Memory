@@ -693,16 +693,18 @@ def main(argv: list[str] | None = None) -> int:
 
     relay_poll = relay_sub.add_parser(
         'poll', help='Take what the relay has for us and answer it')
-    relay_poll.add_argument('--url', required=True,
-                             help='Relay base url (http://host:port)')
+    relay_poll.add_argument('--url', default='',
+                             help='Relay base url (default: the one this '
+                                  'node is registered with)')
     relay_poll.add_argument('--wait', type=int, default=0,
                              help='Seconds to wait for a message (default 0)')
     relay_poll.set_defaults(func=cmd_relay_poll)
 
     relay_look = relay_sub.add_parser(
         'lookup', help='Check whether a peer is on the relay')
-    relay_look.add_argument('--url', required=True,
-                            help='Relay base url (http://host:port)')
+    relay_look.add_argument('--url', default='',
+                            help='Relay base url (default: the one this '
+                                 'node is registered with)')
     relay_look.add_argument('key_id', help="The peer's key_id")
     relay_look.set_defaults(func=cmd_relay_lookup)
 
@@ -1055,6 +1057,14 @@ def main(argv: list[str] | None = None) -> int:
     peer_endpoints.add_argument('urls', nargs='*',
         help='Addresses, most preferred first')
     peer_endpoints.set_defaults(func=cmd_peer_endpoints)
+
+    # v1.17.22: the connection test -- one click instead of four gates.
+    peer_test_p = peer_sub.add_parser(
+        'test', help='Run a real search against a peer and say where it stopped')
+    peer_test_p.add_argument('peer_id')
+    peer_test_p.add_argument('--mode', default='direct',
+                             choices=['direct', 'relay'])
+    peer_test_p.set_defaults(func=cmd_peer_test)
 
     # v1.17.21: relay mode for a peer.
     peer_cmode = peer_sub.add_parser(
@@ -1543,6 +1553,11 @@ def cmd_relay_register(args) -> int:
     except RelayClientError as _e:
         print(f'[ERR] {_e}', file=sys.stderr)
         return 1
+    # remember it, so `am relay poll` and the timer that runs it do not
+    # need the address on the command line every time
+    from .._internal.relay_client import write_config
+    write_config(args.url, key_id=out.get('key_id'),
+                 expires_at=out.get('expires_at'))
     print(f'[OK] registered with {args.url} '
           f'(key_id {out.get("key_id")}, expires {out.get("expires_at")})')
     return 0
@@ -1557,8 +1572,38 @@ def cmd_relay_poll(args) -> int:
     request goes through, and answered.
     """
     from .._internal.relay_node import poll_and_dispatch
+    from .._internal.relay_client import read_config
+    cfg = read_config()
+    url = (getattr(args, 'url', None) or cfg.get('base_url') or '').strip()
+    if not url:
+        # a node that does not use a relay has nothing to poll -- that is
+        # a configuration state, not a failure
+        print('[astor] no relay configured for this node; nothing to poll')
+        return 0
+    # The relay forgets a registration when it expires -- and it
+    # forgets everything when it restarts, because the routing table
+    # is memory only. A node that did not notice would go quiet
+    # without saying anything. So ask whether we are still there, and
+    # register again if not. One request covers both cases.
     try:
-        summary = poll_and_dispatch(args.url, wait=int(getattr(args, 'wait', 0) or 0))
+        from .._internal.relay_client import lookup, register, write_config
+        from .._internal.relay_crypto import key_id_for
+        from .._internal.peer_identity import get_identity
+        _ident = get_identity()
+        _my_key = key_id_for(_ident['public_key']) if _ident else ''
+        _here = lookup(url, _my_key) if _my_key else {'found': False}
+        if not _here.get('found'):
+            _out = register(url)
+            write_config(url, key_id=_out.get('key_id'),
+                         expires_at=_out.get('expires_at'))
+            print(f"[astor] relay registration renewed (key_id "
+                  f"{_out.get('key_id')})")
+    except Exception as _e:
+        print(f'[ERR] could not renew the relay registration: {_e}',
+              file=sys.stderr)
+        return 1
+    try:
+        summary = poll_and_dispatch(url, wait=int(getattr(args, 'wait', 0) or 0))
     except Exception as exc:
         print(f'[ERR] {exc}', file=sys.stderr)
         return 1
@@ -1578,8 +1623,12 @@ def cmd_relay_poll(args) -> int:
 
 def cmd_relay_lookup(args) -> int:
     """Is a peer on the relay right now?"""
-    from .._internal.relay_client import lookup
-    out = lookup(args.url, args.key_id)
+    from .._internal.relay_client import lookup, read_config
+    url = (getattr(args, 'url', None) or read_config().get('base_url') or '').strip()
+    if not url:
+        print('[astor] no relay configured for this node')
+        return 1
+    out = lookup(url, args.key_id)
     if not out.get('found'):
         print(f'  {args.key_id}: not on this relay')
         return 1
@@ -5679,6 +5728,22 @@ def cmd_peer_endpoints(args) -> int:
         print(f'  {i + 1}. {ep}')
     print('     they are tried in this order; the first that answers wins')
     return 0
+
+
+def cmd_peer_test(args) -> int:
+    """v1.17.22: run a real search against one peer and say where it stopped."""
+    from .._internal.peer_test import test_peer
+    out = test_peer(args.peer_id, mode=getattr(args, 'mode', 'direct') or 'direct')
+    stage = out.get('stage')
+    mark = 'OK ' if out.get('ok') else 'FAIL'
+    print(f"[{mark}] {args.peer_id} ({out.get('mode')}) "
+          f"stage={stage} {out.get('latency_ms')}ms")
+    detail = out.get('detail') or ''
+    if detail:
+        print(f'       {detail}')
+    if out.get('error'):
+        print(f"       error: {out['error']}")
+    return 0 if out.get('ok') else 1
 
 
 def cmd_peer_connect_mode(args) -> int:

@@ -1,3 +1,36 @@
+## v1.17.22
+
+The connection test button, and a relay that runs.
+
+The peer panel showed theory: is the trust high enough, is there an
+endpoint. When someone reported "I cannot search them", four gates had
+to be checked one at a time by hand.
+
+The test runs the real search path instead of a ping, because a port
+that answers is not a peer that answers -- the signature and the
+authorization still have to pass. The result is one stage name that
+says which gate stopped it: connect, sign, authorize, trust, match or
+ok. "Match" is the interesting one: the link works, the query simply
+did not match, and that is not a fault.
+
+The address is never taken from the caller. The endpoint comes from
+the peer row, so there is no "connect to this URL" input and no SSRF
+to defend against; redirects are not followed either, and the timeout
+is three seconds. The query carries a unique token, so "matched
+nothing" cannot be confused with "did not arrive".
+
+A test is a real search, so it is charged against that peer's search
+budget. The prefix must not buy a free way to hammer somebody.
+
+The relay now runs: a Windows service (`astor-relay`) serving on
+127.0.0.1, and a timer (`astor-relay-poll-2min`) that takes what the
+relay has for this node and answers it. The node re-registers itself
+when the relay has forgotten it -- which happens when the registration
+expires and when the relay restarts, because the routing table is
+memory only. The relay's address is remembered in the node's own
+runtime directory, so a node that does not use a relay simply does not
+have one, and the timer stays quiet.
+
 ## v1.17.21
 
 The relay can carry a search now.

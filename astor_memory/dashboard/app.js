@@ -896,6 +896,10 @@ function _drawConnPage() {
 // CRUD against /v1/peer/* endpoints. Trust editable inline; allow-search
 // toggle is a one-click switch; blacklist = drop-down + reason prompt.
 // =====================================================================
+// The last connection test per peer, kept here so it survives the
+// panel reload that follows a click. Keyed by peer id.
+const peerTestResults = {};
+
 async function fetchPeers() {
   try {
     // v1.16.7: also fetch self peer_id for header + empty-state copy button
@@ -1223,7 +1227,9 @@ function renderPeerRows(rows, sectionKey) {
     + '<th title="inbound: that peer may search my public tier">allow</th>'
     + '<th title="outbound: I may search that peer">outbound</th>'
     + '<th title="whether a local miss would actually reach this peer">search</th>'
-    + '<th>updated</th><th>actions</th>'
+    + '<th>updated</th>'
+    + '<th title="run a real search against this peer and say where it stopped">test</th>'
+    + '<th>actions</th>'
     + '</tr></thead><tbody>';
   slice.forEach(p => {
     const pid = encodeURIComponent(p.peer_id);
@@ -1259,6 +1265,16 @@ function renderPeerRows(rows, sectionKey) {
           : (!p.endpoint
             ? '<span class="recall-hint">no endpoint</span>'
             : '<span class="rc-tag rc-kind">✓</span>')));
+    // v1.17.22: one click instead of four gates checked by hand. The
+    // test runs the real search path, so "the port answers" and "the
+    // peer answers" do not get confused.
+    const tRes = peerTestResults[p.peer_id];
+    const tCell = (p.kind === 'blacklist' || p.kind === 'quarantine')
+      ? '<span class="recall-hint">blocked</span>'
+      : (tRes
+        ? ('<span class="recall-hint" title="' + escapeHtml(tRes.detail || '') + '">'
+           + (tRes.ok ? '✓ ' : '✗ ') + escapeHtml(tRes.stage) + '</span>')
+        : '');
     html += '<tr>'
       + '<td class="peer-pid" title="' + escapeHtml(p.peer_id) + '">'
       + escapeHtml(p.peer_id.length > 22 ? p.peer_id.slice(0,22) + '…' : p.peer_id)
@@ -1278,6 +1294,12 @@ function renderPeerRows(rows, sectionKey) {
       + outTxt + '</button></td>'
       + '<td>' + search + '</td>'
       + '<td class="recall-hint">' + escapeHtml(updated) + '</td>'
+      + '<td class="peer-test-cell">' + tCell
+      + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="test-peer" '
+      + 'data-mode="direct" class="btn-refresh">test</button>'
+      + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="test-peer" '
+      + 'data-mode="relay" class="btn-refresh">via relay</button>'
+      + '</td>'
       + '<td>'
       + (p.kind === 'blacklist'
         ? '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="unblacklist" class="btn-refresh">unblock</button>'
@@ -1346,6 +1368,33 @@ async function onPeerAction(ev) {
     });
     btn.disabled = false;
     if (!r.ok) { alert('toggle failed: HTTP ' + r.status); return; }
+  } else if (action === 'test-peer') {
+    // v1.17.22: run the real search path and report where it stopped.
+    // The stage is the useful part -- "connect" and "authorize" are
+    // different problems with different fixes.
+    const mode = btn.dataset.mode || 'direct';
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = '…';
+    let res = {ok: false, stage: 'connect', detail: 'test failed'};
+    try {
+      const r = await fetch('/v1/peer/' + encodeURIComponent(pid) + '/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({mode: mode})
+      });
+      const body = await r.json().catch(() => ({}));
+      if (body && body.stage) res = body;
+      else if (!r.ok) res = {ok: false, stage: 'error',
+                             detail: 'HTTP ' + r.status};
+    } catch (e) {
+      res = {ok: false, stage: 'error', detail: String(e)};
+    }
+    btn.disabled = false;
+    btn.textContent = old;
+    peerTestResults[pid] = res;
+    await fetchPeers();
+    return;
   } else if (action === 'toggle-outbound') {
     // v1.17.3: the outbound mirror of allow-search. allow = "that peer
     // may search me"; outbound = "I may search that peer".

@@ -202,16 +202,24 @@ def answer_search_request(d: dict) -> tuple[int, dict]:
         except (ValueError, TypeError):
             continue
 
+    # v1.17.22: a connection test is a real search, so it is charged
+    # against the peer's search budget like any other -- the prefix
+    # must not buy a free way to hammer a peer. But it does not leave
+    # a trace in the audit log: a test is not a query anyone made.
+    from .peer_test import TEST_QUERY_PREFIX as _TEST_PREFIX
+    _is_test = req.query.startswith(_TEST_PREFIX)
     try:
         from .audit_logger import astor_audit as _pp_audit2
-        _pp_audit2(
-            actor=f'peer:{req.requestor_peer_id}',
-            tier='public',
-            action='peer_search',
-            user_id=None,
-            peer_id=req.requestor_peer_id,
-            metadata={'query': req.query[:256], 'result_count': len(results)},
-        )
+        if not _is_test:
+            _pp_audit2(
+                actor=f'peer:{req.requestor_peer_id}',
+                tier='public',
+                action='peer_search',
+                user_id=None,
+                peer_id=req.requestor_peer_id,
+                metadata={'query': req.query[:256],
+                          'result_count': len(results)},
+            )
     except Exception:
         pass
 

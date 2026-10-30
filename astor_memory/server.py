@@ -11290,6 +11290,43 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'endpoint': ident.get('endpoint'),
         })
 
+    @app.route('/v1/peer/<peer_id>/test', methods=['POST'])
+    def peer_test(peer_id: str):
+        """Run a real search against one peer and say where it stopped.
+
+        One click instead of four gates checked by hand: the address,
+        the connection, the signature, the authorization. The address
+        comes from the peer row -- it is never taken from the request,
+        so there is no "connect to this URL" input here at all.
+
+        Admin only: it runs searches and it reads the peer's setup.
+        """
+        from ._internal.acl import astor_check_bot_admin
+        try:
+            astor_check_bot_admin()
+        except Exception as e:
+            return jsonify({'error': 'admin_only', 'detail': str(e)}), 403
+        body = request.get_json(silent=True) or {}
+        mode = str(body.get('mode') or 'direct')
+        if mode not in ('direct', 'relay'):
+            return jsonify({'error': 'bad_mode',
+                            'detail': "mode must be 'direct' or 'relay'"}), 400
+        from ._internal.peer_test import test_peer
+        try:
+            out = test_peer(peer_id, mode=mode)
+        except Exception as e:
+            return jsonify({'error': 'test_failed', 'detail': str(e)}), 500
+        try:
+            from ._internal.audit_logger import astor_audit
+            astor_audit(actor='admin:admin', tier='public',
+                        action='peer_test', user_id=None,
+                        peer_id=peer_id,
+                        metadata={'mode': mode, 'stage': out.get('stage'),
+                                  'ok': bool(out.get('ok'))})
+        except Exception:
+            pass
+        return jsonify(out)
+
     @app.route('/v1/peer/identity', methods=['GET'])
     def peer_identity_public():
         """This node's public identity: peer_id, public key, friend code.
