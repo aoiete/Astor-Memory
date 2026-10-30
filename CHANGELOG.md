@@ -1,5 +1,65 @@
 ## Unreleased
 
+The repository's own leak checks, and a history that names nobody.
+
+**Three scripts that answer "can private data reach the shared tier?"
+with evidence instead of assertion.** `tools/check_public_leak.py`
+drives the real HTTP endpoint with a fact carrying a Windows user path,
+a WeChat user id, a Telegram chat id and a real email, and reads back
+what the public tier stored. The write is refused with `pii_blocked`,
+listing every identifier it matched, and the public tier stays empty;
+a method fact written the same way lands normally. `tools/check_pii_gate.py`
+probes the gate directly, and `tools/check_public_scrub.py` measures
+the scrubber -- which rewrites machine-local paths and deliberately
+does not touch identifiers, because that is the PII gate's job and a
+scrubber that deleted every id would destroy the knowledge the shared
+tier exists to hold.
+
+**The history no longer names anyone.** The whole history was rewritten
+again. A commit's author field named the operator's old handle, a
+release-note commit carried a real WeChat user id, and a path in an
+audit note carried the Windows user name. All of them are gone; every
+commit now has the same generic author. The old owner name, the WeChat
+id and the Windows user name are absent from the history entirely.
+
+Rewriting history means every SHA changed and every tag had to be
+recreated. The bundle at `D:/AI/astor-memory-backup-pre-filter2.bundle`
+holds the history exactly as it was before this pass.
+
+**Also**: the README has badges now, the CI matrix covers 3.14 (the
+local runtime), and the release workflow defaults to the current
+version instead of v0.3.0.
+
+The peer table in the dashboard was unreadable: the table rendered at
+12px, its headers at 9.5px, and its buttons at 2px padding, with six
+buttons sharing one row.
+
+Three separate things were wrong and they compounded:
+
+* the type was 9.5-12px, which is why it could not be read
+* the row was two bands tall, because the endpoint cell wrapped and
+  pushed the last column's buttons down -- every column was straight
+  and the row still looked crooked
+* `display: flex` on a `<td>` breaks the vertical alignment the row
+  depends on: the buttons ended up at six different heights, from 69px
+  to 103px within one row
+
+So: 11px table, 10px headers, 11px buttons at a uniform 26px height.
+The endpoint cell is one line with the full list in the tooltip. The
+flex lives on a div inside the cell, not on the cell itself. The route
+labels are upper case. The row is 37px and every button in it sits on
+one line -- measured, not eyeballed.
+
+The block/unblock button is a `.btn-refresh`, which is a 28x28 square
+icon button for the reload glyph -- so the word was being clipped
+inside a fixed 28px box. The width is released there now and the
+labels get their natural width.
+
+So: 11px table, 10px headers, buttons at a uniform 26px, the endpoint
+cell on one line with the full list in its tooltip, the route labels
+upper case. The row is 37px and every button in it sits on one line.
+
+
 The repository's git hygiene, and a history that does not name the
 operator.
 
