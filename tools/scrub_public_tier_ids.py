@@ -50,7 +50,7 @@ KEYED = re.compile(
     r"group|channel|cron|job)[_\s-]?id)\s*=\s*"
     r"([0-9a-f]{8,}(?:_[0-9a-f]{4,}){0,3}|[0-9]{8,}(?:_[0-9a-f]{4,}){0,3})", re.I)
 
-# A platform identifier with the word in front of it: "bot 8263b17ef9c7",
+# A platform identifier with the word in front of it: "bot 8263b17ef000",
 # "admin 微信同样失败". The word is what says it is an identifier, so a
 # bare hex string without one -- a commit sha -- is left alone.
 CONTEXT_ID = re.compile(
@@ -58,7 +58,7 @@ CONTEXT_ID = re.compile(
     r"([0-9a-f]{10,}(?:_[0-9a-f]{4,}){0,3})(?=[,\s]|$)", re.I)
 
 # A bare platform identifier inside a [STATE-CONST] block. The
-# distiller strips the keys, so "[STATE:8]=8263b17ef9c7" is what a bot
+# distiller strips the keys, so "[STATE:8]=8263b17ef000" is what a bot
 # id looks like in the shared tier -- the key said "bot id" once, in
 # the text the block was built from, and that text is gone.
 #
@@ -68,7 +68,7 @@ CONTEXT_ID = re.compile(
 STATE_BLOCK_ID = re.compile(
     r"(\[[A-Za-z0-9_:.-]+\]=)([0-9a-f]{10,}(?:_[0-9a-f]{4,}){0,3})(?=[,\s]|$)")
 
-# A bare platform account id: "8263b17ef9c7@im.bot".
+# A bare platform account id: "8263b17ef000@im.bot".
 WECHAT_ACCT = re.compile(r"\bo[A-Za-z0-9_-]{10,}@im\.(?:bot|wechat)\b")
 
 
