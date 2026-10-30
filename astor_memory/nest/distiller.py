@@ -203,9 +203,60 @@ def _extract_state_const(text: str) -> list[dict]:
             out.append({
                 'token': tok,
                 'placeholder': f'[STATE:{len(out)+1}]',
+                # v1.17.29: the docstring above says PII tokens "get
+                # priority via redact path, not via this extractor" --
+                # but extraction happens BEFORE the sentence filter, so
+                # the token is already gone from the body by the time
+                # the redact path looks. "message_id=7519050235899700000"
+                # became "[STATE:6]=7519050235899700000" in the shared
+                # tier, with the key stripped and nothing left to catch
+                # it. The key is what says the value is an id, so it is
+                # read here, while the original text still has it.
+                'private': _token_is_private(text, m),
             })
     return out
 
+
+def _token_is_private(text: str, match) -> bool:
+    """Is this extracted token private data in the source text?
+
+    The token alone cannot say -- "7519050235899700000" is a message id
+    to one reader and a checksum to another. What says it is the text
+    around it: "message_id=7519050235899700000" is a message id.
+    """
+    from .visibility_classifier import has_pii as _has_pii
+    start = max(0, match.start() - 40)
+    window = text[start:match.end()]
+    return bool(_has_pii(window))
+
+
+
+def _scrub_state_block(text: str) -> str:
+    """Redact private values inside a [STATE-CONST] block.
+
+    The block exists so that a technical token survives distillation
+    intact -- a script name, a file path, a config key. Those are the
+    point of the shared tier: "read the page into a scratch file, then
+    extract the js_content div" is worth sharing, and the file name is
+    part of it.
+
+    A token that names a person, a message, a chat or an account is
+    not that. It is the operator's private data with a lesson attached,
+    and every peer in the federation can read the shared tier.
+
+    So each value is checked on its own and only the private ones are
+    replaced. The entry keeps its placeholder, so the block still
+    shows that a value was there.
+    """
+    from .visibility_classifier import has_pii as _has_pii
+
+    def _sub(m):
+        key, val = m.group(1), m.group(2)
+        if _has_pii(val):
+            return f'{key}=[REDACTED]'
+        return m.group(0)
+
+    return re.sub(r'(\[[A-Za-z0-9_:.-]+\]=)([^,\n]+)', _sub, text)
 
 def distill(
     text: str,
@@ -360,7 +411,11 @@ def distill(
         # now kept out of the split instead of being mangled to fit it.
         state_tokens = []
         for e in state_extractions[:20]:
-            state_tokens.append(f'{e["placeholder"]}={e["token"]}')
+            # a token that was an id in the source text stays a
+            # placeholder in the shared tier -- the key said what it
+            # was, and the key does not travel
+            val = '[REDACTED]' if e.get('private') else e['token']
+            state_tokens.append(f'{e["placeholder"]}={val}')
         state_block = _STATE_BLOCK_MARK + ', '.join(state_tokens)
         if cleaned:
             cleaned = cleaned + '\n\n' + state_block
@@ -411,7 +466,21 @@ def distill(
         final_clean.append(sent)
     cleaned = ' '.join(final_clean)
     if _sep:
+        # v1.17.29: the state-const block was split off before the final
+        # PII pass and re-attached verbatim, so a token inside it never
+        # saw the checker. The body is checked with its tokens restored,
+        # so a token carrying something private IS caught there -- but
+        # the block itself carried the same values in the
+        # "[STATE:6]=<value>" form, unchecked.
+        #
+        # A token that names a file or a script is the point of the
+        # block and stays. A token that names a person, a message, a
+        # chat or an account is private data in the shared tier and
+        # goes. The block keeps its shape -- the entry becomes
+        # "[STATE:6]=[REDACTED]" -- so the reader still sees that
+        # something was there and the method still reads the same.
         cleaned = (cleaned + _sep + _state_block).strip()
+        cleaned = _scrub_state_block(cleaned)
 
     # 5. Verify the cleaned text still has at least one method/flow keyword.
     # If not, distill didn't preserve actionable content -> abort (empty).

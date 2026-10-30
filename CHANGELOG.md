@@ -1,5 +1,35 @@
 ## Unreleased
 
+A lesson's own session ids were reaching the shared tier.
+
+The public tier is what every peer in the federation can read. An audit
+of the live tier found nine lesson facts carrying identifiers: a
+message id, a bot account id, a cron job id, and session ids like
+`weixin 20261005_085110`.
+
+The distiller extracts the technical tokens out of a fact before the
+sentence filter runs, so that a path or a script name survives
+intact -- the point of the shared tier is that the method travels.
+But extraction happens first, so by the time the PII pass looks, the
+token is already gone from the body, and the sentence that carried it
+no longer contains the thing that made it private. The key that said
+what the value was -- `message_id=`, `bot_id=` -- was stripped along
+the way, so nothing downstream could recognise it either. The
+extractor's own docstring says PII tokens "get priority via redact
+path, not via this extractor", which is the intent; the ordering
+defeated it.
+
+So the context is read at extraction time, while the original text
+still has the key. A token that was an id in the source stays a
+placeholder in the shared tier: `[STATE:6]=[REDACTED]`. A script name
+or a path is untouched -- those are the part worth sharing.
+
+The PII rules also gained one shape they did not have: an identifier
+that names itself. `message_id=7519050235899700000` is the operator's
+message and `bot_id=8263b17ef000` is their account, and a bare 19-digit
+number is indistinguishable from a hash -- so the rule matches the
+key/value form, not the number.
+
 Python 3.14 support, and a CI matrix that stops killing itself.
 
 **3.14's argparse validates help strings.** A literal percent in a

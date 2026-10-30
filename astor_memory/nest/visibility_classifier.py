@@ -103,6 +103,21 @@ _RE_NAMED_CHAT_ID = re.compile(
     re.I,
 )
 
+# An identifier that names itself. "message_id=7519050235899700000" is
+# the operator's message, "bot_id=8263b17ef000" is their account, and
+# neither is a method. The key has to be there -- a bare 19-digit
+# number is indistinguishable from a hash, and a bare hex string from
+# a checksum -- so this matches the key/value form only.
+#
+# The value has to be long enough to be an id: 8+ digits, or 8+ hex
+# characters for the platform-generated ids that are not numeric.
+_RE_KEYED_ID = re.compile(
+    r'\b(?:message|msg|chat|session|conversation|bot|account|user|'
+    r'thread|group|channel)[_\s-]?id\s*[:=]\s*'
+    r'(?:[0-9a-f]{8,}|[0-9]{8,})',
+    re.I,
+)
+
 
 def has_pii(text: str) -> list[dict]:
     """Return list of PII matches. Empty list = clean.
@@ -149,6 +164,8 @@ def has_pii(text: str) -> list[dict]:
     # "wechat.html", which is a filename and not an identifier.
     for m in _RE_NAMED_CHAT_ID.finditer(text):
         out.append({'name': 'telegram_chat_id', 'severity': 'redact', 'sample': m.group()})
+    for m in _RE_KEYED_ID.finditer(text):
+        out.append({'name': 'keyed_identifier', 'severity': 'redact', 'sample': m.group()})
     return out
 
 
