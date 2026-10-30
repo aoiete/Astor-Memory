@@ -1,5 +1,10 @@
 # Astor-Memory
 
+[![CI](https://github.com/aoiete/ASTOR-Memory/actions/workflows/ci.yml/badge.svg)](https://github.com/aoiete/ASTOR-Memory/actions/workflows/ci.yml)
+[![link-check](https://github.com/aoiete/ASTOR-Memory/actions/workflows/link-check.yml/badge.svg)](https://github.com/aoiete/ASTOR-Memory/actions/workflows/link-check.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 > **The peer-to-peer public memory layer for AI agents.** Your private memory stays on your machine; public knowledge is shared peer-to-peer — no central server, no vendor lock-in.
 
 > **中文文档:** [README.zh-CN.md](README.zh-CN.md) · **Dashboard:** [docs/dashboard.md](docs/dashboard.md) · **Architecture:** [docs/architecture.md](docs/architecture.md) · **API:** [docs/api.md](docs/api.md)

@@ -1,5 +1,10 @@
 # Astor-Memory
 
+[![CI](https://github.com/aoiete/ASTOR-Memory/actions/workflows/ci.yml/badge.svg)](https://github.com/aoiete/ASTOR-Memory/actions/workflows/ci.yml)
+[![link-check](https://github.com/aoiete/ASTOR-Memory/actions/workflows/link-check.yml/badge.svg)](https://github.com/aoiete/ASTOR-Memory/actions/workflows/link-check.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 > **面向 AI agent 的点对点公开记忆层。** 私有记忆留在你自己的机器上;公开知识在可信节点之间点对点流通 —— 没有中心 server,没有供应商锁定。
 
 > **English:** [README.md](README.md) · **Dashboard 文档:** [docs/dashboard.md](docs/dashboard.md) · **架构:** [docs/architecture.md](docs/architecture.md) · **API:** [docs/api.md](docs/api.md)

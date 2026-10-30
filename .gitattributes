@@ -1,0 +1,56 @@
+# Normalize line endings.
+#
+# The repository stores LF, and so does the working tree. Without this
+# file the line endings follow whatever the machine happens to have:
+# core.autocrlf=true on one machine, nothing on another, and the same
+# file ends up with different bytes in every clone. That is noise in
+# every diff, and it is the reason commits on Windows warn about line
+# endings.
+* text=auto eol=lf
+
+# Batch files are run by cmd.exe, which is happiest with CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Python sources and the shell scripts beside them: LF, always. A
+# shebang with a stray CR does not work.
+*.py text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Never touched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.bz2 binary
+*.xz binary
+*.7z binary
+*.whl binary
+*.tar binary
+*.parquet binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.pyd binary
+*.so binary
+*.dll binary
+*.exe binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.mp3 binary
+*.mp4 binary
+*.webm binary
+*.wasm binary
+
+# Generated documentation and build output.
+docs/_build/** binary
+build/** binary
+dist/** binary
