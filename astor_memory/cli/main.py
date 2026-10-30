@@ -671,6 +671,33 @@ def main(argv: list[str] | None = None) -> int:
     # am peer ... (v1.14.67 Phase 1: peer_id + keypair + status)
     # Full peer network ships Phase 2-5 (friend list, topic routing,
     # gossip, rekey, anti-spam). Phase 1 ships just identity + status CLI.
+    # v1.17.20: the relay -- a postman that cannot read the mail.
+    relay_p = subparsers.add_parser(
+        'relay', help='Relay service (postman, not reader)')
+    relay_sub = relay_p.add_subparsers(dest='relay_cmd')
+
+    relay_serve = relay_sub.add_parser(
+        'serve', help='Run the relay service')
+    relay_serve.add_argument('--host', default='127.0.0.1')
+    relay_serve.add_argument('--port', type=int, default=7900)
+    relay_serve.add_argument('--state-dir', default=None)
+    relay_serve.add_argument('--threads', type=int, default=16)
+    relay_serve.set_defaults(func=cmd_relay_serve)
+
+    relay_reg = relay_sub.add_parser(
+        'register', help='Register this node with a relay')
+    relay_reg.add_argument('--url', required=True,
+                           help='Relay base url (http://host:port)')
+    relay_reg.add_argument('--ttl', type=int, default=3600)
+    relay_reg.set_defaults(func=cmd_relay_register)
+
+    relay_look = relay_sub.add_parser(
+        'lookup', help='Check whether a peer is on the relay')
+    relay_look.add_argument('--url', required=True,
+                            help='Relay base url (http://host:port)')
+    relay_look.add_argument('key_id', help="The peer's key_id")
+    relay_look.set_defaults(func=cmd_relay_lookup)
+
     # v1.17.19: the pending-candidate queue -- facts that were written
     # but never promoted, so the operator can see and decide.
     pending_p = subparsers.add_parser(
@@ -1452,6 +1479,57 @@ def cmd_reject(args) -> int:
     if not done:
         print(f'[ERR] no pending candidate with id {cid}', file=sys.stderr)
         return 1
+    return 0
+
+
+# --- v1.17.20: the relay ---------------------------------------------
+#
+# The relay is a separate service (it can run on a machine of its own);
+# these commands are the node's side of it, plus a way to run the
+# service locally for testing.
+
+def cmd_relay_serve(args) -> int:
+    """Run the relay service."""
+    from ..relay_server import create_relay_app
+    host = getattr(args, 'host', None) or '127.0.0.1'
+    port = int(getattr(args, 'port', None) or 7900)
+    state_dir = getattr(args, 'state_dir', None)
+    threads = int(getattr(args, 'threads', None) or 16)
+    print(f'[astor] relay on http://{host}:{port} '
+          f'(state: {state_dir or "default"})')
+    print('[astor] the relay holds ciphertext only and has no way to '
+          'call a third party')
+    app = create_relay_app(state_dir=state_dir)
+    try:
+        from waitress import serve
+        serve(app, host=host, port=port, threads=threads)
+    except ImportError:
+        app.run(host=host, port=port, threaded=True)
+    return 0
+
+
+def cmd_relay_register(args) -> int:
+    """Register this node with a relay."""
+    from .._internal.relay_client import register, RelayClientError
+    try:
+        out = register(args.url, ttl_seconds=int(getattr(args, 'ttl', 3600)))
+    except RelayClientError as _e:
+        print(f'[ERR] {_e}', file=sys.stderr)
+        return 1
+    print(f'[OK] registered with {args.url} '
+          f'(key_id {out.get("key_id")}, expires {out.get("expires_at")})')
+    return 0
+
+
+def cmd_relay_lookup(args) -> int:
+    """Is a peer on the relay right now?"""
+    from .._internal.relay_client import lookup
+    out = lookup(args.url, args.key_id)
+    if not out.get('found'):
+        print(f'  {args.key_id}: not on this relay')
+        return 1
+    print(f"  {args.key_id}: online={out.get('online')} "
+          f"peer_id={out.get('peer_id')} expires={out.get('expires_at')}")
     return 0
 
 

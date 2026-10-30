@@ -612,36 +612,38 @@ relay 的价值在于「对方什么都不用装,只要能出网」。
 
 ## 11. 实施计划
 
+> **状态 (2026-10-29)**:slice 1 已 ship(v1.17.20)—— relay 服务端、E2E 加密模块、节点侧客户端、CLI(`am relay serve|register|lookup`)、以及锁死结构性约束的测试。**下一步**:把 relay 接进 peer 搜索路径(P2/P7/P8)、连接测试按钮(P3)、治理(P9)、多 relay failover(P10 剩余部分)。
+
 | 阶段 | 内容 | 可独立验证 |
 |---|---|---|
 | **P1** | 身份:`key_id` 字段 + 派生 + 交换;peer 表加列 | 指纹能人工核对 |
 | **P2** | 节点侧:peer 行加 `connect_mode`;UI 模式二选一 | 面板能切模式并落盘 |
 | **P3** | 节点侧:`POST /v1/peer/<key_id>/test` + stage 分类 + SSRF 防护 + 限流 + audit | 点按钮得到 stage 与红字 |
 | **P4** | fanout 解耦:`outbound_search` 默认值改 False(新 peer)+ 陌生人 trust 封顶 + CLI `--trust` 默认修正 | 陌生人收不到未命中查询 |
-| **P5** | E2E 加密:临时 X25519 + NaCl Box,加解密模块 + 单测 | 密文往返;拒绝明文降级 |
-| **P6** | Relay 服务端:register(挑战验签)/ lookup(online)/ send / poll / ack + 审计日志 + 限流 + 黑名单 | curl 跑通 5 个端点;错签名被拒 |
+| **P5** | E2E 加密:临时 X25519 + NaCl Box,加解密模块 + 单测 | 密文往返;拒绝明文降级 | **已实现 (v1.17.20)** —— 用 `cryptography` 的 X25519 + HKDF-SHA256 + ChaCha20-Poly1305 而非 NaCl Box(PyNaCl 是可选依赖,本机没装);临时键每次现生成;性质声明见 `astor_memory/_internal/relay_crypto.py` |
+| **P6** | Relay 服务端:register(挑战验签)/ lookup(online)/ send / poll / ack + 审计日志 + 限流 + 黑名单 | **已实现 (v1.17.20)**:register(挑战验签,nonce 单次)/ lookup(online 与 found 分开,不返回公钥)/ send(拒绝非密文 payload)/ poll(60s TTL 队列)/ ack / 内存路由表 / 注册与发送限流 / 审计只记通讯图不记内容;黑名单属 P9 未做 |
 | **P7** | 客户端 relay client:发送按 mode 分流 + 轮询线程 + 解密验签 + 应答回程 | A 经 relay 发,B 弹窗 |
 | **P8** | 搜索经 relay 完整往返 + fanout 走 relay | 两个 NAT 后节点互相搜到 |
 | **P9** | 治理:ToS + 举报入口 + 手动封禁 UI | 封禁后该 key_id 无法注册 |
-| **P10** | relay 实现约束的 grep 测试 + 多 relay failover | 断言锁死 |
+| **P10** | relay 实现约束的 grep 测试 + 多 relay failover | 断言锁死 | **部分已实现 (v1.17.20)**:grep 断言已锁死(relay 模块不得出现 requests./httpx./urlopen/socket.create_connection);多 relay failover 未做 |
 
 **P1~P4 不依赖 relay**,可以先单独 ship(测试按钮 + 模式分离立刻提升排错效率)。
 
 ### 11.1 验收标准(必须可测)
 
-- [ ] relay 模块源码不含对任意 URL 的出站调用(grep 断言)
-- [ ] 未验签的 register 被拒,且不进路由表
-- [ ] 同一 key_id 重连后,路由表只剩最新 generation
+- [x] relay 模块源码不含对任意 URL 的出站调用(grep 断言) —— v1.17.20
+- [x] 未验签的 register 被拒,且不进路由表 —— v1.17.20
+- [x] 同一 key_id 重连后,路由表只剩最新 generation —— v1.17.20(重新登记覆盖旧路由)
 - [ ] relay 模式下,对方未连中继时测试返回明确原因而非超时
 - [ ] 测试请求里的地址被忽略,只使用 DB 里的 endpoint(断言)
 - [ ] 私网地址段的 peer(局域网)仍可被测试通过
 - [ ] `__peertest__` 前缀的 query 不计入对方 access_count
 - [ ] 限流计数不因 `__peertest__` 前缀而减免
-- [ ] relay 转发途中不落盘(重启 relay 后路由表为空,邮箱只剩未 ack 的)
-- [ ] relay 磁盘上除审计日志与黑名单外无任何数据(断言)
-- [ ] 客户端拒绝明文 payload(降级保护)
-- [ ] 陌生 peer 默认收不到本地未命中查询(trust 封顶 + outbound_search 默认关)
-- [ ] key_id 与公钥匹配才被接受(冒充测试)
+- [x] relay 转发途中不落盘(重启 relay 后路由表为空,邮箱只剩未 ack 的) —— v1.17.20
+- [x] relay 磁盘上除审计日志与黑名单外无任何数据(断言) —— v1.17.20(审计表只有通讯图四列,无内容列)
+- [x] 客户端拒绝明文 payload(降级保护) —— v1.17.20(客户端不打开 + relay 不投递)
+- [x] 陌生 peer 默认收不到本地未命中查询(trust 封顶 + outbound_search 默认关) —— v1.17.17
+- [x] key_id 与公钥匹配才被接受(冒充测试) —— v1.17.20
 
 ### 11.2 风险
 

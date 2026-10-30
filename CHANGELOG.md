@@ -1,3 +1,51 @@
+## v1.17.20
+
+The relay: a postman that cannot read the mail.
+
+The relay lets two nodes reach each other when neither can be reached
+directly -- the case that a shared public relay exists for. It holds
+routes, it hands bytes to whoever is connected, and it cannot read a
+single message that passes through it.
+
+Two properties are structural rather than promised:
+
+- **the relay has no outbound request path.** It cannot be turned
+  into an open proxy, because it has no "fetch this URL" ability at
+  all. A grep assertion in the test suite locks that, so a later
+  "just for debugging" line breaks the build instead of the
+  deployment.
+- **the routing table, the mailboxes and the message queue live in
+  memory.** What is persisted is an audit row saying "A asked B
+  something" -- the communication graph, which cannot be avoided and
+  is accepted -- with no content, for seven days.
+
+The encryption is real, not a placeholder: X25519 for key agreement,
+HKDF-SHA256 to derive the key, ChaCha20-Poly1305 for the box, with a
+fresh ephemeral key per message. PyNaCl is an optional dependency and
+is not installed everywhere, so this uses `cryptography` instead --
+the same shape as NaCl Box with an explicit KDF in the middle.
+
+What the crypto guarantees, stated exactly: the relay cannot read the
+content, and the sender's key material is not recoverable from the
+traffic. What it does not guarantee is forward secrecy against a later
+compromise of the *recipient's* long-term key -- the design document
+called that forward secrecy; the difference is written down in
+`relay_crypto.py` rather than left to be guessed at.
+
+Nodes prove who they are before they enter the routing table: the
+relay hands out a nonce, the node signs it with the ed25519 identity
+key, and the relay verifies the signature against the reported public
+key and checks that key_id is that key's fingerprint. A node that
+cannot sign does not get a route. The nonce is single-use.
+
+The relay also refuses to carry a payload that is not a sealed
+envelope, and the client refuses to open one that is -- neither side
+will take part in a downgrade.
+
+Slice 1 ships the service, the crypto, the client and the CLI
+(`am relay serve|register|lookup`). Wiring the relay into the peer
+search path is the next slice.
+
 ## v1.17.19
 
 A fact that was written but never promoted must be visible.
