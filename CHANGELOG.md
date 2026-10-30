@@ -1,3 +1,33 @@
+## v1.17.18
+
+Two facts that contradict each other must not both be reinforced.
+
+The write side has had conflict detection for a while
+(`nest/ecv.py`): a new fact is classified against an existing anchor as
+new_fact / clarification / corroboration / repeat / conflict. But it
+only ever ran when a fact was written. On the read side a fact that
+contradicts another one still came back ranked, got its access counter
+bumped like every other hit, and the caller had no way to know the two
+statements disagreed.
+
+Bumping the counter is what keeps a fact out of the decay sweep, so a
+fact contradicted every time it surfaced was being kept hot on the
+strength of the contradiction.
+
+`/v1/read` now scans the facts it is about to return, reports the
+contradicting pairs as `conflicts` plus a one-line `conflict_note`,
+and leaves the contradicted facts out of both reinforcement paths.
+The facts stay in the answer: hiding one of them would hide the
+contradiction instead of surfacing it.
+
+The scan is deliberately stricter than the write-side rule -- high
+bigram overlap (same statement) AND opposite polarity. The write-side
+rule also fires on a shared entity alone, which is too loose here: a
+stray negation word in an unrelated fact would push a good result out
+of the ranking. The read side also detects negation in the raw text,
+because `ecv._tokenize` emits CJK bigrams, so a lone "不" is never a
+token and the write-side Chinese negation test could never fire.
+
 ## v1.17.17
 
 A peer you added does not start inside the broadcast range.

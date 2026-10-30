@@ -176,6 +176,77 @@ def node_usefulness(
     return min(1.0, score)
 
 
+# v1.17.18: negation detection for the read side.
+#
+# The write-side test looks for negation WORDS in the token set, but
+# _tokenize emits CJK bigrams -- a lone "不" is never a token, so the
+# Chinese half of that test could never fire. That is why relation()
+# documents contradictions as "rare in practice". The read side needs
+# to work, so it looks at the raw text.
+_NEG_EN = re.compile(
+    r"\b(?:not|no|never|without|cannot|can't|don't|doesn't|didn't|"
+    r"isn't|aren't|won't|wouldn't|shouldn't|mustn't)\b", re.I)
+_NEG_ZH = re.compile(r"[不没无未勿别]")
+
+
+def _has_negation(text: str) -> bool:
+    """Does this text negate its own claim? Raw text, not tokens."""
+    if not text:
+        return False
+    return bool(_NEG_EN.search(text) or _NEG_ZH.search(text))
+
+
+def scan_conflicts(facts, min_jaccard: float = 0.6, max_pairs: int = 60):
+    """Find pairs of surfaced facts that contradict each other.
+
+    Read-side conflict detection, deliberately stricter than the
+    write-side relation(): two facts count as conflicting only when
+    their bigram overlap is high -- they are the same statement -- AND
+    exactly one of them negates it. The write-side rule also fires on
+    a shared entity alone, which is too loose here: a stray negation
+    word in an otherwise unrelated fact would push a good result out of
+    the ranking.
+
+    The caller decides what to do with the pairs. This module only
+    reports them.
+
+    Args:
+        facts: list of dicts with 'fact_id' and 'content'
+        min_jaccard: token overlap required for "the same statement"
+        max_pairs: stop after this many pairs
+
+    Returns:
+        list of (fact_id_a, fact_id_b, jaccard)
+    """
+    out = []
+    n = len(facts)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if len(out) >= max_pairs:
+                return out
+            fa, fb = facts[i], facts[j]
+            if fa.get("fact_id") is None or fb.get("fact_id") is None:
+                continue
+            ac = fa.get("content") or ""
+            bc = fb.get("content") or ""
+            if not ac or not bc:
+                continue
+            a_toks = _tokenize(ac)
+            b_toks = _tokenize(bc)
+            if not a_toks or not b_toks:
+                continue
+            union = a_toks | b_toks
+            if not union:
+                continue
+            jac = len(a_toks & b_toks) / len(union)
+            if jac < min_jaccard:
+                continue
+            if _has_negation(ac) == _has_negation(bc):
+                continue
+            out.append((int(fa["fact_id"]), int(fb["fact_id"]), round(jac, 4)))
+    return out
+
+
 def relation(
     anchor_content: str,
     anchor_entities_json: str | None,

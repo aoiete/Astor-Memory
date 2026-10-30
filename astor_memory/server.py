@@ -6170,6 +6170,38 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception:
             pass
 
+        # v1.17.18: two surfaced facts that contradict each other.
+        #
+        # A contradicted fact should not be reinforced -- the access
+        # counter is what keeps a fact out of the decay sweep, so a
+        # fact that is contradicted every time it comes up must not be
+        # kept hot -- and the caller deserves to know, because the two
+        # statements are both in the answer and the model has to pick.
+        #
+        # The scan is strict (high overlap + opposite polarity); it
+        # reports, it does not hide. See nest/ecv.py::scan_conflicts.
+        _conflicts = []
+        _conflict_ids = set()
+        _conflict_note = None
+        try:
+            from .nest.ecv import scan_conflicts as _scan_conflicts
+            _conflicts = [
+                {'a': int(a), 'b': int(b), 'jaccard': float(j)}
+                for a, b, j in _scan_conflicts(enriched)
+            ]
+            if _conflicts:
+                _conflict_ids = ({c['a'] for c in _conflicts}
+                                 | {c['b'] for c in _conflicts})
+                _conflict_note = (
+                    "conflicting facts in this answer: "
+                    + ", ".join(f"{c['a']} vs {c['b']}" for c in _conflicts)
+                )
+        except Exception as _cf_exc:
+            _safe_stderr_write(
+                f'[astor.server] conflict scan failed (continuing): {_cf_exc}\n')
+            _conflicts = []
+            _conflict_ids = set()
+
         # v1.14.x (2026-09-13): bump access_count + last_confirmed_at for
         # every fact that actually surfaced in this recall. Per wechat
         # article 3-layer memory best practice (long-term memory decay):
@@ -6179,7 +6211,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         try:
             import datetime as _dt_acc
             import os as _os_acc
-            _surfaced_fids = [int(r['fact_id']) for r in enriched if r.get('fact_id') is not None]
+            _surfaced_fids = [int(r['fact_id']) for r in enriched
+                              if r.get('fact_id') is not None
+                              and int(r['fact_id']) not in _conflict_ids]
             if _surfaced_fids and _os_acc.environ.get('ASTOR_ACCESS_TRACKING', '1') != '0':
                 _ph_acc = ','.join('?' * len(_surfaced_fids))
                 _now_iso = _dt_acc.datetime.now(_dt_acc.timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds') + 'Z'
@@ -6701,10 +6735,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # 90+ days (noise accumulating). Article reference:
         # "同领域事件的写入模式相似度为 0.872, 跨领域为 0.784"
         try:
+            # v1.17.18: a contradicted fact is not a hit worth
+            # reinforcing -- apply_recall_aware_decay boosts importance
+            # and bumps access_count for everything in this list.
             _hit_fact_ids = [
                 int(e.get('fact_id') or e.get('id'))
                 for e in (enriched or [])
                 if (e.get('fact_id') or e.get('id'))
+                and int(e.get('fact_id') or e.get('id')) not in _conflict_ids
             ]
             if _hit_fact_ids and body.get('recall_aware_decay', True):
                 _bus_for_decay = astor_bus(tier=tier, user_id=user_id)
@@ -6748,6 +6786,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _dropped_tombstoned = 0
         return jsonify({
             'results': enriched,
+            # v1.17.18: pairs of surfaced facts that contradict each
+            # other, and a one-line note for the caller. The facts stay
+            # in the answer -- hiding one of them would hide the
+            # contradiction instead of surfacing it.
+            'conflicts': _conflicts,
+            'conflict_note': _conflict_note,
             'count': len(enriched),
             # 2026-10-21: 本次响应里被 tombstone 防线剔除的死数据条数
             'dropped_tombstoned': _dropped_tombstoned,
