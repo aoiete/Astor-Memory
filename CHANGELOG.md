@@ -34,11 +34,23 @@ version instead of v0.3.0.
 
 The peer table in the dashboard was unreadable: the table rendered at
 12px, its headers at 9.5px, and its buttons at 2px padding, with six
-buttons sharing one row. It now renders at 12px with 10px headers and
-11px buttons, the two connection routes side by side under the result
-pill (equal width, so the columns line up), and the block/delete pair
-side by side beside them, inside a scroll container so a narrow window
-does not squash the row. The route labels are upper case.
+buttons sharing one row.
+
+Three separate things were wrong and they compounded:
+
+* the type was 9.5-12px, which is why it could not be read
+* the row was two bands tall, because the endpoint cell wrapped and
+  pushed the last column's buttons down -- every column was straight
+  and the row still looked crooked
+* `display: flex` on a `<td>` breaks the vertical alignment the row
+  depends on: the buttons ended up at six different heights, from 69px
+  to 103px within one row
+
+So: 11px table, 10px headers, 11px buttons at a uniform 26px height.
+The endpoint cell is one line with the full list in the tooltip. The
+flex lives on a div inside the cell, not on the cell itself. The route
+labels are upper case. The row is 37px and every button in it sits on
+one line -- measured, not eyeballed.
 
 ## v1.17.25
 

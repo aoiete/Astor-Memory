@@ -1239,8 +1239,12 @@ function renderPeerRows(rows, sectionKey) {
     // public one. Show them all; the dispatcher tries them in order.
     const _eps = (p.endpoints && p.endpoints.length) ? p.endpoints
                   : (p.endpoint ? [p.endpoint] : []);
+    // one line: a peer with two addresses used to wrap and push the
+    // buttons in the last column onto a second band, which read as
+    // misalignment even though every column was straight
     const endpoint = _eps.length
-      ? _eps.map(function (e) { return escapeHtml(e); }).join('<br>')
+      ? '<span title="' + escapeHtml(_eps.join('\n')) + '">'
+        + escapeHtml(_eps.join(', ')) + '</span>'
       : '<span class="recall-hint">— none —</span>';
     const hasPub = p.has_pubkey
       ? '<span class="rc-tag rc-kind">✓</span>'
@@ -1296,20 +1300,19 @@ function renderPeerRows(rows, sectionKey) {
       + outTxt + '</button></td>'
       + '<td>' + search + '</td>'
       + '<td class="recall-hint">' + escapeHtml(updated) + '</td>'
-      + '<td class="peer-test-cell">' + tCell
+      + '<td class="peer-test-cell"><div class="peer-test-inner">' + tCell
       + '<div class="peer-test-routes">'
       + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="test-peer" '
       + 'data-mode="direct" class="peer-test-btn">test</button>'
       + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="test-peer" '
       + 'data-mode="relay" class="peer-test-btn peer-test-relay">via relay</button>'
-      + '</div>'
-      + '</td>'
-      + '<td class="peer-actions">'
+      + '</div></div></td>'
+      + '<td class="peer-row-actions"><div class="peer-row-actions-inner">'
       + (p.kind === 'blacklist'
         ? '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="unblacklist" class="btn-refresh">unblock</button>'
         : '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="blacklist" class="btn-refresh">block</button>')
       + '<button data-pid="' + escapeHtml(p.peer_id) + '" data-action="delete" class="btn-refresh">&times;</button>'
-      + '</td>'
+      + '</div></td>'
       + '</tr>';
   });
   html += '</tbody></table></div>';
