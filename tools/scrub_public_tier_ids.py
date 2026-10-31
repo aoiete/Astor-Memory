@@ -30,8 +30,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from astor_memory.nest.visibility_classifier import has_pii  # noqa: E402
+from astor_memory.config import get_default_astor_dir
 
-DEFAULT_DB = Path(r"D:\AI\Astor-Memory-Runtime\public\memory\astor_bus_public.db")
+DEFAULT_DB = get_default_astor_dir() / 'public' / 'memory' / 'astor_bus_public.db'
 
 # A session id in the text: the platform name, then the id. The id is a
 # timestamp, an underscore, a short hex id and sometimes a second

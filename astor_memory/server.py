@@ -4762,6 +4762,85 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _safe_stderr_write(f'[astor.server] kp auto-recall failed (non-fatal): {exc}\n')
             return []
 
+    def _peer_fanout_run(query, scopes, body, top_k, stats=None,
+                         fallback_hit=False):
+        """Ask the peers when this node cannot answer the query itself.
+
+        scopes: [(tier, user_id), ...] the caller can see. One scope
+        that carries the question answers it, so a single hit is enough.
+        Returns (dispatched, peer_results, per_peer, error).
+
+        v1.17.26: the gate asks a document-level question -- does one
+        document here carry this question? The corpus-level version
+        ("does this corpus know 30% of these words?") is true for
+        nearly every question on a node with a few thousand facts, so
+        the peers were never asked; measured on a real node, 24 of 29
+        questions about subjects this node had never stored were
+        classified as local hits. IDF-weighted document coverage
+        separates them cleanly -- stored facts score 91-100%, unknown
+        subjects 0-29% -- so 40% is the threshold.
+        """
+        want = body.get("peer_fanout")
+        if want is None:
+            try:
+                from ._internal import peer_fanout as _pf_mod
+                want = _pf_mod.is_enabled()
+            except Exception:
+                want = False
+        else:
+            want = bool(want)
+        if not want:
+            return False, [], [], None
+
+        local_hit = False
+        coverage_ok = False
+        for t, u in scopes:
+            try:
+                from .nest.lex_index import astor_lex as _alex
+                share, _m = _alex(tier=t, user_id=u).idf_coverage(
+                    query, limit=5)
+            except Exception:
+                continue
+            coverage_ok = True
+            if share >= 0.40:
+                local_hit = True
+                break
+        if not coverage_ok and fallback_hit:
+            # the coverage query failed for every scope -- do not treat
+            # every read as a miss, that would fan out on every read
+            local_hit = True
+        if local_hit:
+            return False, [], [], None
+
+        topic = body.get("topic") or None
+        try:
+            topic_min_weight = float(body.get("topic_min_weight", 0.5))
+        except (ValueError, TypeError):
+            topic_min_weight = 0.5
+        topic_min_weight = max(0.0, min(topic_min_weight, 10.0))
+        try:
+            from ._internal.peer_recall import dispatch_peer_fanout
+            fanout = dispatch_peer_fanout(
+                query=query, limit=top_k, topic=topic,
+                topic_min_weight=topic_min_weight, actor_peer_id=None,
+            )
+        except Exception as exc:
+            _safe_stderr_write(
+                f'[astor.server] peer_fanout dispatch failed: '
+                f'{type(exc).__name__}: {exc}\n'
+            )
+            return False, [], [], f"peer_dispatch_failed: {type(exc).__name__}"
+
+        results = fanout.get("peer_results", [])
+        if stats is not None:
+            stats['peer_fanout_triggered'] = (
+                stats.get('peer_fanout_triggered', 0) + 1)
+            stats['peer_fanout_last_triggered_at'] = time.strftime(
+                '%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            stats['peer_fanout_returned_total'] = (
+                stats.get('peer_fanout_returned_total', 0) + len(results))
+        return True, results, fanout.get("per_peer", []), fanout.get("local_error")
+
     @app.route('/v1/read', methods=['POST'])
     def read():
         """Recall similar facts via nest vector search.
@@ -6487,113 +6566,21 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # The lexical-hit set is recorded during recall (bm25_hits, and
         # the synonym variants that feed it), so the check costs
         # nothing extra.
-        _peer_dispatched = False
-        _peer_results = []
-        _peer_per_peer = []
-        _peer_local_error = None
-        _pf_req = body.get("peer_fanout")
-        if _pf_req is None:
-            try:
-                from ._internal import peer_fanout as _pf_mod
-                _pf_want = _pf_mod.is_enabled()
-            except Exception:
-                _pf_want = False
-        else:
-            _pf_want = bool(_pf_req)
-        # The ids this node can actually vouch for lexically.
-        #
-        # v1.17.3: matching the query is not enough. BM25 matches with
-        # OR, so a query of "qqqzzz nonexistent token xyzzy12345"
-        # matched a document about OAuth tokens -- one term out of
-        # four -- and BM25's score cannot tell that apart from a real
-        # match because it is normalized inside the candidate set.
-        # The count of matched terms can.
-        #
-        # A real query matches at least two of its terms, or is a
-        # single term that matched. A gibberish query matches one
-        # term out of several, which means this node has nothing
-        # about it and the peers should be asked.
-        _lexical_ids = set()
-        _coverage_ran = False
         _local_ids = set()
         for _r in (enriched or []):
             try:
                 _local_ids.add(int(_r.get('fact_id')))
             except Exception:
                 pass
-        # Two signals, either is enough to call it a local hit:
-        #
-        #  (a) one document matched two or more of the query's terms.
-        #      That is a real match, whatever the rest of the query
-        #      looks like.
-        #  (b) at least half of the query's terms are words this corpus
-        #      has seen. A question in the corpus's own vocabulary is a
-        #      question this node can answer.
-        #
-        # Neither holds for "qqqzzz nonexistent token xyzzy12345": one
-        # term out of four, and the one that matched ("token") matched
-        # a single document. A vector store returns that document
-        # anyway -- it is the nearest neighbour -- and calling that a
-        # hit is what kept the peer network from ever being asked.
-        try:
-            from .nest.lex_index import astor_lex as _alex
-            _lex = _alex(tier=tier, user_id=user_id)
-            _cov = _lex.bm25_coverage(query, limit=5)
-            _best_cov = max((m for _f, _s, m in _cov), default=0)
-            _ratio, _known_n, _total_n = _lex.known_term_ratio(query)
-            # 30% is the measured split on a real node: gibberish scores
-            # 0-15%, real questions score 42-100%. The threshold is a
-            # constant because the measurement is -- not a guess.
-            _ratio_ok = _ratio >= 0.30
-            _local_hit = bool(_best_cov >= 2 or _ratio_ok)
-        except Exception:
-            # If the coverage query fails, fall back to "any bm25 hit
-            # counts" rather than treating every query as a miss --
-            # that would fan out on every single read.
-            try:
-                _local_hit = bool(bm25_hits)
-            except Exception:
-                _local_hit = bool(_local_ids)
-        if _pf_want and not _local_hit:
-            # v1.15.27 Ship K: body.topic + body.topic_min_weight filters
-            # for topic-aware PPS fanout.
-            _pf_topic = body.get("topic") or None
-            try:
-                _pf_topic_min_weight = float(
-                    body.get("topic_min_weight", 0.5)
-                )
-            except (ValueError, TypeError):
-                _pf_topic_min_weight = 0.5
-            _pf_topic_min_weight = max(0.0, min(_pf_topic_min_weight, 10.0))
-            try:
-                from ._internal.peer_recall import dispatch_peer_fanout
-                _fanout = dispatch_peer_fanout(
-                    query=query, limit=top_k, topic=_pf_topic,
-                    topic_min_weight=_pf_topic_min_weight,
-                    actor_peer_id=None,
-                )
-                _peer_results = _fanout.get("peer_results", [])
-                _peer_per_peer = _fanout.get("per_peer", [])
-                _peer_local_error = _fanout.get("local_error")
-                _peer_dispatched = True
-                _meta_recall_stats['peer_fanout_triggered'] = (
-                    _meta_recall_stats.get('peer_fanout_triggered', 0) + 1
-                )
-                _meta_recall_stats['peer_fanout_last_triggered_at'] = (
-                    time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-                )
-                _meta_recall_stats['peer_fanout_returned_total'] = (
-                    _meta_recall_stats.get('peer_fanout_returned_total', 0)
-                    + len(_peer_results)
-                )
-            except Exception as _pf_exc:
-                _safe_stderr_write(
-                    f'[astor.server] peer_fanout dispatch failed: '
-                    f'{type(_pf_exc).__name__}: {_pf_exc}\n'
-                )
-                _peer_local_error = (
-                    f"peer_dispatch_failed: {type(_pf_exc).__name__}"
-                )
+        (_peer_dispatched, _peer_results, _peer_per_peer,
+         _peer_local_error) = _peer_fanout_run(
+            query, [(tier, user_id)], body, top_k,
+            stats=_meta_recall_stats,
+            # bm25_hits only exists on the hybrid path; the fallback for
+            # an unmeasurable coverage is the lexical hit set, and the
+            # results are the second resort
+            fallback_hit=bool(locals().get('bm25_hits')) or bool(_local_ids),
+        )
 
         # v1.16.x: reactive consult gate. Body.consult=True forces meta-recall;
         # body.consult=False skips it; body.consult=None falls back to env
@@ -8196,15 +8183,37 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'cross_tier_score': round(score, 4),
             })
 
+        # v1.17.26: the multi-scope read had no peer fanout at all, so
+        # the agent plugin -- which reads /v1/read/multi for a resolved
+        # identity -- never reached the peer network. Same gate, same
+        # dispatch, one scope that carries the question is enough.
+        (_pf_dispatched, _pf_results, _pf_per_peer,
+         _pf_error) = _peer_fanout_run(
+            query, [(t, u) for t, u, _w, _m in per_scope_results], body,
+            top_k, fallback_hit=bool(enriched))
+        # peer hits are merged into results: a caller that only reads
+        # "results" (the plugin does) must still see the answer.
+        merged = list(enriched)
+        for r in _pf_results:
+            d = dict(r)
+            d.setdefault('tier', 'peer')
+            d.setdefault('cross_tier_score', d.get('relevance', 0))
+            merged.append(d)
+
         return jsonify({
-            'results': enriched,
-            'count': len(enriched),
+            'results': merged,
+            'count': len(merged),
             # v1.15.17 S21: surface meta-recall diagnostics so caller (and
             # dashboard) can verify "astor auto-injected success/failure patterns".
             'scopes_searched': [
                 {'tier': t, 'user_id': u, 'weight': w}
                 for t, u, w, _ in per_scope_results
             ],
+            'peer_dispatched': _pf_dispatched,
+            'peer_count': len(_pf_results),
+            'peer_results': _pf_results,
+            'peer_per_peer': _pf_per_peer,
+            'peer_local_error': _pf_error,
         })
 
     @app.route('/v1/lex/stats', methods=['GET'])

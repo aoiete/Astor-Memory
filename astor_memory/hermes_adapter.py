@@ -31,11 +31,12 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from .config import get_default_astor_dir
 
 logger = logging.getLogger(__name__)
 
-# Resolve astor runtime dir from env (set by ASTOR_DIR, defaults to ~/.astor)
-ASTOR_DIR = Path(os.environ.get("ASTOR_DIR", "~/.astor")).expanduser()
+# Resolve the astor data dir (ASTOR_DIR, then the install record, then the default)
+ASTOR_DIR = get_default_astor_dir()
 
 # Lazy astor import — adapter must not crash at import time if astor deps missing.
 try:

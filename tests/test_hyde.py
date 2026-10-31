@@ -22,8 +22,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 # Force-load module to clear any cached state from previous runs.
+# Only this module: deleting every astor_memory entry leaves every
+# other module in the process holding a stale reference to the old
+# ones, and two copies of astor_memory.config then resolve the data
+# directory differently -- the server's resolver and the CLI's one
+# stop agreeing.
 for k in list(sys.modules):
-    if k.startswith("astor_memory"):
+    if k.startswith("astor_memory.nest.hyde"):
         del sys.modules[k]
 
 from astor_memory.nest.hyde import (

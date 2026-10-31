@@ -449,8 +449,20 @@ class AstorLex:
         if not fts_terms:
             return self._bm25_coverage_legacy(tokens, uniq, limit)
         try:
+            # v1.17.26: ORDER BY bm25(lex_fts), like bm25_search_tokens
+            # does. Without the ordering the candidate slice is taken in
+            # rowid order, and for a long question an OR match over
+            # thousands of documents puts the document that holds the
+            # answer outside the slice -- measured on a real node: the
+            # answer was in the corpus and held every query term, yet
+            # bm25_search found it first and bm25_coverage missed it in
+            # 6 of 10 cases. The coverage was therefore measuring an
+            # arbitrary neighbour, and the peer fanout gate built on it
+            # could not tell "this node knows" from "this node has a
+            # near neighbour".
             rows = self._conn.execute(
-                "SELECT rowid FROM lex_fts WHERE lex_fts MATCH ? LIMIT ?",
+                "SELECT rowid FROM lex_fts WHERE lex_fts MATCH ? "
+                "ORDER BY bm25(lex_fts) LIMIT ?",
                 (' OR '.join(fts_terms), max(limit * 5, 200)),
             ).fetchall()
         except sqlite3.OperationalError:
@@ -587,6 +599,77 @@ class AstorLex:
                 num += idf
                 known += 1
         return (num / den if den > 0 else 0.0), known, len(uniq)
+
+    def idf_coverage(self, query: str, limit: int = 5) -> tuple[float, int]:
+        """How much of the query's meaning does one document here carry?
+
+        Returns (covered_share, matched_terms) for the best document.
+
+        known_term_ratio asks a corpus-level question -- "does this
+        corpus contain these words?". The peer fanout needs a
+        document-level answer -- "does one document here actually talk
+        about this?" -- and the difference is the whole problem. On a
+        node with a few thousand facts, the corpus knows most words
+        that exist in any language it has seen, so the corpus-level
+        ratio stays high for questions about subjects the node has
+        never stored. Chinese makes it worse: tokenisation turns a
+        four-word question into nineteen bigrams, and half of them
+        land in the corpus by accident.
+
+        So this measures coverage inside a single document, weighted by
+        IDF, because the rare term is the one that identifies the
+        topic. A document that holds the rare word carries most of the
+        question even if it misses the common ones; a document that
+        holds only the common words does not.
+
+        The share is of the query's total IDF mass, so a query the
+        corpus knows nothing about scores near zero -- which is what
+        the fanout gate wants -- while a query about something stored
+        here scores high.
+        """
+        tokens = _tokenize(query)
+        if not tokens:
+            return 0.0, 0
+        uniq = set(tokens)
+        N = self._conn.execute(
+            'SELECT COUNT(*) FROM documents WHERE tombstoned = 0'
+        ).fetchone()[0] or 1
+
+        import math as _m
+
+        def _idf(term: str) -> float:
+            row = self._conn.execute(
+                'SELECT df FROM terms WHERE term = ?', (term,)).fetchone()
+            df = int(row[0]) if row and row[0] else 0
+            return _m.log(max((N - df + 0.5) / (df + 0.5) + 1.0, 1e-9))
+
+        weights = {t: _idf(t) for t in uniq}
+        total = sum(weights.values())
+        if total <= 0:
+            return 0.0, 0
+
+        best_share = 0.0
+        best_matched = 0
+        candidates = [c[0] for c in self.bm25_coverage(query, limit=limit)]
+        if candidates:
+            ph = ','.join('?' * len(uniq))
+            # one query for every candidate: which query terms each
+            # document holds
+            rows = self._conn.execute(
+                'SELECT fact_id, term FROM postings WHERE fact_id IN ('
+                + ','.join('?' * len(candidates)) + ') '
+                'AND term IN (' + ph + ')',
+                [*candidates, *uniq]).fetchall()
+            per_doc: dict[int, set[str]] = {}
+            for fid, term in rows:
+                per_doc.setdefault(int(fid), set()).add(term)
+            for fid, held in per_doc.items():
+                carried = sum(weights[t] for t in held)
+                share = carried / total
+                if share > best_share:
+                    best_share = share
+                best_matched = max(best_matched, len(held))
+        return best_share, best_matched
 
     def bm25_search(self, query: str, limit: int = 20) -> list[tuple[int, float]]:
         """Return [(fact_id, bm25_score), ...] sorted desc by score.

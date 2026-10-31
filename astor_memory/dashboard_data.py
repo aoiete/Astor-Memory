@@ -23,6 +23,7 @@ from collections import Counter
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
+from .config import get_default_astor_dir
 
 
 def _stats(seq) -> dict | None:
@@ -1258,7 +1259,7 @@ def build_dashboard_payload(astor_dir: str | Path) -> dict:
     bound_users_total = 0
     try:
         import sqlite3 as _b_sql
-        _b_dir = os.environ.get('ASTOR_DIR') or str(Path.home() / '.astor')
+        _b_dir = get_default_astor_dir()
         if not os.path.exists(_b_dir):
             _b_dir = os.getcwd()
         _b_db = _b_sql.connect(os.path.join(_b_dir, 'bot-binding.db'))

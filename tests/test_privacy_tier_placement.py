@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -31,6 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from astor_memory.nest.visibility_classifier import has_pii  # noqa: E402
+from astor_memory.config import get_default_astor_dir
 
 
 class TestPiiDetectionCatchesChatIds(unittest.TestCase):
@@ -240,9 +242,13 @@ class TestPublicStoreHoldsOnlyShareableRows(unittest.TestCase):
     """The invariant, checked against the live store when it is there."""
 
     def test_public_store_has_no_personal_rows(self):
-        runtime = Path(r"D:\AI\Astor-Memory-Runtime")
+        runtime = get_default_astor_dir()
         db = runtime / "public" / "memory" / "astor_bus_public.db"
-        if not db.exists():
+        if not db.exists() or not os.environ.get("LIVE_ASTOR"):
+            # LIVE_ASTOR is how the suite says "the live deployment is
+            # under test". Without it the resolver may point at a real
+            # runtime by accident, and a test that writes to the shared
+            # tier during the run would then be judged by it.
             self.skipTest("live runtime not present")
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         try:
@@ -260,9 +266,9 @@ class TestPublicStoreHoldsOnlyShareableRows(unittest.TestCase):
     def test_public_store_holds_only_shareable_kinds(self):
         """public is for lessons, methods, workflows, models and patterns."""
         from astor_memory.nest.visibility_classifier import AUTO_COMMONS_KINDS
-        runtime = Path(r"D:\AI\Astor-Memory-Runtime")
+        runtime = get_default_astor_dir()
         db = runtime / "public" / "memory" / "astor_bus_public.db"
-        if not db.exists():
+        if not db.exists() or not os.environ.get("LIVE_ASTOR"):
             self.skipTest("live runtime not present")
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         try:

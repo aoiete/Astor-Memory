@@ -25,8 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from astor_memory.nest.memory_defense import scan_facts  # noqa: E402
+from astor_memory.config import get_default_astor_dir
 
-DB = Path(r"D:\AI\Astor-Memory-Runtime\public\memory\astor_bus_public.db")
+DB = get_default_astor_dir() / 'public' / 'memory' / 'astor_bus_public.db'
 
 SESSION_ID = re.compile(r"\b(weixin|discord|telegram)\s+(\d{8}_[0-9a-f]{6,})", re.I)
 LOCAL_PATH = re.compile(

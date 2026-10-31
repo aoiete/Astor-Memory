@@ -22,10 +22,11 @@ import re
 import sqlite3
 import urllib.request
 from pathlib import Path
+from astor_memory.config import get_default_astor_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
-DB = Path(r"D:\AI\Astor-Memory-Runtime\users\admin\memory\astor_bus_admin.db")
+DB = get_default_astor_dir() / 'users' / 'admin' / 'memory' / 'astor_bus_admin.db'
 SERVER = "http://127.0.0.1:7803"
 TARGET = 40
 

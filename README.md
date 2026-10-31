@@ -121,17 +121,41 @@ What you actually get:
 
 ## Deployment shape
 
-One server, one port (default 7803), one `ASTOR_DIR` directory on disk:
+Two locations on disk, and only two: **the code** and **the data**.
+They are separate because they have different lifetimes -- the code
+changes when you `git pull`, the data changes every time a fact is
+written, and a backup of the memory must not carry the code with it.
+
+```
+code:  Astor-Code/
+       the checkout you cloned, or site-packages if you installed
+       the package non-editable
+
+data:  Astor-Data/
+       a sibling of the code directory by default; set ASTOR_DIR to
+       put it anywhere else
+```
+
+`ASTOR_DIR` holds no code. Ever. The server resolves its own package
+from wherever Python imports it, so the data directory and the code
+directory can never disagree about which version is running.
 
 ```
 <ASTOR_DIR>/
 ├── public/memory/      # astor_bus_public.db + astor_nest_public.db
 ├── source/memory/      # astor_bus_source.db + astor_nest_source.db
 ├── users/<id>/memory/  # astor_bus_<id>.db + astor_nest_<id>.db  (per user)
+├── lex/memory/         # the lexical index, per scope
 ├── audit/              # audit_log.sqlite (cross-tier)
 ├── logs/                 # server.log + side-log + watch logs
+├── relay/                # relay state (ban list, audit metadata)
 └── identity/            # keypair.json (auto-generated on first boot)
 ```
+
+`am init` picks the data directory on first run and remembers it in
+`~/.astor/install.json`, so the choice survives the next install. An
+install that predates the `Astor-Data` name keeps its data where it
+is -- the name is cosmetic, the data is not.
 
 The server binds to `127.0.0.1:7803` by default. For remote access,
 front it with a Cloudflare Tunnel, nginx, or a peer-anything reverse
@@ -142,8 +166,8 @@ Install from source (not yet published to PyPI) with a single
 command; `am` becomes available as a console script:
 
 ```bash
-git clone https://github.com/aoiete/Astor-Memory.git
-cd Astor-Memory
+git clone https://github.com/aoiete/ASTOR-Memory.git Astor-Code
+cd Astor-Code
 pip install -e .
 ```
 
@@ -157,8 +181,7 @@ Optional `[muse]` extra installs the Muse adapter package. Once the
 project is published to PyPI this becomes plain `pip install
 astor-memory`.
 
-Requires Python 3.10–3.13 (3.14 is not yet accepted by the build
-metadata).
+Requires Python 3.10–3.14.
 
 ---
 

@@ -1757,7 +1757,7 @@ def cmd_mine_public(args) -> int:
     # share -- running the command is the consent. Another user's tier
     # is theirs, and they have to have said yes: distill_opt_in is the
     # flag that says yes, and allow_commons_write says no.
-    _astor_dir = os.environ.get('ASTOR_DIR') or os.path.expanduser('~/.astor')
+    _astor_dir = get_default_astor_dir()
     _own = os.environ.get('ASTOR_USER_ID') or 'admin'
     _allow_commons = {}
     try:
@@ -2029,7 +2029,7 @@ def cmd_export(args) -> int:
     """
     from astor_memory.export.markdown import export
 
-    astor_dir = args.astor_dir or os.environ.get('ASTOR_DIR') or os.path.expanduser('~/.astor')
+    astor_dir = args.astor_dir or get_default_astor_dir()
     out = os.path.abspath(os.path.expanduser(args.out))
     tiers = [t.strip() for t in args.tiers.split(',')] if args.tiers else None
     rep = export(astor_dir, out, tiers=tiers, git=args.git,
@@ -2049,8 +2049,7 @@ def cmd_bundle_export(args) -> int:
     """`am bundle export` -- pack the memory state into one tar.gz."""
     from astor_memory.bundle import export_bundle
 
-    astor_dir = (args.astor_dir or os.environ.get('ASTOR_DIR')
-                 or os.path.expanduser('~/.astor'))
+    astor_dir = (args.astor_dir or get_default_astor_dir())
     tiers = [t.strip() for t in args.tiers.split(',') if t.strip()]
     users = ([u.strip() for u in args.users.split(',') if u.strip()]
              if args.users else None)
@@ -2078,8 +2077,7 @@ def cmd_bundle_import(args) -> int:
     """`am bundle import` -- put a bundle back."""
     from astor_memory.bundle import import_bundle
 
-    astor_dir = (args.astor_dir or os.environ.get('ASTOR_DIR')
-                 or os.path.expanduser('~/.astor'))
+    astor_dir = (args.astor_dir or get_default_astor_dir())
     try:
         rep = import_bundle(args.path, astor_dir, dry_run=args.dry_run,
                              verify=not args.no_verify)
@@ -3164,7 +3162,7 @@ def cmd_doctor(args) -> int:
     else:
         print(f'   PID: {os.getpid()}  Memory RSS: n/a (psutil unavailable)')
 
-    astor_dir = os.environ.get('ASTOR_DIR') or str(_P.home() / '.astor')
+    astor_dir = get_default_astor_dir()
     print(f'   ASTOR_DIR: {astor_dir}')
     bb_path = Path(astor_dir) / 'bot-binding.db'
     print(f'   bot-binding.db: {"EXISTS" if bb_path.exists() else "MISSING"} ({bb_path.stat().st_size if bb_path.exists() else 0} bytes)')
@@ -3704,7 +3702,7 @@ def cmd_mm_list(args):
     import os as _os
     _tier = getattr(args, 'tier', 'public') or 'public'
     _user = getattr(args, 'user_id', None)
-    _rt_dir = os.environ.get("ASTOR_DIR") or str(_Path_h.expanduser(_Path_h.home() / ".astor"))
+    _rt_dir = str(get_default_astor_dir())
     if _tier.startswith('private'):
         _bus_db = str(_P(_rt_dir) / "users" / (_user or 'admin') / "memory" / f"astor_bus_{_user or 'admin'}.db")
     else:
@@ -3740,7 +3738,7 @@ def cmd_mm_rebuild(args):
     from astor_memory.nest.mental_models import upsert_mental_model, _ensure_sources_table
     from pathlib import Path as _P
     import os as _os
-    _rt_dir = os.environ.get("ASTOR_DIR") or str(_Path_h.expanduser(_Path_h.home() / ".astor"))
+    _rt_dir = str(get_default_astor_dir())
     _tier = getattr(args, 'tier', 'public')
     _user = getattr(args, 'user_id', None)
     if _tier.startswith('private'):
@@ -4348,7 +4346,7 @@ def _astor_root() -> Path:
     process working directory, which is wherever the operator happened to be.
     """
     import os as _os
-    return Path(_os.environ.get('ASTOR_DIR') or (Path.home() / '.astor'))
+    return Path(get_default_astor_dir())
 
 
 def cmd_bot_add_user(args) -> int:
@@ -4585,7 +4583,7 @@ def cmd_admin_demote(args) -> int:
     # Open target user's private bus via direct path (no ACL gate).
     import os as _os
     from pathlib import Path as _P
-    astor_dir = _P(_os.environ.get('ASTOR_DIR') or _P.home() / '.astor')
+    astor_dir = get_default_astor_dir()
     dst_db_path = astor_dir / 'users' / args.to_user / 'memory' / 'astor_bus_private.db'
     if not dst_db_path.exists():
         print(f'[ERR] target user private db missing: {dst_db_path}')
@@ -4856,7 +4854,7 @@ def cmd_platform_set_plan(args) -> int:
     import sqlite3
     from datetime import datetime
     _require_admin()
-    db_path = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') / 'bot-binding.db'
+    db_path = get_default_astor_dir() / 'bot-binding.db'
     if not db_path.exists():
         print(f'[ERR] bot-binding.db not found: {db_path}')
         return 1
@@ -4905,7 +4903,7 @@ def cmd_platform_verify(args) -> int:
     """Run 6 invariants on bot-binding.db."""
     import sqlite3
     _require_admin()
-    db_path = Path(os.environ.get('ASTOR_DIR') or Path.home() / '.astor') / 'bot-binding.db'
+    db_path = get_default_astor_dir() / 'bot-binding.db'
     if not db_path.exists():
         print(f'WARN: bot-binding.db not found at {db_path}', file=__import__('sys').stderr)
         print('Run `am init` to bootstrap a fresh astor dir before running verify.', file=__import__('sys').stderr)
@@ -5157,7 +5155,7 @@ def cmd_recall_history(args) -> int:
     import datetime as _dt_h
     from pathlib import Path as _Path_h
 
-    astor_dir = os.environ.get('ASTOR_DIR') or os.path.expanduser(os.path.join('~', '.astor'))  # cross-platform default
+    astor_dir = get_default_astor_dir()  # cross-platform default
     log_path = _Path_h(astor_dir) / 'astor' / 'metrics' / 'recall_log.jsonl'
     if not log_path.exists():
         print(f'[ERR] recall_log not found at {log_path}')
@@ -5233,7 +5231,7 @@ def cmd_recall_trail(args) -> int:
     import datetime as _dt_t
     from pathlib import Path as _Path_t
 
-    astor_dir = os.environ.get('ASTOR_DIR') or os.path.expanduser(os.path.join('~', '.astor'))  # cross-platform default
+    astor_dir = get_default_astor_dir()  # cross-platform default
     log_path = _Path_t(astor_dir) / 'astor' / 'metrics' / 'recall_log.jsonl'
     if not log_path.exists():
         print(f'[ERR] recall_log not found at {log_path}')
@@ -7064,7 +7062,7 @@ def cmd_decay_sweep_stagnation(args) -> int:
     window = int(getattr(args, "window", 5))
     thresh = int(getattr(args, "thresh", 4))
 
-    astor_dir = os.environ.get("ASTOR_DIR") or str(Path.home() / ".astor")
+    astor_dir = get_default_astor_dir()
     audit_db = Path(astor_dir) / "audit" / "astor_audit.db"
     if not audit_db.exists():
         print(f"[stagnation] audit db not found: {audit_db}")

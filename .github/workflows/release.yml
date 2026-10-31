@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. v1.17.25)'
+        description: 'Version to release (e.g. v1.17.26)'
         required: true
-        default: 'v1.17.25'
+        default: 'v1.17.26'
       pypi:
         description: 'Upload to PyPI?'
         required: false

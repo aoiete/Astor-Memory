@@ -70,27 +70,16 @@ DEFAULT_USER = "_current"     # single-user mode default (was '_default' in plan
 
 
 def get_astor_dir() -> Path:
-    """Resolve astor runtime dir.
+    """Resolve the astor data directory.
 
-    Priority (highest first):
-      1. $ASTOR_DIR env var (full absolute path)
-      2. $ASTOR_DIR_NAME env var (relative to home, e.g. 'astor-runtime-dir')
-      3. Default: '~/.astor/' (Unix-style hidden dir; cross-OS standard)
-
-    Examples:
-        ASTOR_DIR=/d/Astor-Memory/Runtime   → /d/Astor-Memory/Runtime
-        ASTOR_DIR_NAME=astor-runtime-dir → ~astor-runtime-dir
-        (no env)                            → ~/.astor/
-
-    Rationale (turn 2026-08-15): source-code separable from runtime data.
-    `pip install astor-memory` users get Unix-style ~/.astor/ by default;
-    per-machine customization via env var keeps the code path simple.
+    The rule lives in config.get_default_astor_dir() -- this is the
+    name the server and the index use, and two rules in one codebase
+    means a new default contradicts itself. It resolves, in order:
+    $ASTOR_DIR, $ASTOR_DIR_NAME, the install record, an install that
+    predates the rename, and finally <source>/../Astor-Data.
     """
-    if env_dir := os.environ.get("ASTOR_DIR"):
-        return Path(env_dir).expanduser()
-    if env_name := os.environ.get("ASTOR_DIR_NAME"):
-        return Path.home() / env_name
-    return Path("~/.astor").expanduser()
+    from ..config import get_default_astor_dir
+    return get_default_astor_dir()
 
 
 def _tier_dir(tier: Tier, user_id: str | None) -> Path:
@@ -209,7 +198,7 @@ def get_db_path(
     """
     Resolve the canonical SQLite path for a (tier, store[, user_id]) combination.
 
-    Examples (default: ASTOR_DIR not set → ~/.astor/):
+    Examples (default: ASTOR_DIR not set → the resolved data dir):
         get_db_path('public', 'bus') -> ~/.astor/public/memory/astor_bus_public.db
         get_db_path('source', 'nest') -> ~/.astor/source/memory/astor_nest_source.db
         get_db_path('private', 'bus', 'alice') -> ~/.astor/users/alice/memory/astor_bus_alice.db

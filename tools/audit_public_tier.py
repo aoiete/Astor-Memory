@@ -25,8 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from astor_memory.nest.memory_defense import scan_facts  # noqa: E402
+from astor_memory.config import get_default_astor_dir
 
-DEFAULT_DIR = Path(r"D:\AI\Astor-Memory-Runtime")
+DEFAULT_DIR = get_default_astor_dir()
 
 # A public-tier fact should not carry these either. The PII scanner
 # knows about ids and emails; it does not know that a path is local.

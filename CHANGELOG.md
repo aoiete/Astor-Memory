@@ -1,4 +1,116 @@
-## Unreleased
+## v1.17.26
+
+The peer fanout gate was asking the wrong question.
+
+The gate decides whether this node can answer a query by itself, and
+only asks the peers when it cannot. It used to ask a corpus-level
+question: does this corpus contain 30% of the query's words? On a node
+with a few thousand facts that is almost always true. The corpus
+contains most of the vocabulary of every language it has seen, so the
+gate read nearly every question as answerable here, and the peers were
+never asked -- the network existed but never carried a query. Chinese
+made it worse: tokenisation turns a four-word question into nineteen
+bigrams, and half of them land in the corpus by accident.
+
+Measured on a real node: 24 of 29 questions about subjects this node
+had never stored were classified as local hits. Customers asking for
+the peer network to answer for them were seeing a gate that never
+opened.
+
+The replacement measures how much of the question one document here
+actually carries, weighted by IDF -- the rare term identifies the
+topic, the common one is noise. On the same measurement the two groups
+separate cleanly: forty stored facts score 91-100%, the twenty-nine
+unknown subjects score 0-29%. The threshold is 40%, in the gap, and it
+came from the measurement rather than from a guess.
+
+The measurement also found the reason the old signal could not work.
+bm25_coverage took its candidate slice from the full-text index in
+rowid order, so for a long question -- where the OR match reaches
+thousands of documents -- the document holding the answer often fell
+outside the slice. On ten real facts, bm25_search found the answer
+first every time and bm25_coverage missed it six times out of ten: the
+coverage was measuring an arbitrary neighbour rather than the answer.
+Ordering the slice by BM25 rank, the way the search path already did,
+brought the two into agreement. This affects every caller of the
+coverage signal, not only the fanout gate.
+
+And the agent plugin never reached the gate at all. Its private recall
+goes through the multi-scope read, and that endpoint had no fanout
+logic whatsoever -- the response carried no peer fields at all. So the
+gate is now shared by both read paths, the peer hits are merged into
+the results the plugin reads, and a caller who reads only `results`
+still sees the answer.
+
+The fanout switch itself needed nothing. It was already on by default
+at the node level, so asking the plugin to send `peer_fanout: true`
+would have changed nothing -- and an explicit request cannot override
+the gate, because the gate exists to stop a query going to the network
+when the answer is already here.
+
+New installs get a clearer shape: the code directory is `Astor-Code`
+and the data directory is `Astor-Data`, a sibling of it. The data
+directory was already a sibling of the checkout -- deliberately outside
+the source tree, so a re-clone cannot touch it, and outside the user
+profile, so it is not mistaken for a per-user cache -- it was only the
+name that said "runtime".
+
+What made the rename more than a name was the rule behind it. The
+directory was resolved in forty-six places, each by hand, and the
+authoritative resolver also honours the install record and the source
+sibling. Two rules in one codebase means a new default contradicts
+itself and different commands land in different directories. All
+forty-six now call the one resolver, which is shorter than what it
+replaced. An install that predates the rename keeps its data where it
+is: the name is cosmetic, the data is not.
+
+The runtime directory also carried a copy of the package -- a hundred
+and four files, a version behind -- that nothing imported. Starting
+the server with `python -m` from that directory would have run it:
+`-m` puts the working directory first on the import path. The copy is
+gone, along with the dashboard files at its root and a few directories
+left over from earlier migrations; the data is untouched.
+
+The peer fanout gate was asking the wrong question.
+
+The gate decides whether this node can answer a query by itself, and
+only asks the peers when it cannot. It used to ask a corpus-level
+question: does this corpus contain 30% of the query's words? On a node
+with a few thousand facts that is almost always true. The corpus
+contains most of the vocabulary of every language it has seen, so the
+gate read nearly every question as answerable here, and the peers were
+never asked -- the network existed but never carried a query. Chinese
+made it worse: tokenisation turns a four-word question into nineteen
+bigrams, and half of them land in the corpus by accident.
+
+Measured on a real node: 24 of 29 questions about subjects this node
+had never stored were classified as local hits. Customers asking for
+the peer network to answer for them were seeing a gate that never
+opened.
+
+The replacement measures how much of the question one document here
+actually carries, weighted by IDF -- the rare term identifies the
+topic, the common one is noise. On the same measurement the two groups
+separate cleanly: forty stored facts score 91-100%, the twenty-nine
+unknown subjects score 0-29%. The threshold is 40%, in the gap, and it
+came from the measurement rather than from a guess.
+
+The measurement also found the reason the old signal could not work.
+bm25_coverage took its candidate slice from the full-text index in
+rowid order, so for a long question -- where the OR match reaches
+thousands of documents -- the document holding the answer often fell
+outside the slice. On ten real facts, bm25_search found the answer
+first every time and bm25_coverage missed it six times out of ten: the
+coverage was measuring an arbitrary neighbour rather than the answer.
+Ordering the slice by BM25 rank, the way the search path already did,
+brought the two into agreement. This affects every caller of the
+coverage signal, not only the fanout gate.
+
+The fanout switch itself needed nothing. It was already on by default
+at the node level, so asking the plugin to send `peer_fanout: true`
+would have changed nothing -- and an explicit request cannot override
+the gate, because the gate exists to stop a query going to the network
+when the answer is already here.
 
 A lesson's own session ids were reaching the shared tier.
 

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
+from .config import get_default_astor_dir
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +449,7 @@ def consolidate(
         dry_run: if True, only propose; do not commit.
         user_id: scope to this user (None = all).
         tier: scope to this tier ('public'/'source'/'private'; None = all).
-        astor_dir: override ASTOR_DIR (default: env or ~/.astor).
+        astor_dir: override ASTOR_DIR (default: the resolved data dir).
         cap: max facts to consider per run (default 1000).
 
     Returns:
@@ -456,7 +457,7 @@ def consolidate(
     """
     actions = list(actions)
     if astor_dir is None:
-        astor_dir = os.environ.get("ASTOR_DIR") or os.path.expanduser("~/.astor")
+        astor_dir = get_default_astor_dir()
     db_path = _get_db_path(astor_dir, tier or "private", user_id)
     if not db_path.exists():
         return ConsolidateReport(errors=[f"db not found: {db_path}"])

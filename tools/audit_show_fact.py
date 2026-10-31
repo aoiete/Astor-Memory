@@ -12,11 +12,12 @@ from __future__ import annotations
 import sqlite3
 import sys
 from pathlib import Path
+from astor_memory.config import get_default_astor_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-DB = Path(r"D:\AI\Astor-Memory-Runtime\public\memory\astor_bus_public.db")
+DB = get_default_astor_dir() / 'public' / 'memory' / 'astor_bus_public.db'
 
 
 def main() -> int:

@@ -90,17 +90,34 @@ CLI(`am`)、REST(`/v1/...`)、MCP 工具,还有一个 dashboard。同一个 serv
 
 ## 部署形态
 
-一个 server、一个端口(默认 7803)、磁盘上一个 `ASTOR_DIR` 目录:
+磁盘上只有两个位置:**代码**和**数据**。分开是因为两者寿命不同 —— 代码随
+`git pull` 变,数据每写一条 fact 就变一次,而备份记忆不该把代码一起打包。
+
+```
+代码:  Astor-Code/
+      你 clone 的目录;非 editable 安装则在 site-packages 里
+
+数据:  Astor-Data/
+      默认是代码目录的同级兄弟目录;设 ASTOR_DIR 可以放到任意位置
+```
+
+`ASTOR_DIR` 里不放代码,永远不放。server 从 Python import 到哪里就从哪里
+解析自己的包,所以数据目录和代码目录不会对"现在跑的是哪个版本"产生分歧。
 
 ```
 <ASTOR_DIR>/
 ├── public/memory/      # astor_bus_public.db + astor_nest_public.db
 ├── source/memory/      # astor_bus_source.db + astor_nest_source.db
 ├── users/<id>/memory/  # astor_bus_<id>.db + astor_nest_<id>.db  (每个用户)
+├── lex/memory/         # 词法索引,按 scope 分
 ├── audit/              # audit_log.sqlite (跨档)
 ├── logs/                 # server.log + side-log + watch logs
+├── relay/                # relay 状态 (封禁名单、审计元数据)
 └── identity/            # keypair.json (首次启动自动生成)
 ```
+
+`am init` 首次运行时会让你选数据目录,并记在 `~/.astor/install.json`,
+所以下次安装不用重新选。
 
 Server 默认绑定 `127.0.0.1:7803`。远程访问请用 Cloudflare Tunnel、nginx 或 peer-anything 反向代理 —— server 不会绑定 `0.0.0.0`,除非你显式传 `--host 0.0.0.0`。
 
@@ -113,7 +130,7 @@ pip install "astor-memory @ git+https://github.com/aoiete/Astor-Memory.git"
 可选 `[muse]` extra 安装 Muse 适配器包。发布到 PyPI 后会改成
 `pip install astor-memory`。
 
-需要 Python 3.10–3.13（3.14 暂时不被构建元数据接受）。
+需要 Python 3.10–3.14。
 
 ---
 

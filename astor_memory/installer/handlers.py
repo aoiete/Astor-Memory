@@ -130,7 +130,7 @@ def _hermes_plugin_yaml() -> str:
         'config_schema:\n'
         '  astor_dir:\n'
         '    type: string\n'
-        '    default: "~/.astor"\n'
+        '    default: "<source>/../Astor-Data"\n'
         '  default_tier:\n'
         '    type: string\n'
         '    enum: ["public", "source", "private"]\n'

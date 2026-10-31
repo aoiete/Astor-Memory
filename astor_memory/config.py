@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-DEFAULT_ASTOR_DIR_NAME = '~/.astor'
+DEFAULT_ASTOR_DIR_NAME = '~/Astor-Data'
 DEFAULT_CONFIG_PATH_NAME = 'config.yaml'
 DEFAULT_BUS_PATH_NAME = 'astor_bus.db'
 DEFAULT_FORGE_PATH_NAME = 'astor_forge.db'
@@ -22,7 +22,10 @@ DEFAULT_NEST_PATH_NAME = 'astor_nest.db'
 # astor_dir in install.json resolves against whatever cwd the process
 # happened to start in, which is how one machine ended up with two
 # identities (one per cwd). Sibling + absolute removes the ambiguity.
-DEFAULT_RUNTIME_DIR_NAME = 'Astor-Memory-Runtime'
+DEFAULT_RUNTIME_DIR_NAME = 'Astor-Data'
+# The name before 2026-10-30. An install that predates the rename keeps
+# its data where it is -- the name is cosmetic, the data is not.
+LEGACY_RUNTIME_DIR_NAME = 'Astor-Memory-Runtime'
 
 
 def _astor_home() -> Path:
@@ -78,6 +81,9 @@ def get_default_astor_dir() -> Path:
     env_dir = os.environ.get('ASTOR_DIR')
     if env_dir:
         return Path(env_dir).expanduser()
+    env_name = os.environ.get('ASTOR_DIR_NAME')
+    if env_name:
+        return _astor_home() / env_name
     install_json = _astor_home() / '.astor' / 'install.json'
     if install_json.exists():
         try:
@@ -88,6 +94,19 @@ def get_default_astor_dir() -> Path:
                 return Path(saved).expanduser()
         except Exception:
             pass
+    # An install that predates the rename keeps its data where it is.
+    # The directory name is cosmetic; the data inside it is not, so
+    # look before falling back to the new default.
+    legacy_runtime = _source_dir().parent / LEGACY_RUNTIME_DIR_NAME
+    if legacy_runtime.exists():
+        return legacy_runtime
+    legacy_home = _astor_home() / '.astor'
+    if legacy_home.exists() and (
+            any(legacy_home.glob('*.db'))
+            or (legacy_home / 'users').is_dir()
+            or (legacy_home / 'public').is_dir()):
+        # has data, not just the install record `am init` leaves behind
+        return legacy_home
     return default_install_dir()
 
 

@@ -15,8 +15,9 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from astor_memory.config import get_default_astor_dir
 
-DB = Path(r"D:\AI\Astor-Memory-Runtime\public\memory\astor_bus_public.db")
+DB = get_default_astor_dir() / 'public' / 'memory' / 'astor_bus_public.db'
 BASE = "http://127.0.0.1:7803"
 
 PAYLOAD = (
@@ -66,7 +67,6 @@ def main() -> int:
     print(f"  public tier rows naming that id: {len(leaked)}")
 
     # 3. the distiller itself, on the running code
-    sys.path.insert(0, r"D:\AI\Astor-Memory-Runtime")
     from astor_memory.nest.distiller import distill
     cleaned, _, _ = distill(PAYLOAD)
     gone = "7519050235899700000" not in cleaned and "8263b17ef000" not in cleaned
