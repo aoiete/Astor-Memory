@@ -283,6 +283,10 @@ curl -X POST http://127.0.0.1:7803/v1/write \
 curl -X POST http://127.0.0.1:7803/v1/read \
      -H 'Content-Type: application/json' \
      -d '{"query":"favorite color","user":"admin","tier":"private","top_k":5}'
+
+# Progressive loading: "level":"L0" returns one-sentence abstracts instead
+# of full text (~90% fewer tokens), and GET /v1/fact/<id> gets one fact
+# back in full when the summary is not enough.
 ```
 
 Full per-endpoint reference: [docs/api.md](docs/api.md).

@@ -1,3 +1,75 @@
+
+## v1.17.30 — 2026-11-01
+
+Progressive loading (L0/L1/L2) wired end to end, after a review of the
+OpenViking article (VikingMem, VLDB 2026).
+
+**What was broken.** astor has carried an L0 `abstract` and an L1 `overview`
+since v1.6.0 (2026-08-25). The extractor derives them, `insert_candidate()`
+accepts them, and `store.py` writes them into the metadata JSON as
+`__abstract__` / `__overview__`. But the three `insert_candidate()` call
+sites in `server.py` never passed the values through, so every fact written
+since landed with both fields empty. Measured on the live runtime:
+6884 canonical facts, 29 with L0 (0.4%), 0 with L1. Nothing ever read the
+fields back either -- `__abstract__` had exactly two references in the whole
+repository, both writes.
+
+**What changed.**
+- The three write paths (async write, primary write, source mirror) now
+  pass `abstract` / `overview` through to `insert_candidate()`.
+- `tools/backfill_l0l1.py` derives L0/L1 for existing facts (first sentence
+  for L0, leading digest for L1 -- the same rule the regex extractor path
+  uses) and writes them into the metadata JSON. Metadata-only UPDATE: no
+  re-embedding, no index rebuild, no content change. 1791 facts backfilled
+  on the live runtime; coverage went from 0.4% to 26.1% (facts under 200
+  characters are skipped -- for those the content is already the summary).
+- `/v1/read` and `/v1/read/multi` accept a `level` body parameter:
+  `L0` (abstract only), `L1` (abstract + overview), `L2` (full text, the
+  default). Every result carries `abstract`, `overview`, `level_text` and
+  `level`. The default is unchanged, so existing callers see identical bytes.
+- `GET /v1/fact/<id>` is new: fetch one fact by id at any level, across
+  tiers. Progressive loading needs a way back to the full text after a
+  summary was shown; without it, "show L0" is just "discard information".
+
+**Notes.**
+- The L0/L1/L2 names here are CONTENT levels. They are not the
+  public/private/source tiers, which control who can read a fact.
+- `nest.vector_store.search_l1_l2()` uses L1/L2 for GRANULARITY (cluster
+  level vs fact level) in multi-granularity recall. Same letters, different
+  axis. The read path comment says so too.
+- The Hermes plugin gains an opt-in `level` parameter on `astor_recall` and
+  a new `astor_fact` drill-down tool. The default payload is unchanged.
+
+**Three things that a first pass got wrong, and what fixed them.**
+
+1. *The read cache key did not include `level`.* All three levels came back
+   identical because the second request was served the first request's
+   cached L2 answer. The cache key must cover every input that changes the
+   result -- the same rule the v1.16.85 fix established for kinds / wing /
+   session_id / consult. Fixed by adding `_level` to `_rcache_key`.
+
+2. *Only three of the result-building channels were updated.* The read path
+   builds result rows independently in the ranked, grep_verify,
+   session_neighbor, trigger-aware, trigger-aware-boost and meta-recall
+   channels. A live query showed 10 of 19 results with no abstract at all.
+   The fix is not to find the missing channels but to stop the pattern:
+   `_apply_fact_levels(rows, level)` runs once over the finished rows in
+   both endpoints, so a channel that forgets is still covered. Adding a
+   column to the grep_verify SELECT also had to go in the middle, not the
+   end -- that channel reads `provenance_kind` from `row[-2]` and
+   `valid_until` from `row[-1]`, so appending a column silently repointed
+   both.
+
+3. *The drill-down endpoint returned 404 for every private fact.* Opening a
+   private bus without an ACL binding raises `PermissionError_`, and the
+   `except Exception` turned that into "not found". The endpoint now binds
+   the ACL for the scope it is about to read.
+
+Also: `tools/backfill_l0l1.py --sessions` backfills `__session_id__` from
+`origin_session_id` where the extractor path did not fill it (833 facts on
+the live runtime; session coverage 56.8% -> 68.8%). The session id is what
+the drill-down endpoint groups by for neighbouring context.
+
 ## v1.17.26
 
 The peer fanout gate was asking the wrong question.

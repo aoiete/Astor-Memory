@@ -130,6 +130,7 @@ Recall similar facts via hybrid vector + BM25 search.
 | `missing_hint` | no | — | v1.15.0 (Ship A): Extra evidence-gap hint to expand query for BM25/vector. E.g. `"user timezone"` if the answer should mention timezone but query is short. |
 | `entity_filter` | no | — | v1.15.0 (Ship A): Restrict hits to facts containing any of these entity names. |
 | `peer_fanout` | no | `false` | v1.15.24 (Ship H): PPS auto-trigger. `true` → fan out to eligible peers when local empty. |
+| `level` | no | `L2` | v1.17.30: progressive loading. `L0` → one-sentence abstract, `L1` → abstract + digest, `L2` → full text. Each result also carries `abstract`, `overview`, `level_text` and `level`. `content` always stays the full text, so `level` only changes `level_text`. |
 
 **Response 200**
 
@@ -276,6 +277,42 @@ versioning / undo). Supports **dry-run** to preview what would happen.
 
 ---
 
+### `GET /v1/fact/<id>`  *(v1.17.30)*
+
+Fetch one fact by id, at any content level. This is the drill-down that
+makes progressive loading work: recall can show a short summary, and this
+is how you get the original text back.
+
+**Query parameters**
+
+| Field | Required | Default | Notes |
+|---|---|---|---|
+| `tier` | no | search all | `public` \| `source` \| `private` |
+| `user_id` | when `tier=private` | — | Whose private DB to look in |
+| `level` | no | `L2` | `L0` (abstract) \| `L1` (abstract + digest) \| `L2` (full text) |
+
+**Response 200**
+
+```json
+{
+  "fact": {
+    "fact_id": 359,
+    "content": "full text",
+    "abstract": "one sentence",
+    "overview": "leading digest",
+    "level_text": "what the requested level renders",
+    "level": "L0",
+    "session_id": "doc-2026-09-13",
+    "neighbours": [{"fact_id": 11932, "abstract": "..."}]
+  }
+}
+```
+
+`neighbours` are the other facts of the same session — a retrieval result
+carries its surroundings, not just the row that matched.
+
+**Response 404** — the fact is not in any readable scope.
+
 ### `POST /v1/read/multi`  *(opt3-6)*
 
 Cross-tier parallel recall. Runs the same query against multiple
@@ -295,7 +332,8 @@ identity spans both `public` (agent's shared knowledge) and
     {"tier": "public", "user_id": null, "weight": 0.5},
     {"tier": "private", "user_id": "alice", "weight": 1.0}
     // omit `scopes` to use default (public 0.5 + private/<caller> 1.0)
-  ]
+  ],
+  "level": "L0"  // optional: L0 | L1 | L2, same as /v1/read
 }
 ```
 

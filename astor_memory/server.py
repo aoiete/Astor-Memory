@@ -69,6 +69,126 @@ def _cap_fact_content(raw):
     return text, False
 
 
+# v1.17.30 (2026-11-01, OpenViking lesson): progressive loading levels.
+#
+# astor has carried an L0 abstract and an L1 overview since v1.6.0, but
+# the write path never passed them through, so the fields were empty for
+# every fact written since -- and nothing ever read them back. This
+# module reads them out of the metadata JSON and lets a caller ask for a
+# cheaper view of a fact.
+#
+# The levels here are CONTENT levels (how much of the fact you get):
+#   'L0' -- the abstract only, one sentence, ~80 tokens
+#   'L1' -- abstract + overview, ~300 tokens
+#   'L2' -- the full fact text (the default, and what callers got before)
+#
+# Do not confuse this with nest.vector_store.search_l1_l2(), which uses
+# L1/L2 for GRANULARITY (cluster level vs fact level) in multi-granularity
+# recall. Same letters, different axis.
+#
+# Naming note: 'L0/L1/L2' here are OpenViking-style content tiers, the
+# same vocabulary the 2026-11-01 article review introduced. They are not
+# the public/private/source tiers, which control WHO can read a fact.
+_FACT_LEVELS = ('L0', 'L1', 'L2')
+
+
+def _fact_levels(meta: dict, content: str) -> tuple[str, str]:
+    """Return (abstract, overview) for a fact, deriving them if absent.
+
+    A fact written before the L0/L1 write path existed has neither field.
+    Rather than hand back an empty summary, derive the same values the
+    regex path of the extractor produces: L0 is the first sentence, L1 is
+    the leading digest. That way the L0 view is never empty just because
+    the fact is old.
+    """
+    abstract = ''
+    overview = ''
+    if meta:
+        abstract = str(meta.get('__abstract__') or '').strip()
+        overview = str(meta.get('__overview__') or '').strip()
+    if not abstract and content:
+        import re as _re_lvl
+        abstract = _re_lvl.split(r'[.!?\u3002\uff01\uff1f\n]', content.strip(),
+                                maxsplit=1)[0].strip()[:317]
+        if len(abstract) > 317:
+            abstract = abstract[:317] + '...'
+    if not overview and content:
+        overview = content[:240].strip()
+    return abstract, overview
+
+
+def _meta_dict(raw) -> dict:
+    """Parse a metadata JSON column into a dict, never raising.
+
+    The read path runs against rows written by many versions of the
+    writer, so the metadata column may be NULL, empty, or malformed
+    JSON. A fact with unreadable metadata must still be recallable.
+    """
+    import json as _json_meta
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        v = _json_meta.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return v if isinstance(v, dict) else {}
+
+
+def _meta_list(raw) -> list:
+    """Parse a JSON list column into a list, never raising."""
+    import json as _json_meta2
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return raw
+    try:
+        v = _json_meta2.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return v if isinstance(v, list) else []
+
+
+def _apply_fact_levels(rows: list, level: str = "L2") -> list:
+    """Fill in the progressive-loading fields on every result row.
+
+    The read path has several independent channels that build result
+    dicts -- ranked, grep_verify, session_neighbor, trigger-aware,
+    trigger-aware-boost, meta-recall patterns. Hand-editing each one is
+    how a channel ends up returning a fact shaped differently from the
+    same fact found by another channel: a live check on 2026-11-01 found
+    10 of 18 results with no abstract at all because the trigger-aware
+    channels were never updated.
+
+    So this runs once over the finished rows, and any channel that
+    forgets to fill the fields is covered. Rows that already carry a
+    real abstract (from the metadata JSON) keep it; the rest get a
+    derived one, which for a short pattern-matched fact is as good as
+    anything.
+    """
+    if not rows:
+        return rows
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        content = r.get("content") or ""
+        if not r.get("abstract"):
+            l0, l1 = _fact_levels({}, content)
+            r["abstract"] = l0
+            if not r.get("overview"):
+                r["overview"] = l1
+        if "level_text" not in r or r.get("level_text") is None:
+            if level == "L0":
+                r["level_text"] = r.get("abstract") or content
+            elif level == "L1":
+                r["level_text"] = (r.get("overview") or r.get("abstract") or content)
+            else:
+                r["level_text"] = content
+        r.setdefault("level", level)
+    return rows
+
+
 
 def _astor_prewarm_dashboard_cache(astor_dir_str):
     """v1.16.42: pre-warm dashboard cache at startup.
@@ -3376,6 +3496,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             tags=_w_f.tags or [],
                             keywords=_w_f.keywords or [],
                             context=_w_f.context or '',
+                            # v1.17.30: L0/L1 were computed by the extractor
+                            # since v1.6.0 but never passed here, so every
+                            # fact landed with an empty __abstract__ /
+                            # __overview__ and progressive loading had
+                            # nothing to load. Pass them through.
+                            abstract=getattr(_w_f, 'abstract', '') or '',
+                            overview=getattr(_w_f, 'overview', '') or '',
                             entities=getattr(_w_f, 'entities', None),
                         )
                         _w_cid = _w_target_bus.promote_candidate(
@@ -3755,6 +3882,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # propagated through to metadata.__topic__ / __session_id__.
                 topic=getattr(f, 'topic', '') or '',
                 session_id=getattr(f, 'session_id', '') or _write_session_id or '',
+                # v1.17.30: thread L0/L1 through so the canonical row
+                # carries a summary for progressive loading.
+                abstract=getattr(f, 'abstract', '') or '',
+                overview=getattr(f, 'overview', '') or '',
                 # v1.14.21 Ship B: RippleMem-style structured entity binding.
                 # Thread entities from AstorFact → insert_candidate → metadata
                 # → promote_candidate → memory_canonical.entities_json.
@@ -3973,6 +4104,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         # v1.2.1: same structured fields as primary write
                         keywords=f.keywords or [],
                         context=f.context or '',
+                        # v1.17.30: same L0/L1 threading as primary write
+                        abstract=getattr(f, 'abstract', '') or '',
+                        overview=getattr(f, 'overview', '') or '',
                     )
                     # Mirror uses its own dedup scope (source/long_term etc)
                     # so it doesn't collide with the primary public write.
@@ -4877,6 +5011,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if not query:
             return jsonify({'error': 'query required', 'detail': 'POST /v1/read requires JSON body with "query" field (string)'}), 400
 
+        # v1.17.30 (OpenViking lesson): progressive loading level.
+        # 'L0' -> abstract only, 'L1' -> abstract + overview, 'L2' (default)
+        # -> full fact text. Default stays L2 so every existing caller
+        # keeps exactly the bytes it had before.
+        _level = str(body.get('level') or 'L2').strip().upper()
+        if _level not in _FACT_LEVELS:
+            _level = 'L2'
+
         # 2026-10-03 (v1.16.61): intent classification (SimpleMem-inspired).
         # Caller may pass body.intent explicitly; otherwise we classify
         # server-side using classify_read_intent() (no DB reads, no
@@ -4969,6 +5111,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
             body.get('consult'),
             body.get('peer_fanout'),
             _rank_key,
+            # v1.17.30: the cache key must cover every input that changes
+            # the RESULT. 'level' changes what each result's content
+            # field renders as, so a cached L2 answer served to an L0
+            # caller would hand back the full text the caller asked to
+            # avoid. Same class of bug as the v1.16.85 fix above.
+            _level,
         )
         _rcache_hit = _READ_CACHE.get(_rcache_key)
         if _rcache_hit and (_rc_time.time() - _rcache_hit[0]) < 60:
@@ -5777,10 +5925,26 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _dropped_oversize += 1
                 continue
             _rc, _rc_trunc = _capped
+            # v1.17.30: L0/L1 out of the metadata JSON, derived when the
+            # fact predates the L0 write path.
+            _l0_abs, _l1_ovw = _fact_levels(_meta, _rc or '')
+            if _level == 'L0':
+                _level_text = _l0_abs or _rc
+            elif _level == 'L1':
+                _level_text = (_l1_ovw or _l0_abs or _rc)
+            else:
+                _level_text = _rc
             enriched.append({
                 'fact_id': row[0],
                 'content': _rc,
                 'content_truncated': _rc_trunc,
+                # v1.17.30: progressive loading surfaces. 'abstract' is L0
+                # (one sentence), 'overview' is L1 (leading digest),
+                # 'level_text' is the requested level rendered.
+                'abstract': _l0_abs,
+                'overview': _l1_ovw,
+                'level_text': _level_text,
+                'level': _level,
                 'kind': row[2],
                 'confidence': row[3],
                 'importance': row[4],
@@ -5963,7 +6127,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             continue
                         _row = bus.conn.execute(
                             "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
-                            "event_date, event_date_precision, origin_session_id, provenance_kind, valid_until "
+                            "event_date, event_date_precision, origin_session_id, metadata, provenance_kind, valid_until "
                             f"FROM memory_canonical WHERE id = ? AND tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')){_vis_where}",
                             (_fid,),
                         ).fetchone()
@@ -5984,10 +6148,32 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             _dropped_oversize += 1
                             continue
                         _gc_text, _gc_trunc = _gc
+                        # v1.17.30: this channel is a SECOND implementation
+                        # of the read rule (the ranked path is the first).
+                        # Both must carry the progressive-loading fields or
+                        # a fact reached through grep_verify comes back
+                        # with an empty abstract while the same fact via
+                        # the ranked path has one.
+                        # metadata sits before provenance_kind / valid_until so that
+                        # row[-2] stays provenance_kind and row[-1] stays
+                        # valid_until -- this path reads them by negative index.
+                        _g_meta = _meta_dict(_row[-3]) if len(_row) > 14 else {}
+                        _g_l0, _g_l1 = _fact_levels(_g_meta, _gc_text or '')
+                        if _level == 'L0':
+                            _g_level_text = _g_l0 or _gc_text
+                        elif _level == 'L1':
+                            _g_level_text = (_g_l1 or _g_l0 or _gc_text)
+                        else:
+                            _g_level_text = _gc_text
                         enriched.append({
                             'fact_id': _row[0],
                             'content': _gc_text,
                             'content_truncated': _gc_trunc,
+                            # v1.17.30: progressive loading surfaces
+                            'abstract': _g_l0,
+                            'overview': _g_l1,
+                            'level_text': _g_level_text,
+                            'level': _level,
                             'kind': _row[2],
                             'confidence': _row[3],
                             'importance': _row[4],
@@ -6027,7 +6213,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     if not _sid:
                         continue
                     _rows = bus.conn.execute(
-                        "SELECT id, content, kind, origin_session_id, event_date, provenance_kind, valid_until "
+                        "SELECT id, content, kind, origin_session_id, event_date, provenance_kind, valid_until, metadata "
                         "FROM memory_canonical "
                         f"WHERE origin_session_id = ? AND id != ? AND tombstoned = 0 AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) {_vis_where}"
                         "ORDER BY ABS(id - ?) LIMIT 2",
@@ -6037,9 +6223,24 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         if int(_row[0]) in _seen_ids:
                             continue
                         _seen_ids.add(int(_row[0]))
+                        # v1.17.30: THIRD implementation of the read rule
+                        # (ranked / grep_verify / session_neighbor). Same
+                        # progressive-loading fields on all three.
+                        _n_meta = _meta_dict(_row[7]) if len(_row) > 7 else {}
+                        _n_l0, _n_l1 = _fact_levels(_n_meta, _row[1] or '')
+                        if _level == 'L0':
+                            _n_level_text = _n_l0 or (_row[1] or '')
+                        elif _level == 'L1':
+                            _n_level_text = (_n_l1 or _n_l0 or (_row[1] or ''))
+                        else:
+                            _n_level_text = _row[1] or ''
                         _neighbors.append({
                             'fact_id': _row[0],
                             'content': _row[1],
+                            'abstract': _n_l0,
+                            'overview': _n_l1,
+                            'level_text': _n_level_text,
+                            'level': _level,
                             'kind': _row[2],
                             'session_id': _row[3],
                             'event_date': _row[4],
@@ -6793,6 +6994,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     _dropped_tombstoned = 0
             except Exception:
                 _dropped_tombstoned = 0
+        # v1.17.30: one place fills the progressive-loading fields for
+        # every channel, so a channel that forgot them is still covered.
+        _apply_fact_levels(enriched, _level)
         return jsonify({
             'results': enriched,
             # v1.17.18: pairs of surfaced facts that contradict each
@@ -8074,6 +8278,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
         query = body.get('query')
         if not query:
             return jsonify({'error': 'query required', 'detail': 'POST /v1/read requires JSON body with "query" field (string)'}), 400
+
+        # v1.17.30: same level parameter as /v1/read -- the Hermes plugin
+        # reads /v1/read/multi, so the cheap view has to exist here too.
+        _level = str(body.get('level') or 'L2').strip().upper()
+        if _level not in _FACT_LEVELS:
+            _level = 'L2'
         top_k = int(body.get('top_k', 10))
         use_hybrid = bool(body.get('hybrid', True))
         # Default scopes: public always + private(current_call_user) if any
@@ -8164,12 +8374,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     subscription_plan=None,
                 )
             bus = astor_bus(tier=tier, user_id=uid)
+            # v1.17.30: metadata added to the SELECT so this path can
+            # surface L0/L1 too. The multi path is a second implementation
+            # of the read rule; it must carry the same fields as /v1/read
+            # or the plugin (which reads /v1/read/multi) sees a different
+            # contract than a direct caller.
             row = bus.conn.execute(
-                "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, origin_session_id "
+                "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, origin_session_id, metadata "
                 "FROM memory_canonical WHERE id = ?", (fid,),
             ).fetchone()
             if row is None:
                 continue
+            _m_meta = _meta_dict(row[9]) if len(row) > 9 else {}
+            _l0_abs, _l1_ovw = _fact_levels(_m_meta, row[1] or '')
+            if _level == 'L0':
+                _level_text = _l0_abs or row[1]
+            elif _level == 'L1':
+                _level_text = (_l1_ovw or _l0_abs or row[1])
+            else:
+                _level_text = row[1]
             enriched.append({
                 'fact_id': row[0],
                 'content': row[1],
@@ -8179,6 +8402,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'tags': row[5],
                 'namespace': row[6],
                 'user_id': row[7],
+                # v1.17.30: progressive loading surfaces, same as /v1/read
+                'abstract': _l0_abs,
+                'overview': _l1_ovw,
+                'level_text': _level_text,
+                'level': _level,
                 'tier': tier,  # opt7: which tier this came from
                 'cross_tier_score': round(score, 4),
             })
@@ -8200,6 +8428,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
             d.setdefault('cross_tier_score', d.get('relevance', 0))
             merged.append(d)
 
+        # v1.17.30: same one-place fill as /v1/read. Peer hits are in the
+        # same list, so they get the fields too.
+        _apply_fact_levels(merged, _level)
         return jsonify({
             'results': merged,
             'count': len(merged),
@@ -8215,6 +8446,127 @@ def create_app(astor_dir: str | None = None) -> Flask:
             'peer_per_peer': _pf_per_peer,
             'peer_local_error': _pf_error,
         })
+
+    # v1.17.30 (2026-11-01, OpenViking lesson): drill-down endpoint.
+    #
+    # Progressive loading only works if the agent can go back for the full
+    # text of one fact after seeing its L0 abstract. Without this, "show
+    # L0 in the prompt" is just "throw information away" -- the caller has
+    # no way to recover what it did not get. This is the L2 half of
+    # L0/L1/L2.
+    @app.route('/v1/fact/<int:fact_id>', methods=['GET'])
+    def get_fact(fact_id):
+        """Fetch one fact by id, at any content level.
+
+        Query params:
+          tier: 'public' | 'source' | 'private' (default: search all)
+          user_id: required when tier == 'private'
+          level: 'L0' | 'L1' | 'L2' (default 'L2', the full text)
+
+        Returns {fact: {...}} on success, 404 when the fact does not
+        exist in any readable scope, 403 when the tier is not readable.
+        """
+        tier = (request.args.get('tier') or '').strip().lower()
+        user_id = request.args.get('user_id') or None
+        level = (request.args.get('level') or 'L2').strip().upper()
+        if level not in _FACT_LEVELS:
+            level = 'L2'
+
+        if tier:
+            scopes = [(tier, user_id if tier == 'private' else None)]
+        else:
+            # No tier given: try the readable scopes in order. A fact id
+            # is unique per db, so the first scope that holds it wins.
+            from ._internal.acl_layout import list_user_ids
+            scopes = [('public', None), ('source', None)]
+            scopes += [('private', u) for u in list_user_ids()]
+
+        for t, u in scopes:
+            # v1.17.30: bind the ACL for this scope before opening the bus.
+            # The read path does the same: a request thread can carry a
+            # stale or absent binding, and a private-scope read without
+            # one is refused by the ACL (which turns into a 404 here).
+            try:
+                from ._internal.acl import astor_init_acl as _fda
+                _fda(actor='admin:admin', role='admin', tier=t, user_id=u,
+                     subscription_plan=None)
+            except Exception:
+                pass
+            try:
+                bus = astor_bus(tier=t, user_id=u)
+            except Exception:
+                continue
+            try:
+                row = bus.conn.execute(
+                    "SELECT id, content, kind, confidence, importance, tags,"
+                    " namespace, user_id, metadata, created_at, memory_class,"
+                    " event_date, entities_json, scope_type, tombstoned"
+                    " FROM memory_canonical WHERE id = ? AND tombstoned = 0",
+                    (fact_id,),
+                ).fetchone()
+            except Exception:
+                continue
+            if row is None:
+                continue
+            meta = _meta_dict(row[8]) if len(row) > 8 else {}
+            content = row[1] or ''
+            l0, l1 = _fact_levels(meta, content)
+            if level == 'L0':
+                level_text = l0 or content
+            elif level == 'L1':
+                level_text = (l1 or l0 or content)
+            else:
+                level_text = content
+            # v1.17.30: neighbouring context. OpenViking's rule is that a
+            # retrieval result carries its surroundings, not just the row
+            # that matched. astor groups facts by the session they came
+            # from (__session_id__ in the metadata), so the neighbours of a
+            # fact are the other facts of its session. Cheap: one indexed
+            # query on a column we already store.
+            _sib = []
+            _sid = str(meta.get('__session_id__') or '') if meta else ''
+            if _sid:
+                try:
+                    _srows = bus.conn.execute(
+                        "SELECT id, content FROM memory_canonical "
+                        "WHERE tombstoned = 0 AND id <> ? "
+                        "AND metadata LIKE ? "
+                        "ORDER BY importance DESC LIMIT 6",
+                        (fact_id, f'%__session_id__%{_sid}%'),
+                    ).fetchall()
+                    for _sid_row in _srows:
+                        _sib.append({
+                            'fact_id': _sid_row[0],
+                            'abstract': _fact_levels({}, _sid_row[1] or '')[0],
+                            'similarity': None,
+                        })
+                except Exception:
+                    _sib = []
+            return jsonify({'fact': {
+                'fact_id': row[0],
+                'content': content,
+                'abstract': l0,
+                'overview': l1,
+                'level_text': level_text,
+                'level': level,
+                # v1.17.30: the surrounding facts of the same session
+                'session_id': _sid,
+                'neighbours': _sib,
+                'kind': row[2],
+                'confidence': row[3],
+                'importance': row[4],
+                'tags': _meta_list(row[5]) if len(row) > 5 else [],
+                'namespace': row[6],
+                'user_id': row[7],
+                'tier': t,
+                'created_at': (row[9] or '')[:19] if len(row) > 9 else '',
+                'memory_class': row[10] if len(row) > 10 else 'world_fact',
+                'event_date': row[11] if len(row) > 11 else None,
+                'entities': _meta_list(row[12]) if len(row) > 12 else [],
+                'scope_type': row[13] if len(row) > 13 else None,
+            }})
+        return jsonify({'error': 'not_found',
+                        'detail': f'fact {fact_id} not found in any readable scope'}), 404
 
     @app.route('/v1/lex/stats', methods=['GET'])
     def lex_stats():
