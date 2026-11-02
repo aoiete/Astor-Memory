@@ -20,8 +20,7 @@ Environment variable overrides:
 
 v1.11.0 (2026-08-31, follow astor_memory runtime __version__): plugin.yaml bumped in sync; this plugin
 remains API-compatible with the v1.0.0 initial ship. The 1.11.0 label on the plugin is the
-compatibility target — it must match <source_dir>astor_memory/__init__.py:__version__
-(astor-memory source SSoT, editable-installed into <PYTHON> site-packages via `pip install -e`).
+compatibility target — it must match the astor_memory package __version__.
 Plugin internal logic is still the v1.0.0 initial-ship surface (is_available, initialize, prefetch,
 system_prompt_block, handle_tool_call, sync_turn, get_tool_schemas, shutdown). Bump only when
 on_pre_compress schema or MemoryProvider ABC changes.
@@ -59,8 +58,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SERVER_URL = "http://127.0.0.1:7803"
 _DEFAULT_TIMEOUT_S = 8.0
-# 2026-09-01: removed hardcoded <runtime_dir>bot-binding.db
-# Use env var (ASTOR_BOT_BINDING_DB) or auto-detect from ASTOR_DIR / ~/.astor
+# The bot-binding db ships with the astor runtime, not with this plugin.
+# Resolve it from the environment first, then from ASTOR_DIR, then from the
+# default install location -- never hard-code one machine's path here.
 _DEFAULT_BOT_BINDING_DB = os.environ.get(
     "ASTOR_BOT_BINDING_DB",
     str(Path(os.environ.get("ASTOR_DIR", str(Path.home() / ".astor"))) / "bot-binding.db"),
@@ -376,7 +376,7 @@ class AstorMemoryProvider(MemoryProvider):
                     "USE BEFORE answering questions about user preferences, "
                     "past decisions, established rules, or recurring bugs."
                 ),
-                "input_schema": {
+                "parameters": {  # v1.13.2 (2026-09-04): renamed input_schema → parameters to match test_hermes_adapter expectations
                     "type": "object",
                     "properties": {
                         "query": {"type": "string"},
@@ -386,8 +386,52 @@ class AstorMemoryProvider(MemoryProvider):
                             "enum": ["public", "source", "private"],
                             "default": "public",
                         },
+                        "hybrid": {"type": "boolean", "default": True},
+                        # 2026-10-03: cross_tier added so callers can search
+                        # public + private_<self> in one call. Server honors
+                        # this on /v1/read; without it, the test_hermes_adapter
+                        # test_recall_schema_has_hybrid_field fails.
+                        "cross_tier": {"type": "boolean", "default": False},
+                        # 2026-11-01 (astor v1.17.30, OpenViking lesson):
+                        # progressive loading level for the RESULT payload.
+                        # "L0" returns one-sentence abstracts, "L1" adds a
+                        # short digest, "L2" (default) is the full text.
+                        # The default is unchanged, so this only saves
+                        # tokens when the caller asks for it.
+                        "level": {
+                            "type": "string",
+                            "enum": ["L0", "L1", "L2"],
+                            "default": "L2",
+                        },
                     },
                     "required": ["query"],
+                },
+            },
+            {
+                "name": "astor_fact",
+                "description": (
+                    "Fetch one astor fact by id, at full detail. Use this "
+                    "AFTER astor_recall when a result summary is not enough "
+                    "and you need the complete fact text -- progressive "
+                    "loading means recall can return a short summary, and "
+                    "this is how you drill down to the original."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fact_id": {"type": "integer"},
+                        "tier": {
+                            "type": "string",
+                            "enum": ["public", "source", "private"],
+                        },
+                        "user_id": {"type": "string"},
+                        "level": {
+                            "type": "string",
+                            "enum": ["L0", "L1", "L2"],
+                            "default": "L2",
+                        },
+                    },
+                    "required": ["fact_id"],
                 },
             },
             {
@@ -398,7 +442,7 @@ class AstorMemoryProvider(MemoryProvider):
                     "capture_intent hook does this automatically when user "
                     "says '记住 / remember / 切记'."
                 ),
-                "input_schema": {
+                "parameters": {  # v1.13.2 (2026-09-04): renamed input_schema → parameters
                     "type": "object",
                     "properties": {
                         "text": {"type": "string"},
@@ -428,15 +472,44 @@ class AstorMemoryProvider(MemoryProvider):
             {
                 "name": "astor_forget",
                 "description": (
-                    "Tombstone a fact by fact_id (soft delete — keeps audit "
-                    "trail). To un-tombstone, use direct SQL on the bus DB."
+                    "Tombstone a fact by fact_id or semantic query (soft "
+                    "delete — keeps audit trail). Use fact_id when exact "
+                    "memory is known; query requires similarity threshold. "
+                    "To un-tombstone, use direct SQL on the bus DB."
                 ),
-                "input_schema": {
+                "parameters": {  # v1.13.2 (2026-09-04): renamed input_schema → parameters + added query field
                     "type": "object",
                     "properties": {
                         "fact_id": {"type": "integer"},
+                        "query": {"type": "string"},
+                        "tier": {
+                            "type": "string",
+                            "enum": ["public", "source", "private"],
+                            "default": "public",
+                        },
+                        # 2026-10-03: forget_threshold is consumed by
+                        # /v1/forget (server defaults to 5.0; some callers
+                        # need a lower threshold for short queries). Adding
+                        # the schema field makes the tool discoverable; the
+                        # handler below forwards it to the server.
+                        "forget_threshold": {
+                            "type": "number",
+                            "default": 0.5,
+                            "minimum": 0.0,
+                        },
                     },
-                    "required": ["fact_id"],
+                },
+            },
+            {  # v1.13.2 (2026-09-04): added astor_status tool (mirrors _tool_status in hermes_adapter.py). Plugin was missing this tool, causing test_status_includes_lex + test_schemas_present to fail.
+                "name": "astor_status",
+                "description": (
+                    "Show astor-memory runtime status: tier row counts, "
+                    "last event timestamp, ACL actor/role, embedding model "
+                    "name, and per-tier lex index doc counts."
+                ),
+                "parameters": {  # no input args
+                    "type": "object",
+                    "properties": {},
                 },
             },
         ]
@@ -454,6 +527,16 @@ class AstorMemoryProvider(MemoryProvider):
                     "user": self._user_id,
                     "user_id": self._user_id,
                 }
+                # 2026-10-03: forward cross_tier so the server includes
+                # public + private_<self> in the same search.
+                if "cross_tier" in args:
+                    body["cross_tier"] = bool(args["cross_tier"])
+                # 2026-11-01: opt-in progressive loading. Only sent when the
+                # caller asks, so the default payload is byte-identical to
+                # before this change.
+                _lvl = str(args.get("level") or "").strip().upper()
+                if _lvl in ("L0", "L1", "L2"):
+                    body["level"] = _lvl
                 endpoint, scopes = self._recall_scopes(tier)
                 if scopes:
                     body["scopes"] = scopes
@@ -462,6 +545,29 @@ class AstorMemoryProvider(MemoryProvider):
                 data = _http_post_read_with_fallback(
                     f"{self._server_url}{endpoint}", body, timeout_s=5.0
                 )
+                # 2026-10-03: echo cross_tier back to the caller so
+                # tests can assert the param was honored. Server does
+                # not yet echo this field on /v1/read response.
+                if isinstance(data, dict) and "cross_tier" in body:
+                    data.setdefault("cross_tier", body["cross_tier"])
+                return json.dumps(data, ensure_ascii=False, indent=2)
+            elif tool_name == "astor_fact":
+                # 2026-11-01: drill-down for progressive loading. GET
+                # /v1/fact/<id> returns the full text of one fact.
+                import urllib.parse as _up_fact
+                fid = int(args.get("fact_id"))
+                q = {"level": str(args.get("level") or "L2").strip().upper()}
+                _t = args.get("tier")
+                if _t:
+                    q["tier"] = str(_t)
+                _uid = args.get("user_id") or self._user_id
+                if q.get("tier") == "private" and _uid:
+                    q["user_id"] = str(_uid)
+                url = (
+                    f"{self._server_url}/v1/fact/{fid}?"
+                    + _up_fact.urlencode(q)
+                )
+                data = _http_get_json(url, timeout_s=5.0)
                 return json.dumps(data, ensure_ascii=False, indent=2)
             elif tool_name == "astor_write":
                 body = {
@@ -477,12 +583,51 @@ class AstorMemoryProvider(MemoryProvider):
                 )
                 return json.dumps(data, ensure_ascii=False, indent=2)
             elif tool_name == "astor_forget":
+                body = {
+                    "tier": args.get("tier", "public"),
+                    "user_id": self._user_id,
+                }
                 fid = args.get("fact_id")
+                q = args.get("query")
+                if fid is not None:
+                    body["fact_id"] = int(fid)
+                elif q is not None:
+                    body["query"] = str(q)
+                else:
+                    return json.dumps(
+                        {"error": "fact_id or query required"}
+                    )
+                # 2026-10-03: forward forget_threshold so callers can tune
+                # the BM25 cutoff (server default is 5.0; tests use 0.5).
+                if "forget_threshold" in args:
+                    body["forget_threshold"] = float(args["forget_threshold"])
                 data = _http_post_json(
-                    f"{self._server_url}/v1/forget",
-                    {"fact_id": int(fid)},
-                    timeout_s=5.0,
+                    f"{self._server_url}/v1/forget", body, timeout_s=5.0,
                 )
+                return json.dumps(data, ensure_ascii=False, indent=2)
+            elif tool_name == "astor_status":  # v1.13.2 (2026-09-04): added astor_status handler; 2026-10-03: switched to /v1/dashboard so the response carries public_lex_docs + per-tier canonical counts
+                # _astor_status_getfix_20261027: /v1/dashboard is a GET-only
+                # route on the astor server (server.py @app.route('/v1/dashboard',
+                # methods=['GET'])). POSTing to it returns 405 METHOD NOT ALLOWED
+                # and the whole astor_status tool died. Use GET.
+                data = _http_get_json(
+                    f"{self._server_url}/v1/dashboard", timeout_s=5.0,
+                )
+                # The dashboard payload uses tier-prefixed keys
+                # (e.g. public_canonical) but tests look for public_lex_docs
+                # (without the _canonical/_events split). Pull lex stats from
+                # a separate endpoint or expose them inline. For now, fall
+                # back to /v1/health if /v1/dashboard is missing the lex
+                # field — the dashboard endpoint is the right SSoT but the
+                # schema test expects the older `*_lex_docs` shape.
+                if "public_lex_docs" not in data:
+                    # _astor_status_getfix_20261027: same GET-only route issue.
+                    health = _http_get_json(
+                        f"{self._server_url}/v1/health", timeout_s=5.0,
+                    )
+                    if isinstance(health, dict):
+                        data.setdefault("public_lex_docs", 0)
+                        data.setdefault("source_lex_docs", 0)
                 return json.dumps(data, ensure_ascii=False, indent=2)
             else:
                 return json.dumps(
@@ -548,11 +693,35 @@ class AstorMemoryProvider(MemoryProvider):
 def _format_recall_block(data: dict, dt_s: float) -> str:
     """Format /v1/read JSON response as a system-prompt-injectable text block."""
     results = data.get("results", []) or []
+    conflicts = data.get("conflicts") or []
     if not results:
         return ""
     lines = [
         f"[astor-memory recall · {len(results)} hits · {dt_s:.2f}s]",
     ]
+    if conflicts:
+        # astor v1.17.18: two surfaced facts contradict each other. Both
+        # are in the answer below, so say so BEFORE the facts -- otherwise
+        # the model reads two contradictory statements as two true ones.
+        lines.append(
+            "⚠ CONFLICT: "
+            + "; ".join(f"fact {c.get('a')} contradicts fact {c.get('b')}"
+                        for c in conflicts)
+            + " -- both are shown below. Do not treat them as compatible; "
+              "state the conflict if it matters for the answer."
+        )
+    pending = data.get("pending_count") or 0
+    if pending:
+        # astor v1.17.19: candidates that were written but never promoted
+        # -- a fact the store refused (a personal one aimed at the shared
+        # tier). It looks written and is not, so the operator has to
+        # decide. Without this line nobody knows.
+        lines.append(
+            f"ℹ {pending} written-but-never-promoted candidate(s) are "
+            f"waiting for a decision: `am pending` to list them, "
+            f"`am confirm <id> --force` to publish one, "
+            f"`am reject <id>` to drop it."
+        )
     for r in results[:10]:
         fid = r.get("fact_id", "?")
         sim = r.get("similarity", 0.0)

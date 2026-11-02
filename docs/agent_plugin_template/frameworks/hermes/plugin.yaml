@@ -1,11 +1,11 @@
 name: astor_memory
-version: 1.11.0
+version: 1.17.30
 description: "Astor Memory — 3-tier × 3-store SQLite memory system with hybrid recall (vector + BM25 + jaccard). Hermes Agent plugin that wraps the astor_memory runtime REST API (http://127.0.0.1:7803) and exposes it through the Hermes MemoryProvider ABC."
 hooks:
   - on_pre_compress
 astor_compat:
-  runtime: "1.11.0"
-  source_release: "1.2.7"
+  runtime: "1.17.30"
+  source_release: "1.17.30"
   api_contract: "v1"
 depends_on:
   - python: ">=3.10"
