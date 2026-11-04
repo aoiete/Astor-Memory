@@ -751,7 +751,13 @@ def main(argv: list[str] | None = None) -> int:
     confirm_p.add_argument('--tier', default='all',
                             help="Which tier to look in: all | public | private")
     confirm_p.add_argument('--user', default='admin',
-                            help="Whose private tier to look in (default admin)")
+                           help='Whose private tier to look in (default admin)')
+    confirm_p.add_argument('--llm', action='store_true',
+                           help='When the content reads as private, ask the '
+                                'LLM to abstract the method out of it and '
+                                'publish the abstraction instead. The rules '
+                                'judge the proposal; a proposal that still '
+                                'reads as private is refused.')
     confirm_p.set_defaults(func=cmd_confirm)
 
     reject_p = subparsers.add_parser(
@@ -1494,6 +1500,63 @@ def cmd_confirm(args) -> int:
                   f'"{kind}". Name the kind it is published as: '
                   f'--kind lesson', file=sys.stderr)
             return 2
+        # v1.17.33: the kind whitelist says the candidate is a method or a
+        # lesson. It says nothing about whether the content is private.
+        # `promote_candidate(force=True)` skips the store's own check --
+        # "tier='public' requires visibility='commons'" -- so without
+        # this, a candidate the classifier called personal could be
+        # published by the operator and no layer would stop it.
+        #
+        # There is no override on purpose. The operator's way out is to
+        # rewrite the content until the classifier agrees it is shareable:
+        # the reason it was called personal is a marker word in the text,
+        # and a marker word in a shared note is a mistake either way.
+        from ..nest.visibility_classifier import classify_visibility
+        _content = str(row['content'])
+        _dec = classify_visibility(text=_content, kind=kind, hint=None,
+                                   admin_allow_commons=True)
+        if _dec.get('visibility') != 'commons':
+            # The content reads as private. With --llm, ask for the method
+            # to be abstracted out of it and publish the abstraction --
+            # never the original. The proposal is judged by the same
+            # rules, so this cannot launder private text: it can only
+            # publish something that reads as a method.
+            _abstracted = None
+            if getattr(args, 'llm', False):
+                from ..nest.llm_judge import abstract_to_shareable
+                _abs = abstract_to_shareable(_content)
+                if _abs.get('shareable'):
+                    _abstracted = _abs['text']
+                    # Belt and braces. The LLM module already judges its
+                    # own proposal, but this is the last line before the
+                    # text reaches a tier every peer can read, so the
+                    # rules get the final word here regardless of what
+                    # the module said.
+                    _recheck = classify_visibility(
+                        text=_abstracted, kind=kind, hint=None,
+                        admin_allow_commons=True)
+                    if _recheck.get('visibility') != 'commons':
+                        _abstracted = None
+            if not _abstracted:
+                _sig = _dec.get('signals') or {}
+                _why = ', '.join(k for k, v in _sig.items() if v) or _dec.get('reason', '')
+                print(f'[ERR] this content reads as private ({_why}); '
+                      f'publishing it would put it in a tier every peer can '
+                      f'read.', file=sys.stderr)
+                print('       Rewrite it without the personal markers and '
+                      'confirm again, or keep it in the private tier.',
+                      file=sys.stderr)
+                if getattr(args, 'llm', False):
+                    print('       (--llm was asked for; the LLM did not '
+                          'produce an abstraction the rules accept.)',
+                          file=sys.stderr)
+                return 2
+            bus.conn.execute(
+                "UPDATE memory_candidates SET content = ? WHERE id = ?",
+                (_abstracted, cid))
+            bus.conn.commit()
+            print(f'[OK] published the abstraction, not the original:\n'
+                  f'       {_abstracted[:160]}')
         bus.conn.execute(
             "UPDATE memory_candidates SET kind = ? WHERE id = ?",
             (kind, cid))

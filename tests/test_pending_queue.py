@@ -61,6 +61,22 @@ class TestPendingQueue(unittest.TestCase):
                                    visibility="personal", verdict="settled")
         return bus, cand
 
+    def _shareable_candidate(self):
+        """A method aimed at the public tier: inserted, ready to publish."""
+        bus = self._bus("public")
+        ev = bus.append_event(namespace="test", agent_id="test",
+                              source="test", action="write",
+                              content="set the stop loss first, then size the "
+                                      "position, and only then scale up",
+                              metadata={})
+        cand = bus.insert_candidate(event_id=ev, namespace="test",
+                                    content="set the stop loss first, then "
+                                            "size the position, and only then "
+                                            "scale up",
+                                    kind="lesson", importance=0.5,
+                                    metadata={})
+        return bus, cand
+
     def test_the_refusal_leaves_a_reason(self):
         bus, cand = self._refused_candidate()
         row = bus.conn.execute(
@@ -132,7 +148,7 @@ class TestPendingQueue(unittest.TestCase):
         self.assertIn("--kind", err.getvalue())
 
     def test_confirming_with_force_promotes_it(self):
-        bus, cand = self._refused_candidate()
+        bus, cand = self._shareable_candidate()
         from astor_memory.cli.main import cmd_confirm
 
         class _Args:
@@ -153,6 +169,42 @@ class TestPendingQueue(unittest.TestCase):
             "WHERE id = ?", (cand,)).fetchone()
         self.assertEqual(row[0], "promoted")
         self.assertIsNotNone(row[1], "the fact id must be recorded")
+
+    def test_confirming_with_force_refuses_private_content(self):
+        """--force is not a way past the privacy rules.
+
+        The candidate holds a chat id. The kind whitelist says it is a
+        lesson; it says nothing about the content. Publishing it would
+        put it in a tier every peer can read, so it is refused and the
+        candidate stays pending.
+        """
+        bus, cand = self._refused_candidate()
+        from astor_memory.cli.main import cmd_confirm
+
+        class _Args:
+            candidate_id = cand
+            force = True
+            kind = "lesson"
+            tier = "public"
+            user = "admin"
+
+        import io
+        import contextlib
+        buf = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = cmd_confirm(_Args())
+        self.assertEqual(rc, 2, buf.getvalue())
+        self.assertIn("private", err.getvalue())
+        row = bus.conn.execute(
+            "SELECT review_state FROM memory_candidates WHERE id = ?",
+            (cand,)).fetchone()
+        self.assertEqual(row[0], "pending",
+                         "a refused candidate must stay pending")
+        published = bus.conn.execute(
+            "SELECT COUNT(*) FROM memory_canonical").fetchone()[0]
+        self.assertEqual(published, 0,
+                         "nothing may reach the shared tier")
 
     def test_rejecting_drops_it(self):
         bus, cand = self._refused_candidate()

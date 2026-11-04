@@ -1,3 +1,74 @@
+## 1.17.33
+
+### The operator path was a hole through the red line
+
+`am confirm` publishes a pending candidate as a commons fact with
+`force=True`, which skips the store's own check -- "tier='public'
+requires visibility='commons'". The kind whitelist it consults says the
+candidate is a method or a lesson. It says nothing about whether the
+content is private. So a candidate the classifier called personal could
+be published by the operator, and no layer would stop it.
+
+The content is now classified before it is published, and a candidate
+that reads as private is refused with the signal that fired. There is no
+override on purpose: the operator's way out is to rewrite the content
+until the classifier agrees it is shareable, because the reason it was
+called personal is a marker word in the text, and a marker word in a
+shared note is a mistake either way.
+
+### LLM-assisted abstraction, for the one moment it is needed
+
+The rules answer "does this text contain private data". They cannot
+answer "is there a generalisable method buried inside a private story",
+and a rule for the second question does not survive contact with real
+notes: a Chinese personal-name detector built for it missed all four
+names it was written for and fired on ten method notes already in the
+shared tier ("CI 连红 3 次的真凶" -- 连红 is a term, not a name). The
+distiller had tried the same thing once and left its proper-noun
+replacement commented out in the source for the same reason.
+
+So the LLM is used where the rules fail, and only there. It proposes a
+shareable abstraction; the rules dispose. Every failure mode -- no
+provider, timeout, malformed output, a proposal that still carries a
+private signal, a proposal that invents words the note never contained
+-- leaves the note private. The proposal is grounded in the source
+before it is judged, and it is judged by the same detector set that
+guards the write path.
+
+What gets published is always the abstraction, never the original.
+
+The LLM is needed at exactly one point in the system's life: the moment
+something is about to be lifted into the shared tier. Everything else --
+writing, recalling, ranking, clustering, deduplicating -- stays
+deterministic and needs no model.
+
+Providers, in order: the operator's own slot
+(`ASTOR_LLM_BASE_URL` / `ASTOR_LLM_API_KEY` / `ASTOR_LLM_MODEL`, any
+OpenAI-compatible endpoint), then MiniMax, OpenAI and OpenRouter, each
+with its own key env var. Every provider is tried without the pinned
+model as well, because a provider-side policy change can refuse one
+model and not another -- measured here: OpenRouter answers
+gpt-4o-mini and refuses every google/gemini-* model on this key with
+"violation of provider Terms Of Service", which had been silently
+disabling `nest/llm_rerank.py` as well.
+
+### Two endpoints
+
+- `POST /v1/visibility/check` -- would this text land in the shared
+  tier, and if not, which signal fired. Deterministic. This is the
+  feedback loop for a caller that has its own LLM: ask, rewrite, ask
+  again.
+- `POST /v1/visibility/abstract` -- propose a shareable abstraction.
+  Admin only, because it spends the operator's LLM key.
+
+### CLI
+
+`am confirm <id> --llm` -- when the content reads as private, ask the
+LLM to abstract the method out of it and publish the abstraction. The
+publisher re-checks the proposal with the rules regardless of what the
+LLM module said: this is the last line before the text reaches a tier
+every peer can read.
+
 ## v1.17.32 — 2026-11-04
 
 The plural-pronoun rule shipped in v1.17.31 leaked almost everything it

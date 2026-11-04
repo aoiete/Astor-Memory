@@ -1653,6 +1653,56 @@ def create_app(astor_dir: str | None = None) -> Flask:
     # Source fact stays in personal bucket + a new commons-eligible copy
     # is written (per user directive — private data preserved AND method
     # extracted). Admin or user-self (with distill_opt_in=1) triggers.
+    @app.route('/v1/visibility/check', methods=['POST'])
+    def visibility_check():
+        """Would this text land in the shared tier, and if not, what blocks it.
+
+        The feedback loop for a caller that has its own LLM. An agent that
+        wants to publish an abstraction asks first: "does this read as
+        private, and which signal fired?" -- then rewrites until it
+        passes. Deterministic, and nothing about the stored facts is
+        revealed: the text belongs to the caller.
+        """
+        body = request.get_json(force=True) if request.is_json else {}
+        text = str(body.get('text') or '')
+        kind = body.get('kind') or 'lesson'
+        if not text.strip():
+            return jsonify({'error': 'text is required'}), 400
+        from .nest.visibility_classifier import classify_visibility
+        dec = classify_visibility(text=text, kind=kind, hint=None,
+                                  admin_allow_commons=True)
+        return jsonify({
+            'visibility': dec.get('visibility'),
+            'reason': dec.get('reason'),
+            'signals': dec.get('signals') or {},
+            'override_allowed': dec.get('override_allowed'),
+            'kind': kind,
+        })
+
+    @app.route('/v1/visibility/abstract', methods=['POST'])
+    def visibility_abstract():
+        """Propose a shareable abstraction of a private note.
+
+        Admin only: it spends the operator's LLM key. The proposal is
+        judged by the same rules that guard the write path before it is
+        returned, so what comes back is either a text that would pass or
+        a refusal. The LLM proposes; the rules dispose.
+        """
+        try:
+            ctx = astor_current_acl()
+        except Exception:
+            return jsonify({'error': 'astor_init_acl required'}), 503
+        if ctx.role != 'admin':
+            return jsonify({'error': 'abstract requires admin'}), 403
+        body = request.get_json(force=True) if request.is_json else {}
+        text = str(body.get('text') or '')
+        if not text.strip():
+            return jsonify({'error': 'text is required'}), 400
+        from .nest.llm_judge import abstract_to_shareable
+        res = abstract_to_shareable(text)
+        res.pop('signals', None)
+        return jsonify(res)
+
     @app.route('/v1/fact/<int:fact_id>/distill', methods=['POST'])
     @app.route('/v1/fact/<int:fact_id>/distill_auto', methods=['POST'])
     def fact_distill(fact_id):
