@@ -1,3 +1,69 @@
+## v1.17.32 — 2026-11-04
+
+The plural-pronoun rule shipped in v1.17.31 leaked almost everything it
+was supposed to catch.
+
+**What was wrong.** An adversarial set of 35 private sentences, each
+using only a plural pronoun and no marker word, was run against the
+shipped rule: 34 of 35 reached the shared tier. The positive set of 17
+method notes was clean, so the rule was not blocking too much -- it was
+blocking nothing in the family it had been narrowed to.
+
+Two causes, one of them older than v1.17.31.
+
+*The English half of the pronoun table was missing.* The plural branch
+was `我们|\bour\b|\bus\b` and the singular branch was
+`我|我的|我自己|家里|\bmy\b|\bmine\b|\bme\b`. English "we" was not
+in the plural branch, so for an English sentence the plural branch never
+fired and the marker list was never consulted -- every English sentence
+leaked. English "I" was not in the singular branch, so "our split is
+that I handle trading" was not a first-person signal either. The
+Chinese forms were all present. This asymmetry predates v1.17.31; that
+release only widened the path that leads to it.
+
+*The marker list named private nouns but not private things.* It listed
+possessives and private nouns ("账户", "余额", "地址", "password",
+"account"), so it caught "我的账户余额" and "our account balance". It
+had nothing for "our API key", "our revenue", "we moved to Vancouver",
+"our travel plan" -- the possessive structure and the asset it governs.
+
+**What changed.**
+- `we` joins the plural branch and `I` joins the singular branch. A
+  standalone capital `I` is a pronoun except where it is a list marker
+  ("R-class I", "Part I", "step I"), so the preceding word decides.
+- The marker list gained a private-asset vocabulary (keys, figures,
+  clients, suppliers, positions, an unreleased product) and six
+  structural axes: residence, family members and pets, medical events,
+  travel, undisclosed business intent, and the English forms of each.
+- The PII layer gained credential *values*: `ghp_...`, `sk-...`, `AKIA...`,
+  a PEM private key header, and `api_key = <value>`. That is a value, not
+  a topic, so "our key rotation is automated" is still a method note.
+
+**Measured.** Adversarial set 35 sentences: leaked 34 → 0. Positive set
+of 17 method notes: false blocks 0 → 1. Facts already in the shared tier
+that the new rule would push back to private: 10 of 1,240 (0.8%), and
+zero in practice until a re-classification sweep is added -- the schema
+backfill that could have done it is dead code.
+
+A standalone capital `I` collides with the Roman numeral in a section
+label ("R-class I", "Part I", "Ship I"), so the preceding word decides.
+The list of label words is not extended by guessing: measured over the
+runtime, 197 standalone "I" occurrences exist, 15 of them follow a
+capitalised word, and twelve of those are "Ship I" while the rest are
+real pronouns ("While I understand", "Would I trust", "As I mentioned").
+A capitalised-prefix rule would swallow those, so only measured words
+are on the list.
+
+The one false block is "我们把密钥轮换做成了自动化". `密钥` has to stay
+a marker word: dropping it releases "our private key lives in the same
+folder as the cert" and "我们的私钥放在 D 盘那个目录里". Two leaks for
+one false block is the wrong trade. The English spelling is unaffected --
+"our key rotation" names no marker word, so it stays shareable.
+
+**Tests.** `tests/test_plural_leak_surface.py` pins both sets (35 + 17
+sentences) plus the mechanisms behind them, so the audit is a regression
+test rather than a one-off script.
+
 
 ## v1.17.31 — 2026-11-04
 

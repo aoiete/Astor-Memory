@@ -175,6 +175,12 @@ def has_pii(text: str) -> list[dict]:
         out.append({'name': 'telegram_chat_id', 'severity': 'redact', 'sample': m.group()})
     for m in _RE_KEYED_ID.finditer(text):
         out.append({'name': 'keyed_identifier', 'severity': 'redact', 'sample': m.group()})
+    # v1.17.32: a credential is a value, not a topic. "our key rotation is
+    # automated" is a method note and does not match; "our API key is
+    # ghp_..." does.
+    for m in _RE_CREDENTIAL_VALUE.finditer(text):
+        out.append({'name': 'credential_value', 'severity': 'redact',
+                    'sample': m.group()[:24]})
     return out
 
 
@@ -197,25 +203,37 @@ def _luhn_ok(digits: str) -> bool:
 # ---------------------------------------------------------------------------
 # First-person + emotion + geographic signals (any match = personal)
 # ---------------------------------------------------------------------------
-# v1.17.31: a plural first-person pronoun is not private by itself. "we
-# lowered the timeout to 3s" and "our approach to the scanner" are method
-# notes; "our account balance is 120000" is not. So the plural forms count
-# only when a personal marker sits in the same text -- a possessive, a
-# private noun, or a stated user position. The singular forms always count.
-#
-# `home` counts only as "my home" / "home address". A bare `home` matched
-# path placeholders and "the home directory", which is how a path, not a
-# person, ends up in the shared tier.
+# v1.17.32: the plural branch never fired for English -- "we" was missing
+# from it, so the marker list was never consulted for an English sentence
+# and every one of them leaked. "I" was missing from the singular branch
+# for the same reason. Both are added.
 _FPII_SINGULAR_RE = re.compile(
     r'我(?!们|自己)|我的|我自己|家里|'
     r'\bmy\b|\bmine\b|\bme\b'
 )
 _FPII_PLURAL_RE = re.compile(
-    r'我们|\bour\b|\bus\b'
+    r'我们|\bour\b|\bus\b|\bwe\b'
 )
 _FPII_HOME_RE = re.compile(
     r'\bmy home\b|\bhome address\b'
 )
+# A standalone capital I is a pronoun -- except where it is a list marker
+# ("R-class I", "Part I", "step I", "Ship I"). The preceding word decides.
+#
+# The list is not extended by guessing. Measured over the runtime: of the
+# 197 standalone "I" occurrences, 12 follow a word on this list and 15
+# follow a capitalised word -- of those 15, twelve are "Ship I" and the
+# rest are real pronouns ("While I understand", "Would I trust", "As I
+# mentioned"). A capitalised-prefix rule would therefore swallow real
+# pronouns, so only measured words belong here. A new label word means
+# adding it here.
+_RE_ENGLISH_I = re.compile(r'\bI\b')
+_SECTION_MARKER_WORDS = frozenset({
+    'class', 'part', 'step', 'section', 'phase', 'stage', 'level', 'type',
+    'item', 'note', 'lesson', 'r', 'r-class', 'version', 'no', 'rule',
+    'gate', 'appendix', 'chapter', 'ship',
+})
+
 # Personal markers -- what makes a plural pronoun personal. A possessive
 # plural ("我们的", "our") is not on this list: it is how method notes
 # are written. The private nouns it usually sits next to are.
@@ -228,6 +246,80 @@ _FPII_MARKER_RE = re.compile(
     r'用户明确|用户强调|用户声明|用户拒绝|用户纠正|用户说|本人|'
     r'\baddress\b|\bpassword\b|\baccount\b|\bsalary\b|\bincome\b|'
     r'\bwife\b|\bhusband\b|\bdaughter\b|\bson\b'
+)
+
+# v1.17.32: six structural axes, one regex each so each can be measured
+# on its own -- see tools/check_plural_axes.py.
+
+# Axis 1: private assets -- a key, a figure, a client, a product.
+_FPII_MARKER_ASSET_RE = re.compile(
+    r'密钥|私钥|口令|凭据|凭证|营收|估值|净值|仓位|持股|客户名单|客户群|'
+    r'供应商|报价|未发布|尽调|股东|股份|行程|旅行计划|确诊|处方|病历|'
+    r'管理员|权限|分工|租金|房贷|'
+    r'\bsecret\b|\btoken\b|\bapi key\b|\bprivate key\b|\bcredential\b|'
+    r'\brevenue\b|\bvaluation\b|\bnet value\b|\bportfolio\b|\bholdings?\b|'
+    r'\bpositions?\b|\bclient list\b|\bsupplier\b|\bquote[sd]?\b|'
+    r'\bunreleased\b|\bproprietary\b|\bconfidential\b|\bdo not share\b|'
+    r'\bdiagnosis\b|\bprescription\b|\brent\b|\bmortgage\b|'
+    r'\badministrator\b|\bpermissions?\b'
+)
+
+# Axis 2: residence -- where a speaker lives.
+_FPII_MARKER_RESIDENCE_RE = re.compile(
+    r'(?:我们|咱|we)\s*(?:搬|住|租|定居|落脚|移居|安家)|'
+    r'\bwe\s+(?:moved|relocated|live|rent|stay)|'
+    r'房东|landlord|房租|租金'
+)
+
+# Axis 3: family members and pets.
+_FPII_MARKER_FAMILY_RE = re.compile(
+    r'猫|狗|宠物|宝宝|婴儿|'
+    r'\bkids?\b|\bchild(?:ren)?\b|\bbaby\b|\bpets?\b|'
+    r'\bcat\b|\bdog\b|\bnewborn\b'
+)
+
+# Axis 4: medical events.
+_FPII_MARKER_MEDICAL_RE = re.compile(
+    r'手术|住院|化验|处方|复查|病假|'
+    r'\bsurgery\b|\bhospitali[sz]ed\b|\bprescription\b|'
+    r'\bchemotherapy\b|\bclinic\b|\bstroke\b'
+)
+
+# Axis 5: travel.
+_FPII_MARKER_TRAVEL_RE = re.compile(
+    r'旅行|旅游|行程|机票|酒店|度假|出发地|签证|'
+    r'\btravel\b|\btrip\b|\bvacation\b|\bflight\b|\bitinerary\b|\btickets?\b'
+)
+
+# Axis 6: undisclosed business intent.
+_FPII_MARKER_INTENT_RE = re.compile(
+    r'(?:打算|计划|准备|考虑)\s*[^\n]{0,6}'
+    r'(?:卖掉|出售|并购|收购|融资|上市|裁员|关停|合并|退市)|'
+    r'\b(?:plan|intend|going)\s+to\s+(?:sell|merge|acquire|raise|buy|IPO|'
+    r'lay\s+off|shut\s+down)\b'
+)
+
+_FPII_MARKER_AXES = (
+    _FPII_MARKER_ASSET_RE,
+    _FPII_MARKER_RESIDENCE_RE,
+    _FPII_MARKER_FAMILY_RE,
+    _FPII_MARKER_MEDICAL_RE,
+    _FPII_MARKER_TRAVEL_RE,
+    _FPII_MARKER_INTENT_RE,
+)
+
+# A credential in the text, not a word about credentials. This is the PII
+# layer's job: it is a value, not a topic. "our key rotation is automated"
+# is a method note; "our API key is ghp_..." is a secret.
+_RE_CREDENTIAL_VALUE = re.compile(
+    r'(?:api[_-]?key|secret|token|password|passwd|pwd|私钥|密钥|密码|口令)'
+    r'\s*(?:[:=]|是|为|\bis\b)\s*[\'"]?[A-Za-z0-9_\-\.]{8,}'
+    r'|\bgh[pousr]_[A-Za-z0-9]{16,}'
+    r'|\bsk-[A-Za-z0-9]{16,}'
+    r'|\bAKIA[0-9A-Z]{12,}'
+    r'|\bxox[baprs]-[A-Za-z0-9-]{10,}'
+    r'|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+    r'|\bAIza[0-9A-Za-z_\-]{30,}'
 )
 
 _EMOTION_RE = re.compile(
@@ -243,6 +335,16 @@ _GEO_RE = re.compile(
 )
 
 
+def _has_english_pronoun_i(text: str) -> bool:
+    """A standalone capital I that is a pronoun, not a list marker."""
+    for m in _RE_ENGLISH_I.finditer(text or ''):
+        before = re.findall(r'([A-Za-z-]+)\s*$', text[:m.start()])
+        if before and before[-1].lower() in _SECTION_MARKER_WORDS:
+            continue
+        return True
+    return False
+
+
 def has_first_person(text: str) -> bool:
     """True when the text reads as private first-person content.
 
@@ -251,10 +353,15 @@ def has_first_person(text: str) -> bool:
     method note and "our account balance is 120000" is not.
     """
     t = text or ''
-    if _FPII_SINGULAR_RE.search(t) or _FPII_HOME_RE.search(t):
+    if (_FPII_SINGULAR_RE.search(t) or _FPII_HOME_RE.search(t)
+            or _has_english_pronoun_i(t)):
         return True
-    if _FPII_PLURAL_RE.search(t) and _FPII_MARKER_RE.search(t):
-        return True
+    if _FPII_PLURAL_RE.search(t):
+        if _FPII_MARKER_RE.search(t):
+            return True
+        for _axis in _FPII_MARKER_AXES:
+            if _axis.search(t):
+                return True
     return False
 
 
