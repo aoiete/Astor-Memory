@@ -65,7 +65,96 @@ _BASE_URL = os.environ.get(
 _MODEL = os.environ.get("ASTOR_LLM_MODEL", "gpt-4o-mini")
 
 
-def _candidates() -> list[tuple[str, str, str, str]]:
+# The providers a caller may ask for by name. A caller cannot point
+# astor at an arbitrary endpoint: it may only name one of these, and
+# astor supplies the key from its own pool. Letting a request choose
+# the destination would turn astor into a relay that ships private
+# text wherever the caller says.
+KNOWN_PROVIDERS = ("minimax", "openai", "openrouter", "custom")
+
+def normalise_provider(name: str, model: str = "") -> tuple[str, str]:
+    """(provider, model) for a caller-supplied preference.
+
+    Only the names astor knows are accepted, and only the model name
+    travels -- the endpoint and the key always come from astor's own
+    side. A caller must not be able to point astor at an arbitrary
+    destination: that would turn astor into a relay that ships private
+    text wherever the request says.
+    """
+    name = (name or "").strip().lower()
+    if name not in KNOWN_PROVIDERS:
+        return "", ""
+    return name, (model or "").strip()
+
+
+def _agents_path():
+    """Where the agent -> provider table lives.
+
+    It is in astor's own runtime directory, not in any agent's config
+    tree: astor must not reach into another program's installation to
+    find out what model it runs on. The operator fills it in, or `am
+    agent-set` does.
+    """
+    import json
+    import os as _os
+    from pathlib import Path as _Path
+    try:
+        from ..config import get_default_astor_dir
+        base = get_default_astor_dir()
+    except Exception:
+        base = _Path(_os.environ.get("ASTOR_DIR") or (_Path.home() / ".astor"))
+    return _Path(base) / "agents.json"
+
+
+def load_agent_table() -> dict:
+    """{agent_name: {"provider": ..., "model": ...}} -- empty on any error."""
+    import json
+    try:
+        raw = _agents_path().read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for name, cfg in data.items():
+        if not isinstance(cfg, dict):
+            continue
+        prov = str(cfg.get("provider") or "").strip().lower()
+        if prov not in KNOWN_PROVIDERS:
+            continue
+        out[str(name).strip().lower()] = {
+            "provider": prov,
+            "model": str(cfg.get("model") or "").strip(),
+        }
+    return out
+
+
+def save_agent_table(table: dict) -> bool:
+    import json
+    try:
+        path = _agents_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(table, indent=2, ensure_ascii=False),
+                        encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def resolve_agent_provider(agent: str) -> tuple[str, str]:
+    """(provider, model) for a named agent. ("", "") when unknown."""
+    name = (agent or "").strip().lower()
+    if not name:
+        return "", ""
+    cfg = load_agent_table().get(name)
+    if not cfg:
+        return "", ""
+    return cfg.get("provider", ""), cfg.get("model", "")
+
+
+def _candidates(prefer: tuple[str, str] | None = None
+                ) -> list[tuple[str, str, str, str]]:
     """(name, base_url, key, model) tries, in order.
 
     Three ways in, in this order:
@@ -110,6 +199,15 @@ def _candidates() -> list[tuple[str, str, str, str]]:
     add("openrouter", "https://openrouter.ai/api/v1",
         os.environ.get("OPENROUTER_API_KEY", "").strip(),
         pinned or default_model)
+
+    # A caller that named its own provider goes first: the agent that
+    # connected is the one that knows which model it runs on.
+    if prefer:
+        want, want_model = prefer
+        for i, c in enumerate(out):
+            if c[0] == want and (not want_model or c[3] == want_model):
+                out.insert(0, out.pop(i))
+                break
     return out
 
 
@@ -147,11 +245,13 @@ def provider_available() -> tuple[bool, str]:
     return True, cands[0][3]
 
 
-def _call(text: str, timeout: int) -> tuple[dict | None, str]:
+def _call(text: str, timeout: int,
+          prefer: tuple[str, str] | None = None
+          ) -> tuple[dict | None, str]:
     """Try each candidate in order. Returns (parsed, provider)."""
     if not text or len(text.strip()) < 4:
         return None, ""
-    for name, base, key, model in _candidates():
+    for name, base, key, model in _candidates(prefer):
         body = json.dumps({
             "model": model,
             "messages": [
@@ -223,6 +323,7 @@ def abstract_to_shareable(
     timeout: int = 60,
     min_overlap: float = 0.5,
     min_chars: int = 8,
+    prefer: tuple[str, str] | None = None,
 ) -> dict:
     """Propose a shareable abstraction of `text`.
 
@@ -246,11 +347,11 @@ def abstract_to_shareable(
     if not (text or "").strip():
         out["reason"] = "empty input"
         return out
-    if not _candidates():
+    if not _candidates(prefer):
         out["reason"] = "no LLM provider configured"
         return out
 
-    parsed, provider = _call(text, timeout)
+    parsed, provider = _call(text, timeout, prefer)
     out["provider"] = provider
     if parsed is None:
         out["reason"] = "provider call failed or returned unparsable output"

@@ -1708,9 +1708,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
         text = str(body.get('text') or '')
         if not text.strip():
             return jsonify({'error': 'text is required'}), 400
-        from .nest.llm_judge import abstract_to_shareable
-        res = abstract_to_shareable(text)
+        from .nest.llm_judge import (abstract_to_shareable,
+                                     normalise_provider, resolve_agent_provider)
+        # The agent that connected knows which model it runs on. Name
+        # it in the header and astor asks that provider first -- the
+        # endpoint and the key still come from astor's own side, and
+        # only the names astor knows are accepted.
+        agent = str(request.headers.get('X-Astor-Agent') or '').strip()
+        prov, model = resolve_agent_provider(agent)
+        prefer = normalise_provider(prov, model)
+        res = abstract_to_shareable(text, prefer=prefer or None)
         res.pop('signals', None)
+        res['agent'] = agent
+        res['provider_preference'] = prov
         return jsonify(res)
 
     @app.route('/v1/fact/<int:fact_id>/distill', methods=['POST'])

@@ -767,6 +767,20 @@ def main(argv: list[str] | None = None) -> int:
                                 'reads as private is refused.')
     confirm_p.set_defaults(func=cmd_confirm)
 
+    agent_p = subparsers.add_parser(
+        'agent', help='Which LLM provider each connecting agent wants used')
+    agent_p.add_argument('name', nargs='?', default='',
+                         help='Agent name, e.g. hermes')
+    agent_p.add_argument('--provider', default='',
+                         help='minimax | openai | openrouter | custom')
+    agent_p.add_argument('--model', default='',
+                         help='Model name, e.g. MiniMax-M3.1-Flash-Preview')
+    agent_p.add_argument('--list', action='store_true',
+                         help='Show the table')
+    agent_p.add_argument('--remove', default='',
+                         help='Remove an agent from the table')
+    agent_p.set_defaults(func=cmd_agent)
+
     reject_p = subparsers.add_parser(
         'reject', help='Drop a pending candidate')
     reject_p.add_argument('candidate_id', help='Candidate id')
@@ -1578,6 +1592,58 @@ def cmd_confirm(args) -> int:
         print(f'[ERR] promote failed: {_e}', file=sys.stderr)
         return 1
     print(f'[OK] candidate #{cid} promoted to fact #{canon_id} ({tier})')
+    return 0
+
+
+def cmd_agent(args) -> int:
+    """Which LLM provider each connecting agent wants astor to use.
+
+    `am agent --list`
+    `am agent hermes --provider minimax --model MiniMax-M3.1-Flash-Preview`
+    `am agent --remove hermes`
+
+    The table lives in astor's own runtime directory (agents.json), not
+    in any agent's config tree -- astor must not reach into another
+    program's installation to find out what model it runs on. The agent
+    names itself with an X-Astor-Agent header; astor then asks that
+    provider first, using its own key for it.
+    """
+    from ..nest.llm_judge import (KNOWN_PROVIDERS, load_agent_table,
+                                   save_agent_table, _agents_path)
+    table = load_agent_table()
+    if getattr(args, 'remove', None):
+        name = str(args.remove).strip().lower()
+        if name in table:
+            del table[name]
+            save_agent_table(table)
+            print(f'[OK] removed {name}')
+            return 0
+        print(f'[ERR] no agent named {name}', file=sys.stderr)
+        return 1
+    name = str(getattr(args, 'name', None) or '').strip().lower()
+    prov = str(getattr(args, 'provider', None) or '').strip().lower()
+    model = str(getattr(args, 'model', None) or '').strip()
+    if not name:
+        print('agents known to astor:')
+        if not table:
+            print('  (none yet -- `am agent hermes --provider minimax`)')
+        for k in sorted(table):
+            print(f"  {k:16} {table[k]['provider']:10} {table[k]['model']}")
+        print(f'\ntable: {_agents_path()}')
+        print(f'providers astor accepts: {", ".join(KNOWN_PROVIDERS)}')
+        return 0
+    if not prov:
+        print(f'[ERR] --provider is required to set {name}', file=sys.stderr)
+        return 2
+    if prov not in KNOWN_PROVIDERS:
+        print(f'[ERR] unknown provider {prov!r}; astor accepts '
+              f'{", ".join(KNOWN_PROVIDERS)}', file=sys.stderr)
+        return 2
+    table[name] = {'provider': prov, 'model': model}
+    if not save_agent_table(table):
+        print('[ERR] could not write the table', file=sys.stderr)
+        return 1
+    print(f'[OK] {name} -> {prov} {model}')
     return 0
 
 

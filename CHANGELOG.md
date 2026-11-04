@@ -1,3 +1,42 @@
+## 1.17.35
+
+### Which LLM each connecting agent wants astor to use
+
+An agent that connects to astor already runs on a model. When astor has
+to do the abstraction itself -- the operator at the CLI, or a client
+that only speaks the HTTP API -- it can ask that provider first
+instead of guessing.
+
+The agent names itself with an `X-Astor-Agent` header; astor looks the
+name up in `$ASTOR_DIR/agents.json` and asks the provider it maps to.
+
+    am agent --list
+    am agent hermes --provider minimax --model MiniMax-M3.1-Flash-Preview
+    am agent --remove hermes
+
+The table lives in astor's own runtime directory, not in any agent's
+config tree: astor must not reach into another program's installation
+to find out what model it runs on.
+
+Only the four provider names astor knows are accepted, and only the
+model name travels with the request -- the endpoint and the key always
+come from astor's side. A caller must not be able to point astor at an
+arbitrary destination, or astor becomes a relay that ships private
+text wherever the request says.
+
+### This is the fallback, not the main path
+
+The main path needs no key in astor at all: the agent does the
+abstraction itself and asks astor for a verdict.
+
+    agent abstracts  ->  POST /v1/visibility/check  ->  rewrite if needed
+                      ->  write  ->  astor judges it again on the way in
+
+That works whether the agent runs on a cloud model with a key, a local
+model, or anything else. astor's own LLM path is for the cases where
+no agent is in the loop. When astor has no provider for it either, the
+note stays private -- fail-closed, same as everywhere else.
+
 ## 1.17.34
 
 ### The runtime's .env was never read
