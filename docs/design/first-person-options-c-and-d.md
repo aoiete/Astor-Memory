@@ -207,7 +207,38 @@ rewrites host-local paths and identifiers, and the PII detector
 catches the rest. The shared tier's own comment says it: "keeps the
 method and loses the machine".
 
-## Recommendation
+## Outcome
+
+C was implemented and shipped in v1.17.31. The change is in
+`has_first_person` itself, because all four of its callers — the
+classifier, the distiller, the schema backfill and the CLI promotion
+path — ask the same question: is this private content.
+
+The blast radius was checked before shipping, and it is smaller than the
+rule suggests. Three things came out of it.
+
+*The schema backfill is dead code.* `_astor_upgrade_v10_to_v11` is
+defined twice in `schema.py` — once at line 620 with the visibility
+column and the backfill, once at line 809 as a `return None` stub. The
+later definition shadows the earlier one, so the backfill has never run.
+A guard added to it was reverted rather than left in a function that
+does not execute. The write path goes through `classify_visibility`
+(`server.py`), and that is where a new write is decided.
+
+*Peers read one database.* Peer search reads the peer's public-tier
+database and filters on `visibility = 'commons'`. In that database the
+change makes two more facts pass the gate — both session-hygiene notes
+about shell piping and log counters. The other facts that the wider
+rule admits sit in the per-user and source-tier databases, which a peer
+does not read.
+
+*The user-position words stay a marker, not a signal.* Making them a
+signal of their own was measured: it would block 16 method notes that
+merely mention the user, such as "当用户说 hi 的时候要回 pong, 这是
+webhook 的标准做法". They only act when a pronoun is nearby, which is
+where the rule needs them.
+
+## Recommendation (as shipped)
 
 **C, on its own. Not D, and not D2.**
 

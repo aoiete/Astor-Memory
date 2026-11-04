@@ -70,6 +70,22 @@ def run_case(desc, text, kind, hint, admin_allow, exp_vis, exp_has_pii):
     return True, ''
 
 
+def test_locked_visibility_cases():
+    """Run the locked cases under pytest.
+
+    v1.17.31: this file was script-style, so pytest collected nothing from
+    it and the ten locked cases had never run in CI. The CASES list is
+    untouched; this wrapper just executes it.
+    """
+    failures = []
+    for desc, text, kind, hint, admin_allow, exp_vis, exp_has_pii in CASES:
+        ok, msg = run_case(desc, text, kind, hint, admin_allow,
+                           exp_vis, exp_has_pii)
+        if not ok:
+            failures.append(f'{desc}: {msg}')
+    assert not failures, '\n'.join(failures)
+
+
 def main():
     print('=' * 70)
     print('Visibility classifier regression (v1.16.29, 10 locked cases)')

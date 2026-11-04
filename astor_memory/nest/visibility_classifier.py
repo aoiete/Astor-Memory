@@ -9,7 +9,8 @@ Three layers (designer intent preserved from user feedback):
 
 The classifier NEVER marks a fact `commons` if it contains:
   - PII (phone, email, SSN, ID card, bank card, geographic, chat_id)
-  - first-person pronouns (我/我的/我自己, I/my/our/us, family/home)
+  - private first-person content (see `has_first_person` below: singular
+    forms always, plural forms only when a personal marker is nearby)
   - emotion/health keywords (suicide/depression/诊断/药物)
   - explicit user hint = 'personal'
 
@@ -19,6 +20,10 @@ It marks `commons` ONLY when:
   - admin_global_toggle = 1
   - hint != 'personal'
   - no PII / first-person / emotion signals
+
+v1.17.31: the first-person signal was split. A plural pronoun alone is
+method narration, not private content, so it blocks only when a personal
+marker is in the same text.
 """
 from __future__ import annotations
 import re
@@ -84,8 +89,12 @@ _RE_WECHAT_CHAT = re.compile(r'\bo[A-Za-z0-9_-]{20,}@im\.wechat\b')
 _RE_TG_CHAT = re.compile(r'\b\d{8,12}\b')
 
 # Multilingual PII keyword anchors — pairs with numeric regexes above
+# "QQ" must not match inside a ticker: TQQQ, QQQI, SQQQ are ETFs. The
+# guard is "not a letter on either side" rather than a word boundary,
+# because "QQ号" has no boundary between QQ and 号 but is still a QQ id.
 _PII_KEYWORDS_ZH = re.compile(
-    r'身份证|银行卡|社保|住址|户口|手机号|微信号|邮箱|QQ|账号'
+    r'身份证|银行卡|社保|住址|户口|手机号|微信号|邮箱|账号|'
+    r'(?<![A-Za-z])QQ(?![A-Za-z])'
 )
 _PII_KEYWORDS_EN = re.compile(
     r'SSN|social security|address|phone number|credit card|'
@@ -188,14 +197,37 @@ def _luhn_ok(digits: str) -> bool:
 # ---------------------------------------------------------------------------
 # First-person + emotion + geographic signals (any match = personal)
 # ---------------------------------------------------------------------------
-# v1.16.29: standalone 我 + 我的 + 我们 + 我自己 + EN pronouns +
-# situational home/family. Negative lookahead on 我 avoids matching 我们/我自己.
-_FPII_RE = re.compile(
-    r'(?:'
-    r'我(?!们|自己)|我的|我们|我自己|'
-    r'\bmy\b|\bour\b|\bmine\b|\bus\b|\bme\b|'
-    r'家里|family|home|home address'
-    r')'
+# v1.17.31: a plural first-person pronoun is not private by itself. "we
+# lowered the timeout to 3s" and "our approach to the scanner" are method
+# notes; "our account balance is 120000" is not. So the plural forms count
+# only when a personal marker sits in the same text -- a possessive, a
+# private noun, or a stated user position. The singular forms always count.
+#
+# `home` counts only as "my home" / "home address". A bare `home` matched
+# path placeholders and "the home directory", which is how a path, not a
+# person, ends up in the shared tier.
+_FPII_SINGULAR_RE = re.compile(
+    r'我(?!们|自己)|我的|我自己|家里|'
+    r'\bmy\b|\bmine\b|\bme\b'
+)
+_FPII_PLURAL_RE = re.compile(
+    r'我们|\bour\b|\bus\b'
+)
+_FPII_HOME_RE = re.compile(
+    r'\bmy home\b|\bhome address\b'
+)
+# Personal markers -- what makes a plural pronoun personal. A possessive
+# plural ("我们的", "our") is not on this list: it is how method notes
+# are written. The private nouns it usually sits next to are.
+_FPII_MARKER_RE = re.compile(
+    r'家人|family|'
+    r'账户|余额|存款|工资|收入|资产|信用卡|贷款|投资组合|持仓|'
+    r'老婆|老公|女朋友|男朋友|父母|父亲|母亲|爸爸|妈妈|孩子|女儿|儿子|'
+    r'住址|地址|手机号|微信号|邮箱|身份证|银行卡|社保|户口|'
+    r'用户主张|用户希望|用户偏好|用户要求|用户规定|用户不满|用户批评|'
+    r'用户明确|用户强调|用户声明|用户拒绝|用户纠正|用户说|本人|'
+    r'\baddress\b|\bpassword\b|\baccount\b|\bsalary\b|\bincome\b|'
+    r'\bwife\b|\bhusband\b|\bdaughter\b|\bson\b'
 )
 
 _EMOTION_RE = re.compile(
@@ -212,7 +244,18 @@ _GEO_RE = re.compile(
 
 
 def has_first_person(text: str) -> bool:
-    return bool(_FPII_RE.search(text or ''))
+    """True when the text reads as private first-person content.
+
+    Singular forms always count. A plural pronoun counts only when a
+    personal marker is nearby, so "our approach to the scanner" is a
+    method note and "our account balance is 120000" is not.
+    """
+    t = text or ''
+    if _FPII_SINGULAR_RE.search(t) or _FPII_HOME_RE.search(t):
+        return True
+    if _FPII_PLURAL_RE.search(t) and _FPII_MARKER_RE.search(t):
+        return True
+    return False
 
 
 def has_emotion(text: str) -> bool:

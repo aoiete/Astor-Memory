@@ -1,4 +1,91 @@
 
+## v1.17.31 — 2026-11-04
+
+The shared tier keeps losing method notes to a first-person pronoun.
+
+**What was broken.** `has_first_person` matched any of `我/我的/我们/我自己`,
+`my/our/mine/us/me`, `家里/family/home`. One match and the fact was
+`personal`, which `server.py` then routed out of the requested tier. The
+branch distribution on the live runtime, over the 1,488 facts whose kind
+is shareable:
+
+| branch | facts blocked alone | share |
+|---|---|---|
+| 我 (singular) | 93 | 66.9% |
+| `home` (bare substring) | 25 | 18.0% |
+| 我自己 | 13 | 9.4% |
+| 我们 | 12 | 8.6% |
+| 我的 | 10 | 7.2% |
+| our / my / family / mine / us / me / 家里 | 20 | 13.7% |
+
+139 of the 214 blocked shareable-kind facts were blocked by the
+first-person signal alone — 65% of all blocks. The tier exists for
+methods, flows, models and patterns, and a note that says "we lowered
+the timeout to 3s" is exactly that.
+
+Two of the branches were plain bugs. `home` had no word boundary, so it
+matched `<home>` placeholders and "the home directory". And the plural
+pronouns were treated as private on their own, the same as `我的`.
+
+**What changed.**
+- The first-person signal is split. Singular forms (`我`, `我的`, `我自己`,
+  `my`, `mine`, `me`, `家里`) still block on their own. A plural pronoun
+  (`我们`, `our`, `us`) blocks only when a personal marker is in the same
+  text — a possessive, a private noun (`账户`, `余额`, `工资`, `住址`,
+  `address`, `password`, `account` …) or a stated user position
+  (`用户主张`, `用户希望`, `用户批评` …). `home` blocks only as `my home`
+  or `home address`.
+- `has_first_person` had four callers — the classifier, the distiller,
+  the schema backfill and the CLI promotion path — and all four ask the
+  same question ("is this private content"), so the rule was changed
+  once, in the shared function. The write path (`server.py`) goes
+  through `classify_visibility`, so this is where a new write is
+  decided.
+- The PII keyword table no longer matches `QQ` inside a ticker.
+  `TQQQ`, `QQQI` and `SQQQ` are ETFs, and "用 US.SPY 跟 US.TQQQ 对比点差"
+  was being blocked as personal because of it. The guard is "not a
+  letter on either side" rather than a word boundary, because `QQ号` has
+  no boundary between `QQ` and `号` but is still a QQ id.
+
+**Measured.** Against the live runtime: shareable-kind facts blocked by
+the first-person signal, 139 → 103. Private facts blocked by it alone,
+585 → 470. In the database peers actually read, the change makes two
+more facts pass the gate — both session-hygiene notes about shell
+piping and log counters, no private content in either.
+
+A hand-built set of 18 private sentences (address, account balance,
+salary, family, password, geo, stated user position) stays `personal`
+under the new rule. One of them was already `personal` before this
+change for an unrelated reason: a stated user position with no pronoun
+in it was never blocked by the first-person signal at all. Making the
+user-position words a signal of their own was measured and rejected —
+it would block 16 method notes that merely mention the user, such as
+"当用户说 hi 的时候要回 pong, 这是 webhook 的标准做法".
+
+The schema backfill (`_astor_upgrade_v10_to_v11`) was inspected while
+checking the blast radius, and found to be dead code: `schema.py`
+defines it twice, and the second definition — a `return None` stub —
+shadows the one that holds the backfill. So the backfill has never run
+and this change does not affect it. A change to it was reverted rather
+than left in a function that does not execute.
+
+The plural-form option B was measured and rejected: it releases the same
+36 facts as C but leaks `our family`. The caller-declared option D was
+measured and rejected: it releases 364 facts from the private tier
+against C's 77, because D's only remaining gate is PII, emotion and
+geographic, and none of those catch "我的工资收入是 50000" or "我老婆叫
+小美". See `docs/design/first-person-options-c-and-d.md`.
+
+**Tests.** `tests/test_first_person_rule_c.py` (24 cases).
+
+While writing them: the locked cases in `tests/test_visibility_classifier.py`
+had never run. The file is script-style — a `main()` that exits non-zero —
+so pytest collected nothing from it, and CI only runs pytest. Ten cases
+marked permanent, guarding the boundary between the shared tier and the
+user's own data, were not executed by anything. The CASES list is
+untouched; a pytest wrapper now runs it. The new file is written as
+pytest functions for the same reason.
+
 ## v1.17.30 — 2026-11-01
 
 Progressive loading (L0/L1/L2) wired end to end, after a review of the
