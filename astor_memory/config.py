@@ -69,6 +69,58 @@ def resolve_install_dir(raw: str | os.PathLike) -> Path:
     return p
 
 
+def load_env_file(path: str | os.PathLike | None = None) -> Path | None:
+    """Load the runtime's .env into os.environ. Existing values win.
+
+    astor reads its configuration from the process environment, which is
+    what a service manager (NSSM, systemd) sets up. But an operator
+    keeps the keys in a file, and until now nothing read that file into
+    the process -- so every LLM-backed feature silently degraded to its
+    no-llm fallback: the fact extractor's LLM mode, the re-ranker, and
+    the visibility abstraction.
+
+    The file is $ASTOR_DIR/.env, or whatever path is given. Lines are
+    KEY=VALUE; blank lines and # comments are skipped; a value wrapped
+    in matching quotes is unwrapped. A key that is already in the
+    environment is left alone, so the service manager's configuration
+    always wins over the file.
+
+    Returns the path that was read, or None if there was nothing to
+    read.
+    """
+    if path is None:
+        try:
+            path = get_default_astor_dir() / '.env'
+        except Exception:
+            return None
+    p = Path(path).expanduser()
+    try:
+        if not p.is_file():
+            return None
+        raw = p.read_text(encoding='utf-8', errors='replace')
+    except Exception:
+        return None
+    loaded = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        key = key.strip()
+        if not key:
+            continue
+        # An existing, non-empty value wins. An empty one is almost
+        # always an accident and the file is the better source.
+        if os.environ.get(key):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        os.environ[key] = value
+        loaded += 1
+    return p if loaded else None
+
+
 def get_default_astor_dir() -> Path:
     """Get default astor dir (reads env at call time).
 

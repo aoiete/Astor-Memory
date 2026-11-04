@@ -39,6 +39,13 @@ ZONE_KINDS = {
 
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point."""
+    # v1.17.33: same .env loading as the server, so `am confirm --llm`
+    # can reach a provider from a plain shell.
+    try:
+        from ..config import load_env_file
+        load_env_file()
+    except Exception:
+        pass
     # v1.13.1 (2026-09-14, Ship E/F/G fix): force stdout line buffering.
     # Without this, print() buffers until process exits — and on Windows
     # the parent PTY buffers further. Symptom: cli output appears

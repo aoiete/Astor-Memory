@@ -1116,6 +1116,16 @@ def create_app(astor_dir: str | None = None) -> Flask:
     app = Flask(__name__)
     if astor_dir:
         os.environ['ASTOR_DIR'] = astor_dir
+    # v1.17.33: read the runtime's .env into the process environment.
+    # astor reads its configuration from the environment, which a
+    # service manager sets up -- but the operator keeps the keys in a
+    # file, so until now every LLM-backed feature silently degraded to
+    # its no-llm fallback. Values already in the environment win.
+    try:
+        from .config import load_env_file
+        load_env_file()
+    except Exception:
+        pass
     # 2026-08-16 opt4: upgrade every known tier DB
     try:
         from .bus.schema import astor_upgrade_all_tier_dbs
