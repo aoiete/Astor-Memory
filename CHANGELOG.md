@@ -1,3 +1,30 @@
+## 1.17.34
+
+### The runtime's .env was never read
+
+astor reads its configuration from the process environment, which is
+what a service manager sets up. But the operator keeps the keys in a
+file, and nothing read that file into the process -- so every
+LLM-backed feature was silently degraded to its no-llm fallback:
+
+- the fact extractor's LLM mode fell back to regex
+- the re-ranker returned the candidates unranked
+- the visibility abstraction reported "no LLM provider configured"
+
+The last one is what made the new endpoint look broken. The MiniMax
+key was in the runtime's .env all along; the server simply never read
+it.
+
+`config.load_env_file()` reads `$ASTOR_DIR/.env`: KEY=VALUE lines, blank
+lines and # comments skipped, a value wrapped in matching quotes
+unwrapped. A key that is already in the environment is left alone, so
+the service manager's configuration always wins over the file. An empty
+value counts as unset, because an empty string in a service environment
+is almost always an accident.
+
+The server loads it in `create_app` and the CLI in `main`, so
+`am confirm --llm` reaches a provider from a plain shell too.
+
 ## 1.17.33
 
 ### The operator path was a hole through the red line
