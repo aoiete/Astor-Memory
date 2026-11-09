@@ -286,6 +286,24 @@ def valid_session(token: str) -> bool:
 _fail_state: dict[str, list[float]] = {}
 
 
+def client_key(headers, remote_addr: str) -> str:
+    """The rate-limit bucket for one request.
+
+    The remote address alone is not a client. A Cloudflare tunnel on
+    this machine forwards to 127.0.0.1, so every request from the
+    public internet arrives with the same loopback address -- one
+    person's wrong guesses would lock everyone else out, including the
+    operator. The edge knows who the real client is and says so in
+    CF-Connecting-IP; X-Forwarded-For is the next best thing.
+    """
+    for hdr in ('CF-Connecting-IP', 'X-Forwarded-For'):
+        val = (headers.get(hdr) or '').strip()
+        if val:
+            # X-Forwarded-For is a list; the client is the first entry.
+            return val.split(',')[0].strip()
+    return (remote_addr or 'unknown').strip()
+
+
 def check_attempt(client: str) -> tuple[bool, dict]:
     """Should this client be allowed to try the passcode right now?
 

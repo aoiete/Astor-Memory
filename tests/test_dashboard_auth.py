@@ -188,6 +188,51 @@ def test_peer_write_endpoints_are_not_exempt(auth):
 
 # ------------------------------------------------------------- rate limit
 
+def test_client_key_uses_the_edge_client_address(auth):
+    """Through a tunnel every request arrives as 127.0.0.1. The bucket
+    must follow the real client, or one person's guesses lock everyone
+    else out."""
+    assert auth.client_key({"CF-Connecting-IP": "198.51.100.7"},
+                            "127.0.0.1") == "198.51.100.7"
+    assert auth.client_key({"X-Forwarded-For": "198.51.100.7, 10.0.0.1"},
+                            "127.0.0.1") == "198.51.100.7"
+    # No edge header: fall back to the address.
+    assert auth.client_key({}, "127.0.0.1") == "127.0.0.1"
+
+
+def test_correct_passcode_is_accepted_even_after_the_bucket_fills(auth):
+    """The limiter slows down guessing. It must never refuse the right
+    code -- that locked the operator out of their own dashboard."""
+    from astor_memory.server import create_app
+    pc = auth.get_passcode()
+    app = create_app()
+    client = app.test_client()
+    headers = {"CF-Connecting-IP": "198.51.100.7", "Host": "astor.example.com"}
+    for _ in range(auth._MAX_FAILS + 2):
+        client.post("/v1/auth/passcode",
+                    json={"passcode": "wrong"},
+                    headers=headers)
+    res = client.post("/v1/auth/passcode", json={"passcode": pc}, headers=headers)
+    assert res.status_code == 200
+    assert res.get_json()["ok"] is True
+    assert res.get_json()["token"]
+
+
+def test_a_wrong_code_is_still_throttled(auth):
+    """The gate still does its job: guessing stays slow."""
+    from astor_memory.server import create_app
+    app = create_app()
+    client = app.test_client()
+    headers = {"CF-Connecting-IP": "198.51.100.8", "Host": "astor.example.com"}
+    codes = []
+    for _ in range(auth._MAX_FAILS + 1):
+        res = client.post("/v1/auth/passcode",
+                          json={"passcode": "wrong"}, headers=headers)
+        codes.append(res.status_code)
+    assert codes.count(429) == 1, codes
+    assert codes[-1] == 429
+
+
 def test_repeated_failures_are_throttled(auth):
     client = "203.0.113.9"
     for _ in range(auth._MAX_FAILS):

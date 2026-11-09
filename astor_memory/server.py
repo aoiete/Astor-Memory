@@ -2793,20 +2793,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
         from ._internal import dashboard_auth as _dauth
         body = request.get_json(silent=True) or {}
         code = (body.get('passcode') or '').strip()
-        client = request.remote_addr or 'unknown'
+        client = _dauth.client_key(request.headers, request.remote_addr or '')
+        # The right code is always accepted. The limiter exists to slow
+        # down guessing, so it must not be able to lock the operator out
+        # of their own dashboard -- which is what happened when the
+        # check ran before the comparison and every public request
+        # shared one bucket.
+        if _dauth.check_passcode(code):
+            _dauth.record_success(client)
+            token = _dauth.issue_session()
+            return jsonify({'ok': True, 'token': token,
+                            'expires_in': _dauth.SESSION_TTL_SECONDS})
         allowed, info = _dauth.check_attempt(client)
         if not allowed:
             return jsonify({'error': 'too_many_attempts',
                             'detail': 'try again later',
                             **info}), 429
-        if not _dauth.check_passcode(code):
-            _dauth.record_failure(client)
-            return jsonify({'error': 'bad_passcode',
-                            'detail': 'that passcode is not right'}), 401
-        _dauth.record_success(client)
-        token = _dauth.issue_session()
-        return jsonify({'ok': True, 'token': token,
-                        'expires_in': _dauth.SESSION_TTL_SECONDS})
+        _dauth.record_failure(client)
+        return jsonify({'error': 'bad_passcode',
+                        'detail': 'that passcode is not right'}), 401
 
     @app.route('/v1/auth/session', methods=['GET'])
     def auth_session_status():
