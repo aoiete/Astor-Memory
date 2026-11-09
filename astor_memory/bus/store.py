@@ -769,10 +769,34 @@ class AstorBus:
         # P1-fix 2026-08-16: on embed failure, enqueue to cascade_state queue
         # for replay (EverOS md_change_state pattern). Without this, fact
         # lives forever with no embedding and recall returns empty.
+        #
+        # v1.17.36 (2026-11-09): embed under the OWNER identity for a
+        # private scope. The fact was ALREADY admitted into this bus under
+        # an authorized identity (the caller opened private_<user> as the
+        # owner, or held a grant), but astor_nest() re-runs
+        # astor_check_read under the CURRENT identity. When the bus was
+        # opened by a short-lived owner binding that had already been
+        # released (open_own_private binds only for the bus open), the
+        # embed ran as the original actor and was denied for a scope the
+        # write had already been admitted to. The failure was swallowed
+        # into cascade_state as `embedding_failed`: the fact existed in
+        # memory_canonical with NO embedding, so every recall for it
+        # returned empty -- a silent write-only black hole.
+        #
+        # The invariant: ONE identity authorizes the write AND the
+        # embedding of that same fact into that same scope. Binding the
+        # owner here keeps them consistent for the whole operation,
+        # whatever identity opened the bus.
         try:
             from ..nest import astor_nest
-            nest = astor_nest(tier=tier, user_id=user_id)
-            nest.store(canonical_id, content)
+            if tier == 'private' and user_id:
+                from .._internal.acl import own_private_scope as _own_scope
+                with _own_scope(user_id):
+                    nest = astor_nest(tier=tier, user_id=user_id)
+                    nest.store(canonical_id, content)
+            else:
+                nest = astor_nest(tier=tier, user_id=user_id)
+                nest.store(canonical_id, content)
         except Exception as e:
             # Embedding failure should not block fact storage; queue for
             # replay + write audit row.

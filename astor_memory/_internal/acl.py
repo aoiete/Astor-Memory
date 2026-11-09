@@ -38,6 +38,7 @@ Lock history: 2026-08-15 (3-tier), 2026-08-16 (strict-privacy),
 from __future__ import annotations
 
 import contextvars
+from contextlib import contextmanager
 import threading
 from dataclasses import dataclass
 from typing import Literal, Optional
@@ -620,6 +621,7 @@ __all__ = [
     "astor_init_acl", "astor_current_acl",
     "astor_check_read", "astor_check_write", "astor_check_bot_admin",
     "astor_actor_id", "astor_user_id",
+    "own_private_scope",
 ]
 
 
@@ -658,6 +660,52 @@ def open_own_private(user_id: str):
                        tier='private', user_id=user_id,
                        subscription_plan='power')
         return astor_bus(tier='private', user_id=user_id)
+    finally:
+        if _prev is not None:
+            try:
+                astor_init_acl(
+                    actor=_prev.actor, role=_prev.role, tier=_prev.tier,
+                    user_id=_prev.user_id,
+                    subscription_plan=_prev.subscription_plan,
+                )
+            except Exception:
+                pass
+
+
+@contextmanager
+def own_private_scope(user_id: str):
+    """Bind as `user_id` (the owner) for the duration of the block.
+
+    v1.17.36 (2026-11-09): `open_own_private` binds the owner identity only
+    while it OPENS the bus, then restores the previous identity before
+    returning. Any later ACL-gated step in the same operation therefore ran
+    as the ORIGINAL actor, not the owner.
+
+    Concretely: `am write --tier private --user <other>` opened
+    private_<other> as the owner and wrote the canonical row, but
+    `promote_candidate` then called `astor_nest(tier='private',
+    user_id=<other>)` to compute the embedding. By then the ACL was back to
+    the CLI's own identity, and `astor_check_read('private', <other>)`
+    raised PermissionError_ ("actor='user:admin' (role=user) cannot read
+    private_<other>"). The embed was swallowed into cascade_state as
+    `embedding_failed`, so the fact existed in the bus with NO embedding and
+    every recall for it returned empty -- a silent write-only black hole.
+
+    This context manager keeps the owner identity bound across the WHOLE
+    write-then-embed sequence, which is the invariant the operation
+    actually needs: one identity authorizes the write AND the embedding of
+    that same fact into that same scope.
+    """
+    from .acl import astor_current_acl, astor_init_acl
+    try:
+        _prev = astor_current_acl()
+    except Exception:
+        _prev = None
+    try:
+        astor_init_acl(actor=f'user:{user_id}', role='user',
+                       tier='private', user_id=user_id,
+                       subscription_plan='power')
+        yield
     finally:
         if _prev is not None:
             try:

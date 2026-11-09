@@ -1,3 +1,56 @@
+## 1.17.36
+
+### A private fact that could be written but never recalled
+
+Writing to another user's private tier worked; recalling it did not.
+
+    am write --tier private --user someone "..."
+
+reported success. The canonical row was there, in that user's own
+private bus. But every recall for it came back empty.
+
+The cause was an identity split inside the write. The bus was opened as
+the OWNER of the target scope -- `open_own_private` binds that identity,
+takes the bus, then restores the previous identity before returning.
+The write was admitted. The EMBEDDING, though, happened afterwards, and
+embedding opens the nest, and the nest open re-runs the read check under
+whatever identity is current at that moment. By then the owner binding
+was gone, so the embed ran as the original actor and was refused:
+
+    actor='user:admin' (role=user) cannot read private_<someone>;
+    only own private allowed
+
+That refusal was not an error the caller saw. It was caught, queued in
+`cascade_state` as `embedding_failed`, and written to the audit log --
+and the fact sat in `memory_canonical` with no embedding, so recall
+returned nothing for it. A write-only black hole: the data was there,
+and no query could ever find it.
+
+The invariant the operation actually needs is one identity across the
+whole sequence: the same identity that authorizes the write also
+authorizes the embedding of that same fact into that same scope. The
+embed now runs under the owner binding for a private scope, so the two
+cannot disagree.
+
+### Where this is fixed
+
+`own_private_scope()` in `astor_memory/_internal/acl.py` is the new
+context manager: it binds the owner identity for the duration of a
+block and restores the previous identity afterwards. `promote_candidate`
+uses it around the embed, which fixes every caller at once -- `am
+write`, `am learn`, `am postmortem`, and the HTTP write path -- rather
+than patching each one.
+
+Facts written before this fix keep their missing embeddings. Re-running
+`am reembed` restores them; the `cascade_state` queue holds the ones
+that failed and `am cascade replay` drains it.
+
+### Nothing else changed
+
+The read path, the write path, and the ACL rules themselves are
+untouched. The same identity that could write a fact before can write it
+now, and the fact can be found afterwards.
+
 ## 1.17.35
 
 ### Which LLM each connecting agent wants astor to use
