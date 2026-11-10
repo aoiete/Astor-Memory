@@ -549,8 +549,7 @@ markers = [
 
 [tool.astor]
 
-
-version = "1.17.36"
+version = "1.17.37"
 
 
 config_schema_version = 2  # +1 for v0.3.0 (added platform CLI section)
