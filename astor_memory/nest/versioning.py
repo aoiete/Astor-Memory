@@ -267,7 +267,17 @@ def restore_fact(
                 # had `astor_get_model_name_for_ram() if False else 'BAAI/bge-small-en-v1.5'`
                 # which always evaluated to the hard-coded string and risked a
                 # dim mismatch if the original embedding came from bge-base.
-                model_name = 'BAAI/bge-base-en-v1.5'  # default
+                # The model that PRODUCED the vector is the model that must be
+                # RECORDED, because embeddings PK is (fact_id, model_name) and
+                # recall filters on model_name. Recording a hard-coded name
+                # that differs from the live embedder writes a row recall will
+                # never select, and (worse) leaves a second row for the same
+                # fact under the wrong model.
+                try:
+                    from .embeddings import astor_get_model_name_for_ram
+                    model_name = astor_get_model_name_for_ram()
+                except Exception:
+                    model_name = 'BAAI/bge-base-en-v1.5'  # last-resort default
                 try:
                     meta_row = conn.execute(
                         "SELECT metadata FROM audit_log WHERE target_type='fact' AND target_id=? AND event='fact_written' ORDER BY id DESC LIMIT 1",
@@ -282,9 +292,17 @@ def restore_fact(
                     pass  # metadata lookup is best-effort
                 emb = list(model.embed([content]))[0]
                 emb_blob = struct_pack_floats(emb)
+                # dim / user_id / tier are NOT NULL in the embeddings schema.
+                # Omitting them makes the whole re-embed fail with
+                # "NOT NULL constraint failed: embeddings.dim", which leaves a
+                # restored fact WITHOUT a vector (lex-only, invisible to
+                # vector recall). Same INSERT shape as `am reembed`.
                 nest.conn.execute(
-                    "INSERT OR REPLACE INTO embeddings(fact_id, embedding, model_name) VALUES (?,?,?)",
-                    (fact_id_int, emb_blob, model_name),
+                    "INSERT OR REPLACE INTO embeddings"
+                    "(fact_id, embedding, model_name, dim, user_id, tier, publishable) "
+                    "VALUES (?,?,?,?,?,?,0)",
+                    (fact_id_int, emb_blob, model_name, len(emb),
+                     user_id or '_system', tier),
                 )
                 nest.conn.commit()
                 nest_re = 'ok'
