@@ -1443,6 +1443,30 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     # became admin:admin).
                     body_user = body.get('user') or body.get('user_id')
                 actor, role, plan = _astor_resolve_actor(body_user)
+                # v1.17.36 (2026-11-04): resolve the caller's OWN id when the
+                # request names no target, so ctx.user_id is never None.
+                #
+                # The ACL is bound here with user_id=body_user, and the write
+                # handler later re-binds with the SAME body_user. For a
+                # tier=public write that the content classifier demotes to
+                # private_<self>, the demote target is the CALLER's own id --
+                # but ctx.user_id was None (no 'user' field in the body), so
+                # astor_check_read('private', '<caller>') fell through to the
+                # admin branch and demanded a grant that the admin cannot
+                # hold from themselves. Result: the fact was stored with no
+                # embedding, every time, silently.
+                #
+                # Evidence: astor_daily_summary.py posts tier=public with no
+                # 'user' field; every summary since 2026-10-29 has
+                # embedding_failed = "actor='admin:admin' (role=admin) cannot
+                # read private_<admin>". Reproduced live: same body without
+                # 'user' fails, with 'user':'admin' embeds.
+                #
+                # Same resolution the tier=='admin' branch above already
+                # does: derive the caller's own id from the actor.
+                if not body_user:
+                    body_user = _astor_resolve_actor(None)[0].split(':', 1)[-1]
+                actor, role, plan = _astor_resolve_actor(body_user)
                 # v1.16.32: tier=None -> public (admin endpoints can still role-check)
                 if tier is None:
                     tier = 'public'
@@ -2688,10 +2712,54 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 "PRAGMA foreign_key_check"
             ).fetchall()
             fk_violation_count = len(fk_violations)
+            # v1.17.37: split the FK count by whether the offending canonical row
+            # is still live. A tombstoned row can never be recalled, so a missing
+            # parent pointer on it is historical residue from a one-shot
+            # migration, not a live defect. Counting those made ship_c_warn
+            # permanently True and buried real failures.
+            # v1.17.37: three buckets, all counted in UNIQUE ROWS, not in
+            # violation lines. One canonical row can trip two FK constraints
+            # (candidate_id AND event_id), so the raw violation count and the row
+            # count differ -- subtracting one from the other was the bug that
+            # made the first cut of this split report a non-zero defect count.
+            fk_row_ids = {row[1] for row in fk_violations}
+            fk_live_rows = 0
+            fk_sentinel_rows = 0
+            fk_defect_rows = 0
+            if fk_row_ids:
+                id_list = list(fk_row_ids)
+                for chunk_start in range(0, len(id_list), 500):
+                    chunk = id_list[chunk_start:chunk_start + 500]
+                    marks = ",".join("?" * len(chunk))
+                    for rid, cand, evt, tomb in cu.execute(
+                        "SELECT id, candidate_id, event_id, tombstoned "
+                        f"FROM memory_canonical WHERE id IN ({marks})", chunk
+                    ):
+                        if tomb:
+                            continue  # legacy: a tombstoned row can never be recalled
+                        fk_live_rows += 1
+                        # A TEXT sentinel in an INTEGER FK column is not a missing
+                        # parent: the one-shot public->source promotion wrote
+                        # 'from_public:1198' / 'migrated:public:...' on
+                        # UNIQUE-conflict rows (NULL is not allowed there). The
+                        # fact is live and recall serves it normally.
+                        if not str(cand).lstrip("-").isdigit() or \
+                                not str(evt).lstrip("-").isdigit():
+                            fk_sentinel_rows += 1
+                        else:
+                            fk_defect_rows += 1
+            fk_legacy_rows = len(fk_row_ids) - fk_live_rows
             db_corruption_check = {
                 "integrity_check": integrity[0] if integrity else "unknown",
                 "integrity_ok": integrity_ok,
                 "foreign_key_violations": fk_violation_count,
+                # v1.17.37: three buckets, counted in unique rows. Only "defect"
+                # is a live defect; ship_c_warn keys on it.
+                "foreign_key_violations_rows": len(fk_row_ids),
+                "foreign_key_violations_live": fk_live_rows,
+                "foreign_key_violations_legacy": fk_legacy_rows,
+                "foreign_key_violations_sentinel": fk_sentinel_rows,
+                "foreign_key_violations_defect": fk_defect_rows,
                 "foreign_key_violation_samples": [
                     {"table": row[0], "rowid": row[1], "parent": row[2]}
                     for row in fk_violations[:5]
@@ -2761,10 +2829,14 @@ def create_app(astor_dir: str | None = None) -> Flask:
             }
 
         # Aggregate warn flags
+        # v1.17.37: only LIVE foreign-key violations are a defect. Tombstoned
+        # rows with a missing parent are historical residue and must not keep
+        # this flag permanently True -- a warn that never clears trains the
+        # operator to ignore it, and real failures go unseen.
         ship_c_warn = (
             proxy_hijack_check["warn"]
             or not db_corruption_check["integrity_ok"]
-            or db_corruption_check["foreign_key_violations"] > 0
+            or db_corruption_check.get("foreign_key_violations_defect", 0) > 0
             or embedding_version_check.get("warn", False)
         )
 

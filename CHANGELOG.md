@@ -1,3 +1,60 @@
+## 1.17.37
+
+**fix(health): a foreign-key warn that never clears hides real failures**
+
+`/v1/health/diagnose` counted every `PRAGMA foreign_key_check` row, including
+rows whose canonical fact is tombstoned. A tombstoned fact can never be
+recalled, so a missing parent pointer on it is historical residue from a
+one-shot migration (v1.17.x: `astor_migrate_memu` on 2026-09-15, the
+public→source promotion, and the `ingest_wiki_v2` wiki import), not a live
+defect. Counting them kept `ship_c_warn` permanently `True`, which is worse
+than no flag: the operator learns to ignore it and real failures go unseen.
+
+- `db_corruption_check` now reports the violating rows in three buckets, all
+  counted in **unique rows** (one canonical row can trip two FK constraints, so
+  the raw violation-line count and the row count differ):
+
+  | field | meaning |
+  |---|---|
+  | `foreign_key_violations` | raw `PRAGMA foreign_key_check` lines (unchanged) |
+  | `foreign_key_violations_rows` | distinct canonical rows that violate |
+  | `foreign_key_violations_live` | rows with `tombstoned = 0` |
+  | `foreign_key_violations_legacy` | tombstoned rows -- can never be recalled |
+  | `foreign_key_violations_sentinel` | live rows holding a TEXT sentinel in an INTEGER FK column |
+  | `foreign_key_violations_defect` | live rows with a genuinely missing parent |
+
+- `ship_c_warn` keys on `foreign_key_violations_defect` only. A database whose
+  only violations are tombstoned rows or one-shot migration sentinels no longer
+  raises it; a real missing parent pointer still does.
+- The sentinel bucket exists because the one-shot public->source promotion wrote
+  `from_public:1198` / `migrated:public:...` into INTEGER FK columns on
+  UNIQUE-conflict rows (NULL is not allowed there). Those facts are live and
+  recall serves them normally.
+- Measured on this host (2026-11-09, admin tier): 142 violating rows ->
+  108 live + 34 legacy; all 108 live rows are sentinels, so **defects = 0**
+  and `ship_c_warn` is now `False`. Across the source/admin/public tiers there
+  are 3346 violating rows, 241 of them live.
+- Nothing new is being produced: the live orphan count has not moved since
+  2026-09-30. The runtime write path (`bus/store.py`) inserts the parent rows
+  in the same transaction, so there is no cross-tier restore that leaks
+  canonical rows without their parents.
+
+**fix(bot-binding): bindings.user_id pointed at a table that no longer exists**
+
+`bot-binding.db`'s `bindings` table carried
+`FOREIGN KEY (user_id) REFERENCES "user_meta_old"(user_id)` while the live
+table is `user_meta` -- an older migration renamed it and left the FK behind.
+`PRAGMA foreign_key_check` reported all 23 binding rows as violations, and any
+future row with an unknown user_id would be rejected once foreign keys are
+enabled on that connection. The source of truth
+(`astor_memory/_internal/bot_binding.py`) already declares the correct
+reference, so this was runtime drift.
+
+`scripts/admin/fix_bot_binding_fk.py` rebuilds the table with the correct FK
+inside a transaction (SQLite cannot ALTER a foreign key in place). Verified on a
+copy first: 23 violations → 0, all 23 rows and 20 `user_meta` rows intact,
+`integrity_check` ok.
+
 ## 1.17.36
 
 ### A private fact that could be written but never recalled
