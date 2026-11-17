@@ -12,6 +12,7 @@ Provides v1.0 minimal commands:
 
 from __future__ import annotations
 
+import pathlib
 import argparse
 import datetime
 import json
@@ -193,6 +194,39 @@ def main(argv: list[str] | None = None) -> int:
                      help='Private-tier owner id (defaults to --user)')
     proc_p.add_argument('--importance', type=float, default=0.9)
     proc_p.set_defaults(func=cmd_procedure)
+
+    # v1.17.39: render a procedure memory as an agent skill document.
+    # The output directory is a parameter -- astor does not know where
+    # any platform keeps its skills.
+    sd_p = subparsers.add_parser(
+        'skill-distill',
+        help='Render a procedure memory as an agent skill document')
+    sd_p.add_argument('--fact', type=int, required=True,
+                      help='Procedure fact id to render')
+    sd_p.add_argument('--out-dir', required=True,
+                      help='Directory to write the document into')
+    sd_p.add_argument('--name', help='Document name (default: derived from the fact id)')
+    sd_p.add_argument('--category', default='',
+                      help='Optional subdirectory under --out-dir')
+    sd_p.add_argument('--description', default='', help='One-line description')
+    sd_p.add_argument('--tier', default='private',
+                      choices=['public', 'source', 'private'])
+    sd_p.add_argument('--user-id', default=None, help='Private-tier owner id')
+    sd_p.add_argument('--extra-frontmatter', default='',
+                      help='JSON object merged into the frontmatter metadata')
+    sd_p.add_argument('--sanitize', action='store_true',
+                      help='Strip PII and replace names/dates/places')
+    sd_p.set_defaults(func=cmd_skill_distill)
+
+    sc_p = subparsers.add_parser(
+        'skill-stale-check',
+        help='Report skill documents whose source facts changed or died')
+    sc_p.add_argument('--skills-dir', required=True,
+                      help='Directory to scan (recursively)')
+    sc_p.add_argument('--tier', default='private',
+                      choices=['public', 'source', 'private'])
+    sc_p.add_argument('--user-id', default=None, help='Private-tier owner id')
+    sc_p.set_defaults(func=cmd_skill_stale_check)
 
     # v1.17.38: read-only noise report.  Every deployment accumulates
     # tool transcripts and test fixtures; this shows how much of a pool
@@ -2469,6 +2503,144 @@ def cmd_init(args) -> int:
     print(f'   - astor_forge.db (forge: LLM extraction cache, v0.2+ LLM extract)')
     print('   Run `astor-server` to start, or `am doctor` to verify.')
     return 0
+
+
+def cmd_skill_distill(args) -> int:
+    """v1.17.39: render a procedure memory as an agent skill document.
+
+    Platform-neutral on purpose: the caller says where the document
+    goes and which platform-specific frontmatter to add.  astor only
+    knows about the procedure and the traceability record.
+    """
+    from ..bus import astor_bus
+    from .._internal.procedure import PROCEDURE_PREFIX, split_procedure
+    from .._internal.skill_doc import render_skill_document
+
+    tier = getattr(args, 'tier', 'private')
+    user_id = getattr(args, 'user_id', None)
+    if tier == 'private':
+        if not user_id:
+            print('[skill-distill] --user-id is required for the private tier',
+                  file=sys.stderr)
+            return 2
+        from .._internal.acl import open_own_private as _own_priv
+        bus = _own_priv(user_id)
+    else:
+        from .._internal.acl import astor_init_acl as _init_acl
+        _init_acl(actor='admin:admin', role='admin', tier=tier)
+        bus = astor_bus(tier=tier, user_id=None)
+
+    row = bus.conn.execute(
+        "SELECT id, content, access_count, last_confirmed_at, tombstoned "
+        "FROM memory_canonical WHERE id = ?", (int(args.fact),)).fetchone()
+    if row is None:
+        print('[skill-distill] fact %s not found' % args.fact, file=sys.stderr)
+        return 2
+    if row[4]:
+        print('[skill-distill] fact %s is archived' % args.fact, file=sys.stderr)
+        return 2
+
+    content = row[1] or ''
+    if not content.lstrip().startswith(PROCEDURE_PREFIX):
+        print('[skill-distill] fact %s is not a procedure' % args.fact,
+              file=sys.stderr)
+        return 2
+
+    extra = {}
+    if getattr(args, 'extra_frontmatter', ''):
+        try:
+            extra = json.loads(args.extra_frontmatter)
+        except Exception as exc:
+            print('[skill-distill] --extra-frontmatter is not valid JSON: %s'
+                  % exc, file=sys.stderr)
+            return 2
+        if not isinstance(extra, dict):
+            print('[skill-distill] --extra-frontmatter must be a JSON object',
+                  file=sys.stderr)
+            return 2
+
+    name = getattr(args, 'name', '') or ('procedure-%s' % args.fact)
+    proc = {
+        'id': row[0], 'content': content, 'access_count': row[2] or 0,
+        'last_confirmed_at': row[3],
+        'parts': split_procedure(content),
+    }
+    doc, report = render_skill_document(
+        proc, name=name, description=getattr(args, 'description', '') or '',
+        extra_frontmatter=extra, sanitize=bool(getattr(args, 'sanitize', False)))
+
+    out_dir = pathlib.Path(args.out_dir)
+    if getattr(args, 'category', ''):
+        out_dir = out_dir / args.category
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / (name + '.md')
+    out.write_text(doc, encoding='utf-8')
+    print('[skill-distill] wrote %s (%d chars, sanitized=%s)'
+          % (out, len(doc), report.get('sanitized')))
+    return 0
+
+
+def cmd_skill_stale_check(args) -> int:
+    """v1.17.39: report skill documents whose source facts changed or died."""
+    from ..bus import astor_bus
+    from .._internal.skill_doc import parse_frontmatter, sha256_short
+
+    tier = getattr(args, 'tier', 'private')
+    user_id = getattr(args, 'user_id', None)
+    if tier == 'private':
+        if not user_id:
+            print('[skill-stale-check] --user-id is required for the private tier',
+                  file=sys.stderr)
+            return 2
+        from .._internal.acl import open_own_private as _own_priv
+        bus = _own_priv(user_id)
+    else:
+        from .._internal.acl import astor_init_acl as _init_acl
+        _init_acl(actor='admin:admin', role='admin', tier=tier)
+        bus = astor_bus(tier=tier, user_id=None)
+
+    root = pathlib.Path(args.skills_dir)
+    if not root.exists():
+        print('[skill-stale-check] %s does not exist' % root, file=sys.stderr)
+        return 2
+
+    problems = 0
+    checked = 0
+    for path in sorted(root.rglob('*.md')):
+        try:
+            text = path.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            continue
+        fm = parse_frontmatter(text)
+        astor_meta = ((fm.get('metadata') or {}).get('astor') or {})
+        sources = astor_meta.get('source_facts') or []
+        if not sources:
+            continue
+        checked += 1
+        hashes = astor_meta.get('source_hashes') or {}
+        for fid in sources:
+            row = bus.conn.execute(
+                "SELECT content, tombstoned FROM memory_canonical WHERE id = ?",
+                (int(fid),)).fetchone()
+            rel = path.relative_to(root)
+            if row is None:
+                print('  STALE  %s -- source fact %s is gone' % (rel, fid))
+                problems += 1
+                continue
+            if row[1]:
+                print('  STALE  %s -- source fact %s is archived' % (rel, fid))
+                problems += 1
+                continue
+            want = hashes.get(str(fid))
+            if want and sha256_short(row[0] or '') != want:
+                print('  STALE  %s -- source fact %s changed since rendering'
+                      % (rel, fid))
+                problems += 1
+    if not checked:
+        print('  no rendered skill documents found under %s' % root)
+        return 0
+    print('  %d document(s) checked, %d stale source link(s)' % (checked, problems))
+    return 1 if problems else 0
 
 
 def cmd_procedure(args) -> int:

@@ -315,6 +315,24 @@ sections are split out of a free-form write-up. Procedures land in
 `memory_class='experience'`; the content starts with `[PROCEDURE]` and
 the four parts are also kept in `metadata.procedure`.
 
+**`am skill-distill`** renders a procedure memory as an agent skill
+document -- a file that changes behaviour instead of waiting to be
+recalled. The renderer is platform-neutral: it emits the Agent Skills
+convention (frontmatter with `name` and `description`, then a markdown
+body) and nothing else. You say where the document goes and which
+platform-specific frontmatter to add.
+
+```bash
+am skill-distill --fact 42 --out-dir ./skills --name triage \
+    --description "Use when the dashboard will not load."
+am skill-stale-check --skills-dir ./skills
+```
+
+Every rendered document records the facts it came from with a content
+hash, so `skill-stale-check` can report a document whose source changed
+or was archived. `--sanitize` replaces machine-local identifiers for
+documents that are going to be shared.
+
 **`am noise-scan`** reports how much of a pool is machine noise -- tool
 transcripts the extractor captured verbatim, test fixtures, state dumps.
 It is read-only. Recognising noise and removing it are separate

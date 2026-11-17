@@ -1,3 +1,39 @@
+## 1.17.39
+
+**feat(skill): render a procedure memory as an agent skill document**
+
+A procedure memory records *when* something happens, *how to diagnose*
+it, *what to do*, and *how to confirm it worked*. That is the shape of
+an agent skill -- but a memory row only helps when something recalls it.
+A skill document changes behaviour instead.
+
+- `am skill-distill --fact <id> --out-dir <dir>` renders one procedure
+  into a skill document. `--name`, `--category`, `--description` and
+  `--extra-frontmatter` (JSON) are optional.
+- `am skill-stale-check --skills-dir <dir>` reports documents whose
+  source facts changed or were archived. A stale skill is worse than no
+  skill: it is confident and wrong.
+
+**The renderer is platform-neutral on purpose.** It emits the Agent
+Skills convention -- frontmatter with `name` and `description`, then a
+markdown body -- and nothing else. The caller supplies the output
+directory and any platform-specific frontmatter. Astor does not know
+where any agent keeps its skills, and does not hardcode another agent's
+layout. A regression test enforces that: the renderer source must not
+mention any platform name, any absolute host path, or any
+platform-specific frontmatter key.
+
+- Every document records the facts it came from, with a content hash
+  per fact and the source's last-confirmed time, so staleness is
+  detectable rather than silent.
+- `--sanitize` replaces machine-local identifiers (paths, user
+  directories) using the existing public-tier scrubber. It is opt-in
+  and it *replaces* rather than drops: the sentence-dropping distiller
+  would silently delete a diagnostic step, and a skill that lost its
+  steps is worse than one that kept a path.
+- `kind='procedure'` facts can now be split back into their four parts
+  by the library, not only by the CLI.
+
 ## 1.17.38
 
 **feat(procedure): a fact shape a question can match, and a way to see the noise**

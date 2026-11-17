@@ -123,3 +123,43 @@ def structured(parts: dict) -> dict:
 def is_procedure(content: str) -> bool:
     """True when a fact was written in the procedure shape."""
     return bool(content) and str(content).lstrip().startswith(PROCEDURE_PREFIX)
+
+
+# The four section markers a procedure body is written with.
+SECTION_MARKERS = ('\u5206\u6790\u8def\u5f84', '\u64cd\u4f5c', '\u9a8c\u8bc1')
+_SECTION_RE = re.compile(r'(\u5206\u6790\u8def\u5f84|\u64cd\u4f5c|\u9a8c\u8bc1)\s*[:\uff1a]\s*')
+_SECTION_KEY = {
+    '\u5206\u6790\u8def\u5f84': 'analysis',
+    '\u64cd\u4f5c': 'action',
+    '\u9a8c\u8bc1': 'verify',
+}
+
+
+def split_procedure(content: str) -> dict:
+    """Split a stored procedure into its four parts.
+
+    A procedure body is written as::
+
+        [PROCEDURE] <trigger> \u5206\u6790\u8def\u5f84: ... \u64cd\u4f5c: ... \u9a8c\u8bc1: ...
+
+    so the trigger is whatever precedes the first marker.  Anything that
+    does not parse stays in the trigger rather than being dropped.
+    """
+    parts = {'trigger': '', 'analysis': '', 'action': '', 'verify': ''}
+    if not content:
+        return parts
+    body = content.strip()
+    if body.startswith(PROCEDURE_PREFIX):
+        body = body[len(PROCEDURE_PREFIX):].strip()
+    marks = list(_SECTION_RE.finditer(body))
+    if not marks:
+        parts['trigger'] = body.split('\n')[0].strip()
+        return parts
+    parts['trigger'] = body[: marks[0].start()].strip()
+    for i, m in enumerate(marks):
+        key = _SECTION_KEY.get(m.group(1), '')
+        if not key:
+            continue
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(body)
+        parts[key] = body[m.end(): end].strip()
+    return parts
