@@ -3327,10 +3327,15 @@ def cmd_recall(args) -> int:
     embeddings = list(model.embed([args.query]))
     query_emb = embeddings[0]
 
-    # v1.13.1 (2026-09-14, Ship G): oversample by 4x when --kinds is given,
-    # so post-filter still gives ~top_k matches even if most candidates
+    # v1.13.1 (2026-09-14, Ship G): oversample by 4x when a kind filter is
+    # given, so post-filter still gives ~top_k matches even if most candidates
     # land in the wrong zone. Cap at 100 to avoid runaway queries.
-    limit = min(args.top_k * 4, 100) if args.kinds else args.top_k
+    # v1.17.39: --zone implies a kind filter too, so it must oversample as
+    # well -- otherwise `--zone lesson` and `--kinds postmortem,lesson`
+    # (the same kind set) returned different counts.
+    _filtering = bool(args.kinds) or (
+        getattr(args, 'zone', None) and args.zone != 'none')
+    limit = min(args.top_k * 4, 100) if _filtering else args.top_k
     results = nest.search(query_emb, limit=limit)
 
     # v1.17.15: search the caller's own private bucket as well.
@@ -3487,8 +3492,6 @@ def cmd_recall(args) -> int:
             except Exception as e:
                 print(f'[WARN] --kinds filter lookup failed: {e}',
                       file=sys.stderr, flush=True)
-            print(f'[WARN] --kinds filter lookup failed: {e}', file=sys.stderr,
-                  flush=True)
         results = [(fid, sim) for fid, sim in results
                    if fact_kind_map.get(fid) in kinds_filter]
         results = results[:args.top_k]
