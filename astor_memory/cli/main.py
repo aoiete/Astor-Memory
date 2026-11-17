@@ -175,6 +175,37 @@ def main(argv: list[str] | None = None) -> int:
     sub.set_defaults(func=cmd_write)
 
     # am recall
+    # v1.17.38: Procedure Memory -- a fact shaped as
+    # "when X -> diagnose -> act -> verify".  The trigger leads so a
+    # question-shaped query matches it.
+    proc_p = subparsers.add_parser(
+        'procedure', help='Write a Procedure Memory fact (trigger/diagnose/act/verify)')
+    proc_p.add_argument('--trigger', help='When this happens (the question shape)')
+    proc_p.add_argument('--analysis', default='', help='How to diagnose it')
+    proc_p.add_argument('--action', default='', help='What to do')
+    proc_p.add_argument('--verify', default='', help='How to confirm it worked')
+    proc_p.add_argument('--text', help='Free-form write-up to split into the four parts')
+    proc_p.add_argument('--from-file', help='Read the write-up from a file')
+    proc_p.add_argument('--tier', default='private', choices=['public', 'source', 'private'],
+                     help='Tier to write (default private)')
+    proc_p.add_argument('--user', default='admin', help='Namespace / owner (default admin)')
+    proc_p.add_argument('--user-id', default=None,
+                     help='Private-tier owner id (defaults to --user)')
+    proc_p.add_argument('--importance', type=float, default=0.9)
+    proc_p.set_defaults(func=cmd_procedure)
+
+    # v1.17.38: read-only noise report.  Every deployment accumulates
+    # tool transcripts and test fixtures; this shows how much of a pool
+    # is machine noise without touching anything.
+    noise_p = subparsers.add_parser(
+        'noise-scan', help='Report machine-noise rows in a pool (read-only)')
+    noise_p.add_argument('--tier', default='private',
+                      choices=['public', 'source', 'private', 'repo'])
+    noise_p.add_argument('--user-id', default=None, help='Private-tier owner id')
+    noise_p.add_argument('--limit', type=int, default=50, help='Rows to list (default 50)')
+    noise_p.add_argument('--show', action='store_true', help='Print the row content')
+    noise_p.set_defaults(func=cmd_noise_scan)
+
     sub = subparsers.add_parser('recall', help='Recall facts')
     sub.add_argument('query', help='Query text')
     sub.add_argument('--user', default='admin', help='User ID')
@@ -2434,6 +2465,127 @@ def cmd_init(args) -> int:
     print(f'   - {nest.db_path.name} (nest: vector embeddings)')
     print(f'   - astor_forge.db (forge: LLM extraction cache, v0.2+ LLM extract)')
     print('   Run `astor-server` to start, or `am doctor` to verify.')
+    return 0
+
+
+def cmd_procedure(args) -> int:
+    """v1.17.38: write a Procedure Memory fact.
+
+    The four parts are explicit, or derived from a free-form write-up.
+    Nothing is extracted twice: the procedure is one fact, written in one
+    shape, with the trigger leading so BM25 and the embedding match a
+    question-shaped query.
+    """
+    from ..bus import astor_bus
+    from .._internal.procedure import (
+        build_content, split_parts, structured, PROCEDURE_KIND,
+    )
+
+    explicit = any([args.trigger, args.analysis, args.action, args.verify])
+    if explicit:
+        parts = {
+            'trigger': args.trigger or '',
+            'analysis': args.analysis or '',
+            'action': args.action or '',
+            'verify': args.verify or '',
+        }
+    else:
+        raw = ''
+        if args.from_file:
+            with open(args.from_file, 'r', encoding='utf-8', errors='replace') as fh:
+                raw = fh.read()
+        elif args.text:
+            raw = args.text
+        if not raw.strip():
+            print('[procedure] nothing to do: pass --text/--from-file or the four parts',
+                  file=sys.stderr)
+            return 2
+        parts = split_parts(raw)
+
+    if not (parts.get('trigger') or '').strip():
+        print('[procedure] refused: no trigger could be determined', file=sys.stderr)
+        return 2
+
+    content = build_content(parts)
+    tier = getattr(args, 'tier', 'private')
+    user = getattr(args, 'user', 'admin')
+    user_id = getattr(args, 'user_id', None) or user
+
+    from .._internal.acl import astor_init_acl as _init_acl
+    if tier == 'private':
+        from .._internal.acl import open_own_private as _own_priv
+        bus = _own_priv(user_id)
+    else:
+        # source is admin-only; the CLI is a local operator tool.
+        _init_acl(actor='admin:admin', role='admin', tier=tier)
+        bus = astor_bus(tier=tier, user_id=None)
+
+    event_id = bus.append_event(
+        namespace=user, agent_id='cli', source='cli.procedure',
+        action='write', content=content,
+    )
+    cand_id = bus.insert_candidate(
+        event_id=event_id,
+        namespace=user,
+        content=content,
+        kind=PROCEDURE_KIND,
+        confidence=1.0,
+        importance=float(getattr(args, 'importance', 0.9)),
+        tags=['procedure'],
+        metadata={'procedure': structured(parts), 'procedure_version': 1},
+        context=parts['trigger'],
+    )
+    fact_id = bus.promote_candidate(
+        cand_id, promoted_by='cli.procedure', user_id=user_id, tier=tier,
+        provenance_kind='manual', provenance_agent='cli',
+    )
+    print(f'[procedure] written: fact_id={fact_id} tier={tier} '
+          f'trigger={parts["trigger"][:80]}')
+    return 0
+
+
+def cmd_noise_scan(args) -> int:
+    """v1.17.38: report machine noise in a pool. Read-only by design.
+
+    Deciding what to do with a match stays with the operator: an archive
+    command may follow, but it must not be implied by a scan.
+    """
+    from ..bus import astor_bus
+    from .._internal import noise as _noise
+
+    tier = getattr(args, 'tier', 'private')
+    user_id = getattr(args, 'user_id', None)
+    from .._internal.acl import astor_init_acl as _init_acl
+    if tier == 'private':
+        if not user_id:
+            print('[noise-scan] --user-id is required for the private tier',
+                  file=sys.stderr)
+            return 2
+        from .._internal.acl import open_own_private as _own_priv
+        bus = _own_priv(user_id)
+    else:
+        # source is admin-only; the CLI is a local operator tool.
+        _init_acl(actor='admin:admin', role='admin', tier=tier)
+        bus = astor_bus(tier=tier, user_id=None)
+
+    n_noise, n_active = _noise.count(bus)
+    pct = (n_noise / n_active * 100) if n_active else 0.0
+    print(f'[noise-scan] tier={tier} user={user_id or "-"}')
+    print(f'  active facts : {n_active}')
+    print(f'  machine noise: {n_noise}  ({pct:.1f}%)')
+
+    rows = _noise.scan(bus, limit=int(getattr(args, 'limit', 50)))
+    if not rows:
+        print('  no machine-noise rows matched')
+        return 0
+    print(f'  --- {len(rows)} row(s) ---')
+    for r in rows:
+        line = f'  id={r["id"]:<7} {r["label"]}'
+        if r.get('access_count'):
+            line += f'  acc={r["access_count"]}'
+        print(line)
+        if getattr(args, 'show', False):
+            print('      ' + r['content'].replace('\n', ' ')[:160])
     return 0
 
 

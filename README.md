@@ -292,6 +292,46 @@ curl -X POST http://127.0.0.1:7803/v1/read \
 Full per-endpoint reference: [docs/api.md](docs/api.md).
 Per-store schema and ACL matrix: [docs/architecture.md](docs/architecture.md).
 
+### Procedures, and keeping a pool clean
+
+Two commands exist for the two things a long-lived pool needs.
+
+**`am procedure`** writes a fact in a shape that a question can match.
+A procedure states *when* something happens, *how to diagnose* it, *what
+to do*, and *how to confirm it worked*. The trigger leads, so a
+question-shaped query hits the procedure rather than a paragraph that
+happens to contain the same words.
+
+```bash
+am procedure \
+  --trigger "dashboard login page will not load" \
+  --analysis "curl the public /login; 1033 means the tunnel is down" \
+  --action "start the tunnel service" \
+  --verify "public /login returns 200"
+```
+
+Pass `--text` or `--from-file` instead of the four parts and the
+sections are split out of a free-form write-up. Procedures land in
+`memory_class='experience'`; the content starts with `[PROCEDURE]` and
+the four parts are also kept in `metadata.procedure`.
+
+**`am noise-scan`** reports how much of a pool is machine noise -- tool
+transcripts the extractor captured verbatim, test fixtures, state dumps.
+It is read-only. Recognising noise and removing it are separate
+decisions, and the second one stays with the operator.
+
+```bash
+am noise-scan --tier private --user-id admin
+# [noise-scan] tier=private user=admin
+#   active facts : 5469
+#   machine noise: 0  (0.0%)
+```
+
+The predicate is deliberately narrow. A wide prefix match would take
+real lessons with it -- `maker_pocket` on its own hits genuine
+R-class writing, and a session-hygiene tick can end with a real
+conclusion. Only the shapes that cannot be knowledge are matched.
+
 ---
 
 ## Muse and external agent platform integration

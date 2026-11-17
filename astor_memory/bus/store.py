@@ -44,7 +44,10 @@ def _derive_memory_class(
     k = str(kind).strip().lower()
     if k in ('rule', 'decision', 'user_preference'):
         return 'mental_model'
-    if k in ('success_pattern', 'failure_pattern', 'lesson', 'experience'):
+    # v1.17.38: 'procedure' is a shape, not a new class -- a procedure
+    # (trigger -> diagnose -> act -> verify) is an experience.
+    if k in ('success_pattern', 'failure_pattern', 'lesson', 'experience',
+             'procedure'):
         return 'experience'
     if k == 'observation':
         return 'observation'

@@ -1,3 +1,49 @@
+## 1.17.38
+
+**feat(procedure): a fact shape a question can match, and a way to see the noise**
+
+Two commands for the two things a long-lived pool needs.
+
+**`am procedure`** writes a fact as *when this happens -> how to diagnose
+it -> what to do -> how to confirm it worked*. The trigger leads the
+content, so a question-shaped query matches the procedure instead of a
+paragraph that happens to contain the same words. Measured on a
+five-thousand-row admin tier, seven procedures took the #1 slot for all
+seven of their trigger queries; the same topics written as prose lessons
+did not.
+
+- The four parts can be given explicitly (`--trigger/--analysis/--action/
+  --verify`) or derived from a free-form write-up (`--text`/`--from-file`).
+  The split is conservative: a part is only filled when a marker word
+  appears in that block, and text that cannot be placed stays in the
+  trigger rather than being dropped.
+- Procedures land in `memory_class='experience'` -- a procedure is a
+  shape, not a new class. `kind='procedure'` now maps there too, so
+  `am write --kind procedure` works without a new namespace.
+- The content starts with `[PROCEDURE]` and the four parts are also kept
+  in `metadata.procedure`, so a caller can read the structure back
+  without parsing the text.
+
+**`am noise-scan`** reports how much of a pool is machine noise: tool
+transcripts the extractor captured verbatim, test fixtures, state dumps.
+It is read-only on purpose. Recognising noise and removing it are
+separate decisions, and the second one stays with the operator.
+
+- The predicate is deliberately narrow. A wide prefix match would take
+  real lessons with it: `maker_pocket` on its own matches genuine
+  R-class writing, a session-hygiene tick can end with a real conclusion
+  ("three copies identical md5, no drift"), and a lesson that merely
+  mentions a fixture name is still knowledge. Only shapes that cannot be
+  knowledge are matched -- a state snapshot, a test fixture at the start
+  of the content, or a `[LESSON]` row whose whole body is a shell
+  command.
+- The shell-command shape exists because the capture hook reads
+  `tool_input.command`, which in an agent session is the agent's own
+  action. A command that merely greps for the word "error" matched the
+  case-insensitive error keywords and was written out as a lesson.
+- Every deployment accumulates this, not just one: the pattern is a
+  property of how an agent uses the tool, not of any particular user.
+
 ## 1.17.37
 
 **fix(health): a foreign-key warn that never clears hides real failures**
