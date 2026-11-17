@@ -202,8 +202,11 @@ def main(argv: list[str] | None = None) -> int:
     noise_p.add_argument('--tier', default='private',
                       choices=['public', 'source', 'private', 'repo'])
     noise_p.add_argument('--user-id', default=None, help='Private-tier owner id')
-    noise_p.add_argument('--limit', type=int, default=50, help='Rows to list (default 50)')
+    noise_p.add_argument('--limit', type=int, default=50,
+                      help='Rows to list; 0 = all (default 50)')
     noise_p.add_argument('--show', action='store_true', help='Print the row content')
+    noise_p.add_argument('--archive', action='store_true',
+                      help='Soft-tombstone the matched rows (reversible via am restore)')
     noise_p.set_defaults(func=cmd_noise_scan)
 
     sub = subparsers.add_parser('recall', help='Recall facts')
@@ -2574,7 +2577,8 @@ def cmd_noise_scan(args) -> int:
     print(f'  active facts : {n_active}')
     print(f'  machine noise: {n_noise}  ({pct:.1f}%)')
 
-    rows = _noise.scan(bus, limit=int(getattr(args, 'limit', 50)))
+    limit = int(getattr(args, 'limit', 50))
+    rows = _noise.scan(bus, limit=limit if limit > 0 else 100000)
     if not rows:
         print('  no machine-noise rows matched')
         return 0
@@ -2586,7 +2590,39 @@ def cmd_noise_scan(args) -> int:
         print(line)
         if getattr(args, 'show', False):
             print('      ' + r['content'].replace('\n', ' ')[:160])
-    return 0
+
+    if not getattr(args, 'archive', False):
+        return 0
+
+    # Archive through the server's own forget path so the versioning
+    # snapshot, the audit row and the lex/nest index sync all happen the
+    # way they do everywhere else.  tombstone_only keeps it reversible.
+    import json as _json
+    import urllib.request as _urlreq
+    import urllib.error as _urlerr
+    endpoint = getattr(args, 'endpoint', None) or os.environ.get(
+        'ASTOR_ENDPOINT', 'http://127.0.0.1:7803')
+    archived = failed = 0
+    for r in rows:
+        body = _json.dumps({
+            'fact_id': r['id'], 'tombstone_only': True,
+            'tier': tier, 'user_id': user_id,
+        }).encode('utf-8')
+        req = _urlreq.Request(
+            endpoint + '/v1/forget', data=body, method='POST',
+            headers={'Content-Type': 'application/json'})
+        try:
+            with _urlreq.urlopen(req, timeout=20) as resp:
+                if resp.status == 200:
+                    archived += 1
+                else:
+                    failed += 1
+        except Exception as exc:
+            failed += 1
+            print(f'  [archive] id={r["id"]} failed: {exc}', file=sys.stderr)
+    print(f'  archived {archived} row(s), {failed} failed'
+          f'  (reversible: am restore)')
+    return 0 if not failed else 1
 
 
 def cmd_write(args) -> int:
