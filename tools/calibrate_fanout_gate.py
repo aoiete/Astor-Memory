@@ -15,7 +15,7 @@ For each query it computes the candidate signals:
 and reports where each candidate's threshold would misfire.
 
 Run with the project interpreter:
-    D:/AI/PY-311/Scripts/python.exe tools/calibrate_fanout_gate.py
+    python tools/calibrate_fanout_gate.py
 """
 from __future__ import annotations
 

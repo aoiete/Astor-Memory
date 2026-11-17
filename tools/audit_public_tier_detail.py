@@ -12,7 +12,7 @@ Two shapes matter here:
     is the scrubber's job.
 
 Run with the project interpreter:
-    D:/AI/PY-311/Scripts/python.exe tools/audit_public_tier_detail.py
+    python tools/audit_public_tier_detail.py
 """
 from __future__ import annotations
 

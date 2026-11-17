@@ -11,8 +11,8 @@ that no amount of correct code on the next write will undo.
 
 Runs against a live ASTOR_DIR (the runtime by default):
 
-    D:/AI/PY-311/Scripts/python.exe tools/audit_public_tier.py
-    D:/AI/PY-311/Scripts/python.exe tools/audit_public_tier.py --dir <path>
+    python tools/audit_public_tier.py
+    python tools/audit_public_tier.py --dir <path>
 """
 from __future__ import annotations
 

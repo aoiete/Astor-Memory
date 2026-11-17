@@ -10,7 +10,7 @@ The method, in order:
 It does not need browser-act or Perplexity.
 
 Usage:
-    D:/AI/PY-311/Scripts/python.exe tools/read_wechat_article.py <url> [out.txt]
+    python tools/read_wechat_article.py <url> [out.txt]
 """
 from __future__ import annotations
 

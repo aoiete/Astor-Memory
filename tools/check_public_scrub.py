@@ -16,7 +16,7 @@ other -- a scrubber that silently deleted every id would destroy the
 knowledge the shared tier is for.
 
 Run with the project interpreter (numpy is a dependency):
-    D:/AI/PY-311/Scripts/python.exe tools/check_public_scrub.py
+    python tools/check_public_scrub.py
 """
 from __future__ import annotations
 

@@ -12,7 +12,7 @@ This deletes the embeddings for exactly the facts the scrub changed,
 and prints what it removed. `am reembed` then fills them back in.
 
 Run with the project interpreter:
-    D:/AI/PY-311/Scripts/python.exe tools/refresh_scrubbed_embeddings.py
+    python tools/refresh_scrubbed_embeddings.py
 """
 from __future__ import annotations
 

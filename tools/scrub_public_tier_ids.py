@@ -15,8 +15,8 @@ placeholders, and leaves the fact, its kind and its visibility alone.
 It is dry-run by default: `--apply` is what writes.
 
 Run with the project interpreter:
-    D:/AI/PY-311/Scripts/python.exe tools/scrub_public_tier_ids.py
-    D:/AI/PY-311/Scripts/python.exe tools/scrub_public_tier_ids.py --apply
+    python tools/scrub_public_tier_ids.py
+    python tools/scrub_public_tier_ids.py --apply
 """
 from __future__ import annotations
 

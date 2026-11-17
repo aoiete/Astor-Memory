@@ -15,7 +15,7 @@ promote_candidate directly bypasses layer 1 and proves nothing about
 the path a peer or an agent actually takes.
 
 Run with the project interpreter:
-    D:/AI/PY-311/Scripts/python.exe tools/check_public_leak.py
+    python tools/check_public_leak.py
 """
 from __future__ import annotations
 

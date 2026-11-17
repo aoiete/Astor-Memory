@@ -741,7 +741,7 @@ commit now has the same generic author. The old owner name, the WeChat
 id and the Windows user name are absent from the history entirely.
 
 Rewriting history means every SHA changed and every tag had to be
-recreated. The bundle at `D:/AI/astor-memory-backup-pre-filter2.bundle`
+recreated. The bundle at `<backup-dir>/astor-memory-backup-pre-filter2.bundle`
 holds the history exactly as it was before this pass.
 
 **Also**: the README has badges now, the CI matrix covers 3.14 (the
@@ -803,7 +803,7 @@ list stays a list of people and not of tools.
 
 Rewriting history is not free: every commit SHA changed and every tag
 had to be recreated. The bundle at
-`D:/AI/astor-memory-backup-pre-filter.bundle` holds the old history
+`<backup-dir>/astor-memory-backup-pre-filter.bundle` holds the old history
 exactly as it was, in case it is ever wanted.
 
 **Also**: the README has badges now, the CI matrix covers 3.14 (the
@@ -7039,7 +7039,7 @@ now).
 # Write to a specific repo
 am.write("bug fixed in store.py:167 promote_candidate UNIQUE",
          tier="repo",
-         repo_id=normalize_repo_id("https://github.com/aoiete/Astor-Memory.git"),
+         repo_id=normalize_repo_id("https://github.com/<repo-owner>/<repo-name>.git"),
          scope="long_term")
 
 # Read from a specific repo (only that repo's facts surface)
