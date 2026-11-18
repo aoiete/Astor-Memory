@@ -8746,6 +8746,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
           limit:     int (default 5)
           kinds:     list[str] or comma-separated str (optional)
           min_similarity: float (default 0.87) -- drop weaker matches
+          peer_fanout: bool (optional) -- ask the peer network when
+                             the local node has nothing (default:
+                             follow the node-level switch)
 
         Returns {found, count, results, query}. "found": false is a real
         answer: nothing is known about this failure yet, which is worth
@@ -8771,8 +8774,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except (TypeError, ValueError):
             min_sim = 0.87
         try:
+            _pf = body.get('peer_fanout')
+            _pf = None if _pf is None else bool(_pf)
             result = find_precedent(query, user_id=user_id, limit=limit,
-                                    kinds=kinds, min_similarity=min_sim)
+                                    kinds=kinds, min_similarity=min_sim,
+                                    peer_fanout=_pf)
         except Exception as exc:
             return jsonify({'error': 'precedent_failed', 'detail': str(exc)}), 500
         return jsonify(result)

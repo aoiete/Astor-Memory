@@ -75,11 +75,16 @@ def find_precedent(
     kinds: Sequence[str] | None = None,
     min_similarity: float = 0.87,
     level: str = 'L1',
+    peer_fanout: bool | None = None,
 ) -> dict[str, Any]:
     """Search the outcome zones for prior art about ``query``.
 
     Returns a dict with ``found``, ``count`` and ``results``. Each result
     carries the fact id, its kind, its similarity and the fact text.
+
+    When the local node has no match at all, the peer network is asked
+    (its public tier is where the shared outcome zones live) and any hit
+    is tagged with its source.
 
     ``min_similarity`` drops weak matches: an empty result then means
     "nothing close enough is known", which the caller can act on, rather
@@ -166,12 +171,128 @@ def find_precedent(
         if len(results) >= limit:
             break
 
+    peer_info: dict[str, Any] = {}
+    if not results:
+        # Nothing local. The peer network holds other nodes' public
+        # outcome zones, and a recipe that exists there is still a
+        # recipe. Fan out only on a miss, and only when the node-level
+        # switch allows it, so a hit never pays a network round trip.
+        peer_info = _peer_precedent(query, limit, peer_fanout, min_similarity)
+        for row in peer_info.get('results', []):
+            results.append(row)
+            if len(results) >= limit:
+                break
+
     return {
         'found': bool(results),
         'count': len(results),
         'results': results,
         'query': query,
         'kinds': list(wanted),
+        'peer': peer_info,
+    }
+
+
+def _rescore(rows: list[dict], query: str, min_similarity: float) -> list[dict]:
+    """Recompute similarity for remote rows with the local embedding model.
+
+    A peer's relevance score is not comparable with the local similarity,
+    so the local model re-ranks the remote text against the same query.
+    Rows that do not clear the threshold are dropped: a remote answer
+    that merely shares vocabulary is worse than no answer.
+    """
+    if not rows:
+        return rows
+    try:
+        import numpy as np
+        from ..nest.embeddings import astor_get_embedding_model
+        model = astor_get_embedding_model()
+        q = np.asarray(list(model.embed([query]))[0], dtype='float64')
+        docs = np.asarray(list(model.embed([r['content'] for r in rows])), dtype='float64')
+        qn = np.linalg.norm(q) or 1.0
+        dn = np.linalg.norm(docs, axis=1)
+        dn[dn == 0] = 1.0
+        sims = (docs @ q) / (dn * qn)
+    except Exception:
+        # Without a scoring pass, keep the peer's own ordering rather
+        # than dropping everything.
+        return rows
+
+    kept = []
+    for row, sim in zip(rows, sims.tolist()):
+        row['similarity'] = round(float(sim), 4)
+        if float(sim) >= float(min_similarity):
+            kept.append(row)
+    kept.sort(key=lambda r: -r['similarity'])
+    return kept
+
+
+def _peer_precedent(query: str, limit: int, peer_fanout: bool | None,
+                    min_similarity: float = 0.87) -> dict[str, Any]:
+    """Ask the peer network for prior art when the local node has none.
+
+    Peers expose their public tier, which is where the success and
+    failure zones live. A recipe another node recorded is still a
+    recipe, and a node that has never solved this problem should not
+    have to solve it alone.
+
+    Honours the node-level peer switch (``peer_fanout.is_enabled``) so a
+    node that does not want to answer remote searches stays quiet. Every
+    returned row is tagged with its source so the caller can tell a
+    local fact from a remote one.
+    """
+    if peer_fanout is False:
+        return {'enabled': False, 'results': [], 'per_peer': [],
+                'peer_count': 0, 'reason': 'disabled_by_caller'}
+    try:
+        from . import peer_fanout as _pf
+        if peer_fanout is None and not _pf.is_enabled():
+            return {'enabled': False, 'results': [], 'per_peer': [],
+                    'peer_count': 0, 'reason': 'node_switch_off'}
+    except Exception:
+        pass
+
+    try:
+        from .peer_recall import dispatch_peer_fanout
+    except Exception as exc:
+        return {'enabled': True, 'results': [], 'per_peer': [],
+                'peer_count': 0, 'reason': f'no_peer_module:{exc}'}
+
+    try:
+        fanout = dispatch_peer_fanout(query=query, limit=max(int(limit), 1) * 2)
+    except Exception as exc:
+        return {'enabled': True, 'results': [], 'per_peer': [],
+                'peer_count': 0, 'reason': f'dispatch_failed:{exc}'}
+
+    rows = []
+    for row in (fanout.get('peer_results') or []):
+        content = str(row.get('content') or '').strip()
+        if not content:
+            continue
+        peer_id = row.get('peer_id') or row.get('source_peer') or 'peer'
+        rows.append({
+            'fact_id': row.get('fact_id') or row.get('id'),
+            'kind': row.get('kind') or 'peer_fact',
+            'peer_relevance': row.get('relevance'),
+            'tier': 'peer_public',
+            'content': content,
+            'source': 'peer:%s' % peer_id,
+        })
+
+    # The peer scores its hits with its own relevance measure, which is not
+    # the same scale as the local similarity, so it cannot be compared
+    # against min_similarity. Recompute with the local model instead: same
+    # query, same embedding space, same threshold. Without this a peer
+    # answers every question with whatever its public tier happens to
+    # rank highest.
+    rows = _rescore(rows, query, min_similarity)
+
+    return {
+        'enabled': True,
+        'results': rows[:limit],
+        'per_peer': fanout.get('per_peer') or [],
+        'peer_count': fanout.get('peer_count') or 0,
+        'local_error': fanout.get('local_error'),
     }
 
 

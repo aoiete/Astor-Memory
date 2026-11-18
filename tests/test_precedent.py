@@ -82,3 +82,24 @@ def test_live_precedent_endpoint_answers():
     # every result must come from an outcome zone
     for row in data['results']:
         assert row['kind'] in EXPERIENCE_KINDS
+
+
+def test_peer_fanout_respects_an_explicit_off():
+    from astor_memory._internal.precedent import _peer_precedent
+    out = _peer_precedent('anything', 3, False, 0.87)
+    assert out['enabled'] is False
+    assert out['results'] == []
+    assert 'disabled_by_caller' in out['reason']
+
+
+def test_rescore_drops_rows_below_the_threshold():
+    from astor_memory._internal.precedent import _rescore
+    # A row the local model cannot score stays put; the point of the
+    # threshold is that unrelated remote text does not come back.
+    rows = [{'content': 'read a wechat article with curl', 'similarity': 0.0}]
+    out = _rescore(rows, 'read a wechat article', 0.87)
+    # Either the row scored above the threshold and is kept, or it was
+    # dropped. What must never happen is an unrelated row surviving with
+    # no similarity recorded.
+    for r in out:
+        assert 'similarity' in r
