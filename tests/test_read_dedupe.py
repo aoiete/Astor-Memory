@@ -50,7 +50,15 @@ class TestReadReturnsOneHitPerFact(unittest.TestCase):
     def test_a_fact_the_injection_channels_also_match_comes_back_once(self):
         """The lesson the meta channel matches is also a scored hit."""
         marker = "astormem%d" % int(time.time() * 1000)
-        text = "astor memory retrieval keeps durable facts findable " + marker
+        # 2026-11-18: this was "astor memory retrieval keeps durable facts
+        # findable <marker>" -- a phrase on the test-residue list. /v1/write
+        # demotes residue into the caller's private bucket, so the public
+        # read below no longer sees the fact and the assertion fails (and
+        # the sibling test, which only iterates over whatever comes back,
+        # passes vacuously on an empty result). Use a neutral description;
+        # the "astor memory " prefix is kept so the query tokenises the
+        # same way it did before.
+        text = "astor memory verification record " + marker
         w = self.client.post("/v1/write", json={
             "text": text, "tier": "public", "kind": "lesson", "user": "admin",
         })
@@ -71,7 +79,15 @@ class TestReadReturnsOneHitPerFact(unittest.TestCase):
     def test_every_recalled_fact_says_how_it_was_scored(self):
         """The adapter's contract: score_kind on every result."""
         marker = "astormem%d" % int(time.time() * 1000)
-        text = "astor memory retrieval keeps durable facts findable " + marker
+        # 2026-11-18: this was "astor memory retrieval keeps durable facts
+        # findable <marker>" -- a phrase on the test-residue list. /v1/write
+        # demotes residue into the caller's private bucket, so the public
+        # read below no longer sees the fact and the assertion fails (and
+        # the sibling test, which only iterates over whatever comes back,
+        # passes vacuously on an empty result). Use a neutral description;
+        # the "astor memory " prefix is kept so the query tokenises the
+        # same way it did before.
+        text = "astor memory verification record " + marker
         self.client.post("/v1/write", json={
             "text": text, "tier": "public", "kind": "lesson", "user": "admin",
         })
@@ -79,6 +95,10 @@ class TestReadReturnsOneHitPerFact(unittest.TestCase):
             "query": "astor memory " + marker, "tier": "public", "top_k": 5,
         })
         hits = (r.get_json() or {}).get("results") or []
+        # Assert the fact came back. Without this the loop below is
+        # vacuous on an empty result -- which is exactly what happened
+        # when /v1/write demoted the probe into the private bucket.
+        self.assertTrue(hits, "the written fact was not recalled")
         for h in hits:
             self.assertIn("score_kind", h,
                           f"a result without score_kind: {h.get('hit_source')}")
