@@ -21,6 +21,13 @@ similarity and bury it.
 - "No precedent found" is a real answer (`found: false`), not a failure: it
   means nothing is known yet, which the caller can act on.
 
+- When the local node has no match at all, the peer network is asked for
+  its public tier, where the shared outcome zones live. A recipe another
+  node recorded is still a recipe. Peer hits are re-scored with the local
+  embedding model before they are returned: the peer's own relevance
+  score is not on the same scale as the local similarity, and without the
+  re-score a peer answers every question with whatever its public tier
+  happens to rank highest.
 ## 1.17.39
 
 **feat(skill): render a procedure memory as an agent skill document**
