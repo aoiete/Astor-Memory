@@ -42,13 +42,37 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 from pathlib import Path
 
 # Where the runtime keeps its bus databases. Public is a tier directory;
 # a private tier lives under users/<user>/memory/. (The tier NAME is
 # public/private/source -- it is not a directory prefix.)
 def _runtime_dir() -> Path:
-    return Path(os.environ.get("ASTOR_DIR") or (Path.home() / ".astor"))
+    """Where this node's runtime lives.
+
+    Resolve it the way the SERVER does, not the way this module used to.
+    The old body was `ASTOR_DIR or ~/.astor`, which silently disagreed
+    with the server on any node whose data lives outside the home
+    directory: the server read <source>/../Astor-Memory-Runtime (via
+    astor_memory.config.get_default_astor_dir, which also honours
+    install.json), while the oracle read the stale ~/.astor. The
+    symptom was an eval run reporting oracle_hit_rate=0.0 with
+    storage_gap_rate=1.0 -- the whole corpus scored as "the store never
+    had it" because the oracle was reading an empty database.
+
+    astor_memory.config.get_default_astor_dir() is the single resolver:
+    ASTOR_DIR env -> install.json -> the install location. Importing it
+    keeps the two halves of every eval number talking about the same
+    node, with no second copy of the precedence rules to drift.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from astor_memory.config import get_default_astor_dir
+        return Path(get_default_astor_dir())
+    except Exception:
+        base = os.environ.get("ASTOR_DIR") or ""
+        return Path(base) if base else Path.home() / ".astor"
 
 
 def bus_path(tier: str = "public", user: str | None = None) -> Path | None:
@@ -95,9 +119,17 @@ def oracle_search(
     except sqlite3.Error:
         return []
     try:
+        # The parentheses around {where} are load-bearing. SQL binds AND
+        # tighter than OR, so without them the statement reads
+        #     (tombstoned = 0 AND LIKE ?) OR (LIKE ?) OR (LIKE ?)
+        # and every keyword after the first pulls TOMBSTONED ROWS back in.
+        # Measured on the 2026-11-18 eval set: 91 of 106 questions were
+        # affected and the evidence set was inflated 1.4x (Q01: 78 rows
+        # instead of 8) -- which made every "the store already holds it"
+        # verdict wrong.
         rows = con.execute(
             "SELECT id, content FROM memory_canonical "
-            f"WHERE tombstoned = 0 AND {where} "
+            f"WHERE tombstoned = 0 AND ({where}) "
             "ORDER BY importance DESC, id DESC LIMIT ?",
             params + [limit],
         ).fetchall()
