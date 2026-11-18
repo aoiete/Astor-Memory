@@ -1,3 +1,26 @@
+## 1.17.40
+
+**feat(precedent): look up prior art for a failed operation**
+
+An agent that had never done a thing before, tried it, and failed had no
+way to learn that astor already knew the answer. The memory was there and
+unreachable: the recall path searches the whole pool, where hundreds of
+automatically generated tick lessons sit just below the one real recipe in
+similarity and bury it.
+
+- New `astor_memory/_internal/precedent.py` and `POST /v1/precedent`: search
+  the outcome zones only -- `success_pattern`, `failure_pattern`, `lesson`,
+  `postmortem`, `procedure`, `experience` -- and never the event and snapshot
+  kinds.
+- The operation being attempted is the query; the error text is a weaker
+  signal appended to it. "curl mp.weixin.qq.com/s/x" matches a stored recipe;
+  "SSL connect error" matches nothing.
+- `min_similarity` (default 0.87) drops weak matches. A weak match is worse
+  than no match: the caller would read "here is how this was solved last
+  time" and get a lesson that merely shares vocabulary.
+- "No precedent found" is a real answer (`found: false`), not a failure: it
+  means nothing is known yet, which the caller can act on.
+
 ## 1.17.39
 
 **feat(skill): render a procedure memory as an agent skill document**

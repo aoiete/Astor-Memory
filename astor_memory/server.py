@@ -8733,6 +8733,50 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 out[f'{tier}/{uid or "_"}'] = {'error': str(e)}
         return jsonify(out)
 
+    @app.route('/v1/precedent', methods=['POST'])
+    def precedent():
+        """Look up prior art for an operation that just failed.
+
+        Body JSON:
+          operation: str (optional) -- what the agent was trying to do
+          error:     str (optional) -- the failure text
+          tool:      str (optional) -- the tool that failed
+          query:     str (optional) -- use verbatim instead of the fields above
+          user_id:   str (optional) -- whose private tier to read
+          limit:     int (default 5)
+          kinds:     list[str] or comma-separated str (optional)
+          min_similarity: float (default 0.87) -- drop weaker matches
+
+        Returns {found, count, results, query}. "found": false is a real
+        answer: nothing is known about this failure yet, which is worth
+        telling the caller rather than silently retrying.
+        """
+        from ._internal.precedent import build_query, find_precedent
+        body = request.get_json(force=True) or {}
+        query = body.get('query') or build_query(
+            operation=body.get('operation', ''),
+            error=body.get('error', ''),
+            tool=body.get('tool', ''),
+        )
+        user_id = body.get('user_id') or body.get('user') or None
+        try:
+            limit = int(body.get('limit', 5))
+        except (TypeError, ValueError):
+            limit = 5
+        kinds = body.get('kinds')
+        if isinstance(kinds, str):
+            kinds = [k.strip() for k in kinds.split(',') if k.strip()]
+        try:
+            min_sim = float(body.get('min_similarity', 0.87))
+        except (TypeError, ValueError):
+            min_sim = 0.87
+        try:
+            result = find_precedent(query, user_id=user_id, limit=limit,
+                                    kinds=kinds, min_similarity=min_sim)
+        except Exception as exc:
+            return jsonify({'error': 'precedent_failed', 'detail': str(exc)}), 500
+        return jsonify(result)
+
     @app.route('/v1/merge/find', methods=['POST'])
     def merge_find():
         """Find candidate duplicate facts (cosine + LLM judge)."""
