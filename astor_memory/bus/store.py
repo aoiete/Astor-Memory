@@ -78,6 +78,31 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%fZ')
 
 
+def _node_user_names() -> set[str]:
+    """The user ids this node hosts, for the public-tier scrub.
+
+    A fact in the shared tier is readable by every peer, and a peer that
+    learns the name of one of this node's users learns something about
+    the operator's household. The public scrub already removes a name it
+    can find in a path, but a name that appears only in prose -- "sunday
+    runs the daemon on his own box" -- is not in any path, so it used to
+    survive into the shared tier.
+
+    So the node passes its own user list in. The list is read from the
+    9-db layout, which is this node's own directory names -- no name is
+    hardcoded in the source, and the rule works unchanged on the next
+    operator's node.
+
+    Read failures return an empty set: the scrub then behaves exactly as
+    it did before, which is the safe direction (it scrubs paths).
+    """
+    try:
+        from .._internal.acl_layout import list_user_ids
+        return {u for u in list_user_ids() if u}
+    except Exception:
+        return set()
+
+
 
 @dataclass
 class AstorEvent:
@@ -541,7 +566,8 @@ class AstorBus:
                 try:
                     from ..nest.public_scrub import (
                         scrub_local_identifiers as _scrub_pub)
-                    _candidate_content = _scrub_pub(_candidate_content)[0]
+                    _candidate_content = _scrub_pub(
+                        _candidate_content, _node_user_names())[0]
                 except Exception:
                     pass
             existing = c.execute(
@@ -593,8 +619,9 @@ class AstorBus:
                     try:
                         from ..nest.public_scrub import (
                             scrub_local_identifiers as _scrub_pub)
-                        content = _scrub_pub(str(content or ''))[0]
-                        metadata = _scrub_pub(str(metadata or ''))[0]
+                        _names = _node_user_names()
+                        content = _scrub_pub(str(content or ''), _names)[0]
+                        metadata = _scrub_pub(str(metadata or ''), _names)[0]
                         try:
                             meta_dict = json.loads(metadata) if metadata else {}
                         except Exception:
@@ -607,8 +634,9 @@ class AstorBus:
                     try:
                         from ..nest.public_scrub import (
                             scrub_local_identifiers as _scrub_pub)
-                        kw_json = _scrub_pub(kw_json)[0]
-                        ctx_text = _scrub_pub(ctx_text)[0][:500]
+                        _names = _node_user_names()
+                        kw_json = _scrub_pub(kw_json, _names)[0]
+                        ctx_text = _scrub_pub(ctx_text, _names)[0][:500]
                     except Exception:
                         pass
                 # v1.10.0: extract event_date from metadata JSON (legacy path).

@@ -104,9 +104,33 @@ _BIRTH_DATE = re.compile(
     r"(?i)(生日|出生|生于|诞辰|birthday|born|birth\s*date)"
     r"(\s*[是为:：]?\s*)(\d{4}[-/]\d{1,2}[-/]\d{1,2})")
 
-# Path segments that mean "a user directory" rather than "a project
-# directory". The name after them is a person's name, so it goes.
+# Path segments that mean "a user directory" rather than a project
+# directory. The name after them is a person's name, so it goes.
 _HOME_SEGMENTS = {"users", "home"}
+
+# Ids that name a SLOT, not a person. Every node has an admin, a
+# _current marker and a couple of probe slots, so a fact that says "the
+# admin role has write access" or "the _current session" is talking
+# about the system, not about somebody. Scrubbing those words would
+# damage the meaning of technical notes and, worse, replace the word in
+# a phrase where it names no one.
+#
+# The names of actual people are NOT here: the node's own user list
+# supplies them at call time, so this rule stays structural.
+_GENERIC_SLOT_IDS = {
+    "admin", "administrator", "user", "users", "public", "private",
+    "default", "all", "any", "none", "root", "guest", "operator",
+    "current", "test", "tmp", "temp",
+}
+
+
+def _is_generic_slot(name: str) -> bool:
+    """True when an id names a system slot rather than a person."""
+    n = (name or "").strip().lower()
+    if n in _GENERIC_SLOT_IDS:
+        return True
+    # Probe and test artifacts the layout creates for itself.
+    return n.startswith("_") or n.endswith("-test") or n.endswith("_test")
 
 
 def find_usernames(text: str) -> set[str]:
@@ -132,11 +156,21 @@ def find_usernames(text: str) -> set[str]:
     return out
 
 
-def scrub_local_identifiers(text: str) -> tuple[str, list[dict]]:
+def scrub_local_identifiers(
+    text: str, extra_names: "set[str] | None" = None
+) -> tuple[str, list[dict]]:
     """Replace machine-specific identifiers in `text`.
 
     Returns (scrubbed_text, changes). `changes` is empty when the text
     was already portable.
+
+    `extra_names` carries identifiers this node already knows are
+    private -- the user ids in its own multi-user layout. Without it the
+    scrub can only learn a name from a path, so a fact that says "sunday
+    runs the daemon on his own box" with no path in it keeps the name and
+    lands in the shared tier where every peer can read it. The names are
+    not hardcoded here: the caller passes the node's own user list, so
+    the rule stays structural and works for any operator.
     """
     if not text:
         return text, []
@@ -251,6 +285,15 @@ def scrub_local_identifiers(text: str) -> tuple[str, list[dict]]:
     # from the text before the paths are rewritten -- after that there
     # is nothing left to learn them from.
     names = find_usernames(text)
+    if extra_names:
+        # The node's own user ids. A name of one or two characters is
+        # skipped: it would match inside ordinary words and turn a
+        # method note into noise. A slot name ("admin", "_current") is
+        # skipped too: it names a system role, not a person, and
+        # replacing it damages technical notes that mention the role.
+        names |= {n for n in extra_names
+                  if n and len(str(n).strip()) >= 3
+                  and not _is_generic_slot(str(n))}
 
     out = text
     # A path can hide another path: "D:/AI/users或C:/Users" is one
@@ -273,17 +316,51 @@ def scrub_local_identifiers(text: str) -> tuple[str, list[dict]]:
     out = _BIRTH_PILLARS.sub(_sub_pillars, out)
     out = _BIRTH_DATE.sub(_sub_birth_date, out)
     for name in names:
-        if name in out:
-            out = out.replace(name, "<user>")
-            changes.append({
-                "kind": "username",
-                "sample": name,
-                "replacement": "<user>",
-            })
+        if name not in out:
+            continue
+        replaced = _replace_name(out, name)
+        if replaced == out:
+            # The name is inside a longer word ("roy" in "destroy"), so
+            # the boundary-aware replace left the text alone. Recording
+            # a change here would report a rewrite that did not happen.
+            continue
+        out = replaced
+        changes.append({
+            "kind": "username",
+            "sample": name,
+            "replacement": "<user>",
+        })
     return out, changes
 
 
-def scrub_values(values: dict) -> tuple[dict, list[dict]]:
+def _replace_name(text: str, name: str) -> str:
+    """Replace a name only where it stands as a word of its own.
+
+    A plain str.replace matches inside any word that happens to contain
+    the name: "guarantee" holds "aran", "royal" holds "roy", and a fact
+    about a guarantee would come back with "gu<user>tee" in it. The
+    boundaries are non-word characters on both sides -- the same rule the
+    PII keyword tables use, because a name glued to another word is part
+    of that word, not a reference to a person.
+
+    A name that is not plain ASCII cannot be delimited this way (Chinese
+    has no word boundary), so it is replaced as a substring: a Chinese
+    handle inside a longer Chinese word is a far rarer accident than
+    the ASCII case, and the risk of leaving a handle behind is worse
+    than the risk of over-replacing.
+    """
+    if not name or not name.isascii():
+        return text.replace(name, "<user>")
+    # \w is Unicode-aware here, so a CJK character next to the name
+    # counts as a word character and blocks the replacement -- the same
+    # "the name is glued to a word" case.
+    pattern = re.compile(r'(?<!\w)' + re.escape(name) + r'(?!\w)')
+    return pattern.sub("<user>", text)
+
+
+def scrub_values(
+    values: dict, extra_names: "set[str] | None" = None
+) -> tuple[dict, list[dict]]:
     """Scrub every text value of a fact, and the operator's name with it.
 
     A fact is a row, and a peer reads the row. The path is in the
@@ -298,12 +375,19 @@ def scrub_values(values: dict) -> tuple[dict, list[dict]]:
     -- and writing a replacement into it would put a single backslash
     where the document needs two, which is not valid JSON.
 
+    `extra_names` adds names this node already knows are private (its
+    own user ids), so a handle that appears only in prose is removed too.
+
     Returns (new_values, changes).
     """
     names: set[str] = set()
     for v in values.values():
         if isinstance(v, str):
             names |= find_usernames(v)
+    if extra_names:
+        names |= {n for n in extra_names
+                  if n and len(str(n).strip()) >= 3
+                  and not _is_generic_slot(str(n))}
     out: dict = {}
     changes: list[dict] = []
     for key, v in values.items():
@@ -338,8 +422,15 @@ def _scrub_text(v: str, names: set[str]) -> tuple[str, list[dict]]:
         return _json.dumps(new_parsed, ensure_ascii=False), ch
     new_v, ch = scrub_local_identifiers(v)
     for name in names:
-        if name in new_v:
-            new_v = new_v.replace(name, "<user>")
+        # Only report a change that actually happened. "name in new_v" is
+        # true for a name that appears inside a longer word ("roy" in
+        # "destroy"), and the boundary-aware replace leaves that word
+        # alone -- so recording a change there would report a rewrite
+        # that never happened, and the CLI would print a scrub notice
+        # for a fact it did not touch.
+        replaced = _replace_name(new_v, name)
+        if replaced != new_v:
+            new_v = replaced
             ch = ch + [{"kind": "username", "sample": name,
                         "replacement": "<user>"}]
     return new_v, ch

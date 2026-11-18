@@ -3242,7 +3242,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if tier == 'public' and text:
             try:
                 from .nest.public_scrub import scrub_local_identifiers as _scrub
-                text, _scrub_changes = _scrub(text)
+                from .bus.store import _node_user_names
+                text, _scrub_changes = _scrub(text, _node_user_names())
             except Exception as _scrub_exc:
                 _safe_stderr_write(f'[astor.server] public scrub failed (non-fatal): {_scrub_exc}\n')
         # v1.16.x: Layer 2 personal content sniff (warn only, never block).

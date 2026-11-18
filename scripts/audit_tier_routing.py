@@ -16,24 +16,41 @@ import argparse
 import json
 import re
 import sqlite3
+import sys
 from collections import Counter
 from pathlib import Path
 
 RUNTIME = Path(r"D:/AI/Astor-Memory-Runtime")
 
-# 第一人称/私人标记 —— 与 astor_memory._internal 的 has_first_person 同源思路
-FIRST_PERSON = re.compile(
-    r"我(?!们|自己)|我的|我自己|我们|家里|\bmy\b|\bour\b|\bmine\b|\bus\b|\bme\b|"
-    r"\bhome address\b", re.I)
-# 高置信 PII: 邮箱 / 手机号 / 长数字 ID / 密钥
+# The classifier astor itself uses to decide commons vs personal. A
+# hand-written regex reports false positives that change the verdict:
+# `\bus\b` matches "US 日内" (the US market) and "US ETF", and "我们" in
+# a method note is a narrative pronoun that v1.17.31 explicitly counts
+# as shareable. The system's own classifier is the only authority.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from astor_memory.nest.visibility_classifier import has_first_person
+    from astor_memory.nest.public_scrub import _is_generic_slot
+except ImportError:  # pragma: no cover
+    has_first_person = None
+    _is_generic_slot = None
+
+# High-confidence PII: email / phone / key.
+#
+# The bare long-number rule is deliberately absent: a Windows process
+# start time is 12-13 digits and looks exactly like a phone number.
+# A real phone number needs a Chinese mobile prefix (1[3-9] then 9
+# digits) and a credential value needs a word in front of it, so both
+# are anchored rather than bare.
 PII = re.compile(
     r"[\w.+-]+@[\w-]+\.[\w.]+|"
-    r"\b1[3-9]\d{9}\b|"
-    r"\b\d{11,}\b|"
+    r"(?<!\d)1[3-9]\d{9}(?!\d)|"
     r"\b(?:sk|pk|ghp|xox[baprs])-[A-Za-z0-9]{16,}\b|"
-    r"\bAKIA[0-9A-Z]{16}\b",
+    r"\bAKIA[0-9A-Z]{16}\b|"
+    r"(?:api[_-]?key|secret|token|password|passwd|密码|密钥|私钥)"
+    r"\s*(?:[:=]|是|为)\s*['\"]?[A-Za-z0-9_\-\.]{8,}",
     re.I)
-# 平台账号 ID (Telegram chat id / weixin openid / discord id)
+# Platform account ids (Telegram chat id / weixin openid / discord id).
 ACCOUNT_ID = re.compile(
     r"\b\d{15,20}\b|"                       # telegram chat_id / discord snowflake
     r"o[A-Za-z0-9_-]{20,}@im\.wechat|"      # weixin openid
@@ -41,6 +58,37 @@ ACCOUNT_ID = re.compile(
     re.I)
 
 PRIVATE_MARKERS = ("private", "source")
+
+
+def node_user_names() -> set[str]:
+    """The user ids this node hosts -- a name in the shared tier is
+    private data whether or not a pronoun is around it."""
+    try:
+        from astor_memory._internal.acl_layout import list_user_ids
+        return {u for u in list_user_ids() if u}
+    except Exception:
+        return set()
+
+
+def handle_leaks(text: str, names: set[str]) -> list[str]:
+    """User handles named in the text, as whole words.
+
+    A name glued to another word is part of that word, not a reference
+    to a person -- the same boundary rule the public scrub applies. A
+    slot name ("admin", "_current") is excluded for the same reason the
+    scrub excludes it: it names a system role, and every node has one.
+    """
+    if not names:
+        return []
+    out = []
+    for n in names:
+        if len(n) < 3:
+            continue
+        if _is_generic_slot is not None and _is_generic_slot(n):
+            continue
+        if re.search(r'(?<!\w)' + re.escape(n) + r'(?!\w)', text, re.I):
+            out.append(n)
+    return out
 
 
 def dbs() -> list[tuple[str, Path]]:
@@ -130,16 +178,23 @@ def audit() -> dict:
 
             # --- 泄漏检测: 只对 public 层做 ---
             if label == "public":
-                leaks = {"first_person": [], "pii": [], "account_id": []}
+                leaks = {"first_person": [], "pii": [], "account_id": [],
+                         "user_handle": []}
+                handles = node_user_names()
                 vis_expr = "visibility" if "visibility" in cc else "NULL AS visibility"
                 for r in con.execute(
                         f"SELECT id, kind, {vis_expr}, content FROM memory_canonical "
-                        "WHERE tombstoned=0 AND content IS NOT NULL"):
+                        "WHERE tombstoned = 0 AND content IS NOT NULL"):
                     c = r["content"]
-                    if FIRST_PERSON.search(c):
+                    if has_first_person is not None and has_first_person(c):
                         leaks["first_person"].append(
                             {"id": r["id"], "kind": r["kind"], "vis": r["visibility"],
                              "excerpt": c[:150]})
+                    names = handle_leaks(c, handles)
+                    if names:
+                        leaks["user_handle"].append(
+                            {"id": r["id"], "kind": r["kind"], "vis": r["visibility"],
+                             "names": names, "excerpt": c[:150]})
                     if PII.search(c):
                         leaks["pii"].append(
                             {"id": r["id"], "kind": r["kind"], "vis": r["visibility"],

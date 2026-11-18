@@ -1399,11 +1399,15 @@ def cmd_scrub_public(args) -> int:
     except Exception:
         pass
 
-    from ..bus.store import astor_bus
+    from ..bus.store import astor_bus, _node_user_names
     from ..nest.vector_store import astor_nest
 
     bus = astor_bus(tier='public')
     nest = astor_nest(tier='public')
+    # The node's own user ids. A handle named in prose (no path in the
+    # text) is private data in the shared tier, and the path rule alone
+    # never learns it.
+    user_names = _node_user_names()
 
     # Columns that are not free text: an id, a hash, a timestamp.
     skip = {'id', 'stable_id', 'created_at', 'promoted_at', 'valid_until',
@@ -1423,7 +1427,7 @@ def cmd_scrub_public(args) -> int:
     for row in rows:
         fid = row[0]
         vals = {col: row[3 + idx] for idx, col in enumerate(text_cols)}
-        new_vals, ch = scrub_values(vals)
+        new_vals, ch = scrub_values(vals, user_names)
         if not ch:
             continue
         new_vals = {k: v for k, v in new_vals.items() if vals.get(k) != v}
@@ -2062,7 +2066,9 @@ def cmd_mine_public(args) -> int:
 
     promoted = []
     for tier, user_id, fid, kind, namespace, content in candidates:
-        scrubbed, _ident_changes = scrub_local_identifiers(content)
+        from ..bus.store import _node_user_names
+        scrubbed, _ident_changes = scrub_local_identifiers(
+            content, _node_user_names())
         cleared, _blocks = _clear_tools(scrubbed, keep_recent_n=3)
         cleaned, removed, report = _distill(cleared)
         if not cleaned or len(cleaned) < min_len // 2:
@@ -2819,6 +2825,7 @@ def cmd_write(args) -> int:
     if tier == 'public' and os.environ.get('ASTOR_PII_PUBLIC_FORCE', '1') == '1':
         from ..nest.memory_defense import scan_policy as _md_scan
         from ..nest.public_scrub import scrub_local_identifiers as _scrub_pub
+        from ..bus.store import _node_user_names
         _md_text, _md_matches = _md_scan(args.text, policy='block')
         if (_md_matches and not getattr(args, 'allow_pii', False)
                 and any(m.severity in ('block', 'redact') for m in _md_matches)):
@@ -2829,7 +2836,7 @@ def cmd_write(args) -> int:
                   f'every peer. Write it to your own tier, or pass '
                   f'--allow-pii to override.', file=sys.stderr)
             return 1
-        args.text, _scrub_changes = _scrub_pub(_md_text)
+        args.text, _scrub_changes = _scrub_pub(_md_text, _node_user_names())
         for _c in _scrub_changes:
             print('[write] scrubbed a machine-local identifier from the '
                   'public fact')
@@ -2959,6 +2966,7 @@ def cmd_learn(args) -> int:
     if tier == 'public' and os.environ.get('ASTOR_PII_PUBLIC_FORCE', '1') == '1':
         from ..nest.memory_defense import scan_policy as _md_scan
         from ..nest.public_scrub import scrub_local_identifiers as _scrub_pub
+        from ..bus.store import _node_user_names
         _md_text, _md_matches = _md_scan(args.text, policy='block')
         if (_md_matches and not getattr(args, 'allow_pii', False)
                 and any(m.severity in ('block', 'redact') for m in _md_matches)):
@@ -2969,7 +2977,7 @@ def cmd_learn(args) -> int:
                   f'every peer. Write it to your own tier, or pass '
                   f'--allow-pii to override.', file=sys.stderr)
             return 1
-        args.text, _scrub_changes = _scrub_pub(_md_text)
+        args.text, _scrub_changes = _scrub_pub(_md_text, _node_user_names())
         for _c in _scrub_changes:
             print('[write] scrubbed a machine-local identifier from the '
                   'public fact')
@@ -3196,6 +3204,7 @@ def cmd_postmortem(args) -> int:
     if tier == 'public' and os.environ.get('ASTOR_PII_PUBLIC_FORCE', '1') == '1':
         from ..nest.memory_defense import scan_policy as _md_scan
         from ..nest.public_scrub import scrub_local_identifiers as _scrub_pub
+        from ..bus.store import _node_user_names
         _md_text, _md_matches = _md_scan(args.text, policy='block')
         if (_md_matches and not getattr(args, 'allow_pii', False)
                 and any(m.severity in ('block', 'redact') for m in _md_matches)):
@@ -3206,7 +3215,7 @@ def cmd_postmortem(args) -> int:
                   f'every peer. Write it to your own tier, or pass '
                   f'--allow-pii to override.', file=sys.stderr)
             return 1
-        args.text, _scrub_changes = _scrub_pub(_md_text)
+        args.text, _scrub_changes = _scrub_pub(_md_text, _node_user_names())
         for _c in _scrub_changes:
             print('[write] scrubbed a machine-local identifier from the '
                   'public fact')

@@ -185,13 +185,15 @@ def render_skill_document(proc: dict, name: str, description: str = '',
         # worse than one that kept a path.
         try:
             from ..nest.public_scrub import scrub_local_identifiers as _scrub
+            from ..bus.store import _node_user_names
         except Exception as exc:  # pragma: no cover - import guard
             report['sanitize_error'] = str(exc)
         else:
+            _user_names = _node_user_names()
             for key in ('trigger', 'analysis', 'action', 'verify'):
                 if not parts.get(key):
                     continue
-                cleaned, changes = _scrub(parts[key])
+                cleaned, changes = _scrub(parts[key], _user_names)
                 if changes:
                     parts[key] = cleaned
                     report['sanitized'] = True

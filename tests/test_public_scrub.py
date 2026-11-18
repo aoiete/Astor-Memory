@@ -300,3 +300,101 @@ def test_a_sentence_with_ordinary_words_is_not_joined():
               "it failed. local retry then gave up"):
         out, _ch = rejoin_split_tokens(s)
         assert out == s, (s, out)
+
+
+# --- user handles named in prose (the 2026-11-18 audit) -------------------
+#
+# The scrub learned a name from a path, so a fact that named a user
+# without a path kept the name and landed in the shared tier where every
+# peer reads it. The node now passes its own user list in.
+
+def test_a_user_named_in_prose_is_scrubbed():
+    out, ch = scrub_local_identifiers(
+        "对非技术 user (sunday/halama/yuqi) 完全不实用",
+        {"sunday", "halama", "yuqi"})
+    assert "sunday" not in out, out
+    assert "halama" not in out, out
+    assert "yuqi" not in out, out
+    assert "<user>" in out, out
+    assert any(c["kind"] == "username" for c in ch), ch
+
+
+def test_a_user_named_in_prose_stays_when_the_node_does_not_host_it():
+    """A name that is not this node's own user is left alone -- the rule
+    is about this node's users, not about every word that looks like
+    one."""
+    out, _ch = scrub_local_identifiers(
+        "the operator asked about sunday's daemon", {"halama"})
+    assert "sunday" in out, out
+
+
+def test_without_the_user_list_the_prose_name_survives():
+    """The old behaviour, kept so the change is visible: no list, no
+    scrub of a name that appears in no path."""
+    out, _ch = scrub_local_identifiers("sunday runs the daemon")
+    assert "sunday" in out, out
+
+
+def test_a_short_user_id_is_not_used_as_a_substring():
+    """A one- or two-character id would match inside ordinary words and
+    turn every method note into noise."""
+    out, _ch = scrub_local_identifiers("a b c in the middle of a sentence", {"a"})
+    assert out == "a b c in the middle of a sentence", out
+
+
+def test_a_name_inside_a_longer_word_is_not_scrubbed():
+    """A plain substring replace mangles ordinary words: "aran" lives
+    inside "guarantee" and "roy" inside "royal". The name has to stand
+    on its own to be a reference to a person."""
+    out, ch = scrub_local_identifiers(
+        "the log asserted a false guarantee", {"aran"})
+    assert out == "the log asserted a false guarantee", out
+    # And no change may be reported for a rewrite that did not happen.
+    assert ch == [], ch
+    out, ch = scrub_local_identifiers(
+        "the royal account has write access", {"roy"})
+    assert out == "the royal account has write access", out
+    assert ch == [], ch
+
+
+def test_a_name_glued_to_a_word_is_not_scrubbed():
+    """The same rule for a name that is a prefix of a longer word."""
+    out, _ch = scrub_local_identifiers(
+        "run it as sundaybot and check", {"sunday"})
+    assert out == "run it as sundaybot and check", out
+
+
+def test_a_name_standing_alone_is_still_scrubbed():
+    """The word-boundary rule must not disarm the scrub."""
+    out, _ch = scrub_local_identifiers(
+        "ask sunday about the guarantee", {"sunday", "aran"})
+    assert "sunday" not in out, out
+    assert "guarantee" in out, out
+
+
+def test_a_slot_id_is_not_scrubbed():
+    """A slot names a system role, not a person. Every node has an
+    admin, so replacing the word damages technical notes that mention
+    the role without protecting anybody."""
+    out, _ch = scrub_local_identifiers(
+        "the admin role has write access", {"admin"})
+    assert out == "the admin role has write access", out
+    out, _ch = scrub_local_identifiers(
+        "the _current session id", {"_current"})
+    assert out == "the _current session id", out
+
+
+def test_a_real_name_is_still_scrubbed_alongside_a_slot():
+    """The slot rule must not disarm the rule."""
+    out, _ch = scrub_local_identifiers(
+        "admin asked sunday about it", {"admin", "sunday"})
+    assert "sunday" not in out, out
+    assert "admin" in out, out
+
+
+def test_the_scrub_still_removes_paths_when_the_user_list_is_given():
+    """The new argument must not disable the existing rules."""
+    out, _ch = scrub_local_identifiers(
+        r"C:\Users\someone\AppData\Local\app\cfg.ini", {"sunday"})
+    assert out == r"<home>\AppData\Local\app\cfg.ini", out
+    assert "someone" not in out, out
