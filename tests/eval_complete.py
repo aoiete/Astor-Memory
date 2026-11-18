@@ -172,13 +172,82 @@ def keyword_coverage(results: list[dict], expected_keywords: list[str]) -> list[
         return []
     blob_parts = []
     for r in results:
-        content = (r.get("content") or r.get("text") or "").lower()
+        content = _haystack(r)
         if any(kw in content for kw in kws):
             blob_parts.append(content)
     blob = "\n".join(blob_parts)
     bn = _norm(blob)
     bt = set(re.findall(r"[a-z0-9]+", blob.lower()))
     return [k for k in kws if _covered(k, bn, bt)]
+
+
+def keyphrase_rarity(kws: list[str], tier: str, user: str) -> dict:
+    """How generic are this question's keywords in the store?
+
+    A keyword that appears in 200 facts does not identify an answer --
+    it only tells you the topic. This is the denominator that makes
+    mean_evidence_recall_ratio unreadable: the store holds ~100 facts
+    containing "cron", and 1-3 of them are the answer.
+
+    Returns the per-keyword counts and the rarest one. A question whose
+    rarest keyword still matches dozens of facts cannot be scored by
+    keyword alone -- it needs evidence ids.
+    """
+    counts = {}
+    for kw in (kws or []):
+        kw = (kw or "").strip()
+        if not kw:
+            continue
+        try:
+            n = len(_oracle_search([kw], tier=tier, user=user, limit=100000))
+        except Exception:
+            n = 0
+        counts[kw] = n
+    # Rarity over the keywords the store ACTUALLY holds. A keyword with
+    # zero hits is a storage gap, not a generic keyword -- counting it
+    # as the rarest would make a topic with nothing stored look maximally
+    # discriminable.
+    held = [n for n in counts.values() if n > 0]
+    rarest = min(held) if held else 0
+    return {"counts": counts, "rarest": rarest, "held": len(held)}
+
+
+def _haystack(r: dict) -> str:
+    """Every text the response carries for a row.
+
+    The API returns L2 content CAPPED (FACT_SOFT_CHARS) plus the
+    progressive-loading fields -- abstract (L0), overview (L1),
+    level_text, keywords, context. Scoring only `content` reads the
+    truncated head and misses the answer when the keyword sits past
+    the cut, which is exactly what happened to Q01: the DB row is 3713
+    chars and mentions 扑克 well past the 1226-char cap.
+    """
+    parts = []
+    for k in ("content", "text", "abstract", "overview", "level_text",
+              "topic", "keywords", "context", "evidence_quote"):
+        v = r.get(k)
+        if isinstance(v, str) and v:
+            parts.append(v)
+        elif isinstance(v, (list, tuple)):
+            parts.extend(str(x) for x in v)
+    return "\n".join(parts).lower()
+
+
+def answer_precision(results: list[dict], expected_keywords: list[str]) -> float:
+    """Share of the recalled rows that actually carry the answer keywords.
+
+    Recall at top-10 can look perfect while every row is a near miss
+    that happens to contain one common word. This separates "the right
+    fact came back" from "some fact with the word came back".
+    """
+    kws = [k.strip().lower() for k in (expected_keywords or []) if k and k.strip()]
+    if not kws or not results:
+        return 0.0
+    on_topic = 0
+    for r in results:
+        if any(kw in _haystack(r) for kw in kws):
+            on_topic += 1
+    return round(on_topic / len(results), 4)
 
 
 def run(eval_set: list[dict], top_k_default: int = 10) -> dict:
@@ -199,6 +268,7 @@ def run(eval_set: list[dict], top_k_default: int = 10) -> dict:
         oracle = _oracle_coverage(kws, tier=tier, user=user, min_hits=q.get("min_hits", 1))
         oracle_cov = [k.lower() for k in (oracle.get("oracle_covered") or [])]
         recall_cov = keyword_coverage(results, oracle_cov)
+        rarity = keyphrase_rarity(kws, tier=tier, user=user)
 
         # ID-level evidence set: the facts the STORE holds for this query.
         # Language-independent, so it does not inherit the eval set's
@@ -225,6 +295,11 @@ def run(eval_set: list[dict], top_k_default: int = 10) -> dict:
             "recall_covered": sorted(recall_cov),
             "missing_from_recall": missing,
             "evidence_complete": bool(needed) and not missing,
+            "answer_precision_at_k": answer_precision(results, kws),
+            "keyphrase_rarity": rarity["rarest"],
+            "keyphrase_held": rarity["held"],
+            "keyphrase_counts": rarity["counts"],
+            "discriminable": rarity["rarest"] <= 20,
             "oracle_hit": bool(oracle.get("oracle_hit")),
             "expected_miss": q.get("expected_miss", False),
         })
@@ -260,6 +335,25 @@ def run(eval_set: list[dict], top_k_default: int = 10) -> dict:
         "evidence_hit_rate": round(evidence_rate, 4),
         "mean_evidence_recall_ratio": round(mean_ratio, 4),
         "storage_gap_queries": len(scored) - n_elig,
+        # How many questions can be scored by keyword alone. A keyword
+        # that matches 100+ facts does not identify an answer, so those
+        # questions need evidence ids before any optimisation can be
+        # verified against them.
+        "discriminable_queries": sum(1 for d in eligible if d.get("discriminable")),
+        # Questions whose expected answer is not in the declared tier at
+        # all. The oracle finds a keyword hit (a daily brief mentions
+        # 扑克) and calls the store complete, but the answer itself (the
+        # user prefers cash games) lives in the private tier with
+        # visibility=personal -- correctly so. These questions measure
+        # the layer policy, not the retrieval.
+        "tier_mismatch_queries": sum(
+            1 for d in eligible if d.get("keyphrase_held", 0) < d.get("n_keywords", 0)),
+        "mean_answer_precision_at_k": round(
+            statistics.mean(d["answer_precision_at_k"] for d in eligible), 4)
+            if eligible else 0.0,
+        "mean_keyphrase_rarity": round(
+            statistics.mean(d["keyphrase_rarity"] for d in eligible), 2)
+            if eligible else 0.0,
         "avg_latency_ms": round(statistics.mean(latencies), 2) if latencies else 0,
         "by_category": {},
     }
@@ -311,6 +405,14 @@ def main() -> int:
     print(f"  [keyword] complete_retrieval_rate   = {s['complete_retrieval_rate']:.4f}")
     print(f"  [ID]      evidence_hit_rate         = {s['evidence_hit_rate']:.4f}")
     print(f"  [ID]      mean_evidence_recall_ratio= {s['mean_evidence_recall_ratio']:.4f}")
+    print(f"  [precision] mean_answer_precision@k= {s['mean_answer_precision_at_k']:.4f}"
+          "   (share of recalled rows carrying an answer keyword)")
+    print(f"  [rarity]    mean_keyphrase_rarity  = {s['mean_keyphrase_rarity']:.1f}"
+          "   (facts matching the rarest keyword)")
+    print(f"  [scorable]  discriminable queries  = {s['discriminable_queries']}/{s['n_eligible']}"
+          "   (rarest keyword matches <=20 facts)")
+    print(f"  [warn]      tier-mismatch queries  = {s['tier_mismatch_queries']}/{s['n_eligible']}"
+          "   (a keyword is missing from the declared tier)")
     if s["by_category"]:
         print("  by category:")
         for cat, m in sorted(s["by_category"].items()):
