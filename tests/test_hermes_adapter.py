@@ -58,36 +58,60 @@ class HermesAdapterToolTest(unittest.TestCase):
         # shared tiers also removed the implicit "an earlier test wrote
         # something" dependency. A test must not borrow its fixtures from a
         # neighbour: write the fact, then recall it.
-        import time as _t
-        _marker = 'astormem%d' % int(_t.time() * 1000)
         # The seed has to go through the REST write path, not the adapter's
         # astor_write tool: the tool appends an event and inserts a
         # CANDIDATE, and a candidate is not recallable -- the promotion to
         # memory_canonical (and the lexical index entry that recall reads)
         # happens in /v1/write. So write over REST, to the same server the
         # adapter's recall will query.
+        #
+        # 2026-11-18: this probe used to be "astor memory retrieval keeps
+        # durable facts findable <marker>" and was never cleaned up. That
+        # text is on the test-residue list, so /v1/write demoted it into
+        # the caller's private bucket -- and the row stayed there for
+        # good, once per test run, on the LIVE server (the test posts over
+        # REST to 127.0.0.1:7803, so the conftest ASTOR_DIR isolation does
+        # not apply to it). 95 such rows had accumulated in the public
+        # tier. Use the same neutral description and the same
+        # forget-the-row cleanup the sibling test below already uses.
+        import secrets as _secrets
+        import time as _t
+        _ascii_word = "".join(_secrets.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(8))
+        _marker = f'熊猫{_ascii_word}{_secrets.token_hex(6)}{int(_t.time() * 1000)}'
         import urllib.request as _ur
         _base = os.environ.get('ASTOR_BASE_URL', 'http://127.0.0.1:7803')
         _req = _ur.Request(
             _base + '/v1/write',
             data=json.dumps({
-                'text': ('astor memory retrieval keeps durable facts findable '
-                         + _marker),
+                'text': ('adapter verification record with ' + _marker),
                 'tier': 'public', 'kind': 'lesson',
                 'user': 'admin',
             }).encode('utf-8'),
             headers={'Content-Type': 'application/json'},
         )
         _ur.urlopen(_req, timeout=30).read()
-        result = json.loads(self.provider.handle_tool_call(
-            'astor_recall', {'query': 'astor memory ' + _marker,
-                             'top_k': 3},
-        ))
-        self.assertIn('results', result)
-        self.assertGreater(result['count'], 0)
-        for r in result['results']:
-            self.assertIn('score_kind', r)
-            self.assertIn(r['score_kind'], ('hybrid', 'cosine', 'session_neighbor'))
+        try:
+            result = json.loads(self.provider.handle_tool_call(
+                'astor_recall', {'query': 'adapter verification record ' + _marker,
+                                 'top_k': 3},
+            ))
+            self.assertIn('results', result)
+            self.assertGreater(result['count'], 0)
+            for r in result['results']:
+                self.assertIn('score_kind', r)
+                self.assertIn(r['score_kind'], ('hybrid', 'cosine', 'session_neighbor'))
+        finally:
+            # /v1/forget is BM25-only and the lexical index lags the
+            # canonical write, so retry: a forget that finds nothing
+            # tombstones nothing, so retrying is safe.
+            for _attempt in range(20):
+                forgotten = json.loads(self.provider.handle_tool_call(
+                    'astor_forget', {'query': _marker, 'tier': 'public',
+                                     'user_id': None, 'forget_threshold': 0.5},
+                ))
+                if forgotten.get('forgotten'):
+                    break
+                _t.sleep(0.5)
 
     def test_recall_hybrid_false(self):
         # v1.16.x: unique query for same LRU-bypass reason.
