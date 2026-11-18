@@ -1,3 +1,81 @@
+## 1.17.41
+
+**fix(public-scrub): remove the node's user handles from the shared tier**
+
+The shared tier is what peers read. The public scrub already removed a
+machine-local path from a fact, and the name of the path's owner with
+it -- but only the name it could find IN a path. A handle that appears
+only in prose ("sunday runs the daemon on his own box") was never
+learned, so it survived into a tier every peer can read.
+
+Measured on the 2026-11-18 audit: 18 of 621 public facts carried a real
+user handle (sunday / halama / yuqi / xindi) with visibility='commons'.
+The public write path forces visibility='commons', so every one of them
+was readable by a peer.
+
+- The node now passes its own user list in, so the rule stays
+  structural: `scrub_local_identifiers()` and `scrub_values()` take an
+  optional `extra_names`, and `bus/store.py::_node_user_names()` reads
+  the user ids from the 9-db layout. No name is hardcoded in the source,
+  and the rule works unchanged on the next operator's node.
+- Every public write path passes it: the three public branches in
+  `promote_candidate` (candidate content, content+metadata,
+  keywords+context), the HTTP write path in `server.py`, `am
+  write/learn/fail`, `am scrub-public`, `am mine-public`, and the skill
+  document sanitizer.
+- A slot name is not a person. Every node has an admin, so replacing
+  that word turned "the admin role has write access" into "the <user>
+  role" and damaged technical notes. `_is_generic_slot()` excludes the
+  role names and the layout's own probe slots; the real names arrive
+  at call time and are not in that set.
+- The replacement is word-bounded. A plain substring replace mangles
+  ordinary words -- "aran" lives inside "guarantee", "roy" inside
+  "destroy" -- so the name has to stand on its own to be a reference to
+  a person.
+- A change is now recorded only when the text actually changed. The
+  change list used to be keyed on "the name appears somewhere in the
+  text", so a fact containing "destroy" reported a username scrub it
+  never received.
+
+**fix(eval): the oracle read the wrong runtime and let tombstoned rows back in**
+
+Two bugs in the eval harness's store-side oracle, both of which made
+every "the store already holds it" verdict wrong.
+
+- `_runtime_dir()` was `ASTOR_DIR or ~/.astor`, while the server
+  resolves its data root through `astor_memory.config.get_default_astor_dir()`
+  (ASTOR_DIR -> install.json -> the install location). On a node whose
+  data lives outside the home directory the oracle read a stale, empty
+  `~/.astor`. The symptom: an eval run reported `oracle_hit_rate=0.0`
+  with `storage_gap_rate=1.0` -- the whole corpus scored as "the write
+  path lost it". The 2026-11-08 baseline still carries that signature.
+  Reuse the server's resolver instead of keeping a second copy of the
+  precedence rules.
+- The statement read `WHERE tombstoned = 0 AND {where}`, where `{where}`
+  is a chain of ORs. SQL binds AND tighter than OR, so every keyword
+  after the first bypassed the tombstoned filter and pulled archived
+  rows back in. Measured on the 110-question eval set: 91 of 106
+  questions affected, evidence set inflated 1.4x (Q01: 78 rows instead
+  of 8).
+
+After both fixes the complete-retrieval-rate probe
+(`tests/eval_complete.py`, new) reports
+`complete_retrieval_rate` 0.7453 -> 0.8000 and `evidence_hit_rate`
+0.9811 -> 0.9905, with the keyword-incomplete count down from 27 to 21.
+The probe reports a keyword-level and an ID-level number side by side,
+because the keyword reading turned out to measure the eval set's
+vocabulary rather than the system's retrieval: one question was scored
+incomplete on the spelling "no-restart" while 9 of its 10 recalled rows
+were members of the store's evidence set.
+
+Also adds `scripts/audit_tier_routing.py`: a read-only audit of tier
+routing -- the tier column against the physical database, the
+visibility distribution, and first-person / PII / account-id / user-handle
+leakage in the public tier. It calls the system's own classifier
+(`has_first_person`) rather than a hand-written regex, and its PII rule
+no longer treats a 12-digit Windows process start time as a phone
+number.
+
 ## 1.17.40
 
 **feat(precedent): look up prior art for a failed operation**
