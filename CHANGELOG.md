@@ -1,3 +1,73 @@
+## 1.17.42
+
+**fix(hygiene): the shared tier was holding 95 seeded test facts**
+
+`/v1/write` demotes test residue to the caller's own bucket. That guard
+existed since v1.16.95, when 56.9% of the public tier's facts turned out
+to be e2e residue -- but it had a hole, and the residue kept arriving.
+
+The hole: astor's own REST tests seed a fact with a fixed phrase plus a
+timestamp marker, and the marker moves.
+
+    astor memory retrieval keeps durable facts findable astormem1793267439099
+    astor memory_1793266451698 retrieval keeps durable facts findable
+
+None of the fourteen existing patterns matched either form. There is no
+`marker` word, no `e2e_`, no `Maria`, and the "test verb plus ten
+digits" rule needs a test verb this text does not have. So
+`is_test_residue` returned false, the write went to the public tier, and
+peers in the federation could read it.
+
+Measured on the live public tier before the fix: **95 of 627 active
+facts** (15%) were these seeded rows, dated back to 2026-10-29. They
+were `visibility=commons`, so every peer could read them.
+
+The new rule matches the phrase rather than the marker, because the
+phrase is the stable half:
+
+```python
+re.compile(r"^astor memory.*\bretrieval keeps durable facts findable\b", re.I)
+```
+
+It is anchored at the start on purpose. A real R-class lesson quotes
+the marker while explaining something else -- the v1.16.97 note about
+unconditional DEBUG output leaking user data quotes
+`query='astor memory astormem...'` -- and that lesson must survive. An
+unanchored match would quarantine it.
+
+**fix(hygiene): "marker drain" is astor's own vocabulary**
+
+The rule `marker[-\s][a-z0-9]` matched "marker drain", which is the
+planned-stop marker in the graceful gateway drain path. A genuine
+lesson -- the four real bugs in the NSSM gateway restart script -- was
+being quarantined into the private tier on write because of it.
+
+The rule now splits in two: the hyphen form matches any token
+(`marker-no-pii`, `marker-q1w2e3`), and the space form requires a
+digit in the token (`marker zx9309`) so that ordinary English after
+"marker " is left alone.
+
+**Existing rows cleaned**
+
+The 95 seeded facts were removed from the live public tier, matched on
+the exact phrase with nothing in front of it, so the lesson that quotes
+a marker stayed. The public tier went from 627 to 532 active facts. The
+private tier's one remaining hit is itself a real lesson -- the 2026-10-29
+note about broad substring matching tombstoning a real fact, which is
+the same mistake made again a fortnight later.
+
+**Verification**
+
+- `tests/test_hygiene_rules.py`: 35 passed. Two seeded forms added as
+  bad samples; the quoting lesson added as a good sample so the anchor
+  cannot be dropped later.
+- Scanned all 627 live public facts with `is_test_residue`: it catches
+  exactly the 95 seeded rows and nothing else.
+- Ran a second astor instance from the same source tree and wrote
+  through the real `/v1/write` path: both seeded forms land in the
+  private tier with `visibility=personal`, and a real lesson quoting a
+  marker lands in the public tier with `visibility=commons`.
+
 ## 1.17.41
 
 **fix(public-scrub): remove the node's user handles from the shared tier**

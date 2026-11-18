@@ -59,7 +59,14 @@ TEST_RESIDUE_PATTERNS = (
     # 通用测试/调试 marker
     re.compile(r"\bmarker[-\s]?(test|fact|distill|publish|visibility)", re.I),
     # "marker-<任意串>" —— 覆盖 marker-final / marker-q1w2e3 / marker-methodtest
-    re.compile(r"\bmarker[-\s][a-z0-9]", re.I),
+    re.compile(r"\bmarker-[a-z0-9]", re.I),
+    # "marker <token>" 形式 —— 覆盖 "tier resolver test marker zx9309"。
+    #
+    # 空格版本要求 token 里带数字, 因为 astor 自己的术语里有 "marker
+    # drain" (planned-stop marker, 优雅停机流程) —— 那是一句真实的知识,
+    # 却被空格版本误判成测试残留, 写入时被 quarantine 到 private 层。
+    # 测试 marker 带随机串 (zx9309 / q1w2e3), 真实术语不带。
+    re.compile(r"\bmarker\s+[a-z0-9]*\d", re.I),
     # astor e2e 场景里虚构的人名 "Maria" —— 只匹配 e2e 叙述, 不能匹配
     # 真实提到 Maria 的条目 (例如 "Maria 是用户的同事")。
     re.compile(r"^Maria\b.*(测试|test|项目|启动|完成|marker|e2e|新发布|发布)", re.I),
@@ -73,6 +80,16 @@ TEST_RESIDUE_PATTERNS = (
     re.compile(r"^她?他?们?完成了\s+e2e_", re.I),
     # 时间戳型一次性事实: "..._<10位时间戳>" 结尾且带测试动词
     re.compile(r"\b(test|probe|debug|mock)\b.*\b\d{10}\b", re.I),
+    # astor 自己的 REST 测试 (test_read_dedupe.py / test_hermes_adapter.py)
+    # 播的种子事实: 固定短语 + 一个时间戳 marker, marker 会在短语前后的
+    # 不同位置 ("astor memory retrieval keeps durable facts findable
+    # astormem1793267439099" 和 "astor memory_1793266451698 retrieval keeps
+    # durable facts findable")。短语是稳定的那一半, 所以按短语匹配。
+    #
+    # 锚在开头是刻意的: 真实的 R-class 笔记会引用这个 marker 来讲别的事
+    # (v1.16.97 那条讲 DEBUG 输出泄漏用户数据的 lesson 就引了它), 那类
+    # 内容不该被当成残留删掉。只有整条就是测试短语的才该被抓。
+    re.compile(r"^astor memory.*\bretrieval keeps durable facts findable\b", re.I),
 )
 
 

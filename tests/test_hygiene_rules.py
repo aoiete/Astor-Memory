@@ -36,6 +36,11 @@ BAD_SAMPLES = [
     "poc",
     "tier resolver test marker zx9309",
     "method clean test no pii marker-no-pii",
+    # astor 自己的 REST 测试播的种子事实 (2026-11-18 审计发现 94 条进了
+    # live public 层)。marker 在短语尾部。
+    "astor memory retrieval keeps durable facts findable astormem1793267439099",
+    # 同一个测试, marker 在短语中间 —— 所以规则不能只认前缀。
+    "astor memory_1793266451698 retrieval keeps durable facts findable",
 ]
 
 # --- 真知识: 用户的实际规则 / 偏好 / 架构知识, 一个都不能被误伤 ----------
@@ -52,7 +57,20 @@ GOOD_SAMPLES = [
     "astor ship流程锁定5步: 改源码->patch runtime->runtime验证->pre-flight audit->复查",
     "用户说 stakes 时永远是 先小盲 后大盲(1/3 -> BB=$3, 2/5 -> BB=$5)",
     "用户反馈回复太长，要求更简洁直接的风格(短句+项目符号+表格)",
+    # astor 自己的术语: planned-stop marker drain 是真实的优雅停机流程,
+    # 不能因为含 "marker drain" 就被当成测试残留。
+    "R-class (2026-11-18, NSSM gateway 重启脚本审计): 唯一没走 clean drain 的分支反而最可能造成 unclean exit + session pause。"
+    "修法: 删掉整个 escalation ladder, 只保留 marker drain + 等 guard 自己拉起; 没回来就报 WARNING 指向 logs/service-stdout.log。",
     "成功模式(success_pattern)只存通用方法论和工具路径,不能含私人数据",
+    # 一条真实的 R-class lesson, 正文里引用了测试 marker 来讲别的事
+    # (v1.16.97: 裸 DEBUG 输出把用户数据写进日志)。引用不等于残留,
+    # 规则必须锚在开头才能放过它。
+    "LESSON ([DATE_1], astor v1.16.97, 读日志发现的真问题 — 无条件 DEBUG 输出把用户数据写进日志): "
+    "起因是一个被 kill 的临时 server 的 stdout 里滚着 "
+    "`[DEBUG-MM] query='astor memory astormem1793267439099' → 0 hits` / `[DEBUG-KP] . . . ` / "
+    "`[DEBUG-E] canon_id=9` / `[EXTRACT_DEBUG] . . . text_preview=. . . `。 查源码发现 7 处裸调试输出 全部无门控: "
+    "server.py 3146 (裸 print 到 stdout)、3487/3499/3501/3504 ([DEBUG-E] 到 stderr)、"
+    "6074/6085 ([DEBUG-MM]/[DEBUG-KP] 到 stderr)、forge/extractor.py:956 ([EXTRACT_DEBUG] 到 stderr)。",
 ]
 
 
