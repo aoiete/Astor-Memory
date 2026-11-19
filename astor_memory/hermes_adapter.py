@@ -15,7 +15,7 @@ ABC. This adapter:
   - system_prompt_block() -> returns a HIGHEST PRIORITY marker + status
   - prefetch() -> runs astor bus recall (public + source tiers)
   - sync_turn() -> writes a system_event event to public bus for audit
-  - get_tool_schemas() -> exposes astor_recall / astor_write / astor_forget
+  - get_tool_schemas() -> exposes astor_recall / astor_write / astor_forget / astor_demote
     as native hermes tools
 
 When config.yaml sets `external_memory_provider: astor_memory`, hermes
@@ -267,6 +267,46 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                 "parameters": {"type": "object", "properties": {}},
             },
             {
+                "name": "astor_demote",
+                "description": (
+                    "Retire a memory the user just rejected. Use this when "
+                    "the user says the answer was wrong, still not working, "
+                    "or corrects a rule the answer relied on -- and the "
+                    "answer came from a recalled fact. The fact stays "
+                    "recallable and is marked [INACTIVE], it stops being "
+                    "renewed, and it ages out on its own. Use astor_forget "
+                    "only when the fact should be gone entirely."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fact_ids": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": (
+                                "The ids of the facts that fed the answer "
+                                "the user rejected."
+                            ),
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": (
+                                "What the user said, in their words. "
+                                "Recorded as the audit reason."
+                            ),
+                        },
+                        "reactivate": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "Bring the fact back instead of retiring it."
+                            ),
+                        },
+                    },
+                    "required": ["fact_ids"],
+                },
+            },
+            {
                 "name": "astor_forget",
                 "description": (
                     "Tombstone a fact in astor-memory by fact_id or semantic query. "
@@ -308,6 +348,8 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
         # was missing, so all forget calls raised NotImplementedError.
         if tool_name == "astor_forget":
             return self._tool_forget(args)
+        if tool_name == "astor_demote":
+            return self._tool_demote(args)
         raise NotImplementedError(f"astor_memory: unknown tool {tool_name}")
 
     # -- Optional hooks (override for richer behavior) --------------------
@@ -758,6 +800,59 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
             return _ur.urlopen(req, timeout=15).read().decode('utf-8')
         except Exception as exc:
             return json.dumps({"error": f"astor_forget failed: {exc}"})
+
+    def _tool_demote(self, args: Dict[str, Any]) -> str:
+        """Retire a memory the user just rejected.
+
+        The feedback hook covers a short verdict ("还是不行"). It cannot
+        cover a rejection that arrives as a long technical report, and
+        for this operator that is the normal shape of dissatisfaction.
+        The agent is already in the conversation and can make the
+        judgement, so the judgement is made by the caller rather than by
+        widening the hook's pattern -- a wide pattern matches questions
+        and quoted titles, and a false demotion is worse than a missed
+        one.
+
+        The fact is not destroyed: it stays recallable, marked
+        [INACTIVE], stops being renewed, and ages out on its own.
+        """
+        import json
+        import urllib.request as _ur
+        import os as _os
+        ids = args.get('fact_ids') or []
+        if isinstance(ids, (int, str)):
+            ids = [ids]
+        try:
+            ids = [int(i) for i in ids]
+        except (TypeError, ValueError):
+            return json.dumps({"error": "fact_ids must be integers"})
+        if not ids:
+            return json.dumps({"error": "fact_ids required"})
+        reason = str(args.get('reason', ''))
+        reactivate = bool(args.get('reactivate', False))
+        status = 'active' if reactivate else 'inactive'
+        base = _os.environ.get('ASTOR_BASE_URL', 'http://127.0.0.1:7803')
+        results = []
+        for fid in ids:
+            try:
+                body = json.dumps({'status': status, 'reason': reason}).encode()
+                req = _ur.Request(
+                    f'{base}/v1/fact/{fid}/set_status',
+                    data=body,
+                    headers={'Content-Type': 'application/json'},
+                )
+                data = json.loads(_ur.urlopen(req, timeout=15).read().decode('utf-8'))
+            except Exception as exc:
+                data = {"error": str(exc)}
+            results.append({"fact_id": fid, "result": data})
+        changed = [r for r in results
+                   if isinstance(r["result"], dict) and r["result"].get("ok")]
+        return json.dumps({
+            "requested": len(ids),
+            "changed": len(changed),
+            "status": status,
+            "results": results,
+        }, ensure_ascii=False, indent=2)
 
     def _tool_status(self) -> str:
         import json

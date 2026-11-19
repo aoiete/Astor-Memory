@@ -1,3 +1,37 @@
+## 1.17.47
+
+**feat(adapter): astor_demote -- retire a memory the user just rejected**
+
+The feedback hook covers a short verdict ("还是不行"). It cannot cover a
+rejection that arrives as a long technical report, and for this
+operator that is the normal shape of dissatisfaction -- the capture
+side works (a session state file holds 14 recalled fact ids) but the
+verdict side has never fired.
+
+The rule itself is not the problem. Measured over 654 real user
+messages (the messages table also stores system-generated wrappers
+under role='user', so the raw count overstates it by more than half):
+the current rule catches 4 verdicts, and every extra one a wider
+pattern would catch is a false positive -- a question ("我这样理解对不对
+啊"), a request ("有没有问题"), a quoted document title. Not one real
+verdict is missed.
+
+So the fix is not a wider pattern. It is a different judge. The agent
+is already in the conversation and can tell that the user rejected the
+answer; the hook is deliberately model-free. astor_demote lets the
+caller make that judgement and act on it, leaving the hook alone.
+
+The fact is not destroyed: it stays recallable and marked [INACTIVE],
+the status travels as a field, the fact stops being renewed, and it
+ages out on its own.
+
+Added to both implementations, which mirror each other: the Hermes
+plugin and astor_memory/hermes_adapter.py.
+
+`tests/test_astor_demote.py`: 3 passed against a real server on a
+temporary ASTOR_DIR -- write, demote, recall (marked, with the status
+field and the boundary), and the schema.
+
 ## 1.17.46
 
 **fix(peer): a retired fact is not shared with peers**
