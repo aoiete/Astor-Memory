@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -37,6 +38,17 @@ def post(path, payload):
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def try_post(path, payload):
+    """A read can return a row that is not a local canonical fact -- a
+    peer result, for one -- and the demote endpoint answers 404 for
+    those. That is not an error for this measurement, it just means the
+    question is not leaning on a fact we can retire."""
+    try:
+        return post(path, payload)
+    except urllib.error.HTTPError:
+        return {"ok": False, "error": "http_error"}
 
 
 def read(q):
@@ -57,6 +69,7 @@ questions = [json.loads(l) for l in
 
 rows = []
 restored = []
+skipped = 0
 try:
     for q in questions:
         kws = q.get("expected_keywords") or []
@@ -72,9 +85,11 @@ try:
             # take anything away
             continue
 
-        r = post(f"/v1/fact/{fid}/set_status",
-                 {"status": "inactive", "reason": "retirement impact (temporary)"})
+        r = try_post(f"/v1/fact/{fid}/set_status",
+                     {"status": "inactive",
+                      "reason": "retirement impact (temporary)"})
         if not r.get("ok"):
+            skipped += 1
             continue
         restored.append(fid)
 
@@ -93,8 +108,8 @@ try:
         })
 finally:
     for fid in restored:
-        post(f"/v1/fact/{fid}/set_status",
-             {"status": "active", "reason": "impact measurement cleanup"})
+        try_post(f"/v1/fact/{fid}/set_status",
+                 {"status": "active", "reason": "impact measurement cleanup"})
 
 n = len(rows)
 lost = [r for r in rows if r["lost"]]
@@ -107,7 +122,7 @@ if n:
         ranks.sort()
         print(f"  退役事实的新名次: 中位 {ranks[len(ranks)//2]} 最大 {ranks[-1]}")
     print(f"  有别的 fact 顶上: {sum(1 for r in rows if r['took_over'])}/{n}")
-print(f"已还原 {len(restored)} 条 fact")
+print(f"已还原 {len(restored)} 条 fact；跳过 {skipped} 条（非本地 canonical 行）")
 if lost:
     print("\n失去覆盖的题:")
     for r in lost:
