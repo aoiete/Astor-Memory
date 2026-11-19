@@ -1,3 +1,50 @@
+## 1.17.50
+
+**fix(recall): a retired fact has to stop being the first thing the model sees**
+
+Retiring a fact was supposed to stop it steering the answer. It did not.
+Measured on 2026-11-19 over the live corpus: of six facts that ranked
+first for their own question, four kept rank 1 after being retired. The
+only thing standing between a retired fact and the answer was a marker
+in its content, and a marker is only as strong as the model that reads
+it.
+
+The survey on multimodal agent memory (arXiv 2610.19366) checks
+formation fidelity, update effectiveness and retrieval accuracy
+separately, and a demotion that leaves the ranking untouched scores
+badly on the second of those. The ruler built in v1.17.49 measures the
+third. The second was not measured at all -- this is the measurement
+that found the gap.
+
+**Two changes.**
+
+A retired fact now sinks below the active ones. It is still returned:
+the fact may be what the query is about, and hiding it would hide the
+context. Only which one the model sees first changes. The sort is
+stable, so the order inside each group is untouched, and it sits at
+the one point where the scored path and the injection channels
+converge, so every channel is covered by one sort.
+
+And the retired facts are now marked in every channel. The scored path
+labelled a retired fact when it built its row. The injection channels
+(meta-recall, lessons, patterns, multimodal, key points) build their
+rows from their own queries and never looked at the status column -- a
+fact that only those channels found came back with no warning and no
+status field at all. The demotion was invisible for it. One pass over
+the merged list fixes every channel at once, and it runs before the
+dedup because the dedup keeps one copy of each fact.
+
+**Measured over the live corpus**, the same six facts, retired and
+reactivated:
+
+| | retired facts that sank |
+| --- | --- |
+| before | 2 of 6 |
+| after | 5 of 6 |
+
+The stored content is untouched -- the warning is added to the
+response, not to the fact.
+
 ## 1.17.49
 
 **feat(eval): a ruler for retrieval changes that needs no hand annotation**

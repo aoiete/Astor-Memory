@@ -965,6 +965,39 @@ def _infer_provenance_kind(origin_session_id: str | None) -> str | None:
     return None
 
 
+def _mark_retired_rows(rows, inactive_ids):
+    """Label the retired facts, in every channel.
+
+    The scored path labels a retired fact when it builds its row. The
+    injection channels (meta-recall, lessons, patterns, multimodal, key
+    points) build their rows from their own queries and never looked at
+    the status column -- so a fact that only those channels found came
+    back with no warning and no status field at all. The demotion was
+    invisible for it.
+
+    One pass over the merged list covers every channel at once. It has
+    to run before the dedup: the dedup keeps one copy of each fact, and
+    an injected copy carries no label of its own.
+
+    Rows are modified in place -- they are the dicts the response is
+    built from, so there is nothing to copy back.
+    """
+    if not rows or not inactive_ids:
+        return
+    for r in rows:
+        try:
+            fid = int(r.get('fact_id'))
+        except (TypeError, ValueError):
+            continue
+        if fid not in inactive_ids:
+            continue
+        r['status'] = 'inactive'
+        c = r.get('content')
+        if (isinstance(c, str) and c
+                and not c.startswith('\u26a0[INACTIVE] ')):
+            r['content'] = '\u26a0[INACTIVE] ' + c
+
+
 def _v186_now_iso() -> str:
     """Current UTC time in the format memory_canonical.valid_until uses.
 
@@ -7095,6 +7128,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                                  and str(r["valid_until"]) <=
                                  _v186_now_iso())]
 
+        # v1.17.50: mark the retired facts in every channel, before
+        # the dedup. The helper carries the reasoning.
+        _mark_retired_rows(enriched, _inactive_ids)
+
         # v1.17.15: one fact, one hit. The scored path and the
         # injection channels find facts independently, so a fact both
         # channels match came back twice. The scored copy is the better
@@ -7116,6 +7153,101 @@ def create_app(astor_dir: str | None = None) -> Flask:
                                      and _r.get('score_kind')):
                     _dedup[_fid] = _r
             enriched = list(_dedup.values())
+
+        # v1.17.50: a retired fact sinks below the active ones.
+        #
+        # Retiring a fact is supposed to stop it steering the answer.
+        # Measured on 2026-11-19 over the live corpus: of six facts
+        # that ranked first for their own question, four kept rank 1
+        # after being retired. The only thing between a retired fact
+        # and the answer was a marker in its content, and a marker is
+        # only as strong as the model that reads it.
+        #
+        # The survey on multimodal agent memory (arXiv 2610.19366)
+        # checks formation fidelity, update effectiveness and retrieval
+        # accuracy separately, and a demotion that leaves the ranking
+        # untouched scores badly on the second of those.
+        #
+        # So the ranking moves: retired facts go below the active ones.
+        # They are still returned -- the fact may be what the query is
+        # about, and hiding it would hide the context. This only changes
+        # which one the model sees first.
+        #
+        # Stable sort, so the order inside each group is untouched, and
+        # one sort here covers every channel: the scored path and the
+        # injection channels all converge into this list.
+        if enriched:
+            enriched.sort(key=lambda r: 1 if r.get('status') == 'inactive' else 0)
+
+        # v1.17.50: a retired fact sinks below the active ones.
+        #
+        # Retiring a fact is supposed to stop it steering the answer.
+        # Measured on 2026-11-19 over the live corpus: of six facts
+        # that ranked first for their own question, four kept rank 1
+        # after being retired. The only thing between a retired fact
+        # and the answer was a marker in its content, and a marker is
+        # only as strong as the model that reads it.
+        #
+        # The survey on multimodal agent memory (arXiv 2610.19366)
+        # checks formation fidelity, update effectiveness and retrieval
+        # accuracy separately, and a demotion that leaves the ranking
+        # untouched scores badly on the second of those.
+        #
+        # So the ranking moves: retired facts go below the active ones.
+        # They are still returned -- the fact may be what the query is
+        # about, and hiding it would hide the context. This only changes
+        # which one the model sees first.
+        #
+        # Stable sort, so the order inside each group is untouched, and
+        # one sort here covers every channel: the scored path and the
+        # injection channels all converge into this list.
+
+        # v1.17.50: a retired fact sinks below the active ones.
+        #
+        # Retiring a fact is supposed to stop it steering the answer.
+        # Measured on 2026-11-19 over the live corpus: of six facts
+        # that ranked first for their own question, four kept rank 1
+        # after being retired. The only thing between a retired fact
+        # and the answer was a marker in its content, and a marker is
+        # only as strong as the model that reads it.
+        #
+        # The survey on multimodal agent memory (arXiv 2610.19366)
+        # checks formation fidelity, update effectiveness and retrieval
+        # accuracy separately, and a demotion that leaves the ranking
+        # untouched scores badly on the second of those.
+        #
+        # So the ranking moves: retired facts go below the active ones.
+        # They are still returned -- the fact may be what the query is
+        # about, and hiding it would hide the context. This only changes
+        # which one the model sees first.
+        #
+        # Stable sort, so the order inside each group is untouched, and
+        # one sort here covers every channel: the scored path and the
+        # injection channels all converge into this list.
+
+
+        # v1.17.50: a retired fact sinks below the active ones.
+        #
+        # Retiring a fact is supposed to stop it steering the answer.
+        # Measured on 2026-11-19: of six facts that ranked first for
+        # their own question, four kept rank 1 after being retired. The
+        # only thing between a retired fact and the answer was a marker
+        # in the content, and a marker is only as strong as the model
+        # that reads it.
+        #
+        # The survey on multimodal agent memory (arXiv 2610.19366) checks
+        # formation fidelity, update effectiveness and retrieval accuracy
+        # separately, and a demotion that leaves the ranking untouched
+        # scores badly on the second of those.
+        #
+        # So the ranking moves: retired facts go below the active ones.
+        # They are still returned -- the fact may be what the query is
+        # about, and hiding it would hide the context. This only changes
+        # which one the model sees first.
+        #
+        # Stable sort, so the order inside each group is untouched, and
+        # one sort here covers every channel: the scored path and the
+        # injection channels all converge into this list.
 
         # v1.16.20: cache store (before return).
         try:
