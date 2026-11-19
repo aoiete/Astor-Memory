@@ -1,3 +1,45 @@
+## 1.17.51
+
+**feat(recall): a retired fact has to say why it was retired**
+
+SkillHone (Tencent WeChat, EMNLP 2026 Industry Track) keeps a decision
+history beside the skills it repairs: the diagnosis, the candidate
+approaches, the evidence, and whether each was kept or rejected. Its
+ablation is the number that matters -- remove the decision history and
+accuracy drops 13.4 and 10.9 points. The next agent does not repeat a
+fix that was already tried and refused.
+
+astor had the reason but not the history. `astor_demote` sent it, the
+audit log stored it, and the fact itself kept nothing: a recall showed
+`⚠[INACTIVE]` and nothing else. The next agent could not tell a
+deliberate retirement from a mistake, so it re-proposed the thing the
+user had just rejected -- with a retired fact still sitting in the
+recall block.
+
+The reason now travels in the fact's own row (`metadata.status_reason`)
+and rides inside the label: `⚠[INACTIVE] (the user's own words) the
+fact`. Every consumer sees it, because every consumer reads the
+content. No schema change -- `metadata` already existed.
+
+The reason is cleared when the fact is reactivated: it belonged to the
+retirement, and once the fact is current again the reason is stale.
+
+The same contract now holds on `/v1/read/multi`, which is the path the
+Hermes plugin actually reads. It carried no label and no status field
+before, so in production a demotion was invisible -- and the plugin's
+"N of the facts below were reported as NOT WORKING" hint could never
+fire, because it counts rows with a status. The multi path also sinks
+retired facts now, with the same stable sort the single path uses.
+
+**The same path also resurrected deleted facts.** It re-reads each hit
+by id and did not filter, so a fact whose id the lexical index still
+held came back even though it was tombstoned -- one of those showed up
+in a production recall as `auto fork-4cf743c05ce2`. The same hole
+served facts past their expiry, which is where a retired fact's
+boundary stops meaning anything. The multi path now applies the same
+three filters as the single path: `tombstoned = 0`, not expired, and
+`visibility = 'commons'` on the public tier.
+
 ## 1.17.50
 
 **fix(recall): a retired fact has to stop being the first thing the model sees**

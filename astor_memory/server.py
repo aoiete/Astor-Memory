@@ -965,6 +965,44 @@ def _infer_provenance_kind(origin_session_id: str | None) -> str | None:
     return None
 
 
+def _retired_reason(inactive_ids, fid):
+    """The retirement reason for a fact id, if the caller passed one.
+
+    inactive_ids is normally a {fact_id: reason} mapping. A plain set
+    is still accepted (the older call sites pass one) and yields no
+    reason.
+    """
+    if not isinstance(inactive_ids, dict):
+        return ''
+    try:
+        return inactive_ids.get(int(fid)) or ''
+    except (TypeError, ValueError):
+        return ''
+
+
+def _retired_label(content, reason=''):
+    """The one label a retired fact wears, wherever its row was built.
+
+    Every consumer reads the content -- the plugin prints it, the CLI
+    prints it -- so the reason has to ride inside the label. A retired
+    fact with no visible reason is a trap: the next agent cannot tell a
+    deliberate retirement from a mistake, and re-proposes what the user
+    already rejected. SkillHone (EMNLP 2026 Industry Track) measured
+    that cost: dropping the decision history cost 13.4 and 10.9
+    accuracy points.
+    """
+    if not isinstance(content, str) or not content:
+        return content
+    if content.startswith('\u26a0[INACTIVE] '):
+        return content
+    r = str(reason or '').strip().replace('\n', ' ')
+    if r:
+        if len(r) > 200:
+            r = r[:200] + '...'
+        return '\u26a0[INACTIVE] (' + r + ') ' + content
+    return '\u26a0[INACTIVE] ' + content
+
+
 def _mark_retired_rows(rows, inactive_ids):
     """Label the retired facts, in every channel.
 
@@ -993,9 +1031,9 @@ def _mark_retired_rows(rows, inactive_ids):
             continue
         r['status'] = 'inactive'
         c = r.get('content')
-        if (isinstance(c, str) and c
-                and not c.startswith('\u26a0[INACTIVE] ')):
-            r['content'] = '\u26a0[INACTIVE] ' + c
+        if isinstance(c, str) and c:
+            r['content'] = _retired_label(
+                c, _retired_reason(inactive_ids, r.get('fact_id')))
 
 
 def _v186_now_iso() -> str:
@@ -5483,14 +5521,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # valid_until by NEGATIVE index (row[-2] / row[-1]), so appending
         # a column would silently shift them.
         try:
-            _inactive_ids = {
-                int(r[0]) for r in bus.conn.execute(
-                    "SELECT id FROM memory_canonical "
-                    "WHERE status = 'inactive' AND tombstoned = 0"
-                ).fetchall()
-            }
+            # v1.17.51: the retirement reason travels WITH the fact.
+            #
+            # The reason used to live only in the audit log, so a recall
+            # showed "INACTIVE" and nothing else. The next agent could
+            # not tell a deliberate retirement from a mistake, and
+            # re-proposed what the user had already rejected.
+            _inactive_ids = {}
+            for _r in bus.conn.execute(
+                "SELECT id, metadata FROM memory_canonical "
+                "WHERE status = 'inactive' AND tombstoned = 0"
+            ).fetchall():
+                try:
+                    _rid = int(_r[0])
+                    _rreason = (_meta_dict(_r[1]) or {}).get('status_reason') or ''
+                except Exception:
+                    _rid, _rreason = int(_r[0]), ''
+                _inactive_ids[_rid] = str(_rreason)
         except Exception:
-            _inactive_ids = set()
+            _inactive_ids = {}
         # v1.17.16: the public tier is the shared layer -- every peer in
         # the federation reads it. Only commons are readable from it. A
         # personal row that reached the shared DB (a promote path, a
@@ -6145,7 +6194,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # v1.17.42: label a fact the user reported as not working.
             # The label is what the astor-feedback hook promised; without
             # it the demotion changed nothing an agent could see.
-            _rc_out = ('\u26a0[INACTIVE] ' + _rc) if row[0] in _inactive_ids else _rc
+            _rc_out = (_retired_label(_rc, _retired_reason(_inactive_ids, row[0]))
+                       if row[0] in _inactive_ids else _rc)
             enriched.append({
                 'fact_id': row[0],
                 'content': _rc_out,
@@ -6384,7 +6434,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             _g_level_text = _gc_text
                         # v1.17.42: same inactive label as the ranked
                         # path, so a fact found by grep is marked too.
-                        _gc_out = ('\u26a0[INACTIVE] ' + _gc_text) if _row[0] in _inactive_ids else _gc_text
+                        _gc_out = (_retired_label(_gc_text, _retired_reason(_inactive_ids, _row[0]))
+                                   if _row[0] in _inactive_ids else _gc_text)
                         enriched.append({
                             'fact_id': _row[0],
                             'content': _gc_out,
@@ -7157,16 +7208,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # v1.17.50: a retired fact sinks below the active ones.
         #
         # Retiring a fact is supposed to stop it steering the answer.
-        # Measured on 2026-11-19 over the live corpus: of six facts
-        # that ranked first for their own question, four kept rank 1
-        # after being retired. The only thing between a retired fact
-        # and the answer was a marker in its content, and a marker is
-        # only as strong as the model that reads it.
-        #
-        # The survey on multimodal agent memory (arXiv 2610.19366)
-        # checks formation fidelity, update effectiveness and retrieval
-        # accuracy separately, and a demotion that leaves the ranking
-        # untouched scores badly on the second of those.
+        # Measured on 2026-11-19: of six facts that ranked first for
+        # their own question, four kept rank 1 after being retired. The
+        # only thing between a retired fact and the answer was a marker
+        # in the content, and a marker is only as strong as the model
+        # that reads it.
         #
         # So the ranking moves: retired facts go below the active ones.
         # They are still returned -- the fact may be what the query is
@@ -7178,76 +7224,6 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # injection channels all converge into this list.
         if enriched:
             enriched.sort(key=lambda r: 1 if r.get('status') == 'inactive' else 0)
-
-        # v1.17.50: a retired fact sinks below the active ones.
-        #
-        # Retiring a fact is supposed to stop it steering the answer.
-        # Measured on 2026-11-19 over the live corpus: of six facts
-        # that ranked first for their own question, four kept rank 1
-        # after being retired. The only thing between a retired fact
-        # and the answer was a marker in its content, and a marker is
-        # only as strong as the model that reads it.
-        #
-        # The survey on multimodal agent memory (arXiv 2610.19366)
-        # checks formation fidelity, update effectiveness and retrieval
-        # accuracy separately, and a demotion that leaves the ranking
-        # untouched scores badly on the second of those.
-        #
-        # So the ranking moves: retired facts go below the active ones.
-        # They are still returned -- the fact may be what the query is
-        # about, and hiding it would hide the context. This only changes
-        # which one the model sees first.
-        #
-        # Stable sort, so the order inside each group is untouched, and
-        # one sort here covers every channel: the scored path and the
-        # injection channels all converge into this list.
-
-        # v1.17.50: a retired fact sinks below the active ones.
-        #
-        # Retiring a fact is supposed to stop it steering the answer.
-        # Measured on 2026-11-19 over the live corpus: of six facts
-        # that ranked first for their own question, four kept rank 1
-        # after being retired. The only thing between a retired fact
-        # and the answer was a marker in its content, and a marker is
-        # only as strong as the model that reads it.
-        #
-        # The survey on multimodal agent memory (arXiv 2610.19366)
-        # checks formation fidelity, update effectiveness and retrieval
-        # accuracy separately, and a demotion that leaves the ranking
-        # untouched scores badly on the second of those.
-        #
-        # So the ranking moves: retired facts go below the active ones.
-        # They are still returned -- the fact may be what the query is
-        # about, and hiding it would hide the context. This only changes
-        # which one the model sees first.
-        #
-        # Stable sort, so the order inside each group is untouched, and
-        # one sort here covers every channel: the scored path and the
-        # injection channels all converge into this list.
-
-
-        # v1.17.50: a retired fact sinks below the active ones.
-        #
-        # Retiring a fact is supposed to stop it steering the answer.
-        # Measured on 2026-11-19: of six facts that ranked first for
-        # their own question, four kept rank 1 after being retired. The
-        # only thing between a retired fact and the answer was a marker
-        # in the content, and a marker is only as strong as the model
-        # that reads it.
-        #
-        # The survey on multimodal agent memory (arXiv 2610.19366) checks
-        # formation fidelity, update effectiveness and retrieval accuracy
-        # separately, and a demotion that leaves the ranking untouched
-        # scores badly on the second of those.
-        #
-        # So the ranking moves: retired facts go below the active ones.
-        # They are still returned -- the fact may be what the query is
-        # about, and hiding it would hide the context. This only changes
-        # which one the model sees first.
-        #
-        # Stable sort, so the order inside each group is untouched, and
-        # one sort here covers every channel: the scored path and the
-        # injection channels all converge into this list.
 
         # v1.16.20: cache store (before return).
         try:
@@ -7516,6 +7492,33 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     try:
                         conn = sqlite3.connect(str(_gdp(t, 'bus', uid)))
                         astor_init_schema(conn)
+                        # v1.17.51: persist WHY, in the fact's own row.
+                        #
+                        # The audit log keeps the reason for the operator,
+                        # but the fact and its reason have to be read
+                        # together -- the read path never joins the audit
+                        # table, so a recall could only say "INACTIVE".
+                        # metadata already exists, so this costs no schema
+                        # change.
+                        _meta_json = None
+                        try:
+                            _mrow = conn.execute(
+                                "SELECT metadata FROM memory_canonical "
+                                "WHERE id = ?", (fact_id,)
+                            ).fetchone()
+                            _m = json.loads(_mrow[0]) if (_mrow and _mrow[0]) else {}
+                            if not isinstance(_m, dict):
+                                _m = {}
+                            if new_status == 'inactive':
+                                if reason:
+                                    _m['status_reason'] = str(reason)
+                            else:
+                                # Reactivating clears it: the reason
+                                # belonged to the retirement.
+                                _m.pop('status_reason', None)
+                            _meta_json = json.dumps(_m, ensure_ascii=False)
+                        except Exception:
+                            _meta_json = None  # unreadable metadata: keep it
                         cur = conn.execute(
                             # v1.17.44: a demotion also NARROWS the fact.
                             #
@@ -7540,9 +7543,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             # it should stop being surfaced quickly -- and
                             # reactivating it restores it.
                             "UPDATE memory_canonical SET status = ?, "
-                            "scope_type = ?, expires_at = ? "
+                            "scope_type = ?, expires_at = ?, "
+                            "metadata = COALESCE(?, metadata) "
                             "WHERE id = ? AND tombstoned = 0",
-                            (new_status, _scope_type, _expires_at, fact_id)
+                            (new_status, _scope_type, _expires_at,
+                             _meta_json, fact_id)
                         )
                         if cur.rowcount > 0:
                             conn.commit()
@@ -8788,10 +8793,28 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # of the read rule; it must carry the same fields as /v1/read
             # or the plugin (which reads /v1/read/multi) sees a different
             # contract than a direct caller.
-            row = bus.conn.execute(
-                "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, origin_session_id, metadata "
-                "FROM memory_canonical WHERE id = ?", (fid,),
-            ).fetchone()
+            # v1.17.51: the same three filters the single path applies.
+            #
+            # The multi path re-reads each hit by id, and it did not
+            # filter. The lexical index can still hold the id of a
+            # tombstoned fact (the index-side tombstone sync does not
+            # cover every path), so the re-read resurrected it -- a
+            # deleted fact came back in a production recall. The same
+            # hole let a fact past its expiry (a retired fact past its
+            # boundary) be served. The public tier also needs the
+            # commons filter, or a personal row there is served.
+            _row_sql = (
+                "SELECT id, content, kind, confidence, importance, tags, "
+                "namespace, user_id, origin_session_id, metadata, status "
+                "FROM memory_canonical WHERE id = ? AND tombstoned = 0 "
+                "AND (expires_at IS NULL OR expires_at > "
+                "strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                "AND (valid_until IS NULL OR valid_until > "
+                "strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+            )
+            if tier == 'public':
+                _row_sql += " AND visibility = 'commons'"
+            row = bus.conn.execute(_row_sql, (fid,)).fetchone()
             if row is None:
                 continue
             _m_meta = _meta_dict(row[9]) if len(row) > 9 else {}
@@ -8802,15 +8825,28 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _level_text = (_l1_ovw or _l0_abs or row[1])
             else:
                 _level_text = row[1]
+            # v1.17.51: the multi path is the one the Hermes plugin
+            # reads, so it owes the same retirement contract as
+            # /v1/read: the label, the status field, and the sink.
+            # Before this, a retired fact came back from here with no
+            # marker at all -- so in production the demotion was
+            # invisible and the plugin's "N of the facts below were
+            # reported as NOT WORKING" hint could never fire.
+            _status = (row[10] or 'active') if len(row) > 10 else 'active'
+            _content = row[1] or ''
+            if _status == 'inactive':
+                _content = _retired_label(
+                    _content, (_m_meta or {}).get('status_reason') or '')
             enriched.append({
                 'fact_id': row[0],
-                'content': row[1],
+                'content': _content,
                 'kind': row[2],
                 'confidence': row[3],
                 'importance': row[4],
                 'tags': row[5],
                 'namespace': row[6],
                 'user_id': row[7],
+                'status': _status,
                 # v1.17.30: progressive loading surfaces, same as /v1/read
                 'abstract': _l0_abs,
                 'overview': _l1_ovw,
@@ -8836,6 +8872,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
             d.setdefault('tier', 'peer')
             d.setdefault('cross_tier_score', d.get('relevance', 0))
             merged.append(d)
+
+        # v1.17.51: same sink as /v1/read -- a retired fact goes below
+        # the active ones. Stable sort, so the order inside each group
+        # is untouched. Peer rows carry no status, so they stay with
+        # the active group and keep their place.
+        merged.sort(key=lambda r: 1 if r.get('status') == 'inactive' else 0)
 
         # v1.17.30: same one-place fill as /v1/read. Peer hits are in the
         # same list, so they get the fields too.

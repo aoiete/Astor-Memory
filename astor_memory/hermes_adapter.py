@@ -292,7 +292,9 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                             "type": "string",
                             "description": (
                                 "What the user said, in their words. "
-                                "Recorded as the audit reason."
+                                "Recorded as the audit reason and shown next "
+                                "to the fact on recall, so a later agent can "
+                                "see what was already rejected."
                             ),
                         },
                         "reactivate": {
