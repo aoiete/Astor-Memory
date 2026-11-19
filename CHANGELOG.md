@@ -1,3 +1,49 @@
+## 1.17.43
+
+**fix(recall): a demoted fact now says so**
+
+The astor-feedback hook watches for a user verdict -- "还是不行" -- and
+demotes the facts that fed the previous answer by setting
+`status='inactive'`. Its contract, in the hook's own docstring and in
+HOOK.yaml, is that the fact stays recallable but is marked:
+
+    "⚠[INACTIVE] [EVIDENCE] user likes coffee [/EVIDENCE] -- the
+     fact stays recallable but is marked [INACTIVE]"
+
+Nothing implemented that half. `/v1/fact/<id>/set_status` set the
+column and stopped, and the read path never looked at it -- so a
+demoted fact came back byte identical, at the same score, in the same
+position. Measured on a throwaway instance: before and after the
+demotion the content was the same string and the similarity was
+0.9354400000000002 both times.
+
+So the backward channel was inert. A user could say a memory did not
+work as often as they liked and retrieval would not change. The hook
+had fired exactly once since it was written, and that once was on a
+synthetic test fact.
+
+The read path now labels what the hook demotes, on both paths that
+can return a fact -- the ranked path and the grep-verify path -- so a
+fact found either way is marked. The label is a prefix on the content
+the agent reads, not a filter: the fact stays in the response and
+keeps its score, which is what the hook promised ("demotion never
+destroys knowledge").
+
+The inactive ids are fetched in one query rather than added to the
+per-fact SELECTs. Both of those read `provenance_kind` and
+`valid_until` by negative index (`row[-2]` / `row[-1]`), so appending
+a column to them would have silently shifted them. The query is
+covered by `idx_canonical_status` and costs 0.049 ms.
+
+Not changed: the peer read path also ignores `status`, so a retired
+fact in the shared tier is still served to peers unlabelled. Whether a
+peer should see the label or not see the fact at all is a design
+question, not a bug fix, so it is left alone here.
+
+`tests/test_inactive_label.py`: 3 passed. The label test was verified
+to fail when the injection is reverted -- otherwise it would have been
+another test that passes without checking anything.
+
 ## 1.17.42
 
 **fix(hygiene): the shared tier was holding 95 seeded test facts**

@@ -5431,6 +5431,28 @@ def create_app(astor_dir: str | None = None) -> Flask:
         oversample = max(top_k * 2, 20)
         nest = astor_nest(tier=tier, user_id=user_id)
         bus = astor_bus(tier=tier, user_id=user_id)
+        # v1.17.42: facts the user reported as not working are marked
+        # status='inactive' by the astor-feedback hook (D:/AI/admin/
+        # hermes-config/hooks/astor-feedback). The hook's contract says
+        # they stay recallable but are labelled, so the agent can see
+        # them and reason about them without treating them as current
+        # truth. Nothing downstream read that column: the recall path
+        # returned the fact byte-identical and at the same score, which
+        # made the whole backward channel inert.
+        #
+        # The ids are fetched in one query rather than added to the
+        # per-fact SELECTs: both of those read provenance_kind and
+        # valid_until by NEGATIVE index (row[-2] / row[-1]), so appending
+        # a column would silently shift them.
+        try:
+            _inactive_ids = {
+                int(r[0]) for r in bus.conn.execute(
+                    "SELECT id FROM memory_canonical "
+                    "WHERE status = 'inactive' AND tombstoned = 0"
+                ).fetchall()
+            }
+        except Exception:
+            _inactive_ids = set()
         # v1.17.16: the public tier is the shared layer -- every peer in
         # the federation reads it. Only commons are readable from it. A
         # personal row that reached the shared DB (a promote path, a
@@ -6082,9 +6104,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 _level_text = (_l1_ovw or _l0_abs or _rc)
             else:
                 _level_text = _rc
+            # v1.17.42: label a fact the user reported as not working.
+            # The label is what the astor-feedback hook promised; without
+            # it the demotion changed nothing an agent could see.
+            _rc_out = ('\u26a0[INACTIVE] ' + _rc) if row[0] in _inactive_ids else _rc
             enriched.append({
                 'fact_id': row[0],
-                'content': _rc,
+                'content': _rc_out,
                 'content_truncated': _rc_trunc,
                 # v1.17.30: progressive loading surfaces. 'abstract' is L0
                 # (one sentence), 'overview' is L1 (leading digest),
@@ -6313,9 +6339,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             _g_level_text = (_g_l1 or _g_l0 or _gc_text)
                         else:
                             _g_level_text = _gc_text
+                        # v1.17.42: same inactive label as the ranked
+                        # path, so a fact found by grep is marked too.
+                        _gc_out = ('\u26a0[INACTIVE] ' + _gc_text) if _row[0] in _inactive_ids else _gc_text
                         enriched.append({
                             'fact_id': _row[0],
-                            'content': _gc_text,
+                            'content': _gc_out,
                             'content_truncated': _gc_trunc,
                             # v1.17.30: progressive loading surfaces
                             'abstract': _g_l0,
