@@ -116,3 +116,4 @@ scripts/auto_promote_mental_model.py
 # local PII-rewrite backup tree (not part of the project)
 .old_tree/
 .git.bak-pre-pii-rewrite-*/
+tests/eval_gold.jsonl

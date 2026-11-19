@@ -1,3 +1,45 @@
+## 1.17.49
+
+**feat(eval): a ruler for retrieval changes that needs no hand annotation**
+
+The keyword ruler answers "does recall return anything about this
+topic". It cannot answer "is the right fact at the top", because it has
+no right fact -- the eval set is written by topic, not by fact.
+
+`tests/eval_evidence.py` builds one. For each question the gold is the
+fact containing the most distinct expected keywords, ties going to the
+higher importance and then the lower id. The rule is lexical and fixed,
+so it does not move when the retrieval path changes, which is what an
+A/B ruler has to satisfy. It also covers every question: requiring all
+keywords at once left 44 of 110 with no candidate, this leaves none.
+
+**It reproduces a known answer.** Measured against the live server and
+against a second instance started with a different BM25 weight:
+
+| metric | bm25 0.6 (current) | bm25 0.4 |
+| --- | --- | --- |
+| recall@1 | 0.164 | 0.155 |
+| recall@5 | 0.436 | 0.300 |
+| recall@10 | 0.545 | 0.427 |
+| MRR | 0.287 | 0.232 |
+
+0.6 wins on every metric, which is what the store's own history says:
+0.6 has been the ship default since v1.14.5 and 0.4 was the value
+before it. A ruler that cannot tell a known-good configuration from a
+known-bad one is not a ruler.
+
+**What it can and cannot say.** It measures whether the ranking layer
+surfaces the best lexical match. That is the right question for the
+lexical half -- bm25_weight, the rerank stage, a top_k clamp. It does
+not measure semantic quality: the gold is chosen lexically, so a change
+that only moves the vector half reads flat here even if it helps. Read
+a flat result as "this did not move the lexical ranking", not as "this
+did nothing".
+
+The gold file carries no content -- only the question id, the fact id,
+how many keywords it matched and a hash of the text. The content is
+real user data. `--show` prints it for a human check.
+
 ## 1.17.48
 
 **fix(audit): the reason a fact was retired was never recorded**
