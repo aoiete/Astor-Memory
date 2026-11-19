@@ -1,3 +1,38 @@
+## 1.17.45
+
+**feat(recall): a demotion gives the fact a boundary, so it ages out**
+
+ReHarness (arXiv 2610.12668) argues the disease in a memory system is
+that an experience is unconditional: "bigger first" should have become
+"bigger first, when sorting descending". The cure is to make an
+experience carry its own boundary.
+
+astor cannot rewrite a fact's text on demotion -- that needs a language
+model and a grounding step, and the feedback hook is deliberately
+model-free. But it can give the fact a bound.
+
+A demotion now also moves the fact into the temporary layer with an
+expiry (7 days). The read path already filters expired rows, so the
+fact stops being surfaced on its own instead of sitting in the store
+forever as "inactive but still retrieved" and competing for a top slot
+on every query it matches. Reactivating it puts it back in the permanent
+layer -- the operator saying "it works again" is the operator saying it
+is current truth.
+
+7 days rather than scope_policy's 30: that value is for facts nobody
+has used, where a month is cheap. This one was reported as not
+working, so it should stop being surfaced quickly.
+
+**A demoted fact is no longer renewed on recall.** The renewal on
+recall is the safety valve that keeps a fact alive as long as it keeps
+being used -- and that is exactly wrong here: the fact that fed a
+failed answer is the one most likely to be recalled again. Without
+this a demoted fact would be renewed forever and never age out.
+
+`tests/test_inactive_label.py`: 6 passed. The boundary test and the
+"does not change the score" test were both verified to fail when the
+change is reverted.
+
 ## 1.17.44
 
 **feat(recall): the status of a fact travels as a field, and a demotion

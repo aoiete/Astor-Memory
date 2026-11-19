@@ -1698,7 +1698,17 @@ class AstorBus:
                             "UPDATE memory_canonical "
                             "SET importance = ?, last_confirmed_at = ?, access_count = access_count + 1, "
                             "    expires_at = CASE "
+                            # v1.17.44: do not renew an inactive fact.
+                            #
+                            # The renewal is the safety valve that keeps a
+                            # fact alive as long as it is being used -- and
+                            # that is exactly wrong for a fact the user
+                            # reported as not working: the fact that fed a
+                            # failed answer is the one most likely to be
+                            # recalled again. Without this a demoted fact
+                            # would be renewed forever and never age out.
                             "      WHEN scope_type = 'short_term' AND expires_at IS NOT NULL "
+                            "           AND status != 'inactive' "
                             "      THEN ? ELSE expires_at END "
                             "WHERE id = ?",
                             (_new_imp, _now, _renewed_expiry, _id),

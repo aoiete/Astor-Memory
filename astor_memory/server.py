@@ -215,6 +215,11 @@ _READ_CACHE: dict = {}  # key=(query,tier,user,top_k) -> (timestamp, results)
 import time as _rc_init_t
 _RCACHE_TTL_S = 60
 
+# v1.17.44: how long a fact the user reported as not working keeps being
+# returned (labelled, so it does not mislead) before it ages out. Short
+# on purpose: the operator has already said it does not work.
+_DEMOTED_TTL_DAYS = 7
+
 
 # v1.16.42 (2026-10-01): meta-recall stats dict — pre-existing latent bug
 # where _meta_recall_stats (lowercase) was 'global' inside functions but
@@ -7329,6 +7334,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if new_status not in ('active', 'inactive', 'archived'):
             return jsonify({'error': 'invalid_status',
                             'detail': 'status must be one of active|inactive|archived'}), 400
+        # v1.17.44: the narrowing that goes with the status.
+        import datetime as _dtz
+        if new_status == 'inactive':
+            _scope_type = 'short_term'
+            _expires_at = (
+                _dtz.datetime.now(_dtz.timezone.utc)
+                + _dtz.timedelta(days=_DEMOTED_TTL_DAYS)
+            ).isoformat().replace('+00:00', 'Z')
+        else:
+            # Reactivating means the operator says it is current truth
+            # again, so it goes back to the permanent layer.
+            _scope_type = 'long_term'
+            _expires_at = None
         try:
             from .bus.store import _get_or_create_singleton as _g
             from ._internal.acl import astor_check_write
@@ -7366,8 +7384,32 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         conn = sqlite3.connect(str(_gdp(t, 'bus', uid)))
                         astor_init_schema(conn)
                         cur = conn.execute(
-                            "UPDATE memory_canonical SET status = ? WHERE id = ? AND tombstoned = 0",
-                            (new_status, fact_id)
+                            # v1.17.44: a demotion also NARROWS the fact.
+                            #
+                            # ReHarness (arXiv 2610.12668) argues the disease
+                            # is that an experience is unconditional: "bigger
+                            # first" should have become "bigger first, when
+                            # sorting descending". The cure is to make an
+                            # experience carry its own boundary.
+                            #
+                            # astor cannot rewrite the fact's text here --
+                            # that would need an LLM and a grounding step.
+                            # But it can give the fact a BOUND: demote it
+                            # into the temporary layer with an expiry. The
+                            # read path already filters expired rows, so the
+                            # fact ages out on its own instead of sitting in
+                            # the store forever as "inactive but still
+                            # retrieved".
+                            #
+                            # 7 days, not scope_policy's 30: that value is
+                            # for facts nobody has used, where a month is
+                            # cheap. This one was reported as not working, so
+                            # it should stop being surfaced quickly -- and
+                            # reactivating it restores it.
+                            "UPDATE memory_canonical SET status = ?, "
+                            "scope_type = ?, expires_at = ? "
+                            "WHERE id = ? AND tombstoned = 0",
+                            (new_status, _scope_type, _expires_at, fact_id)
                         )
                         if cur.rowcount > 0:
                             conn.commit()
