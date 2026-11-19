@@ -1,3 +1,32 @@
+## 1.17.46
+
+**fix(peer): a retired fact is not shared with peers**
+
+The peer read path filtered `tombstoned = 0` and `visibility =
+'commons'`, but not `status`. So a fact the operator had reported as
+not working -- the feedback hook sets that when an answer drawn from
+it failed -- was still served to peers as if it were current knowledge.
+
+This is not hypothetical: the shared tier holds the method and lesson
+facts that feed answers every day, so any of them leading to a failed
+answer retires one.
+
+Locally the fact stays visible and labelled, because the local agent
+can reason about "this used to be true". A peer has none of that
+context: it would receive the fact as knowledge and repeat the failure,
+at federation scale. The peer boundary now stops serving retired facts.
+
+The fact is not destroyed. It stays in the shared tier with its label
+and its reason, and the local operator can still see it.
+
+The fix is a WHERE clause, not a new column: the peer contract selects
+exactly four columns (`id`, `content`, `kind`, `importance`) and a
+guard test pins that list, so adding `status` to the SELECT would have
+broken the contract.
+
+`tests/test_peer_retired_facts.py`: 2 passed, and the retired-fact
+assertion was verified to fail when the filter is reverted.
+
 ## 1.17.45
 
 **feat(recall): a demotion gives the fact a boundary, so it ages out**

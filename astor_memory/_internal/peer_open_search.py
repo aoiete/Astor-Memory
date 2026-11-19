@@ -251,8 +251,20 @@ def _recall_public(query: str, limit: int) -> list[dict]:
     # them -- and this function answers a remote node, so reading the
     # whole table handed out private facts. Measured on the live corpus:
     # 509 of 732 public rows were `personal`.
+    # v1.17.45: a retired fact is not shared.
+    #
+    # status='inactive' means the operator reported that fact as not
+    # working -- the feedback hook sets it when an answer drawn from
+    # it failed. Locally the fact stays visible and labelled, because
+    # the local agent can reason about "this used to be true". A peer
+    # has none of that context: it would receive the fact as knowledge
+    # and repeat the failure, at federation scale.
+    #
+    # The fact is not destroyed. It stays in the shared tier with its
+    # label and its reason, and the local operator can still see it.
     where = ('COALESCE(tombstoned, 0) = 0 '
-             "AND COALESCE(visibility, 'commons') = 'commons' AND ") + \
+             "AND COALESCE(visibility, 'commons') = 'commons' "
+             "AND COALESCE(status, 'active') = 'active' AND ") + \
         ' AND '.join('LOWER(content) LIKE ?' for _ in tokens)
     params: list = [f'%{t}%' for t in tokens]
     params.append(max(1, min(20, limit)))
