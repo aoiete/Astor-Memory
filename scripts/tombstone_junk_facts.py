@@ -22,7 +22,18 @@ JUNK_PATTERNS = [
     ("ACL测试fixture", r"(?i)(my stocks went down|tired and sad about my work|^[a-z-]+ own (v\d+|note|private)$)"),
     ("过期状态快照", r"(?i)(^astor.{0,30}(alive|server 在 :\d+)|\d+ facts / \d+ events|^\d+ embeds / \d+ facts)"),
 ]
-COMPILED = [(name, re.compile(p)) for name, p in JUNK_PATTERNS]
+# The probe prefixes astor's own write path already refuses live in a
+# shared tier come from the same list the write path uses. Two lists
+# drift: the write path knew "auto fork-" and the cleanup tool did not,
+# so the residue the write path was told to keep out stayed in the
+# private tier for months. One source, imported.
+try:
+    from astor_memory.forge.hygiene_rules import PROBE_PREFIXES
+    _prefix_pats = [(f"探针前缀:{pfx}", rf"^{re.escape(pfx)}") for pfx in PROBE_PREFIXES]
+except Exception:  # running the script outside the package
+    _prefix_pats = []
+
+COMPILED = [(name, re.compile(p)) for name, p in JUNK_PATTERNS + _prefix_pats]
 
 
 def find_bus_dbs(root):

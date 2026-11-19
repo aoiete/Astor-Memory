@@ -12,7 +12,79 @@ import unittest
 import urllib.request
 import urllib.error
 
-BASE = "http://127.0.0.1:7803"
+# This file writes. It used to write to the live server, so every test
+# run left a fact behind -- 182 of them accumulated in the live private
+# tier over months ("auto fork-<uuid>" and "middleware-warn-test"),
+# and they showed up in recall.
+#
+# So the tests get their own astor: a temporary ASTOR_DIR and a server
+# on a free port. If it cannot start, the module skips -- falling back
+# to the live server would be the bug again.
+BASE = ""
+
+
+def _start_isolated_server():
+    """A throwaway astor on a temp dir and a free port.
+
+    Returns (base_url, process) or (None, None).
+    """
+    import os
+    import socket
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path as _P
+
+    repo = _P(__file__).resolve().parent.parent
+    py = sys.executable
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    tmp = tempfile.mkdtemp(prefix="astor_correction_")
+    env = {**os.environ, "ASTOR_DIR": tmp}
+    proc = subprocess.Popen(
+        [py, "-u", "-m", "astor_memory.server", "--host", "127.0.0.1",
+         "--port", str(port)],
+        cwd=str(repo), env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    import time as _t
+    base = f"http://127.0.0.1:{port}"
+    deadline = _t.time() + 90
+    while _t.time() < deadline:
+        try:
+            with urllib.request.urlopen(base + "/v1/health", timeout=5) as r:
+                if r.status == 200:
+                    return base, proc
+        except Exception:
+            _t.sleep(0.5)
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    return None, None
+
+
+def setUpModule():
+    global BASE
+    base, proc = _start_isolated_server()
+    if base is None:
+        raise unittest.SkipTest("could not start an isolated astor server")
+    BASE = base
+    globals()["_ISOLATED_PROC"] = proc
+
+
+def tearDownModule():
+    proc = globals().pop("_ISOLATED_PROC", None)
+    if proc is not None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=15)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
 
 def _post(path: str, body: dict, timeout: int = 15) -> tuple[int, dict]:
