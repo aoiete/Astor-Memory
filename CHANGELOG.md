@@ -1,3 +1,43 @@
+## 1.17.48
+
+**fix(audit): the reason a fact was retired was never recorded**
+
+`set_status` called `from .bus.store import astor_audit`. Nothing
+exports that name from `bus.store` -- it lives in
+`_internal/audit_logger` -- so the ImportError was swallowed by the
+bare `except: pass` around it, and the retirement reason was dropped on
+the floor. Every other audit call in the server imports it from the
+right place; this one was the only one, and it was the newest.
+
+A retirement without a reason is a deletion with extra steps: there is
+no way to tell a deliberate retirement from a mistake, and nothing to
+show the operator.
+
+The reason now goes into the tier database that holds the fact, in the
+same `audit_log` the fact's own lifecycle uses, so the fact and its
+reason are read together. The system-wide audit gets the call too, now
+with the correct import -- and neither audit failure is silent any
+more: each writes to stderr instead of being swallowed.
+
+**feat(cli): `am retired` and `am reactivate`**
+
+A retired fact stays in the store: it is still recallable, it is marked
+[INACTIVE], and it ages out on its own. What it loses is being served
+as current truth. Until now the operator could not see that queue at
+all.
+
+`am retired` lists it -- id, tier, kind, the boundary it was given, and
+why it was retired. `am reactivate <id>` puts one back.
+
+The shape follows `am pending` / `am confirm` / `am reject`, which
+already do this for the candidates that were written but never
+promoted.
+
+`tests/test_retired_cli.py`: 2 passed against a real server -- the
+reason is recorded next to the fact, the queue lists it, and the
+restore puts it back. Both assertions were verified to fail when the
+audit is removed.
+
 ## 1.17.47
 
 **feat(adapter): astor_demote -- retire a memory the user just rejected**

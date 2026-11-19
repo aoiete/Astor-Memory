@@ -28,8 +28,9 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-REPO = Path(r"D:/AI/astor-memory")
-PY = r"D:/AI/PY-311/Scripts/python.exe"
+REPO = Path(__file__).resolve().parent.parent
+# the interpreter running the tests is the one the server should use
+PY = sys.executable
 
 
 def _free_port():

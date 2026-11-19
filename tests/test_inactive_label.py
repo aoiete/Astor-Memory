@@ -1,6 +1,6 @@
 """A fact the user reported as not working must be labelled on recall.
 
-The astor-feedback hook (D:/AI/admin/hermes-config/hooks/astor-feedback)
+The astor-feedback hook (installed under the Hermes home)
 watches for a user verdict -- "还是不行" -- and demotes the facts that
 fed the previous answer by setting status='inactive'. Its contract, in
 the hook's own docstring and in HOOK.yaml, is that the fact stays

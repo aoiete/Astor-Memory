@@ -815,6 +815,26 @@ def main(argv: list[str] | None = None) -> int:
                             help="Whose private tier to look in (default admin)")
     pending_p.set_defaults(func=cmd_pending)
 
+    # v1.17.48: the retired-fact queue -- facts the operator (or the
+    # feedback hook) reported as not working. They stay in the store,
+    # marked and bounded, but they are no longer current truth.
+    retired_p = subparsers.add_parser(
+        'retired', help='List the facts that were retired as not working')
+    retired_p.add_argument('--limit', type=int, default=20,
+                            help='How many to list (default 20)')
+    retired_p.add_argument('--tier', default='all',
+                            help="Which tier to look in: all | public | private")
+    retired_p.add_argument('--user', default='admin',
+                            help="Whose private tier to look in (default admin)")
+    retired_p.set_defaults(func=cmd_retired)
+
+    reactivate_p = subparsers.add_parser(
+        'reactivate', help='Restore a retired fact to current truth')
+    reactivate_p.add_argument('fact_id', help='Fact id')
+    reactivate_p.add_argument('--reason', default='restored by the operator',
+                               help='Why it is being restored')
+    reactivate_p.set_defaults(func=cmd_reactivate)
+
     confirm_p = subparsers.add_parser(
         'confirm', help='Promote a pending candidate')
     confirm_p.add_argument('candidate_id', help='Candidate id')
@@ -1543,6 +1563,93 @@ def cmd_pending(args) -> int:
     print()
     print('  promote one:  am confirm <id> --force')
     print('  drop one:     am reject <id> --reason "..."')
+    return 0
+
+
+def cmd_retired(args) -> int:
+    """List the facts that were retired because they did not work.
+
+    A retired fact stays in the store: it is still recallable, it is
+    marked [INACTIVE], and it ages out on its own. What it loses is
+    being served as current truth. This is where the operator sees
+    which facts those are and why each one was retired.
+    """
+    limit = int(getattr(args, 'limit', 20) or 20)
+    rows = []
+    for label, bus in _pending_buses(args):
+        try:
+            for r in bus.conn.execute(
+                    "SELECT id, content, kind, status, scope_type, expires_at, "
+                    "created_at FROM memory_canonical "
+                    "WHERE status = 'inactive' AND tombstoned = 0 "
+                    "ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall():
+                rows.append((label, {
+                    'id': r[0], 'content': r[1], 'kind': r[2], 'status': r[3],
+                    'scope_type': r[4], 'expires_at': r[5], 'created_at': r[6],
+                    'reason': _retire_reason(bus, r[0])}))
+        except Exception as _e:
+            print(f'[WARN] {label}: {_e}', file=sys.stderr)
+    if not rows:
+        print('[OK] no retired facts')
+        return 0
+    print(f'[astor] {len(rows)} retired fact(s):')
+    for label, r in rows:
+        until = str(r['expires_at'] or '')[:10] or '-'
+        print(f"  #{r['id']} [{label}] {r['kind']} scope={r['scope_type']} "
+              f"until {until}")
+        print(f"      {str(r['content'])[:160]}")
+        if r['reason']:
+            print(f"      why: {r['reason'][:200]}")
+    print()
+    print('  restore one:  am reactivate <id>')
+    return 0
+
+
+def _retire_reason(bus, fact_id) -> str:
+    """The reason a fact was retired, from the audit trail.
+
+    The reason is written next to the fact, in the same database, so
+    the fact and its reason are read together.
+    """
+    try:
+        row = bus.conn.execute(
+            "SELECT reason FROM audit_log WHERE event = 'set_status' "
+            "AND target_id = ? ORDER BY id DESC LIMIT 1",
+            (str(fact_id),)).fetchone()
+        return (row[0] or '') if row else ''
+    except Exception:
+        return ''
+
+
+def cmd_reactivate(args) -> int:
+    """Restore a retired fact: it becomes current truth again."""
+    fid = int(getattr(args, 'fact_id', 0) or 0)
+    if not fid:
+        print('[ERR] a fact id is required', file=sys.stderr)
+        return 1
+    import os as _os
+    import urllib.request as _ur
+    endpoint = _os.environ.get('ASTOR_ENDPOINT', 'http://127.0.0.1:7803')
+    body = json.dumps({
+        'status': 'active',
+        'reason': str(getattr(args, 'reason', '') or 'restored by the operator'),
+    }).encode()
+    req = _ur.Request(f'{endpoint}/v1/fact/{fid}/set_status', data=body,
+                       headers={'Content-Type': 'application/json'})
+    try:
+        with _ur.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except Exception as exc:
+        print(f'[ERR] could not reach the astor server: {exc}',
+              file=sys.stderr)
+        print(f'       is it running? {endpoint}', file=sys.stderr)
+        return 1
+    if not data.get('ok'):
+        print(f'[ERR] {data.get("error", "could not restore")}: '
+              f'{data.get("detail", "")}', file=sys.stderr)
+        return 1
+    print(f'[OK] fact #{fid} is active again')
+    print(f"     restored in: {', '.join(data.get('updated_tiers') or [])}")
     return 0
 
 

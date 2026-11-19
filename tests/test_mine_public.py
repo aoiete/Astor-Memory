@@ -114,12 +114,12 @@ def test_a_public_write_is_scrubbed_at_the_bus(tmp_path, monkeypatch):
     event_id = bus.append_event(
         namespace="admin", agent_id="test", source="test",
         action="write",
-        content="LESSON 抓文章缓存在 D:/AI/.tmp_wechat.html, "
+        content="LESSON 抓文章缓存在 D:/scratch/.tmp_wechat.html, "
                 "脚本在 X:/Users/someone/AppData/run.py",
     )
     cand_id = bus.insert_candidate(
         event_id=event_id, namespace="admin",
-        content="LESSON 抓文章缓存在 D:/AI/.tmp_wechat.html, "
+        content="LESSON 抓文章缓存在 D:/scratch/.tmp_wechat.html, "
                 "脚本在 X:/Users/someone/AppData/run.py",
         kind="lesson", confidence=0.9, importance=0.7, tags=[],
     )
@@ -128,7 +128,7 @@ def test_a_public_write_is_scrubbed_at_the_bus(tmp_path, monkeypatch):
     row = bus.conn.execute(
         "SELECT content FROM memory_canonical WHERE id = ?", (fid,)).fetchone()
     content = row[0]
-    assert "D:/AI" not in content
+    assert "D:/scratch" not in content
     assert "someone" not in content
     assert "<root>" in content
     assert "<home>" in content
@@ -145,18 +145,18 @@ def test_a_private_write_keeps_its_path(tmp_path, monkeypatch):
     bus = astor_bus(tier="private", user_id="admin")
     event_id = bus.append_event(
         namespace="admin", agent_id="test", source="test",
-        action="write", content="缓存在 D:/AI/.tmp_wechat.html",
+        action="write", content="缓存在 D:/scratch/.tmp_wechat.html",
     )
     cand_id = bus.insert_candidate(
         event_id=event_id, namespace="admin",
-        content="缓存在 D:/AI/.tmp_wechat.html",
+        content="缓存在 D:/scratch/.tmp_wechat.html",
         kind="fact", confidence=0.9, importance=0.7, tags=[],
     )
     fid = bus.promote_candidate(cand_id, promoted_by="test", user_id="admin",
                                 tier="private")
     row = bus.conn.execute(
         "SELECT content FROM memory_canonical WHERE id = ?", (fid,)).fetchone()
-    assert "D:/AI/.tmp_wechat.html" in row[0]
+    assert "D:/scratch/.tmp_wechat.html" in row[0]
 
 
 def test_a_state_const_token_survives_the_body():

@@ -30,10 +30,34 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-HOOK = Path(r"D:/AI/admin/hermes-config/hooks/astor-feedback/astor_feedback.py")
-PY = r"D:/AI/PY-311/Scripts/python.exe"
-REPO = r"D:/AI/astor-memory"
+REPO = Path(__file__).resolve().parent.parent
+# the interpreter running the tests is the one the server should use
+PY = sys.executable
 MARKER = "wombat"
+
+
+def _find_hook() -> Path | None:
+    """The installed astor-feedback hook.
+
+    It lives under the Hermes home, not in this repository. The Hermes
+    home is derived rather than hardcoded, so nothing here names a
+    machine.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        home = Path(get_hermes_home())
+    except Exception:
+        env = os.environ.get("HERMES_HOME")
+        if not env:
+            return None
+        home = Path(env)
+    for candidate in (home / "hooks" / "astor-feedback" / "astor_feedback.py",):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+HOOK = _find_hook()
 
 
 def _free_port() -> int:
@@ -44,6 +68,8 @@ def _free_port() -> int:
     return p
 
 
+@unittest.skipIf(HOOK is None,
+                 "the astor-feedback hook is not installed on this host")
 class TestFeedbackLoopEndToEnd(unittest.TestCase):
 
     @classmethod
@@ -56,8 +82,8 @@ class TestFeedbackLoopEndToEnd(unittest.TestCase):
         cls._server = subprocess.Popen(
             [PY, "-m", "astor_memory.server", "--host", "127.0.0.1",
              "--port", str(cls.port)],
-            cwd=REPO,
-            env={**os.environ, "PYTHONPATH": REPO,
+            cwd=str(REPO),
+            env={**os.environ, "PYTHONPATH": str(REPO),
                  "ASTOR_DIR": str(cls.astor_dir)},
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )

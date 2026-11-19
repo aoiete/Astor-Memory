@@ -47,6 +47,8 @@ command that was removed disappears from here.
 | `am recall-auto` | Auto-classify an error / tool-output string into the right recall zone |
 | `am relay` | Relay service (postman, not reader) |
 | `am pending` | List candidates that were written but never promoted |
+| `am retired` | List the facts that were retired as not working |
+| `am reactivate` | Restore a retired fact to current truth |
 | `am confirm` | Promote a pending candidate |
 | `am agent` | Which LLM provider each connecting agent wants used |
 | `am reject` | Drop a pending candidate |
@@ -647,6 +649,31 @@ options:
   --limit LIMIT  How many to list (default 20)
   --tier TIER    Which tier to look in: all | public | private
   --user USER    Whose private tier to look in (default admin)
+```
+
+### `am retired`
+
+```
+usage: am retired [-h] [--limit LIMIT] [--tier TIER] [--user USER]
+
+options:
+  -h, --help     show this help message and exit
+  --limit LIMIT  How many to list (default 20)
+  --tier TIER    Which tier to look in: all | public | private
+  --user USER    Whose private tier to look in (default admin)
+```
+
+### `am reactivate`
+
+```
+usage: am reactivate [-h] [--reason REASON] fact_id
+
+positional arguments:
+  fact_id          Fact id
+
+options:
+  -h, --help       show this help message and exit
+  --reason REASON  Why it is being restored
 ```
 
 ### `am confirm`

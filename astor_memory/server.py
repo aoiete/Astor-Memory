@@ -7378,6 +7378,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             from ._internal.acl_layout import get_db_path as _gdp
             from .bus.schema import astor_init_schema
             updated_tiers = []
+            updated_pairs = []
             for t in ('public', 'private', 'source'):
                 for uid in (None, 'admin'):
                     try:
@@ -7414,22 +7415,55 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         if cur.rowcount > 0:
                             conn.commit()
                             updated_tiers.append(f"{t}:{uid or '_'}")
+                            updated_pairs.append((t, uid))
                         conn.close()
                     except Exception:
                         continue
             if not updated_tiers:
                 return jsonify({'error': 'fact_not_found',
                                 'detail': f'no tier DB had fact_id={fact_id}'}), 404
-            # Audit
+            # Audit.
+            #
+            # The reason a fact was retired is the whole point of
+            # retiring it: without it there is no way to tell a
+            # deliberate retirement from a mistake, and nothing to show
+            # the operator. It goes in the tier database that holds the
+            # fact, so the fact and its reason are read together.
+            #
+            # v1.17.48: this import was from .bus.store, which does not
+            # export astor_audit, so the ImportError was swallowed by the
+            # bare except and the reason was never recorded at all.
+            for _t, _uid in updated_pairs:
+                try:
+                    from .bus.store import astor_bus as _bus_for_audit
+                    _bus_for_audit(tier=_t, user_id=_uid).write_audit(
+                        event='set_status',
+                        actor='admin:admin',
+                        target_type='fact',
+                        target_id=str(fact_id),
+                        old_state={'status': 'active', 'scope_type': 'long_term'},
+                        new_state={'status': new_status,
+                                   'scope_type': _scope_type},
+                        reason=reason,
+                        metadata={'fact_id': fact_id},
+                    )
+                except Exception as _audit_exc:
+                    _safe_stderr_write(
+                        f'[astor.server] set_status audit failed: '
+                        f'{type(_audit_exc).__name__}: {_audit_exc}\n'
+                    )
             try:
-                from .bus.store import astor_audit
+                from ._internal.audit_logger import astor_audit
                 astor_audit(
                     actor='admin:admin', tier='public', action='set_status',
                     target=str(fact_id),
                     metadata={'new_status': new_status, 'reason': reason},
                 )
-            except Exception:
-                pass
+            except Exception as _central_exc:
+                _safe_stderr_write(
+                    f'[astor.server] set_status central audit failed: '
+                    f'{type(_central_exc).__name__}: {_central_exc}\n'
+                )
             return jsonify({'fact_id': fact_id, 'status': new_status,
                             'updated_tiers': updated_tiers, 'ok': True})
         except Exception as e:
