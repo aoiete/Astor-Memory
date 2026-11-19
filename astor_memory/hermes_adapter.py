@@ -842,8 +842,15 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                     headers={'Content-Type': 'application/json'},
                 )
                 data = json.loads(_ur.urlopen(req, timeout=15).read().decode('utf-8'))
+            except _ur.error.HTTPError as exc:
+                # the server answers a missing fact with 404 and a JSON body
+                try:
+                    detail = exc.read().decode('utf-8', 'replace')[:300]
+                except Exception:
+                    detail = ''
+                data = {"error": f"http_{exc.code}", "detail": detail}
             except Exception as exc:
-                data = {"error": str(exc)}
+                data = {"error": f"{type(exc).__name__}: {exc}"}
             results.append({"fact_id": fid, "result": data})
         changed = [r for r in results
                    if isinstance(r["result"], dict) and r["result"].get("ok")]
