@@ -1,3 +1,47 @@
+## 1.17.44
+
+**feat(recall): the status of a fact travels as a field, and a demotion
+takes effect on the next recall**
+
+Two things stood between the astor-feedback hook and a working
+feedback loop, both found while making the label the hook promised
+actually reach the model.
+
+**The status is now a field, not only a label in the text.** A consumer
+that grepped the content for "[INACTIVE]" would also match a fact whose
+TEXT discusses the inactive mechanism -- and this corpus does contain
+such facts, including the ones written about this work. The read path
+returns `status` alongside `content` now, and the Hermes plugin reads
+the field.
+
+**A demotion used to be invisible for up to a minute.** The read path
+caches responses for 60 seconds and the cache stores the built result
+dicts, so a fact demoted at one moment kept coming back unmarked until
+the entry expired. That window is exactly where the feedback loop
+lands: the hook demotes at the end of turn N+1 and the agent recalls
+again in turn N+2, which is often inside it. `set_status` now drops
+the cached entries that mention the fact -- those entries only, so
+concurrent readers do not all miss at once.
+
+**The Hermes plugin says it in the block.** A fact marked inactive is
+still returned (the hook's contract: "demotion never destroys
+knowledge", and the fact may still be relevant to the query), but the
+block now opens with a line saying how many facts below were reported
+as not working, and that they are retired rather than current truth.
+It follows the pattern already used for contradicted facts.
+
+**The plugin's Python was never covered by the sync tool.**
+`sync_hermes_config.py` only syncs files carrying the
+`SYNC_HERMES_SCRIPT=True` marker, and the astor plugin's `__init__.py`
+did not have one -- so the runtime copy under
+`$HERMES_HOME/hermes-agent/plugins/memory/astor_memory/` was kept in
+step by hand. The marker is now inside the module docstring (so
+`__doc__` survives), and the file is part of the sync and backup set.
+
+`tests/test_inactive_label.py`: 4 passed. The status-field test failed
+before the cache invalidation was added, which is how the cache hole
+was found.
+
 ## 1.17.43
 
 **fix(recall): a demoted fact now says so**

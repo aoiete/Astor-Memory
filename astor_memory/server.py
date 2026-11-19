@@ -6111,6 +6111,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
             enriched.append({
                 'fact_id': row[0],
                 'content': _rc_out,
+                # v1.17.43: the status as a field, not just the label in
+                # the content. A consumer that greps for "[INACTIVE]"
+                # would also match a fact whose TEXT mentions the
+                # mechanism -- and this corpus does contain such facts.
+                'status': 'inactive' if row[0] in _inactive_ids else 'active',
                 'content_truncated': _rc_trunc,
                 # v1.17.30: progressive loading surfaces. 'abstract' is L0
                 # (one sentence), 'overview' is L1 (leading digest),
@@ -6345,6 +6350,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         enriched.append({
                             'fact_id': _row[0],
                             'content': _gc_out,
+                            'status': 'inactive' if _row[0] in _inactive_ids else 'active',
                             'content_truncated': _gc_trunc,
                             # v1.17.30: progressive loading surfaces
                             'abstract': _g_l0,
@@ -7330,6 +7336,24 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except Exception:
             pass
         try:
+            # v1.17.43: a demotion has to be visible on the next recall.
+            # The read path caches responses for _RCACHE_TTL_S (60s), and
+            # the cache stores the built result dicts -- so a fact demoted
+            # now would keep coming back unmarked for up to a minute.
+            # That window is exactly where the feedback loop lands: the
+            # hook demotes at the end of turn N+1 and the agent recalls
+            # again in turn N+2, which is often inside it. Drop the
+            # cached entries that mention this fact rather than the
+            # whole cache -- clearing it all would make every concurrent
+            # reader miss at once.
+            global _READ_CACHE
+            for _ck, (_cts, _cres) in list(_READ_CACHE.items()):
+                try:
+                    if any(isinstance(_r, dict) and _r.get('fact_id') == fact_id
+                           for _r in (_cres or [])):
+                        _READ_CACHE.pop(_ck, None)
+                except Exception:
+                    pass
             # We write to all 3 tiers since status is a global SSoT property
             # of a fact_id. In practice fact_ids are tier-namespaced, but
             # for safety we update every tier DB that contains the row.

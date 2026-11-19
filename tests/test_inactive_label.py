@@ -90,6 +90,27 @@ class TestInactiveLabel(unittest.TestCase):
         # The label must not replace the fact.
         self.assertIn("demoted fact mentioning", hit.get("content") or "")
 
+    def test_the_status_is_a_field_not_only_a_label(self):
+        """A consumer must be able to tell without reading the text.
+
+        Grepping the content for "[INACTIVE]" would also match a fact
+        whose TEXT discusses the inactive mechanism -- and this corpus
+        does contain such facts. So the status travels as a field.
+        """
+        fid = self._write(f"status field test mentioning {MARKER} and a fourth rare token")
+        hits = self._read(f"{MARKER} fourth rare token")
+        hit = next((h for h in hits if h.get("fact_id") == fid), None)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit.get("status"), "active")
+
+        self.client.post(f"/v1/fact/{fid}/set_status", json={
+            "status": "inactive", "reason": "user reported this did not work",
+        })
+        hits = self._read(f"{MARKER} fourth rare token")
+        hit = next((h for h in hits if h.get("fact_id") == fid), None)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit.get("status"), "inactive")
+
     def test_demotion_does_not_hide_the_fact_or_change_its_score(self):
         """The hook's contract: the fact stays recallable.
 
