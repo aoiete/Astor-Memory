@@ -53,6 +53,12 @@ class TestAstorDemote(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix="astor_demote_")
+        # Remember the original: this test points ASTOR_DIR at its own
+        # directory, and every later test in the session inherits that.
+        # Leaving it behind makes the next test write to the database
+        # the server subprocess still has open -- an OperationalError
+        # that looks like a random failure in an unrelated test.
+        cls._orig_astor_dir = os.environ.get("ASTOR_DIR")
         os.environ["ASTOR_DIR"] = cls.tmp
         cls.port = _free_port()
         cls.base = f"http://127.0.0.1:{cls.port}"
@@ -82,6 +88,10 @@ class TestAstorDemote(unittest.TestCase):
                 cls.proc.kill()
             except Exception:
                 pass
+        if cls._orig_astor_dir is None:
+            os.environ.pop("ASTOR_DIR", None)
+        else:
+            os.environ["ASTOR_DIR"] = cls._orig_astor_dir
 
     def _write_fact(self, content):
         r = _post(self.base + "/v1/write", {
