@@ -18,7 +18,13 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(os.environ.get("ASTOR_PROJECT_ROOT", "."))
-HISTORY = Path(os.environ.get("ASTOR_METRICS_DIR", str(ROOT / "astor" / "metrics"))) / "eval_history.jsonl"
+# Default to the runtime directory, not the checkout: the default used to
+# be <repo>/astor/metrics, which left eval artifacts in the source tree.
+HISTORY = Path(
+    os.environ.get("ASTOR_METRICS_DIR")
+    or str(Path(os.environ.get("ASTOR_DIR") or (Path.home() / ".astor"))
+           / "astor" / "metrics")
+) / "eval_history.jsonl"
 # S15 (2026-09-08): last-good BM25 weight is read from eval_history.jsonl (most recent
 # baseline run's kwargs.bm25_weight). This way rollback restores the previously-known-good
 # config instead of hardcoded 0.4 (which was wrong vs v1.14.5 ship default 0.6).

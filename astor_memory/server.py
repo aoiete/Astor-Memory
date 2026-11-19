@@ -10988,10 +10988,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
         import logging as _logging
         import os as _os_e
         import traceback as _tb
+        # The runtime directory, not the source tree: this used to point
+
+        # at the package's parent, which for an editable install is the
+
+        # checkout, so a 500 left a log file in the repository.
+
         _side_log = _os_e.path.join(
-            _os_e.path.dirname(_os_e.path.dirname(_os_e.path.abspath(__file__))),
+
+            _os_e.environ.get('ASTOR_DIR') or _os_e.path.expanduser('~/.astor'),
+
             'logs', '_server_500.log',
+
         )
+
         try:
             _os_e.makedirs(_os_e.path.dirname(_side_log), exist_ok=True)
             with open(_side_log, 'a', encoding='utf-8') as _f:

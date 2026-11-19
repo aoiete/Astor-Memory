@@ -28,8 +28,15 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(os.environ.get("ASTOR_PROJECT_ROOT", str(Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name in ("tests", "tools") else Path.cwd())))
-METRICS = ROOT / "astor" / "metrics"
+# The report belongs to the runtime directory, not to the source tree.
+# Writing it into the repo left artifacts in a checkout that is meant to
+# stay clean. The override is the one the rest of the codebase already
+# uses: ASTOR_METRICS_DIR, else <ASTOR_DIR>/astor/metrics (server.py).
+METRICS = Path(
+    os.environ.get("ASTOR_METRICS_DIR")
+    or str(Path(os.environ.get("ASTOR_DIR") or (Path.home() / ".astor"))
+           / "astor" / "metrics")
+)
 METRICS.mkdir(parents=True, exist_ok=True)
 
 
