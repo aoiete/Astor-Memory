@@ -64,7 +64,8 @@ def _read_capped(resp, url: str) -> str:
     return body.decode("utf-8", "replace")
 
 
-def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
+def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT,
+              allow_refusal: bool = False) -> dict:
     req = urllib.request.Request(url, headers={
         # Some deployments sit behind a proxy that rejects the default
         # urllib agent, and a bare "Python-urllib" is a signal we do
@@ -81,6 +82,13 @@ def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
             body = e.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")[:200]
         except Exception:
             pass
+        if allow_refusal:
+            try:
+                parsed = json.loads(body)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict) and "error" in parsed:
+                return parsed
         raise ConnectError("HTTP %s from %s %s" % (e.code, url, body))
     except urllib.error.URLError as e:
         raise ConnectError("cannot reach %s: %s" % (url, e.reason))
@@ -334,7 +342,24 @@ def search_peer_friend(endpoint: str, query: str, peer_id: str, public_key: str,
     }
     raw = base64.urlsafe_b64encode(json.dumps(req).encode("utf-8")).decode("ascii")
     url = endpoint + "/v1/peer/public_search?req=" + urllib.parse.quote(raw)
-    return _get_json(url, timeout=timeout)
+    body = _get_json(url, timeout=timeout, allow_refusal=True)
+    # A peer older than v1.17.64 rebuilds the signed payload without the
+    # nonce, so a signature made over the six-part payload never
+    # verifies there. Retry in the legacy five-part form -- that is the
+    # form every older peer verifies, and a current peer accepts it
+    # too (the nonce is optional; the replay ledger then falls back to
+    # the signature as its key).
+    if isinstance(body, dict) and body.get("error") == "bad_signature":
+        legacy = dict(req)
+        legacy.pop("nonce", None)
+        legacy["signature"] = sign(canonical_payload_bytes(
+            peer_id, query, topic, int(limit), now))
+        raw2 = base64.urlsafe_b64encode(
+            json.dumps(legacy).encode("utf-8")).decode("ascii")
+        return _get_json(
+            endpoint + "/v1/peer/public_search?req=" +
+            urllib.parse.quote(raw2), timeout=timeout, allow_refusal=True)
+    return body
 
 
 def _post_json(url: str, payload: dict, timeout: int = DEFAULT_TIMEOUT) -> dict:

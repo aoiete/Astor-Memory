@@ -145,34 +145,50 @@ def _test_direct(row: dict, timeout: float) -> dict:
         return {"stage": "sign", "error": "no_identity",
                 "detail": f"本机没有身份: {exc}", "ok": False}
 
-    request = build_search_request(
-        query=_test_query(),
-        requestor_peer_id=ident["peer_id"],
-        requestor_pubkey=ident["public_key"],
-        requestor_private_key=ident["private_key"],
-        limit=1,
-    )
-    url = endpoint + "/v1/peer/public_search?req=" + urllib.parse.quote(
-        request.to_query_string())
-    req = urllib.request.Request(url, headers={
-        "Accept": "application/json",
-        "User-Agent": "astor-memory/peer-test",
-    }, method="GET")
-    try:
-        with _OPENER.open(req, timeout=timeout) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", "replace")
+    def _url(include_nonce: bool) -> str:
+        request = build_search_request(
+            query=_test_query(),
+            requestor_peer_id=ident["peer_id"],
+            requestor_pubkey=ident["public_key"],
+            requestor_private_key=ident["private_key"],
+            limit=1,
+            include_nonce=include_nonce,
+        )
+        return endpoint + "/v1/peer/public_search?req=" + urllib.parse.quote(
+            request.to_query_string())
+
+    def _send(url: str):
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "astor-memory/peer-test",
+        }, method="GET")
         try:
-            body = json.loads(raw)
-        except Exception:
-            body = {"error": f"http_{exc.code}"}
-        code = body.get("error") or f"http_{exc.code}"
+            with _OPENER.open(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8")), None
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", "replace")
+            try:
+                err = json.loads(raw)
+            except Exception:
+                err = {"error": f"http_{exc.code}"}
+            return None, err
+        except Exception as exc:
+            return None, {"error": "unreachable",
+                          "detail": f"连不上 {endpoint}: {exc}"}
+
+    body, err = _send(_url(True))
+    if err is not None and err.get("error") == "bad_signature":
+        # A peer older than v1.17.64 rebuilds the signed payload without
+        # the nonce, so it cannot verify a six-part signature. Retry in
+        # the legacy five-part form -- that is the form it verifies.
+        body, err = _send(_url(False))
+    if err is not None:
+        code = err.get("error") or "unknown"
+        if code == "unreachable":
+            return {"stage": "connect", "error": code,
+                    "detail": err.get("detail", ""), "ok": False}
         stage, detail = _stage_from_error(code)
         return {"stage": stage, "error": code, "detail": detail, "ok": False}
-    except Exception as exc:
-        return {"stage": "connect", "error": "unreachable",
-                "detail": f"连不上 {endpoint}: {exc}", "ok": False}
 
     err = body.get("error")
     if err:

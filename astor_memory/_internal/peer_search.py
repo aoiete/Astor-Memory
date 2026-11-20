@@ -358,19 +358,24 @@ def build_search_request(
     requestor_private_key: str,
     topic: str | None = None,
     limit: int = 10,
+    include_nonce: bool = True,
 ) -> PeerSearchRequest:
     """Build a signed PeerSearchRequest.
 
     Caller passes requestor_peer_id + private_key (from peer_identity).
     The function builds the canonical payload, signs it, and returns
     a validated PeerSearchRequest object.
+
+    include_nonce=False signs the legacy five-part payload, which is
+    the form every peer before v1.17.64 verifies. It is the fallback
+    for a peer that answers bad_signature.
     """
     from .peer_identity import sign
     now = _dt.datetime.now(_dt.timezone.utc).isoformat(
         timespec='seconds'
     ).replace('+00:00', 'Z')
     # 每个请求一个 nonce: 抓到的签名 URL 只能买一次搜索
-    nonce = secrets.token_hex(16)
+    nonce = secrets.token_hex(16) if include_nonce else ''
     # First build a temp object to get the canonical payload
     temp = PeerSearchRequest(
         requestor_peer_id=requestor_peer_id,

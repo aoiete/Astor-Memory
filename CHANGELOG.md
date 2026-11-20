@@ -1,3 +1,27 @@
+## 1.17.70
+
+**fix(peer): a peer that predates the signed nonce could not be searched**
+
+The signed payload gained a nonce in v1.17.64, so a six-part payload
+went out where every peer before v1.17.64 rebuilds a five-part one.
+Those peers answered bad_signature -- which reads like a key problem
+but is a format problem, and it made every un-upgraded peer
+unsearchable while the reverse direction still worked (the receiver
+rebuilds the payload without a nonce when the request carries none, so
+an old peer could still reach us).
+
+The client now retries in the legacy five-part form when the peer
+answers bad_signature. A current peer accepts that form too: the nonce
+is optional, and the replay ledger then falls back to the signature as
+its key.
+
+build_search_request grows include_nonce, and _get_json grows
+allow_refusal so a refusal can be answered rather than raised (the POST
+path already did this; the GET path did not).
+
+Measured against the node on the LAN (astor v1.17.40): the peer test
+went from bad_signature to stage=ok with one result.
+
 ## 1.17.69
 
 **fix(memory): a lesson whose fact was contradicted keeps its heat**
