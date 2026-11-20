@@ -1,3 +1,35 @@
+## 1.17.67
+
+**feat(eval): the naive arm -- "a bag of words plus a search tool"**
+
+The evaluation had ablation arms (vector only, rerank off, MMR, HyDE)
+but no arm for the thing a memory system actually has to beat: the
+corpus as a plain lexical index. The server also could not express
+that ranking: it read the ranking weights with
+`body.get('vec_weight') or default`, and 0.0 is falsy, so a request
+for a pure lexical ranking silently got the default vector weight.
+
+- The weights now resolve through `_resolve_rank_weights()`, where a
+  weight of exactly 0.0 is a request, not a missing value.
+- eval_runner grows a `bm25_only` arm (bm25_weight=1.0,
+  vec_weight=0.0, no rerank).
+
+Measured on the current 106-query set:
+
+| arm | hit@10 | mrr | avg ms |
+|---|---|---|---|
+| production (hybrid + rerank) | 0.972 | 0.816 | 493 |
+| naive (lexical only) | 0.972 | 0.812 | 574 |
+| vector only | 0.745 | 0.548 | 430 |
+
+The full semantic stack buys 0.005 MRR over the lexical arm on this
+set -- and costs 81ms. That is a fact about the ruler, not about
+embeddings: the score is expected-keyword matching, so the set is
+lexical by construction and cannot show what the semantic arm is for.
+The five queries both arms miss are the paraphrased ones. The next
+measurement needs a paraphrase subset whose expected keywords do not
+appear in the query.
+
 ## 1.17.66
 
 **fix(privacy): overlapping redactions ate the text after the block, and the PII audit row could be written under any name**

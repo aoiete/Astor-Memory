@@ -181,6 +181,13 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
         # turns on the LLM-hypothetical-answer path for short queries.
         "hyde_on":       {"hybrid": True, "rerank": "on", "hyde": True},                  # Ship O on
         "hyde_off":      {"hybrid": True, "rerank": "on", "hyde": False},                 # Ship O explicit off
+        # The naive arm: the corpus as a bag of words plus a search tool.
+        # A memory system that cannot beat this is not worth its storage.
+        # ("No memory at all" is not an arm here: astor is a retrieval
+        # layer, so with no facts returned the hit rate is 0 by
+        # construction and the number says nothing.)
+        "bm25_only":     {"hybrid": True, "rerank": "off",
+                          "bm25_weight": 1.0, "vec_weight": 0.0},
     }
     kwargs = variants.get(variant, {})
 
@@ -335,7 +342,7 @@ def print_summary(run: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--variant", default="baseline",
-                    choices=["baseline", "baseline_bm25_6", "baseline_bm25_4", "vector_only", "rerank_off", "mmr_lambda_05", "mmr_lambda_07", "mmr_lambda_09", "mmr_off", "hyde_on", "hyde_off"])
+                    choices=["baseline", "baseline_bm25_6", "baseline_bm25_4", "vector_only", "rerank_off", "mmr_lambda_05", "mmr_lambda_07", "mmr_lambda_09", "mmr_off", "hyde_on", "hyde_off", "bm25_only"])
     ap.add_argument("--all", action="store_true", help="Run all variants")
     ap.add_argument("--set", default=str(EVAL_SET), help="Path to eval set jsonl")
     args = ap.parse_args()
@@ -348,7 +355,7 @@ def main() -> int:
     print(f"Loaded {len(eval_set)} queries from {eval_set_path}")
     print(f"Server: {SERVER}\n")
 
-    variants = ["baseline", "vector_only", "rerank_off", "mmr_lambda_05", "mmr_lambda_07", "mmr_lambda_09", "mmr_off", "hyde_on", "hyde_off"] if args.all else [args.variant]
+    variants = ["baseline", "vector_only", "rerank_off", "mmr_lambda_05", "mmr_lambda_07", "mmr_lambda_09", "mmr_off", "hyde_on", "hyde_off", "bm25_only"] if args.all else [args.variant]
     runs = []
     for v in variants:
         run = run_variant(v, eval_set)

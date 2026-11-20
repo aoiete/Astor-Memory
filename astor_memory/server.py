@@ -836,6 +836,23 @@ def _rc_should_recall(query: str, body: dict) -> tuple[bool, str]:
     return True, 'ok'
 
 
+def _resolve_rank_weights(body: dict) -> tuple[float, float]:
+    """The bm25/vector weights for a read, from the body then the env.
+
+    A weight of exactly 0.0 is a real request (a pure-bm25 ranking), so
+    `body.get(...) or default` is wrong here: 0.0 is falsy and would
+    fall through to the default. The evaluation needs the naive
+    lexical arm, so 0.0 has to survive.
+    """
+    _bm25 = body.get('bm25_weight')
+    _vec = body.get('vec_weight')
+    bm25 = float(_bm25 if _bm25 is not None
+                 else os.environ.get('ASTOR_BM25_WEIGHT', 0.6))
+    vec = float(_vec if _vec is not None
+                else os.environ.get('ASTOR_VEC_WEIGHT', 0.4))
+    return bm25, vec
+
+
 def _rc_choose_top_k(query: str, body: dict, default_top_k: int, lib_size: int) -> int:
     """MemCon action 'retrieve' with adaptive top_k.
 
@@ -5740,10 +5757,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         #   Sample size 50 with hit_rate=1.0 has reduced discriminative power
         #   but the +3.6% gap exceeds typical noise. Default bumped 0.4 → 0.6.
         #   Override via env/body to A/B on a larger eval set when built.
-        bm25_weight = float(body.get('bm25_weight')
-                            or os.environ.get('ASTOR_BM25_WEIGHT', 0.6))
-        vec_weight = float(body.get('vec_weight')
-                           or os.environ.get('ASTOR_VEC_WEIGHT', 0.4))
+        bm25_weight, vec_weight = _resolve_rank_weights(body)
         # Oversample before merge so hybrid doesn't return fewer than top_k
         oversample = max(top_k * 2, 20)
         nest = astor_nest(tier=tier, user_id=user_id)
