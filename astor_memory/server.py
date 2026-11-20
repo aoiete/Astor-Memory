@@ -1003,6 +1003,31 @@ def _retired_label(content, reason=''):
     return '\u26a0[INACTIVE] ' + content
 
 
+def _scope_guard(tier, user_id, write=False):
+    """Per-user scope check for endpoints that take tier/user_id from
+    the request instead of the bound identity.
+
+    The read paths get this from the before_request hook, which binds
+    the ACL from the caller's declared identity. These endpoints take
+    the scope from the query string, so they have to check it
+    themselves -- otherwise the caller picks whose data to read.
+
+    Returns a 403 response tuple, or None when the scope is allowed.
+    The denial is silent on purpose: the caller must not learn the
+    ACL rules (R234/R236).
+    """
+    from ._internal.acl import astor_check_read as _acr
+    try:
+        if write:
+            from ._internal.acl import astor_check_write as _acw
+            _acw(tier=tier, user_id=user_id)
+        else:
+            _acr(tier=tier, user_id=user_id)
+    except Exception:
+        return jsonify({'error': 'cross_user_forbidden'}), 403
+    return None
+
+
 def _mark_retired_rows(rows, inactive_ids):
     """Label the retired facts, in every channel.
 
@@ -1596,6 +1621,32 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # the namespace). Read endpoints stay open; write endpoints add
                 # an inline check.
                 return
+        # v1.17.53: a GET that carries X-Actor binds as THAT identity.
+        #
+        # The header was only parsed for POST, so every GET bound as the
+        # server (admin). The endpoints that take tier/user_id from the
+        # query string (provenance, lineage, graph.dot, versions) then
+        # had no per-user check at all: a scoped caller could ask for
+        # another user's private tier and get the fact text back.
+        # X-Actor is the established mechanism -- client.py already
+        # sends it; it just was not honoured on GET.
+        _x_actor_get = request.headers.get('X-Actor', '').strip()
+        if _x_actor_get:
+            _actor_id = None
+            if _x_actor_get.startswith('admin:') or _x_actor_get.startswith('user:'):
+                _actor_id = _x_actor_get.split(':', 1)[1] or None
+            else:
+                _actor_id = _x_actor_get
+            if _actor_id:
+                try:
+                    _actor, _role, _plan = _astor_resolve_actor(_actor_id)
+                    astor_init_acl(actor=_actor, role=_role, tier='public',
+                                   user_id=_actor_id,
+                                   subscription_plan=_plan)
+                    return
+                except (ValueError, PermissionError_) as _acl_exc:
+                    return jsonify({'error': 'acl_init_failed',
+                                    'detail': str(_acl_exc)}), 403
         # Default bind for GET endpoints + POST without JSON body.
         # GETs are read-only public-tier inspections; safe to bind as
         # admin (server identity).
@@ -9151,6 +9202,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         tier = request.args.get('tier', 'public')
         user_id = request.args.get('user_id')
         max_depth = int(request.args.get('max_depth', 8))
+        _guard = _scope_guard(tier, user_id)
+        if _guard is not None:
+            return _guard
         try:
             return jsonify(get_provenance(fact_id, tier=tier, user_id=user_id,
                                           max_depth=max_depth))
@@ -9164,6 +9218,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         tier = request.args.get('tier', 'public')
         user_id = request.args.get('user_id')
         max_depth = int(request.args.get('max_depth', 8))
+        _guard = _scope_guard(tier, user_id)
+        if _guard is not None:
+            return _guard
         try:
             return jsonify(get_lineage(fact_id, tier=tier, user_id=user_id,
                                        max_depth=max_depth))
@@ -9178,6 +9235,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         tier = request.args.get('tier', 'public')
         user_id = request.args.get('user_id')
         max_depth = int(request.args.get('max_depth', 6))
+        _guard = _scope_guard(tier, user_id)
+        if _guard is not None:
+            return _guard
         try:
             dot = graph_dot(fact_id=fact_id, direction=direction,
                             tier=tier, user_id=user_id, max_depth=max_depth)
@@ -9189,7 +9249,13 @@ def create_app(astor_dir: str | None = None) -> Flask:
     def fact_record_provenance(fact_id):
         """Manually record a provenance edge between two fact_ids (admin-only)."""
         from .nest.provenance import record_provenance
+        from ._internal.acl import astor_current_acl
         body = request.get_json(force=True)
+        # The docstring said admin-only; nothing enforced it. Planting a
+        # provenance edge in another user's tier is a write across the
+        # tenant boundary.
+        if astor_current_acl().role != 'admin':
+            return jsonify({'error': 'cross_user_forbidden'}), 403
         result = record_provenance(
             fact_id=fact_id,
             parents=body.get('parents', []),
@@ -9207,6 +9273,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
         from .nest.versioning import list_versions
         tier = request.args.get('tier', 'public')
         user_id = request.args.get('user_id')
+        _guard = _scope_guard(tier, user_id)
+        if _guard is not None:
+            return _guard
         try:
             rows = list_versions(fact_id, tier=tier, user_id=user_id)
         except FileNotFoundError as e:

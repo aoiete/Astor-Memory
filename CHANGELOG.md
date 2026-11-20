@@ -1,3 +1,41 @@
+## 1.17.53
+
+**fix(auth): the provenance routes must not cross the tenant boundary**
+
+`/v1/fact/<id>/provenance`, `/lineage`, `/graph.dot` and `/versions`
+take `tier` and `user_id` from the query string. They did no per-user
+check, and the before_request hook bound every GET as the server
+(admin) because `X-Actor` was only parsed for POST -- so a scoped
+caller could ask for another user's private tier and get the fact text
+back:
+
+```
+X-Actor: user:sunday
+GET /v1/fact/18400/provenance?tier=private&user_id=admin
+-> {"ancestors": [{"fact": {"content": "R-class ..."}}]}
+```
+
+`X-Actor` is the established mechanism -- `client.py` already sends it.
+It just was not honoured on GET. Now:
+
+- a GET carrying `X-Actor` binds as that identity;
+- the four GET routes check the scope they were asked for;
+- `POST /v1/fact/<id>/provenance` enforces the admin-only role its
+  docstring always claimed, so a provenance edge cannot be planted in
+  another user's tier.
+
+The refusal is silent (`cross_user_forbidden`): the caller must not
+learn the ACL rules.
+
+Found while triaging an external AI security scan of this repository.
+The same scan's other two cross-tenant findings were checked and are
+false positives: the dashboard's data lives behind the passcode gate
+(`/v1/dashboard` answers 401 to a non-loopback caller without the
+token), and the forced-public capture is the intended shared-first
+design -- the visibility classifier decides commons vs personal per
+fact, honours each user's own `allow_commons_write` switch, and blocks
+PII, first-person and emotion content.
+
 ## 1.17.52
 
 **fix(peer): a fact past its boundary is not shared knowledge**
