@@ -53,8 +53,8 @@ SERVER = os.environ.get("ASTOR_SERVER", "http://127.0.0.1:7803")
 EVAL_SET = TESTS_DIR / "eval_set.jsonl"
 
 
-def load_eval_set() -> list[dict]:
-    with open(EVAL_SET, encoding="utf-8") as f:
+def load_eval_set(path: Path | None = None) -> list[dict]:
+    with open(path or EVAL_SET, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
@@ -351,7 +351,7 @@ def main() -> int:
     if not eval_set_path.exists():
         print(f"ERROR: eval set not found at {eval_set_path}", file=sys.stderr)
         return 2
-    eval_set = load_eval_set()
+    eval_set = load_eval_set(eval_set_path)
     print(f"Loaded {len(eval_set)} queries from {eval_set_path}")
     print(f"Server: {SERVER}\n")
 

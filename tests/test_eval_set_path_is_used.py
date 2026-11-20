@@ -1,0 +1,99 @@
+"""--set has to actually load the set it was given.
+
+The runner accepted --set, printed the path, and then loaded the
+default set anyway: `eval_set = load_eval_set()` read the module
+constant. Every run with a custom set was silently the default set,
+which is how a paraphrase set came back with the default set's
+numbers.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+TESTS = Path(__file__).parent
+
+
+def _runner():
+    spec = importlib.util.spec_from_file_location(
+        "eval_runner_path_test", TESTS / "eval_runner.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["eval_runner_path_test"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestEvalSetPathIsUsed(unittest.TestCase):
+
+    def test_load_eval_set_reads_the_given_path(self):
+        mod = _runner()
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "custom.jsonl"
+            rows = [{"qid": "X1", "query": "q", "expected_keywords": ["k"]}]
+            p.write_text("\n".join(json.dumps(r) for r in rows) + "\n",
+                         encoding="utf-8")
+            loaded = mod.load_eval_set(p)
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0]["qid"], "X1")
+
+    def test_main_actually_loads_the_given_set(self):
+        """The call site, not just the helper.
+
+        The bug was in main(): it printed the path it was given and
+        then loaded the default set. Testing load_eval_set(path) alone
+        cannot see that.
+        """
+        mod = _runner()
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "custom.jsonl"
+            rows = [{"qid": f"X{i}", "query": "q", "expected_keywords": ["k"],
+                     "min_hits": 1, "category": "t", "tier": "public",
+                     "user": "admin", "top_k": 10}
+                    for i in range(3)]
+            p.write_text("\n".join(json.dumps(r) for r in rows) + "\n",
+                         encoding="utf-8")
+
+            seen = {}
+
+            def _fake_recall(**kw):
+                seen.setdefault("queries", []).append(kw.get("query"))
+                return [], 1.0
+
+            original = mod.recall
+            mod.recall = _fake_recall
+            argv = sys.argv
+            sys.argv = ["eval_runner.py", "--set", str(p),
+                        "--variant", "baseline"]
+            try:
+                mod.main()
+            finally:
+                sys.argv = argv
+                mod.recall = original
+            self.assertEqual(
+                len(seen.get("queries", [])), 3,
+                "main() ran a different number of queries than the custom "
+                "set holds -- the --set path was ignored")
+
+    def test_the_paraphrase_set_is_not_the_default_set(self):
+        mod = _runner()
+        default = mod.load_eval_set()
+        para = mod.load_eval_set(TESTS / "eval_paraphrase_set.jsonl")
+        self.assertTrue(para, "the paraphrase set is empty")
+        self.assertNotEqual(
+            len(para), len(default),
+            "the paraphrase set is the same size as the default set")
+        for row in para:
+            self.assertTrue(row.get("paraphrase"))
+            for kw in row["expected_keywords"]:
+                self.assertNotIn(
+                    kw.lower(), row["query"].lower(),
+                    "a paraphrase query contains its own expected keyword "
+                    "-- the query would not be a paraphrase")
+
+
+if __name__ == "__main__":
+    unittest.main()

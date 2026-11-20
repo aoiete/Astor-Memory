@@ -1,0 +1,26 @@
+{"qid": "P01", "query": "两个人坐一张桌子用筹码换钱的那种纸牌玩法", "expected_keywords": ["德州", "扑克", "赌博", "竞技"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P02", "query": "算命里日主很旺的那种格局怎么判断", "expected_keywords": ["八字", "壬水", "身强"], "min_hits": 1, "category": "fortune", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P03", "query": "写入记忆的时候到底应该先落到哪一层", "expected_keywords": ["R132", "3-store", "auto_route"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P04", "query": "跑机器人的那个服务能不能由我自己动手重启", "expected_keywords": ["gateway", "R218", "restart"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P05", "query": "备份出来的文件夹命名有什么讲究", "expected_keywords": ["ACTIVE_", "backup"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P06", "query": "微信那边拿到访问凭证的唯一来源是哪张表", "expected_keywords": ["iLink", "token", "SSoT"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P07", "query": "我现在住的城市跟 utc 差几个小时", "expected_keywords": ["MDT", "America", "Edmonton"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P08", "query": "把文字变成向量用的是哪个模型", "expected_keywords": ["bge", "embedding"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P09", "query": "磁盘里临时堆着的东西多久该清一次", "expected_keywords": ["cleanup", "scratchpad"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P10", "query": "发布记录里不能出现真实身份信息这件事怎么把关", "expected_keywords": ["PII", "CHANGELOG"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P11", "query": "把本地的对局页面暴露到公网用的是哪个通道工具", "expected_keywords": ["Cloudflared", "Poker"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P12", "query": "交易所的统一接口对接的是哪一家", "expected_keywords": ["ccxt", "kraken"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P13", "query": "挂单实验那个小工具在什么状态下才会真的下单", "expected_keywords": ["maker_pocket", "ARMED"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P14", "query": "占卜服务本地监听的是几号端口", "expected_keywords": ["tianshu_api", "7777"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P15", "query": "记忆写进库里之前要过的那道真实性检查叫什么", "expected_keywords": ["L4", "grounding"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P16", "query": "私有数据分几个文件存才不会被串到别人那里", "expected_keywords": ["9-db", "private"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P17", "query": "真实性检查的通过线定在多少", "expected_keywords": ["grounding_check", "0.5"], "min_hits": 1, "category": "project", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P18", "query": "自动备份多久跑一次", "expected_keywords": ["weekly", "smart_backup"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P19", "query": "定时任务里跟周期相关的那条规则", "expected_keywords": ["cron", "weekly"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P20", "query": "用哪种服务托管工具让它崩了能自己拉起来", "expected_keywords": ["NSSM", "Restart"], "min_hits": 1, "category": "workflow", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P21", "query": "一批东西做完以后按什么节奏往外发", "expected_keywords": ["ship", "cadence"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P22", "query": "有一条铁律是不许把没验证过的事说成真的", "expected_keywords": ["IRON RULE", "fabricate"], "min_hits": 1, "category": "rclass", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P23", "query": "用几个数字推出来的那种古法", "expected_keywords": ["梅花易数", "起卦"], "min_hits": 1, "category": "fortune", "tier": "private", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P24", "query": "摇三个铜钱问一件事的那种占卜怎么排", "expected_keywords": ["六爻", "起卦", "排盘"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P25", "query": "看星盘的那种排盘结果是怎么呈现的", "expected_keywords": ["紫微", "命盘", "输出"], "min_hits": 1, "category": "fortune", "tier": "public", "user": "admin", "top_k": 10, "paraphrase": true}
+{"qid": "P26", "query": "打牌什么时段手气好什么时段不宜", "expected_keywords": ["扑克", "旺时", "凶时"], "min_hits": 1, "category": "lifestyle", "tier": "public", "user": "admin", "top_k": 10, "paraphrase": true}

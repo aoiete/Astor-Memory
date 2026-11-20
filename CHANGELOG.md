@@ -1,3 +1,26 @@
+## 1.17.68
+
+**fix(eval): --set was ignored, and the paraphrase set had nowhere to go**
+
+The runner accepted `--set`, printed the path, and then loaded the
+default set anyway -- `load_eval_set()` read the module constant. Any
+run with a custom set was silently the default set.
+
+With that fixed, the paraphrase set (26 questions whose expected
+keywords do not appear in the query) gives a different picture from the
+default set:
+
+| arm | default set hit@10 / mrr | paraphrase set hit@10 / mrr |
+|---|---|---|
+| production (hybrid + rerank) | 0.972 / 0.816 | 0.654 / 0.383 |
+| naive (lexical only) | 0.972 / 0.812 | 0.577 / 0.347 |
+| vector only | 0.745 / 0.548 | 0.538 / 0.205 |
+
+On the default set the semantic arm buys nothing measurable, because
+the score is expected-keyword matching and the set is lexical by
+construction. On the paraphrase set it buys +0.077 hit rate and +0.036
+MRR over the lexical arm -- which is what the semantic arm is for.
+
 ## 1.17.67
 
 **feat(eval): the naive arm -- "a bag of words plus a search tool"**
