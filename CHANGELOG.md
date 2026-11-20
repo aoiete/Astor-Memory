@@ -1,3 +1,25 @@
+## 1.17.61
+
+**fix(privacy): the server log was a copy of the memory**
+
+Two lines wrote the text itself to stderr, unconditionally -- not
+behind `ASTOR_DEBUG`:
+
+- the REUSE warning carried the first 120 characters of the write;
+- the coref line carried the whole text, `repr`'d.
+
+Logs outlive the operation that made them, are replicated to
+aggregation platforms, and are read by a wider audience than the
+data's own access path -- so an unconditional log line is a materially
+worse leak than the same line behind a debug flag.
+
+Both now print a fingerprint instead: the length and a short hash of
+the text. Enough to tell two log lines about the same text apart, not
+enough to read it. The coref line is also a debug line now, which is
+what it always was in practice.
+
+Found while triaging an external AI security scan of this repository.
+
 ## 1.17.60
 
 **fix(audit): a reflection run was attributed to the owner account**

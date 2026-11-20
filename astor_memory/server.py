@@ -361,6 +361,20 @@ def _debug_write(msg: str) -> None:
     if _debug_enabled():
         _safe_stderr_write(msg)
 
+
+def _text_fingerprint(text: str) -> str:
+    """A loggable stand-in for text that may hold personal data.
+
+    Length plus a short hash: enough to tell two log lines about the
+    same text apart, not enough to read the text. Logs live longer than
+    the operation that made them and reach a wider audience than the
+    data's own access path, so the text itself does not belong there.
+    """
+    import hashlib
+    t = str(text or '')
+    sha = hashlib.sha256(t.encode('utf-8', 'replace')).hexdigest()[:12]
+    return f'len={len(t)} sha={sha}'
+
 def _pii_last_24h_count() -> int:
     """v1.16.x: count `memory_defense_scan` audit_log rows in the last 24h.
 
@@ -1457,7 +1471,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # need to act without prior recall)
                 _safe_stderr_write(
                     f'[astor.before_write_hook] REUSE pattern detected: {msg}\n'
-                    f'  text={text[:120]}\n'
+                    f'  text={_text_fingerprint(text)}\n'
                     f'  astor_recall should have been called before this write.\n'
                 )
                 request.environ['ASTOR_REUSE_WARNING'] = msg
@@ -3310,8 +3324,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     user_id=_coref_uid,
                     antecedent_window=int(body.get('coref_window', 10)),
                 )
-                _safe_stderr_write(
-                    f'[astor.server] coref: text={text!r} ns={_coref_ns!r} '
+                _debug_write(
+                    f'[astor.server] coref: text={_text_fingerprint(text)} '
+                    f'ns={_coref_ns!r} '
                     f'changed={_coref_result.get("changed")} '
                     f'resolved={_coref_result.get("resolved", "")!r} '
                     f'used={_coref_result.get("antecedents_used")}\n'
