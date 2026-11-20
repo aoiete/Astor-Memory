@@ -237,6 +237,12 @@ def context_to_request_body(ctx: AstorRequestContext) -> dict:
         "transport": ctx.transport,
         "request_id": ctx.request_id,
     }
+    # v1.17.64: default_tier was parsed off the profile but never put on
+    # the wire, so a local-direct caller that declared it still had the
+    # server fall back to tier='public'. The declared tier is the caller's
+    # own routing decision -- forward it.
+    if ctx.default_tier:
+        body["tier"] = ctx.default_tier
     for name in ("source", "namespace", "session_id"):
         value = getattr(ctx, name)
         if value:

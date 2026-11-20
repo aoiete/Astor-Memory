@@ -12,6 +12,8 @@ The rules, in order:
     key, and it is checked against the key in the request
   - the requestor is a known peer, not blacklisted, with trust >= 50,
     and has allow_search set
+  - the request carries a one-time nonce: the same signed request buys
+    exactly one search, so a captured URL cannot be replayed
   - the requestor is charged against the per-peer search budget
   - the answer holds only `commons` rows of the public tier: never a
     personal fact, never a tombstoned one
@@ -22,7 +24,12 @@ copy -- and a copy of an authorization check is a copy that can drift.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -42,9 +49,11 @@ def answer_search_request(d: dict) -> tuple[int, dict]:
     from .peer_relationships import get_peer as _pp_get_peer
     from .peer_search import (
         MAX_RESULTS_PER_PEER,
+        MAX_TAG_JSON_BYTES,
         PeerSearchRequest,
         PeerSearchResponse,
         PeerSearchResult,
+        cap_tags,
     )
 
     # The server wraps the bus and nest factories so every one created
@@ -65,6 +74,7 @@ def answer_search_request(d: dict) -> tuple[int, dict]:
             limit=int(d.get('limit', 10)),
             timestamp=d['timestamp'],
             signature=d['signature'],
+            nonce=d.get('nonce') or '',
         )
     except KeyError as e:
         return 400, {'error': 'missing_field', 'field': str(e)}
@@ -119,6 +129,17 @@ def answer_search_request(d: dict) -> tuple[int, dict]:
         return 403, {'error': 'search_not_allowed',
                         'detail': 'friend has not opted in '
                                   '(am peer allow-search <requestor_peer_id>)'}
+    # 一次性 nonce: 抓到的签名 URL 重放一次就把对方的 1000/24h 预算
+    # 烧光 —— 重放不需要签名私钥, 只有一次性 nonce 能挡住它。老客户端
+    # 没带 nonce 时退回用签名本身当 key: 签名里有时间戳, 重放同一个
+    # URL 就是同一个 key。
+    from .peer_rate_limit import consume_nonce as _prl_nonce
+    _nonce = req.nonce or hashlib.sha256(
+        req.signature.encode('utf-8')).hexdigest()
+    if not _prl_nonce(req.requestor_peer_id, _nonce):
+        return 403, {'error': 'replayed_request',
+                     'detail': 'this signed request was already used'}
+
     # v1.15.22 Ship E: per-peer rate limit (R12593 lock — PPS path is
     # its own budget, separate from per-actor limits). Enforce BEFORE
     # doing any expensive search work so a runaway peer doesn't trigger
@@ -183,11 +204,15 @@ def answer_search_request(d: dict) -> tuple[int, dict]:
         # separates them -- and this endpoint answers a remote node.
         if (row[6] or 'commons') != 'commons':
             continue
-        try:
-            import json as _j_pps
-            tags = tuple(_j_pps.loads(row[3])) if row[3] else ()
-        except Exception:
-            tags = ()
+        # tag 是作者写的 JSON, 长度和个数都没上限: 字节太多就不解析
+        # (解析本身就要把它整个展开), 解析之后还要压住个数和字节数。
+        tags = ()
+        if row[3] and len(row[3]) <= MAX_TAG_JSON_BYTES:
+            try:
+                import json as _j_pps
+                tags = cap_tags(_j_pps.loads(row[3]))
+            except Exception:
+                tags = ()
         try:
             results.append(PeerSearchResult(
                 source_peer_id=my_peer_id,

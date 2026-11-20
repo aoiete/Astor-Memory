@@ -1869,8 +1869,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if not text.strip():
             return jsonify({'error': 'text is required'}), 400
         from .nest.visibility_classifier import classify_visibility
+        # confidence=1.0: this endpoint answers "does this text read as
+        # private" -- the kind-driven auto route is not what the caller
+        # asked about, so the kind must not decide the answer. v1.17.64:
+        # an unmeasured confidence is not confidence.
         dec = classify_visibility(
-            text=text, kind=kind, hint=None,
+            text=text, kind=kind, hint=None, confidence=1.0,
             admin_allow_commons=_astor_allow_commons_write(
                 body.get('user') or body.get('user_id')))
         return jsonify({
@@ -3579,6 +3583,64 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if _qerr is not None:
             return jsonify({'error': 'permission_denied', 'detail': _qerr}), 403
 
+        # v1.17.64: LOCK rules were only consulted by /v1/classify, so an
+        # admin who seeded a rule (block this, route that) had no effect on
+        # the HTTP write path -- the rule looked alive and did nothing.
+        # The rules live in the public tier's canonical DB, so they can be
+        # read without private-tier access.
+        _lock_target_tier = None
+        _lock_tags = []
+        try:
+            from ._internal.lock_rules import (
+                fetch_lock_rules as _lr_fetch, evaluate_text as _lr_eval,
+            )
+            import sqlite3 as _lock_sq
+            _lock_dir = _os.environ.get('ASTOR_DIR', '~/.astor')
+            _lock_db = (
+                Path(_lock_dir).expanduser()
+                / 'public' / 'memory' / 'astor_bus_public.db')
+            if _lock_db.exists():
+                _lock_conn = _lock_sq.connect(str(_lock_db))
+                try:
+                    _lock_conn.row_factory = _lock_sq.Row
+                    _lock_rules = _lr_fetch(
+                        _lock_conn, user_id=user, scope=None)
+                    _lock_match = _lr_eval(text, _lock_rules)
+                    if _lock_match:
+                        _lock_action = _lock_match.get('action')
+                        if _lock_action == 'block':
+                            # same shape as the quality gate: no rule detail
+                            return jsonify({
+                                'error': 'permission_denied',
+                                'detail': 'invalid content',
+                            }), 403
+                        if _lock_action == 'route':
+                            _lock_target_tier = _lock_match.get('target_tier')
+                            if _lock_target_tier == 'rule_ship':
+                                _lock_target_tier = 'public'
+                            # NOTE: a per-fact visibility routing runs later
+                            # and sends a 'personal' fact to the caller's
+                            # private bucket, so a route only decides the
+                            # tier for facts that stay shared (kind=lesson
+                            # and friends).
+                        if _lock_action == 'tag':
+                            _lock_tags = list(_lock_match.get('tags_extra') or [])
+                finally:
+                    _lock_conn.close()
+        except Exception:
+            # A missing DB or a malformed rule must not block the write --
+            # same best-effort contract as the /v1/classify path.
+            _lock_target_tier = None
+            _lock_tags = []
+
+        if _lock_target_tier in ('public', 'source', 'private'):
+            tier = _lock_target_tier
+            if tier == 'private':
+                bus_user_id = user
+            elif tier == 'public':
+                bus_user_id = None
+            body['tier'] = tier
+
         # v1.16.95 (2026-10-23, HaluMem-driven): test/debug residue must not
         # land in a shared tier.
         #
@@ -3754,8 +3816,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
             def _extract_and_promote():
                 try:
                     from ._internal.acl import astor_init_acl as _wia
+                    # v1.17.64: the thread acts as the CALLER, and the
+                    # caller identity has to stay intact: astor_check_write
+                    # decides "own scope vs cross-user" by comparing the
+                    # target against ctx.user_id. Binding user_id to the
+                    # TARGET made every cross-user private write look like
+                    # the caller's own scope, so the grant check was skipped
+                    # entirely.
+                    #
+                    # The target rides along as the scope being written to,
+                    # and the write into that scope happens under an owner
+                    # scope (below) -- the same shape store.py uses.
+                    _w_caller_uid = _w_acl.user_id
                     _wia(actor=_w_acl.actor, role=_w_acl.role, tier=_w_tier,
-                         user_id=_w_user or user)
+                         user_id=_w_caller_uid)
                     from .bus.store import astor_bus as _w_bus_factory
                     from .forge.extractor import astor_extract_facts as _w_extract
                     _w_facts = _w_extract(
@@ -3785,7 +3859,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         _safe_stderr_write(
                             f'[v1.16.84] long-text fallback (async): '
                             f'{len(_w_text)} chars kept as 1 fact\n')
-                    _w_bus = _w_bus_factory(tier=_w_tier, user_id=_w_user)
+                    if _w_tier == 'private' and _w_user:
+                        # 写别人的私有桶要按 owner 身份开, 但授权已经在
+                        # astor_check_write 里按调用者判过了(grant 在那一步)。
+                        from ._internal.acl import own_private_scope as _w_scope
+                        with _w_scope(_w_user):
+                            _w_bus = _w_bus_factory(tier=_w_tier,
+                                                    user_id=_w_user)
+                    else:
+                        _w_bus = _w_bus_factory(tier=_w_tier, user_id=_w_user)
                     _w_fact_ids = []
                     # v1.17.15: this path is a second implementation of
                     # the write rule, and two implementations of one rule
@@ -3822,8 +3904,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         _w_target_event = _w_event_id
                         if _w_vis != 'commons' and _w_tier != 'private':
                             if _w_priv_bus is None:
-                                _w_priv_bus = _w_bus_factory(
-                                    tier='private', user_id=_w_user or user)
+                                from ._internal.acl import (
+                                    own_private_scope as _w_scope2)
+                                with _w_scope2(_w_user or user):
+                                    _w_priv_bus = _w_bus_factory(
+                                        tier='private',
+                                        user_id=_w_user or user)
                                 _w_priv_event = _w_priv_bus.append_event(
                                     namespace=_w_namespace,
                                     agent_id=agent_ctx['agent_id'] or 'rest_api',
@@ -4093,7 +4179,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # Merge body.tags INTO each fact's tags so post_tool_call hooks
         # (which rely on `lesson:sdk-auto-capture` filter) can find their
         # facts downstream. Caller tags take precedence on collision.
-        body_tags = body.get('tags') or []
+        # v1.17.64: a LOCK rule with action='tag' adds its tags to what
+        # gets stored -- otherwise the tag action had no effect on the
+        # write path either.
+        body_tags = list(body.get('tags') or []) + list(_lock_tags or [])
         if body_tags:
             for fx in facts:
                 fx.tags = list(dict.fromkeys((fx.tags or []) + body_tags))
@@ -6045,11 +6134,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
             #   - 'on' | '1' | True  → force enable (overrides ASTOR_RERANK=0)
             #   - 'off' | '0' | False → force disable
             #   - absent → follow ASTOR_RERANK env
+            # v1.17.64: the body may TURN THE RERANKER OFF, never on.
+            # The reranker sends the query and the candidate texts to an
+            # external model, so it is the operator's decision whether
+            # that happens at all -- ASTOR_RERANK=0 has to mean off. A
+            # body['rerank']='on' used to override it, which put private
+            # content on the wire for any caller who asked nicely.
+            _rerank_env = os.environ.get('ASTOR_RERANK', '0') == '1'
             _body_rr = body.get('rerank', None)
             if _body_rr is None:
-                _rerank_on = os.environ.get('ASTOR_RERANK', '0') == '1'
+                _rerank_on = _rerank_env
             else:
-                _rerank_on = str(_body_rr).lower() in ('1', 'on', 'true', 'yes')
+                _body_wants = str(_body_rr).lower() in ('1', 'on', 'true', 'yes')
+                # 'off' always wins; 'on' only when the operator allows it
+                _rerank_on = _rerank_env and _body_wants
             if _rerank_on and results and top_k >= 3:
                 try:
                     _safe_stderr_write(f"[RERANK] enabled, results={len(results)}, top_k={top_k}, calling LLM...\n")
@@ -7837,11 +7935,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 'note': 'No mutation was performed.',
             })
         # Capture old_state for versioning (opt6)
+        #
+        # v1.17.64: a HARD forget means the content is gone. Keeping the
+        # old row (and its content) in the audit log left the text
+        # readable in another table, so "forget" was reversible by
+        # anyone with audit access. The snapshot is only taken for a
+        # tombstone, where the content is still there by design.
         snapshot_json = None
         try:
-            existing = bus.conn.execute(
-                "SELECT * FROM memory_canonical WHERE id = ?", (cfid,),
-            ).fetchone()
+            existing = None
+            if tombstone_only:
+                existing = bus.conn.execute(
+                    "SELECT * FROM memory_canonical WHERE id = ?", (cfid,),
+                ).fetchone()
             if existing is not None:
                 cols = [d[1] for d in bus.conn.execute(
                                     "PRAGMA table_info(memory_canonical)"
@@ -7929,7 +8035,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
                  snapshot_json,
                  f'tombstone={tombstone_only} tier={tier} user={user_id} '
                  f'score={cscore:.3f}',
-                 f'{{"content_preview": {ccontent[:80]!r}}}',
+                 # A hard forget must not leave the content behind in
+                 # the audit log -- that made "forget" reversible.
+                 (f'{{"content_preview": {ccontent[:80]!r}}}'
+                  if tombstone_only else '{}'),
                  'warning' if not tombstone_only else 'info'),
             )
             bus.conn.commit()
@@ -7937,13 +8046,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
             _safe_stderr_write(
                 f'[astor.server] forget audit_log failed: {_audit_exc}\n'
             )
-        return jsonify({
-            'forgotten': [{
-                'fact_id': cfid, 'score': round(cscore, 3),
-                'content_preview': ccontent[:120],
-                'tombstone_only': tombstone_only,
-            }],
-        })
+        _forgotten_row = {
+            'fact_id': cfid, 'score': round(cscore, 3),
+            'tombstone_only': tombstone_only,
+        }
+        if tombstone_only:
+            # the content is still there (tombstoned), so the preview is
+            # useful; a hard delete must not echo it back
+            _forgotten_row['content_preview'] = ccontent[:120]
+        return jsonify({'forgotten': [_forgotten_row]})
 
     @app.route('/v1/chat/ingest', methods=['POST'])
     def chat_ingest():
@@ -9394,12 +9505,21 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 return jsonify({'error': 'restore requires admin'}), 403
         except Exception:
             pass
+        # v1.17.64: the actor comes from the bound ACL, not from the
+        # request body. A body-supplied actor is a caller claiming to be
+        # somebody else, and this audit row is the only record of who
+        # restored what.
+        _restore_actor = 'restore_v1'
+        try:
+            _restore_actor = ctx.actor
+        except Exception:
+            pass
         result = restore_fact(
             fact_id=fact_id,
             tier=body.get('tier', 'public'),
             user_id=body.get('user_id'),
             target_state=body.get('target_state', 'preview'),
-            actor=body.get('actor', 'restore_v1'),
+            actor=_restore_actor,
         )
         return jsonify(result)
 
@@ -9455,21 +9575,27 @@ def create_app(astor_dir: str | None = None) -> Flask:
             bus, limit=limit, max_attempts=max_attempts,
         )
         # Also write an audit row so replay is traceable.
+        # v1.17.64: the actor is the admin who actually ran the replay.
+        # Hard-coding admin:admin made every replay look like it came
+        # from the SSoT owner, which is exactly the misdirection an
+        # incident review has to untangle.
+        _replay_actor = 'admin:admin'
         try:
-            bus.write_audit(
-                event='cascade_replay',
-                actor='admin:admin',
-                target_type='system',
-                target_id='cascade_state',
-                metadata={
-                    'limit': limit, 'max_attempts': max_attempts,
-                    'succeeded': result['succeeded'],
-                    'failed': result['failed'],
-                    'still_pending': result['still_pending'],
-                },
-            )
+            _replay_actor = ctx.actor
         except Exception:
             pass
+        bus.write_audit(
+            event='cascade_replay',
+            actor=_replay_actor,
+            target_type='system',
+            target_id='cascade_state',
+            metadata={
+                'limit': limit, 'max_attempts': max_attempts,
+                'succeeded': result['succeeded'],
+                'failed': result['failed'],
+                'still_pending': result['still_pending'],
+            },
+        )
         return jsonify(result)
 
     @app.route('/v1/cascade/stats', methods=['GET'])

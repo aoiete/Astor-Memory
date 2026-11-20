@@ -1713,8 +1713,12 @@ def cmd_confirm(args) -> int:
         # and a marker word in a shared note is a mistake either way.
         from ..nest.visibility_classifier import classify_visibility
         _content = str(row['content'])
+        # confidence=1.0: the operator asked for this to be published, and
+        # the whole point of this check is "does it read as private" --
+        # the kind-driven auto route is not what is being asked here.
+        # v1.17.64: an unmeasured confidence is not confidence.
         _dec = classify_visibility(text=_content, kind=kind, hint=None,
-                                   admin_allow_commons=True)
+                                   admin_allow_commons=True, confidence=1.0)
         if _dec.get('visibility') != 'commons':
             # The content reads as private. With --llm, ask for the method
             # to be abstracted out of it and publish the abstraction --
@@ -1734,7 +1738,7 @@ def cmd_confirm(args) -> int:
                     # the module said.
                     _recheck = classify_visibility(
                         text=_abstracted, kind=kind, hint=None,
-                        admin_allow_commons=True)
+                        admin_allow_commons=True, confidence=1.0)
                     if _recheck.get('visibility') != 'commons':
                         _abstracted = None
             if not _abstracted:
@@ -2029,6 +2033,24 @@ def cmd_relay_lookup(args) -> int:
     return 0
 
 
+def _scan_for_secrets(text: str) -> set:
+    """Names of the secret/PII patterns the broad scan found in `text`.
+
+    The classifier's has_pii() knows names, places and emotions; the
+    broad scan (memory_defense) knows bearer tokens, PEM keys and api
+    keys. A fact that is about to be promoted into the shared tier has
+    to pass both -- the shared tier is readable by every peer.
+    """
+    try:
+        from ..nest.memory_defense import scan_policy as _md_scan
+        _text, _matches = _md_scan(text, policy='block')
+    except Exception:
+        # If the scanner cannot run, do not publish.
+        return {'scanner_unavailable'}
+    return {m.name for m in _matches
+            if m.severity in ('block', 'redact')}
+
+
 def cmd_mine_public(args) -> int:
     """Move what the private tier learned into the shared tier.
 
@@ -2179,6 +2201,19 @@ def cmd_mine_public(args) -> int:
         cleared, _blocks = _clear_tools(scrubbed, keep_recent_n=3)
         cleaned, removed, report = _distill(cleared)
         if not cleaned or len(cleaned) < min_len // 2:
+            continue
+
+        # v1.17.64: has_pii() is the classifier's PII check -- names,
+        # places, emotions. It does not know about bearer tokens, PEM
+        # private keys or api keys: the broad secret scan does. Mining a
+        # private fact into the shared tier used only the first one, so a
+        # private note holding a token was published with the token in
+        # it. Same door as `am write --tier public`.
+        _secret_names = _scan_for_secrets(cleaned)
+        if _secret_names:
+            print(f'[mine-public] skipped id={fid}: '
+                  f'{len(_secret_names)} secret/PII match(es) including '
+                  f'{sorted(_secret_names)}', file=sys.stderr)
             continue
 
         if (has_pii(cleaned) or has_first_person(cleaned)

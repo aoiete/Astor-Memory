@@ -77,113 +77,72 @@ def _resolve_db_path() -> Optional[Path]:
     return None
 
 
-def _platform_id_for(platform: str, chat_id: Optional[str]) -> Optional[str]:
-    """Map hermes Platform enum value + chat_id to a bot-binding.db platform_id.
+# hermes 的平台名不一定等于 bot-binding.db 的 platform_kind
+# （见 astor_memory/_internal/bot_binding.py 的 upsert_platform:
+#   platform_id = "<platform_kind>:<account_id>"）。
+_PLATFORM_KIND_ALIASES = {
+    "discord_main": "discord",
+    "discord_main_bot": "discord",
+    "telegram_main": "telegram",
+    "telegram_bot": "telegram",
+    "wechat": "weixin",
+}
 
-    bot-binding.db's ``platforms`` table has rows like
-    ``weixin:<bot_account_id>@im.bot`` or ``discord:discord_main`` — only one per
-    platform kind, so for Discord/Telegram the lookup is just the platform
-    + a stable bot identifier. WeChat is special: there can be multiple
-    ``weixin:<id>@im.bot`` rows; the chat_id alone is not enough. But for the
-    common case of one weixin bot per installation, the chat_id (an
-    ``@im.wechat`` style id) maps to that single bot.
 
-    Returns the platform_id to query, or None if the platform isn't tracked
-    in bot-binding.db.
+def _platform_kind(platform: str) -> Optional[str]:
+    """Map a hermes platform value to the bot-binding.db platform_kind.
+
+    bot-binding.db 里的 platform_id 形如 ``<platform_kind>:<account_id>``
+    （weixin:<id>@im.bot），同一个 kind 下可以有多个 bot 账号，而入站事件
+    只带平台种类、不带账号 id —— 所以查询只能按 kind 匹配。
     """
-    if not platform or not chat_id:
+    kind = (platform or "").strip().lower()
+    if not kind:
         return None
-    if platform in {"discord", "discord_main", "discord_main_bot"}:
-        return "discord:discord_main"
-    if platform in {"telegram", "telegram_main", "telegram_bot"}:
-        return "telegram:hermes_bot"
-    if platform in {"weixin", "wechat"}:
-        # WeChat bots are per-account. The chat_id is the user's @im.wechat
-        # id; the platform_id is whichever weixin:<id>@im.bot row(s) bind
-        # this user. Since each user binds to exactly one weixin bot in our
-        # setup, we look up via chat_id (not platform_id). The helper below
-        # does that for weixin.
-        return None  # signal "use chat_id-only path"
-    return None
+    return _PLATFORM_KIND_ALIASES.get(kind, kind)
 
 
-def _lookup_user(platform: str, chat_id: Optional[str], user_id: Optional[str]) -> Optional[Dict[str, Any]]:
+def _lookup_user(platform: str, chat_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """Look up a user in bot-binding.db.
 
     Returns a dict with at least ``user_id`` and ``role`` keys, or None.
-    We accept both the chat_id (binding row) and user_id (sender id) so the
-    platform adapter doesn't have to know which one we trust.
+    绑定 = “某个会话属于某个用户”，所以只有 chat_id 与平台 kind 都对得上
+    的绑定才算数。发送者 id 故意不作为查询键：否则属于别的会话（或别的
+    平台）的绑定会替这条消息放行，撤销绑定、停用用户都拦不住。
     """
     db_path = _resolve_db_path()
     if not db_path:
         return None
+    # 来源平台或会话不确定时没有可核对的绑定，交回网关的 env allowlist 决定，
+    # 不要拿一条“看起来像”的绑定放行。
+    kind = _platform_kind(platform)
+    if not kind or not chat_id:
+        return None
 
-    pid = _platform_id_for(platform, chat_id)
     try:
         conn = sqlite3.connect(str(db_path), timeout=2.0)
         try:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
-
-            if pid:
-                # Standard path: bindings.platform_id = pid AND chat_id matches
-                cur.execute(
-                    """
-                    SELECT b.user_id, b.role_inherit AS role, b.active,
-                           m.subscription_plan, m.short_alias, m.real_name
-                    FROM bindings b
-                    LEFT JOIN user_meta m ON b.user_id = m.user_id
-                    WHERE b.platform_id = ?
-                      AND b.chat_id = ?
-                      AND b.active = 1
-                    LIMIT 1
-                    """,
-                    (pid, chat_id),
-                )
-                row = cur.fetchone()
-                if row:
-                    return dict(row)
-
-            # Fallback 1: chat_id-only lookup for weixin-style platforms
-            # where each user binds to exactly one weixin bot row
-            if chat_id and (platform in {"weixin", "wechat"} or pid is None):
-                cur.execute(
-                    """
-                    SELECT b.user_id, b.role_inherit AS role, b.active,
-                           m.subscription_plan, m.short_alias, m.real_name
-                    FROM bindings b
-                    LEFT JOIN user_meta m ON b.user_id = m.user_id
-                    WHERE b.platform_id LIKE 'weixin:%'
-                      AND b.chat_id = ?
-                      AND b.active = 1
-                    LIMIT 1
-                    """,
-                    (chat_id,),
-                )
-                row = cur.fetchone()
-                if row:
-                    return dict(row)
-
-            # Fallback 2: any binding for this user_id (catches weixin DMs
-            # where sender is known by user_id, not by chat_id)
-            if user_id:
-                cur.execute(
-                    """
-                    SELECT b.user_id, b.role_inherit AS role, b.active,
-                           m.subscription_plan, m.short_alias, m.real_name
-                    FROM bindings b
-                    LEFT JOIN user_meta m ON b.user_id = m.user_id
-                    WHERE b.user_id = ?
-                      AND b.active = 1
-                    LIMIT 1
-                    """,
-                    (user_id,),
-                )
-                row = cur.fetchone()
-                if row:
-                    return dict(row)
-
-            return None
+            # chat_id 必须一致，platform 必须是同一个 kind（每个 bot 的账号
+            # id 不同，入站事件拿不到）；user_meta.active 是停用开关，必须
+            # 一起生效，否则停用用户照样被放行。ESCAPE 保证 kind 里的 "_"
+            # 不被当成通配符。
+            cur.execute(
+                """
+                SELECT b.user_id, b.role_inherit AS role, b.active,
+                       m.subscription_plan, m.short_alias, m.real_name
+                FROM bindings b
+                JOIN user_meta m ON m.user_id = b.user_id AND m.active = 1
+                WHERE (b.platform_id = ? OR b.platform_id LIKE ? ESCAPE '\\')
+                  AND b.chat_id = ?
+                  AND b.active = 1
+                LIMIT 1
+                """,
+                (kind, kind.replace("_", r"\_") + ":%", chat_id),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
         finally:
             conn.close()
     except sqlite3.Error as e:
@@ -211,12 +170,11 @@ def _on_pre_gateway_dispatch(event: Any, gateway: Any = None, **kwargs: Any) -> 
         return None
     platform = source.platform.value if source.platform else ""
     chat_id = source.chat_id or None
-    user_id = source.user_id or None
 
     if not platform or not chat_id:
         return None  # leave the gateway's chat-id-less handling to the core
 
-    user = _lookup_user(platform, chat_id, user_id)
+    user = _lookup_user(platform, chat_id)
     if user is None:
         return None  # not in bot-binding.db — let the env-var path decide
 

@@ -376,8 +376,12 @@ def abstract_to_shareable(
     # that guards the write path -- including the first-person check,
     # because the whole point of the abstraction is the third person.
     from .visibility_classifier import classify_visibility
+    # confidence=1.0: the LLM proposed this as a shareable method and the
+    # grounding check above already passed -- this call is asking "does it
+    # still read as private", not "is the kind right". v1.17.64: an
+    # unmeasured confidence is not confidence.
     verdict = classify_visibility(text=method, kind="lesson", hint=None,
-                                  admin_allow_commons=True)
+                                  admin_allow_commons=True, confidence=1.0)
     if verdict.get("visibility") != "commons":
         out["reason"] = "the proposal still reads as private"
         out["signals"] = verdict.get("signals") or {}

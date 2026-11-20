@@ -95,11 +95,20 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
     ("bearer_token", re.compile(r"\bBearer\s+[A-Za-z0-9_-]{20,}\b"), "block"),
     ("basic_auth", re.compile(r"\bBasic\s+[A-Za-z0-9+/=]{10,}\b"), "block"),
 
-    # URL with secret query params
-    ("url_secret_param", re.compile(r"\?[^&\s]*(?:key|token|secret|password|api_key|access_token)=[A-Za-z0-9]+", re.IGNORECASE), "block"),
+    # URL with secret query params — 密钥参数可以落在任何一个 query 槽位,
+    # 旧写法只认 '?' 后面的第一个槽位,'?a=1&api_key=SECRET' 整条被判成干净文本。
+    # 用 lookbehind 吃掉分隔符,redact 之后 URL 结构还留着。
+    ("url_secret_param", re.compile(
+        r"(?<=[?&])[^&;\s=]*(?:key|token|secret|password|api_key|access_token)=[A-Za-z0-9]+",
+        re.IGNORECASE), "block"),
 
-    # Private key markers
-    ("private_key_pem", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "block"),
+    # Private key markers — 整块匹配(头 + base64 正文 + 尾)。
+    # 只匹配头一行的话,redact 之后 base64 正文原样写进公开层,私钥等于没拦。
+    # 没有 END 尾行(粘贴被截断)时退化成吃掉后面的 base64 行。
+    ("private_key_pem", re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
+        r"(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
+        r"|(?:[ \t]*\r?\n[ \t]*[A-Za-z0-9+/=]+)*)"), "block"),
     ("ssh_key", re.compile(r"ssh-(?:rsa|dss|ed25519|ecdsa)\s+[A-Za-z0-9+/=]{40,}"), "block"),
 
     # JWT tokens (3 base64 chunks separated by dots)

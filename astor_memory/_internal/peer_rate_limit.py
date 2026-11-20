@@ -8,12 +8,17 @@ tunable via env ASTOR_PEER_RATE_LIMIT_PER_24H.
 
 Design choices:
 
-  - In-memory dict keyed by peer_id, values = sliding window of timestamps.
-    No new DB table. Storage is trivial (≤ N peers × 1000 timestamps = a
-    few MB even at scale), and rebuilds from the audit log on restart
-    anyway (see ``rebuild_from_audit``).
-  - Lazy eviction on insertion: prune entries > 24h before counting.
-  - Thread-safe via a single lock (Python dict, won't be cross-process).
+  - The counter lives in SQLite (peer_state.db), not in this process's
+    memory. An in-memory dict gave every worker its own budget, so the
+    peer's real allowance was N x 1000 when the node ran N workers --
+    a replayed signed URL then burned one budget per worker.
+  - The same file holds the one-time nonce ledger, because a nonce that
+    only one worker knows about is not a nonce.
+  - Sliding window of timestamps, so a peer that keeps a steady rate
+    still gets its full budget every 24h.
+  - ``_BUCKET`` stays as a dict-shaped view over the shared table: older
+    code (and the test suite) pokes at it as a dict, and the storage
+    underneath is now shared by every worker.
   - Admin escape hatch: ``reset(peer_id)`` clears one peer's bucket.
   - ``rebuild_from_audit`` lets the server rebuild buckets after a restart
     by replaying the latest 24h of audit rows with ``action='peer_search'``
@@ -23,6 +28,10 @@ Functions:
     check_and_consume(peer_id) -> (allowed: bool, count: int, retry_after_s: int)
         Atomic: if allowed, appends this timestamp; if not, returns retry-after.
         Used by ``/v1/peer/public_search`` before doing any work.
+    consume_nonce(peer_id, nonce) -> bool
+        Atomic: True the first time this (peer, nonce) is seen, False on
+        every replay. Used to stop a captured signed URL from being
+        replayed into the peer's budget.
     snapshot(peer_id) -> {count, window_hours, cap, last_request_iso, oldest}
         Read-only — used by ``/v1/peer/rate-limit`` (admin peek).
     reset(peer_id) -> int (rows cleared)
@@ -30,7 +39,7 @@ Functions:
     rebuild_from_audit(astor_dir=None) -> int (rows replayed)
         Called by server start hooks and CLI ``am peer rl rebuild``.
         Reads from audit_logger.conn for last 24h of ``peer_search`` rows
-        and rebuilds the in-memory buckets.
+        and rebuilds the buckets.
 
 Constants:
     DEFAULT_LIMIT_PER_24H = 1000
@@ -39,18 +48,49 @@ Constants:
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import os
+import sqlite3
 import threading
 import time
-from typing import Optional
+from pathlib import Path
 
+from .acl_layout import get_astor_dir
+from .peer_search import TIMESTAMP_AGE_SECONDS
 
 DEFAULT_LIMIT_PER_24H = 1000
 WINDOW_SECONDS = 24 * 3600
 
+# 一次性 nonce 留多久 = 签名请求本身还能被接受多久(复用 peer_search 的
+# 7 天新鲜度窗口)。更老的请求本来就过不了时间戳校验, 留着只是占地方。
+NONCE_TTL_SECONDS = TIMESTAMP_AGE_SECONDS
+
+_DB_NAME = "peer_state.db"
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS peer_budget (
+    peer_id TEXT NOT NULL,
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_peer_budget_peer ON peer_budget(peer_id, ts);
+
+CREATE TABLE IF NOT EXISTS peer_nonce (
+    peer_id TEXT NOT NULL,
+    nkey TEXT NOT NULL,
+    ts REAL NOT NULL,
+    PRIMARY KEY (peer_id, nkey)
+);
+CREATE INDEX IF NOT EXISTS ix_peer_nonce_ts ON peer_nonce(ts);
+"""
+
 
 def _now() -> float:
     return time.time()
+
+
+def _cutoff() -> float:
+    """窗口边界: 比它早的请求已经不在 24h 额度里了。"""
+    return _now() - WINDOW_SECONDS
 
 
 def _iso(ts: float) -> str:
@@ -73,25 +113,28 @@ def _limit() -> int:
         return DEFAULT_LIMIT_PER_24H
 
 
-# Module-level state. Single-process lock is fine; PPS volume at current
-# scale is < 1000 events / 24h even with the E2E test fleet.
-_BUCKET: dict[str, list[float]] = {}
-_LOCK = threading.Lock()
+def _db_path() -> Path:
+    """Where the shared counter lives.
+
+    WHY: the budget is a property of the peer, not of this process.
+    Every worker of the node has to see the same table, so it sits next
+    to the other per-peer state (relationships.db) rather than in memory.
+    """
+    p = get_astor_dir() / "identity" / _DB_NAME
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
 
 
-def _evict(peer_id: str, *, now: Optional[float] = None) -> None:
-    """Drop entries older than WINDOW_SECONDS."""
-    t = now if now is not None else _now()
-    cutoff = t - WINDOW_SECONDS
-    bucket = _BUCKET.get(peer_id)
-    if not bucket:
-        return
-    # In-place prune (timestamps are mostly append-ordered)
-    pruned = [ts for ts in bucket if ts >= cutoff]
-    if pruned:
-        _BUCKET[peer_id] = pruned
-    else:
-        _BUCKET.pop(peer_id, None)
+def _connect() -> sqlite3.Connection:
+    con = sqlite3.connect(str(_db_path()), timeout=30.0, isolation_level=None)
+    con.execute("PRAGMA busy_timeout=30000")
+    con.executescript(_SCHEMA)
+    return con
+
+
+# In-process lock on top of SQLite's own locking: keeps the read-modify-
+# write of the budget inside one transaction instead of racing on it.
+_LOCK = threading.RLock()
 
 
 def check_and_consume(peer_id: str) -> tuple[bool, int, int]:
@@ -104,17 +147,70 @@ def check_and_consume(peer_id: str) -> tuple[bool, int, int]:
         # Unlabeled request — fail closed (counted as a hostile request).
         return False, 0, WINDOW_SECONDS
     cap = _limit()
-    with _LOCK:
-        _evict(peer_id)
-        bucket = _BUCKET.setdefault(peer_id, [])
-        count = len(bucket)
-        if count >= cap:
-            # Compute retry-after based on the bucket's oldest entry
-            oldest = min(bucket) if bucket else _now()
-            retry_s = max(1, int((oldest + WINDOW_SECONDS) - _now()))
-            return False, count, retry_s
-        bucket.append(_now())
-        return True, count + 1, 0
+    now = _now()
+    cutoff = now - WINDOW_SECONDS
+    con = _connect()
+    try:
+        with _LOCK:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                # 24h 窗口滑出去的行顺手删掉, 表才不会一直长
+                con.execute("DELETE FROM peer_budget WHERE peer_id=? AND ts<?",
+                            (peer_id, cutoff))
+                count = con.execute(
+                    "SELECT COUNT(*) FROM peer_budget WHERE peer_id=?",
+                    (peer_id,)).fetchone()[0]
+                if count >= cap:
+                    oldest = con.execute(
+                        "SELECT MIN(ts) FROM peer_budget WHERE peer_id=?",
+                        (peer_id,)).fetchone()[0]
+                    con.execute("COMMIT")
+                    retry_s = (max(1, int((oldest + WINDOW_SECONDS) - now))
+                               if oldest else WINDOW_SECONDS)
+                    return False, count, retry_s
+                con.execute(
+                    "INSERT INTO peer_budget (peer_id, ts) VALUES (?, ?)",
+                    (peer_id, now))
+                con.execute("COMMIT")
+                return True, count + 1, 0
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
+    finally:
+        con.close()
+
+
+def consume_nonce(peer_id: str, nonce: str) -> bool:
+    """Record a one-time token. False means "already used" -> replay.
+
+    WHY: the peer's budget is the thing an attacker wants to burn, and a
+    captured signed URL can be replayed without the requestor's key. One
+    row per (peer, nonce) means the second use of the same request is
+    refused — and the row has to be in the shared table, or a second
+    worker would happily accept the replay.
+    """
+    if not peer_id or not nonce:
+        return False
+    # 只存摘要: nonce 是不受信任的输入, 而且长度没有上限
+    key = hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+    now = _now()
+    con = _connect()
+    try:
+        with _LOCK:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                con.execute("DELETE FROM peer_nonce WHERE ts < ?",
+                            (now - NONCE_TTL_SECONDS,))
+                cur = con.execute(
+                    "INSERT OR IGNORE INTO peer_nonce (peer_id, nkey, ts) "
+                    "VALUES (?, ?, ?)", (peer_id, key, now))
+                con.execute("COMMIT")
+                return cur.rowcount == 1
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
+    finally:
+        con.close()
 
 
 def snapshot(peer_id: str) -> dict:
@@ -125,48 +221,56 @@ def snapshot(peer_id: str) -> dict:
                 "window_hours": WINDOW_SECONDS // 3600,
                 "last_request_iso": None, "oldest_iso": None,
                 "retry_after_seconds": None}
-    with _LOCK:
-        _evict(peer_id)
-        bucket = _BUCKET.get(peer_id, [])
-        if not bucket:
-            return {"peer_id": peer_id, "count": 0, "cap": cap,
-                    "window_hours": WINDOW_SECONDS // 3600,
-                    "last_request_iso": None, "oldest_iso": None,
-                    "retry_after_seconds": None}
-        oldest = min(bucket)
-        last = max(bucket)
-        retry_s = max(0, int((oldest + WINDOW_SECONDS) - _now()))
-        return {"peer_id": peer_id, "count": len(bucket), "cap": cap,
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT COUNT(*), MIN(ts), MAX(ts) FROM peer_budget "
+            "WHERE peer_id=? AND ts>=?", (peer_id, _cutoff())).fetchone()
+    finally:
+        con.close()
+    count = int(row[0] or 0)
+    if not count:
+        return {"peer_id": peer_id, "count": 0, "cap": cap,
                 "window_hours": WINDOW_SECONDS // 3600,
-                "last_request_iso": _iso(last),
-                "oldest_iso": _iso(oldest),
-                "retry_after_seconds": retry_s}
+                "last_request_iso": None, "oldest_iso": None,
+                "retry_after_seconds": None}
+    oldest, last = float(row[1]), float(row[2])
+    retry_s = max(0, int((oldest + WINDOW_SECONDS) - _now()))
+    return {"peer_id": peer_id, "count": count, "cap": cap,
+            "window_hours": WINDOW_SECONDS // 3600,
+            "last_request_iso": _iso(last),
+            "oldest_iso": _iso(oldest),
+            "retry_after_seconds": retry_s}
 
 
 def reset(peer_id: str) -> int:
     """Admin escape hatch. Returns count cleared."""
-    with _LOCK:
-        bucket = _BUCKET.pop(peer_id, None)
-        return len(bucket) if bucket else 0
+    con = _connect()
+    try:
+        with _LOCK:
+            cur = con.execute("DELETE FROM peer_budget WHERE peer_id=?",
+                               (peer_id,))
+            return cur.rowcount
+    finally:
+        con.close()
 
 
 def all_snapshots() -> list[dict]:
     """For the dashboard / CLI ``am peer rl list`` view."""
-    with _LOCK:
-        out = []
-        # Snapshot a copy under lock
-        for pid in list(_BUCKET.keys()):
-            _evict(pid)
-        for pid, bucket in _BUCKET.items():
-            if not bucket:
-                continue
-            oldest = min(bucket)
-            last = max(bucket)
-            out.append({"peer_id": pid, "count": len(bucket),
-                        "cap": _limit(),
-                        "last_request_iso": _iso(last),
-                        "oldest_iso": _iso(oldest),
-                        "window_hours": WINDOW_SECONDS // 3600})
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT peer_id, COUNT(*), MIN(ts), MAX(ts) FROM peer_budget "
+            "WHERE ts>=? GROUP BY peer_id", (_cutoff(),)).fetchall()
+    finally:
+        con.close()
+    out = []
+    for pid, count, oldest, last in rows:
+        out.append({"peer_id": pid, "count": int(count),
+                    "cap": _limit(),
+                    "last_request_iso": _iso(last),
+                    "oldest_iso": _iso(oldest),
+                    "window_hours": WINDOW_SECONDS // 3600})
     return out
 
 
@@ -188,13 +292,12 @@ def rebuild_from_audit(astor_dir: str | None = None) -> int:
         return 0
     if not path.exists():
         return 0
-    import sqlite3 as _sqlite3
     cutoff_iso = (
         _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=WINDOW_SECONDS)
     ).isoformat(timespec="seconds").replace("+00:00", "Z")
     rows = []
     try:
-        con = _sqlite3.connect(str(path), check_same_thread=False)
+        con = sqlite3.connect(str(path), check_same_thread=False)
         cur = con.execute(
             "SELECT actor, ts FROM audit "
             "WHERE action = 'peer_search' AND ts >= ?",
@@ -204,38 +307,137 @@ def rebuild_from_audit(astor_dir: str | None = None) -> int:
         con.close()
     except Exception:
         return 0
-    n = 0
-    with _LOCK:
-        # Wipe and repopulate (each restart gets a clean window).
-        _BUCKET.clear()
-        for actor, ts in rows:
-            peer_id = actor[len("peer:"):].strip() if actor.startswith("peer:") else ""
-            if not peer_id:
-                continue
-            # parse ISO back to epoch
+    entries = []
+    for actor, ts in rows:
+        peer_id = actor[len("peer:"):].strip() if actor.startswith("peer:") else ""
+        if not peer_id:
+            continue
+        # parse ISO back to epoch
+        try:
+            t = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            continue
+        entries.append((peer_id, t))
+    con = _connect()
+    try:
+        with _LOCK:
+            con.execute("BEGIN IMMEDIATE")
             try:
-                t = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+                # Wipe and repopulate (each restart gets a clean window).
+                con.execute("DELETE FROM peer_budget")
+                con.executemany(
+                    "INSERT INTO peer_budget (peer_id, ts) VALUES (?, ?)",
+                    entries)
+                con.execute("COMMIT")
             except Exception:
-                continue
-            _BUCKET.setdefault(peer_id, []).append(t)
-            n += 1
-        # Drop empty entries after pruning
-        for pid in list(_BUCKET.keys()):
-            _evict(pid)
-    return n
+                con.execute("ROLLBACK")
+                raise
+    finally:
+        con.close()
+    return len(entries)
 
 
 def status_summary() -> dict:
     """Admin dashboard summary: total peers, total requests in window, total cap."""
-    with _LOCK:
-        # Evict stale
-        for pid in list(_BUCKET.keys()):
-            _evict(pid)
-        total = sum(len(b) for b in _BUCKET.values())
-        cap = _limit()
-        return {
-            "peers_tracked": len(_BUCKET),
-            "requests_in_window": total,
-            "cap_per_peer_per_24h": cap,
-            "window_hours": WINDOW_SECONDS // 3600,
-        }
+    con = _connect()
+    try:
+        peers = con.execute(
+            "SELECT COUNT(DISTINCT peer_id) FROM peer_budget WHERE ts>=?",
+            (_cutoff(),)).fetchone()[0]
+        total = con.execute(
+            "SELECT COUNT(*) FROM peer_budget WHERE ts>=?",
+            (_cutoff(),)).fetchone()[0]
+    finally:
+        con.close()
+    return {
+        "peers_tracked": int(peers),
+        "requests_in_window": int(total),
+        "cap_per_peer_per_24h": _limit(),
+        "window_hours": WINDOW_SECONDS // 3600,
+    }
+
+
+class _BudgetView:
+    """dict 形状的兼容层。
+
+    WHY: 旧的调用方(CLI 清理钩子、测试)把 _BUCKET 当 dict 用, 而额度
+    现在必须活在所有 worker 共享的表里 —— 所以这里只保留 dict 的外形,
+    真正的存储是共享的 SQLite 表。
+    """
+
+    def __getitem__(self, peer_id: str) -> list:
+        con = _connect()
+        try:
+            rows = con.execute(
+                "SELECT ts FROM peer_budget WHERE peer_id=? ORDER BY ts",
+                (peer_id,)).fetchall()
+        finally:
+            con.close()
+        return [float(r[0]) for r in rows]
+
+    def __setitem__(self, peer_id: str, timestamps) -> None:
+        con = _connect()
+        try:
+            with _LOCK:
+                con.execute("BEGIN IMMEDIATE")
+                try:
+                    con.execute("DELETE FROM peer_budget WHERE peer_id=?",
+                                (peer_id,))
+                    con.executemany(
+                        "INSERT INTO peer_budget (peer_id, ts) VALUES (?, ?)",
+                        [(peer_id, float(t)) for t in timestamps])
+                    con.execute("COMMIT")
+                except Exception:
+                    con.execute("ROLLBACK")
+                    raise
+        finally:
+            con.close()
+
+    def __delitem__(self, peer_id: str) -> None:
+        con = _connect()
+        try:
+            con.execute("DELETE FROM peer_budget WHERE peer_id=?", (peer_id,))
+        finally:
+            con.close()
+
+    def get(self, peer_id: str, default=None):
+        rows = self[peer_id]
+        return rows if rows else default
+
+    def pop(self, peer_id: str, default=None):
+        rows = self[peer_id]
+        if not rows:
+            return default
+        del self[peer_id]
+        return rows
+
+    def clear(self) -> None:
+        con = _connect()
+        try:
+            con.execute("DELETE FROM peer_budget")
+        finally:
+            con.close()
+
+    def keys(self) -> list:
+        con = _connect()
+        try:
+            rows = con.execute(
+                "SELECT DISTINCT peer_id FROM peer_budget").fetchall()
+        finally:
+            con.close()
+        return [r[0] for r in rows]
+
+    def items(self) -> list:
+        return [(pid, self[pid]) for pid in self.keys()]
+
+    def __contains__(self, peer_id: str) -> bool:
+        return peer_id in self.keys()
+
+    def __len__(self) -> int:
+        return len(self.keys())
+
+    def __iter__(self):
+        return iter(self.keys())
+
+
+_BUCKET = _BudgetView()

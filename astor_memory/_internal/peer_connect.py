@@ -33,15 +33,35 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
 
+from .peer_search import MAX_RESPONSE_BYTES, canonical_payload_bytes
+
 DEFAULT_TIMEOUT = 20
+
+# peer 是远端不可信方:它想回多少字节都行,而 resp.read() 不带上限会把
+# 整个 body 读进内存才解析 —— 一次超大响应就够把本地进程拖垮。
+# 按 peer_search.py 的做法给它一个字节上限。
 
 
 class ConnectError(Exception):
     """A failure that the operator needs to read, not a stack trace."""
+
+
+def _read_capped(resp, url: str) -> str:
+    """读取 response body,超过上限就拒绝。
+
+    多读 1 字节来判断是否超限:超限必须报错,不能悄悄截断 ——
+    截断后的内容可能仍能解析成另一份看起来合法的 JSON。
+    """
+    body = resp.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise ConnectError("response from %s is larger than %d bytes"
+                           % (url, MAX_RESPONSE_BYTES))
+    return body.decode("utf-8", "replace")
 
 
 def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
@@ -54,16 +74,18 @@ def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
     })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", "replace")
+            raw = _read_capped(resp, url)
     except urllib.error.HTTPError as e:
         body = ""
         try:
-            body = e.read().decode("utf-8", "replace")[:200]
+            body = e.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")[:200]
         except Exception:
             pass
         raise ConnectError("HTTP %s from %s %s" % (e.code, url, body))
     except urllib.error.URLError as e:
         raise ConnectError("cannot reach %s: %s" % (url, e.reason))
+    except ConnectError:
+        raise
     except Exception as e:  # socket timeouts land here too
         raise ConnectError("cannot reach %s: %s" % (url, e))
     try:
@@ -293,16 +315,12 @@ def search_peer_friend(endpoint: str, query: str, peer_id: str, public_key: str,
 
     now = _dt.datetime.now(_dt.timezone.utc).isoformat(
         timespec="seconds").replace("+00:00", "Z")
-    topic_str = topic or ""
     # The canonical payload is the same bytes the receiver rebuilds --
-    # peer_id, query, topic, limit, timestamp, in that order.
-    payload = (
-        peer_id.encode("utf-8") + b"\n" +
-        query.encode("utf-8") + b"\n" +
-        topic_str.encode("utf-8") + b"\n" +
-        str(int(limit)).encode("utf-8") + b"\n" +
-        now.encode("utf-8")
-    )
+    # peer_id, query, topic, limit, timestamp, nonce, in that order.
+    # nonce 每个请求一个: 抓到的签名 URL 只能买一次搜索。
+    nonce = secrets.token_hex(16)
+    payload = canonical_payload_bytes(
+        peer_id, query, topic, int(limit), now, nonce)
     sig = sign(payload)
     req = {
         "requestor_peer_id": peer_id,
@@ -312,6 +330,7 @@ def search_peer_friend(endpoint: str, query: str, peer_id: str, public_key: str,
         "limit": int(limit),
         "timestamp": now,
         "signature": sig,
+        "nonce": nonce,
     }
     raw = base64.urlsafe_b64encode(json.dumps(req).encode("utf-8")).decode("ascii")
     url = endpoint + "/v1/peer/public_search?req=" + urllib.parse.quote(raw)
@@ -335,11 +354,11 @@ def _post_json(url: str, payload: dict, timeout: int = DEFAULT_TIMEOUT) -> dict:
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", "replace")
+            raw = _read_capped(resp, url)
     except urllib.error.HTTPError as e:
         raw = ""
         try:
-            raw = e.read().decode("utf-8", "replace")
+            raw = e.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
         except Exception:
             pass
         try:
@@ -352,6 +371,8 @@ def _post_json(url: str, payload: dict, timeout: int = DEFAULT_TIMEOUT) -> dict:
         return {"error": "http_%s" % e.code, "detail": raw[:200]}
     except urllib.error.URLError as e:
         raise ConnectError("cannot reach %s: %s" % (url, e.reason))
+    except ConnectError:
+        raise
     except Exception as e:
         raise ConnectError("cannot reach %s: %s" % (url, e))
     try:

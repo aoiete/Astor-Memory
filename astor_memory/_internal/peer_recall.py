@@ -54,6 +54,32 @@ def dispatch_peer_fanout(
         except Exception:
             actor_peer_id = None
 
+    # v1.17.64: the query goes out to the peer network verbatim, and the
+    # peer network is a federation -- not the caller's own machine. A
+    # question like "what was my TFSA balance in March" or "who is my
+    # daughter's teacher" carries the private part of the query to
+    # every trusted friend.
+    #
+    # The gate is the same one the write path uses (astor's own
+    # detectors, not a hand-rolled regex): a query that reads as
+    # personal or carries PII is not shared. A question that reads as a
+    # method or a topic still fans out -- that is the whole point of the
+    # federation.
+    try:
+        from ..nest.visibility_classifier import has_first_person, has_pii
+        from ..nest.memory_defense import detect_personal_content
+        _q = query or ""
+        _private = bool(has_first_person(_q)) or bool(has_pii(_q)) \
+            or bool(detect_personal_content(_q))
+    except Exception:
+        # If the detectors cannot run, do not ship the query.
+        _private = True
+    if _private:
+        return {"peer_results": [], "per_peer": [],
+                "peer_count": 0, "local_error": None,
+                "mode": "peer_fanout",
+                "skipped": "query_reads_as_private"}
+
     peers = list_peers()
     targets = select_search_targets(
         peers, topic=topic, topic_min_weight=topic_min_weight,

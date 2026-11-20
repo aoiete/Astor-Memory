@@ -37,6 +37,7 @@ import base64
 import datetime as _dt
 import hashlib
 import json
+import secrets
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -47,10 +48,63 @@ MAX_QUERY_LENGTH = 1024          # bytes
 MAX_TOPIC_LENGTH = 128           # bytes
 MAX_RESULTS_PER_PEER = 20       # friend returns at most N facts
 MAX_RESPONSE_BYTES = 1 * 1024 * 1024   # 1MB per peer
+MAX_TAGS_PER_RESULT = 16     # 每个结果最多带几个 tag
+MAX_TAG_BYTES = 1024         # 一个结果的 tag 总字节上限
+MAX_TAG_JSON_BYTES = 8192    # 存 tag 的原始 JSON 的字节上限
 PEER_TIMEOUT_SECONDS = 3        # per-peer HTTP timeout
 TOTAL_TIMEOUT_SECONDS = 10      # total budget across all peers
 TIMESTAMP_SKEW_SECONDS = 60     # allow 60s clock skew into the future
 TIMESTAMP_AGE_SECONDS = 7 * 24 * 3600   # reject requests older than 7d
+
+
+def _capped_rows(raw) -> tuple[list, bool]:
+    """Cut a peer's result list down to MAX_RESULTS_PER_PEER before parsing.
+
+    WHY: MAX_RESULTS_PER_PEER is the cap we promise the caller, but the
+    peer answers the request and does not have to honour it -- a 1MB body
+    can carry thousands of rows, and parsing every one of them spends the
+    CALLER's memory and CPU on the peer's behalf. Returns
+    (rows_to_parse, was_truncated). A non-list payload is passed through
+    untouched so the existing error path still handles junk.
+    """
+    if not isinstance(raw, list):
+        return raw, False
+    rows = raw[:MAX_RESULTS_PER_PEER]
+    return rows, len(rows) < len(raw)
+
+
+def canonical_payload_bytes(requestor_peer_id: str, query: str,
+                           topic: str | None, limit: int, timestamp: str,
+                           nonce: str = '') -> bytes:
+    """被签名的字节串 —— 只有这一处拼。
+
+    WHY: peer_connect 自己拼过一份同样的字节; 两份拼法差一个换行,
+    签名就永远验不过, 所以两边都走这里。
+    """
+    parts = [requestor_peer_id, query, topic or '', str(limit), timestamp]
+    if nonce:
+        parts.append(nonce)
+    return '\n'.join(parts).encode('utf-8')
+
+
+def cap_tags(tags) -> tuple:
+    """压住 tag 的个数和总字节数。
+
+    WHY: tag 是作者自己写的, 长度和个数都没有上限; 不压住的话一个
+    结果就能带着几 MB 的 tag 出门。
+    """
+    out = []
+    total = 0
+    for tag in tags:
+        s = tag if isinstance(tag, str) else str(tag)
+        size = len(s.encode('utf-8'))
+        if total + size > MAX_TAG_BYTES:
+            break
+        total += size
+        out.append(s)
+        if len(out) >= MAX_TAGS_PER_RESULT:
+            break
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -68,6 +122,7 @@ class PeerSearchRequest:
     limit: int
     timestamp: str   # ISO 8601 UTC, e.g. 2026-09-17T19:00:00Z
     signature: str   # base64
+    nonce: str = ''  # 一次性 nonce(hex); 老客户端可以不带
 
     def __post_init__(self):
         # Validate requestor_peer_id format
@@ -113,6 +168,16 @@ class PeerSearchRequest:
             )
         # Validate timestamp freshness (replay defense)
         self._validate_timestamp()
+        # nonce 进了签名, 所以格式必须钉死: 同一个 key 下不同字段的
+        # 组合不能拼出同一串签名字节。
+        if self.nonce:
+            if (not isinstance(self.nonce, str)
+                    or len(self.nonce) != 32
+                    or any(c not in '0123456789abcdef' for c in self.nonce)):
+                raise ValueError(
+                    f"nonce must be 32 lowercase hex chars; "
+                    f"got {self.nonce!r}"
+                )
         # Validate signature is non-empty (actual verification is
         # caller's job — we just enforce structural validity)
         if not self.signature:
@@ -155,13 +220,9 @@ class PeerSearchRequest:
 
     def canonical_payload(self) -> bytes:
         """Bytes that were signed — used by verifier to reconstruct."""
-        topic_str = self.topic or ""
-        return (
-            self.requestor_peer_id.encode("utf-8") + b"\n" +
-            self.query.encode("utf-8") + b"\n" +
-            topic_str.encode("utf-8") + b"\n" +
-            str(self.limit).encode("utf-8") + b"\n" +
-            self.timestamp.encode("utf-8")
+        return canonical_payload_bytes(
+            self.requestor_peer_id, self.query, self.topic,
+            self.limit, self.timestamp, self.nonce,
         )
 
     def verify_signature(self) -> bool:
@@ -195,6 +256,7 @@ class PeerSearchRequest:
             "limit": self.limit,
             "timestamp": self.timestamp,
             "signature": self.signature,
+            "nonce": self.nonce,
         }
 
     def to_query_string(self) -> str:
@@ -235,6 +297,9 @@ class PeerSearchResult:
             raise ValueError(
                 f"relevance must be 0.0-1.0; got {self.relevance}"
             )
+        # tag 的个数和字节数在这里钉死(frozen dataclass, 要绕一层
+        # object.__setattr__): 作者写的 tag 进了响应就是别人的内存。
+        object.__setattr__(self, 'tags', cap_tags(self.tags))
 
     def to_dict(self) -> dict:
         """JSON-serializable form for embedding in responses."""
@@ -304,6 +369,8 @@ def build_search_request(
     now = _dt.datetime.now(_dt.timezone.utc).isoformat(
         timespec='seconds'
     ).replace('+00:00', 'Z')
+    # 每个请求一个 nonce: 抓到的签名 URL 只能买一次搜索
+    nonce = secrets.token_hex(16)
     # First build a temp object to get the canonical payload
     temp = PeerSearchRequest(
         requestor_peer_id=requestor_peer_id,
@@ -313,6 +380,7 @@ def build_search_request(
         limit=limit,
         timestamp=now,
         signature='A' * 86 + '==',  # placeholder: 88 chars base64 → exactly 64 bytes
+        nonce=nonce,
     )
     # sign with the key the caller handed in, not with whatever identity
     # happens to be on disk -- for every in-tree caller those are the
@@ -328,6 +396,7 @@ def build_search_request(
         limit=limit,
         timestamp=now,
         signature=sig,
+        nonce=nonce,
     )
 
 
@@ -461,7 +530,11 @@ def _dispatch_via_relay(request, peer: dict,
         )
     # the answer is the same document the direct path returns
     results = []
-    for r in (out.get("results") or []):
+    # relay 回来的也是对端给的, 同样先切到上限再解析
+    _raw = out.get("results") or []
+    if not isinstance(_raw, list):
+        _raw = []
+    for r in _raw[:MAX_RESULTS_PER_PEER]:
         try:
             results.append(PeerSearchResult(
                 source_peer_id=r.get("source_peer_id", ""),
@@ -469,7 +542,7 @@ def _dispatch_via_relay(request, peer: dict,
                 fact_id=int(r.get("fact_id", 0)),
                 content=str(r.get("content", "")),
                 kind=str(r.get("kind", "fact")),
-                tags=tuple(r.get("tags") or ()),
+                tags=cap_tags(r.get("tags") or ()),
                 created_at=str(r.get("created_at", "")),
                 relevance=float(r.get("relevance", 0.0)),
             ))
@@ -584,6 +657,9 @@ def dispatch_search_to_peers(
                         last_error = 'response_too_large'
                         continue
                     data = json.loads(body)
+                    # Slice BEFORE parsing: the peer controls this list and
+                    # is not obliged to stop at MAX_RESULTS_PER_PEER.
+                    rows, dropped = _capped_rows(data.get('results', []))
                     results = tuple(
                         PeerSearchResult(
                             source_peer_id=r['source_peer_id'],
@@ -591,16 +667,16 @@ def dispatch_search_to_peers(
                             fact_id=r.get('fact_id', 0),
                             content=r['content'],
                             kind=r.get('kind', 'fact'),
-                            tags=tuple(r.get('tags', [])),
+                            tags=cap_tags(r.get('tags') or ()),
                             created_at=r.get('created_at', ''),
                             relevance=r.get('relevance', 0.5),
                         )
-                        for r in data.get('results', [])
+                        for r in rows
                     )
                     responses.append(PeerSearchResponse(
                         requestor_peer_id=request.requestor_peer_id,
                         results=results,
-                        truncated=data.get('truncated', False),
+                        truncated=bool(data.get('truncated', False)) or dropped,
                         error=data.get('error'),
                     ))
                     break

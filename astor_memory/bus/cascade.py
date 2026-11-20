@@ -221,18 +221,28 @@ def replay_one(bus, row_id: int, max_attempts: int = 5) -> dict:
     # queued cascade row. The forget path cancels the rows it can see,
     # but a row can be enqueued again afterwards (or have been written
     # by an older build), so the fact's own state decides here.
+    #
+    # v1.17.64: a HARD forget deletes the canonical row outright, so the
+    # lookup below returns None -- and "no row" used to mean "not
+    # forgotten", which let the replay re-index the plaintext from
+    # cascade_state.payload and bring the deleted content back. A row
+    # that is gone is exactly as gone as one that is tombstoned, so
+    # both cases skip.
     try:
         _tomb = bus.conn.execute(
             "SELECT tombstoned FROM memory_canonical WHERE id = ?",
             (int(fact_id),)).fetchone()
     except Exception:
         _tomb = None
-    if _tomb is not None and _tomb[0]:
+    if _tomb is None or _tomb[0]:
         bus.conn.execute(
             "UPDATE cascade_state SET status = ?, last_attempt_at = "
             "strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), attempt_count = attempt_count + 1, "
             "last_error = ? WHERE id = ?",
-            (STATUS_SKIPPED, 'fact was forgotten', int(queue_id)))
+            (STATUS_SKIPPED,
+             'fact was forgotten' if (_tomb is not None and _tomb[0])
+             else 'fact was deleted',
+             int(queue_id)))
         bus.conn.commit()
         return {'ok': True, 'row_id': int(queue_id), 'fact_id': int(fact_id),
                 'operation': operation, 'status': STATUS_SKIPPED,

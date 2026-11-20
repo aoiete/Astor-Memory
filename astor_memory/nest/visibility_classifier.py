@@ -396,7 +396,7 @@ def classify_visibility(
       3. If hint == 'personal' → personal
       4. If hint == 'auto' or None:
            if kind in AUTO_COMMONS_KINDS
-              and confidence >= 0.7
+              and (confidence or 0.0) >= 0.7
               and not (has_pii(text) or has_first_person(text)
                        or has_emotion(text) or has_geographic(text)):
                → commons
@@ -469,7 +469,7 @@ def classify_visibility(
             _content_kind = 'content_inferred'
     _effective_kind = kind if (kind and kind in AUTO_COMMONS_KINDS) else _content_kind
 
-    if _effective_kind and confidence >= 0.7 and not has_any_block:
+    if _effective_kind and (confidence or 0.0) >= 0.7 and not has_any_block:
         return {
             'visibility': 'commons',
             'reason': f'kind_{_effective_kind}_auto_promote',

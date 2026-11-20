@@ -1,3 +1,79 @@
+## 1.17.64
+
+**fix(security): the second batch of the external scan -- what was real, what was not**
+
+Ten more findings from the external scanner, each checked against the
+real code path before anything was changed. Six were real and are fixed
+here; the rest are noted below with the reason they were not bugs.
+
+Real, and fixed:
+
+- **The passcode limiter was rotatable.** `client_key()` in
+  `dashboard_auth.py` trusted `CF-Connecting-IP` / `X-Forwarded-For`
+  whenever they were present. A caller that reaches the server directly
+  can change that header and get a fresh rate-limit bucket every time,
+  so the passcode could be guessed without limit. The forwarding
+  headers are now only trusted on a loopback request -- that is where
+  the tunnel lands, and the tunnel overwrites the header itself.
+- **A hard-deleted fact came back.** `cascade.replay_one()` skipped a
+  queued row only when the canonical row still existed with
+  `tombstoned=1`. A hard forget deletes the row, so the lookup returned
+  nothing and the replay re-indexed the plaintext out of
+  `cascade_state.payload`. A row that is gone is as gone as one that is
+  tombstoned.
+- **The async write thread became the target.** It bound
+  `ctx.user_id` to the user being written to, and `astor_check_write`
+  decides "own scope vs cross-user" by comparing the target against
+  `ctx.user_id` -- so a cross-user private write needed no grant. The
+  thread keeps the caller's identity now, and opens the target's bucket
+  under an owner scope. The grant check stays outside that scope: wrap
+  it and it sees "my own scope" again.
+- **`body['rerank']` could switch the reranker on.** The reranker
+  sends the query and the candidate texts to an external model, so
+  `ASTOR_RERANK=0` has to mean off. The body may only turn it off.
+- **LOCK rules did nothing on the write path.** They were consulted
+  by `/v1/classify` only, so a rule an admin seeded looked alive and
+  had no effect on the path that actually stores the text. `/v1/write`
+  evaluates them now: `block` refuses the write, `tag` tags the
+  stored fact, `route` picks the tier.
+- **A hard forget left the content in the audit log.** The audit row
+  carried an `old_state` snapshot of the whole row, a
+  `content_preview` in its metadata, and the response echoed the text
+  back. The fact was gone from `memory_canonical` and readable in
+  `audit_log`, so "forget" was reversible by anyone with audit access.
+  A tombstone keeps all three on purpose -- that path is recoverable.
+
+Also fixed, from the read-only verification pass:
+
+- **The restore endpoint took the actor from the request body.** A
+  caller could name somebody else in the audit row. It comes from the
+  bound ACL now.
+- **The cascade replay audit row was hard-coded to `admin:admin`** and
+  its write errors were swallowed. The actor is the admin who ran it,
+  and a failed audit write is an error.
+- **`default_tier` was parsed off the local-direct profile and never
+  put on the wire**, so a caller that declared a tier still got
+  `tier='public'`.
+- **A peer fan-out shipped the query verbatim** to every trusted
+  friend. A question that reads as personal (astor's own detectors,
+  not a hand-rolled regex) is not sent.
+- **Mining a private note into the shared tier skipped the secret
+  scan.** `am mine-public` checked the note with the classifier's PII
+  detector -- names, places, emotions -- which does not know a bearer
+  token from a name. A private note holding a token was published with
+  the token in it. It goes through the same broad scan as
+  `am write --tier public` now, and a scanner that cannot run stops
+  the promotion instead of letting it through.
+
+Not bugs:
+
+- **`confidence` defaulting to 1.0.** The default is the existing
+  contract, and the only caller that passes a measured confidence is
+  the forge. What was missing was intent: the three call sites that
+  ask "does this read as private" now say so explicitly.
+- **The `reload` role check.** The global passcode gate and the
+  loopback exemption already cover that endpoint.
+
 ## 1.17.63
 
 **fix(test): the peer read test was looking in the wrong window**

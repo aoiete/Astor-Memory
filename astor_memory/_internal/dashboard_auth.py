@@ -296,11 +296,22 @@ def client_key(headers, remote_addr: str) -> str:
     operator. The edge knows who the real client is and says so in
     CF-Connecting-IP; X-Forwarded-For is the next best thing.
     """
-    for hdr in ('CF-Connecting-IP', 'X-Forwarded-For'):
-        val = (headers.get(hdr) or '').strip()
-        if val:
-            # X-Forwarded-For is a list; the client is the first entry.
-            return val.split(',')[0].strip()
+    # v1.17.64: the forwarding headers are only trusted from loopback.
+    #
+    # The tunnel overwrites CF-Connecting-IP with the real client, and
+    # the tunnel reaches us over 127.0.0.1 -- but a caller that reaches
+    # the server directly (over the LAN) can put any value it likes in
+    # those headers. Every new value was a new rate-limit bucket, so
+    # the passcode could be guessed without limit.
+    #
+    # A local caller can still spoof them, and that is fine: a local
+    # caller can read the passcode file anyway.
+    if is_loopback(remote_addr):
+        for hdr in ('CF-Connecting-IP', 'X-Forwarded-For'):
+            val = (headers.get(hdr) or '').strip()
+            if val:
+                # X-Forwarded-For is a list; the client is the first entry.
+                return val.split(',')[0].strip()
     return (remote_addr or 'unknown').strip()
 
 

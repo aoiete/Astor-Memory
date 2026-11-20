@@ -31,10 +31,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # 固定到 commit SHA：tag 可被重指向，SHA 不可变（记录原版本 v4）
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+        # 固定到 commit SHA（记录原版本 v5）
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -49,10 +51,14 @@ jobs:
           pytest tests/ -v --tb=short
 
       - name: Verify version in pyproject matches tag
+        # 不可信的 workflow_dispatch 输入不能直接插值进 run 块（会被当成 shell 代码执行），
+        # 必须经 env 传入并在 shell 内加引号引用。
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
           VERSION=$(grep '^version' pyproject.toml | head -1 | cut -d'"' -f2)
           echo "pyproject version: $VERSION"
-          EXPECTED="${{ github.event.inputs.version }}"
+          EXPECTED="$VERSION_INPUT"
           EXPECTED_STRIP="${EXPECTED#v}"
           if [ "$VERSION" != "$EXPECTED_STRIP" ]; then
             echo "::error::Version mismatch: pyproject.toml has '$VERSION' but release tag is '$EXPECTED_STRIP'"
@@ -65,7 +71,8 @@ jobs:
           python -m build
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        # 固定到 commit SHA（记录原版本 v4）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ github.event.inputs.version }}
           path: dist/*
@@ -83,13 +90,17 @@ jobs:
       url: https://pypi.org/p/astor-memory
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        # 固定到 commit SHA（记录原版本 v4）
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-${{ github.event.inputs.version }}
           path: dist/
 
       - name: Publish to PyPI via OIDC
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # 这个 job 持有 id-token: write（OIDC 发布凭据），所以 action 必须是不可变的 commit SHA：
+        # 可变 tag（release/v1）可被上游重新指向，等于把 PyPI 发布权限交给任意第三方代码。
+        # SHA 7245906f... = release/v1 分支当前指向的提交，同时是 v1.14.3 的 tag 目标。
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1 (v1.14.3)
         with:
           packages-dir: dist/
           # OIDC trusted publishing — no API token needed.
