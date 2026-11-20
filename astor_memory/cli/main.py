@@ -5152,6 +5152,30 @@ def cmd_bot_demote(args) -> int:
     roles = state.setdefault("roles", {})
     roles[args.user_id] = "user"
     _write_install_state(state)
+    # v1.17.62: that was the whole demotion. The runtime reads the role
+    # from user_meta.role in bot-binding.db, so a demoted admin kept
+    # admin authority -- the business rule (demotion takes effect) was
+    # bypassed. Write the runtime role as well.
+    from .._internal.bot_binding import get_user as _get_user
+    from .._internal.bot_binding import upsert_user as _upsert_user
+    _meta = _get_user(args.user_id)
+    if _meta:
+        _upsert_user(
+            user_id=args.user_id,
+            short_alias=_meta.get('short_alias') or args.user_id,
+            role='user',
+            # 'admin' is a ROLE, not a plan; a demoted user is not on
+            # the admin plan. upsert_user validates the pair.
+            subscription_plan=(
+                _meta.get('subscription_plan')
+                if _meta.get('subscription_plan') in ('trial', 'vip', 'power')
+                else 'trial'),
+            active=bool(_meta.get('active', 1)),
+            source='cli:bot_demote',
+        )
+    else:
+        print(f'[WARN] {args.user_id!r} has no user_meta row -- only the '
+              f'install state was demoted.')
     print(f'[OK] Demoted {args.user_id!r} to user.')
     return 0
 

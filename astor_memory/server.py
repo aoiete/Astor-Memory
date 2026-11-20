@@ -7740,6 +7740,22 @@ def create_app(astor_dir: str | None = None) -> Flask:
         user_id = body.get('user_id') or body.get('user')
         if tier == 'repo':
             user_id = body.get('repo_id') or user_id
+        # v1.17.62: the ACL matrix says ("write","repo"): {"admin"} --
+        # the repo tier is admin-write-only -- but nothing called the
+        # check on this path, so a plain user could delete repository
+        # memory. The private tiers are covered by the ownership check
+        # further down; the repo tier had no gate at all.
+        if tier == 'repo':
+            # The request's ACL identity is the REPO's owner, not the
+            # caller: the before_request binds user_id=repo_id for a
+            # tier=repo request (tier=repo uses repo_id as user_id).
+            # So the matrix rule ("write","repo") = {"admin"} has to be
+            # checked against the CALLER -- body['user'] -- or the repo
+            # owner would be judged instead of whoever asked.
+            _caller = body.get('user') or body.get('user_id')
+            _actor, _role, _plan = _astor_resolve_actor(_caller)
+            if _role != 'admin':
+                return jsonify({'error': 'cross_user_forbidden'}), 403
         bus = astor_bus(tier=tier, user_id=user_id)
         fact_id = body.get('fact_id')
         query   = body.get('query')
@@ -7976,6 +7992,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
         user_id = namespace.split(':', 1)[1] if ':' in namespace else '_current'
 
         try:
+            # v1.17.62: the tier and the user both come from the
+            # caller's namespace, and the repo tier is admin-write-only
+            # -- but nothing called the check, so a plain user could
+            # write into shared repository memory through chat.
+            if tier == 'repo':
+                from ._internal.acl import astor_check_write as _acw
+                from ._internal.acl import PermissionError_ as _perm
+                try:
+                    _acw('repo', user_id)
+                except _perm:
+                    return jsonify({'error': 'cross_user_forbidden'}), 403
             from .bus.store import astor_bus_for
             bus = astor_bus_for(tier, user_id=user_id)
         except Exception as e:

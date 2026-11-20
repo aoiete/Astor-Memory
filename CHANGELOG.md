@@ -1,3 +1,29 @@
+## 1.17.62
+
+**fix(auth): the repo tier is admin-write-only, and that rule was never called**
+
+The ACL matrix has `("write", "repo"): {"admin"}` -- repository memory
+is admin-write-only -- but neither `/v1/forget` nor `chat_ingest`
+called the check. The tier and the user both come from the caller, so
+a plain user could delete repository memory and write into it through
+chat ingestion.
+
+`/v1/forget` needs a note: for a `tier=repo` request the ACL identity
+is the repo's *owner* (the before_request binds `user_id=repo_id`),
+not the caller. The rule is therefore checked against the caller --
+`body['user']` -- or the owner would be judged instead of whoever
+asked.
+
+**fix(auth): a demotion that did not demote**
+
+`am bot demote` rewrote `install-state.json` and stopped there. The
+runtime reads the role from `user_meta.role` in bot-binding.db, so a
+demoted admin kept admin authority -- the rule "demotion takes effect"
+was bypassed by the CLI doing half the job. The runtime role is now
+written too.
+
+Found while triaging an external AI security scan of this repository.
+
 ## 1.17.61
 
 **fix(privacy): the server log was a copy of the memory**
