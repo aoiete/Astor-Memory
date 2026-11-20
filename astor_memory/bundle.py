@@ -204,7 +204,7 @@ def import_bundle(
 
     plan = []
     for f in manifest["files"]:
-        target = astor_dir / f["arcname"]
+        target = _resolve_under(astor_dir, f["arcname"])
         plan.append({
             "arcname": f["arcname"],
             "target": str(target),
@@ -221,7 +221,7 @@ def import_bundle(
         with tarfile.open(path, "r:gz") as tf:
             for f in manifest["files"]:
                 member = tf.getmember(f["arcname"])
-                src = tmpdir / f["arcname"]
+                src = _resolve_under(tmpdir, f["arcname"])
                 src.parent.mkdir(parents=True, exist_ok=True)
                 with tf.extractfile(member) as fh, src.open("wb") as out:
                     shutil.copyfileobj(fh, out)
@@ -232,12 +232,37 @@ def import_bundle(
                             "checksum mismatch for %s: manifest says %s, file is %s"
                             % (f["arcname"], f["sha256"], got)
                         )
-                target = astor_dir / f["arcname"]
+                target = _resolve_under(astor_dir, f["arcname"])
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, target)
                 restored += 1
 
     return {"manifest": manifest, "plan": plan, "dry_run": False, "restored": restored}
+
+
+def _resolve_under(root: Path, arcname: str) -> Path:
+    """Resolve a bundle member name under root, refusing every escape.
+
+    The manifest comes from inside the bundle, so its arcnames are
+    untrusted input. "members/../../.ssh/authorized_keys" or
+    "/etc/cron.d/x" would write outside the restore root -- and the
+    same name is used for the temp extraction path, so it would also
+    escape the temp directory.
+
+    resolve() is what makes this safe: it collapses "..", follows
+    symlinks, and yields the real target, so the containment check is
+    on the path the write will actually hit.
+    """
+    p = Path(arcname)
+    if p.is_absolute() or p.drive or p.root:
+        raise ValueError(
+            "bundle member %r is not a relative path" % (arcname,))
+    root_r = root.resolve()
+    target = (root_r / p).resolve()
+    if target != root_r and root_r not in target.parents:
+        raise ValueError(
+            "bundle member %r escapes the restore root" % (arcname,))
+    return target
 
 
 def _arc_name(tier: str, user_id: str | None, store: str, db: Path | None = None) -> str:

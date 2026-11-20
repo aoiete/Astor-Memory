@@ -1,3 +1,28 @@
+## 1.17.57
+
+**fix(security): a bundle must not write outside the restore root**
+
+The manifest travels inside the bundle, so its `arcname` values are
+untrusted input. The restore did:
+
+```python
+target = astor_dir / f["arcname"]
+shutil.copy2(src, target)
+```
+
+so a bundle whose manifest claimed `../../.ssh/authorized_keys` -- or
+an absolute path -- wrote wherever the operator's account could reach.
+The same name was used for the temp extraction path, so it escaped the
+temp directory as well.
+
+Every member name is now resolved under its root and refused if it
+escapes: an absolute path or one with a drive is not a relative path,
+and `resolve()` collapses `..` and follows symlinks, so the
+containment check is on the path the write will actually hit. The
+dry-run plan is checked the same way.
+
+Found while triaging an external AI security scan of this repository.
+
 ## 1.17.56
 
 **fix(auth): a page the operator visits must not be able to write**
