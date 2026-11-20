@@ -594,7 +594,22 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                 agent_id="astor_memory_adapter",
                 source="hermes.sync_turn",
                 action="turn",
-                content=user_content[:500] if user_content else "",
+                # v1.17.55: lengths, not the text -- the same shape the
+                # production plugin writes.
+                #
+                # The raw user text went into the PUBLIC tier's events
+                # table on every turn, unconditionally (no classifier,
+                # no PII gate -- this write bypasses the write path
+                # entirely). And events.content is not private to the
+                # events table: the provenance reader returns it for a
+                # promoted fact, and the markdown exporter reads it.
+                # So a line like "my password is X" in a turn was
+                # readable through the provenance of any public fact
+                # extracted from it.
+                content=(
+                    f"user_text_len={len(user_content or '')} "
+                    f"assistant_text_len={len(assistant_content or '')}"
+                ),
                 metadata={
                     "session_id": session_id or self._session_id,
                     "platform": self._platform,
@@ -627,20 +642,38 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
             )
             if observe.get("observed"):
                 tier = observe["tier"] or "public"
-                bus = _auto_bus(tier=tier, user_id=None if tier != "private" else None)
-                bus.append_event(
-                    namespace=f"hermes/{self._platform}/{session_id or self._session_id}",
-                    agent_id="astor_memory_adapter",
-                    source="hermes.astor_auto_observe",
-                    action="auto_observe",
-                    content=text[:500],
-                    metadata={
-                        "outcome": observe.get("outcome", "neutral"),
-                        "importance": observe.get("importance", 0.0),
-                        "tier": tier,
-                        "agent_id": "astor_memory_adapter",
-                    },
-                )
+                _who = getattr(self, "_platform_user_id", None) or "admin"
+                # v1.17.55: the raw conversation text is the user's own
+                # content, and it was written straight to the bus -- which
+                # bypasses the write path's PII gate. So a line like "my
+                # password is X" rode along with a shareable lesson into
+                # the shared tier, because the classifier had only judged
+                # the extracted fact, not the text it came from.
+                #
+                # The event goes to the user's own private store; the
+                # extracted fact still goes where the classifier decided.
+                try:
+                    from astor_memory._internal.acl import open_own_private as _own
+                    bus = _own(_who)
+                except Exception as _own_exc:
+                    # Never fall back to an ungated public write: the
+                    # whole point of the gate is that raw text does not
+                    # get stored unwatched.
+                    bus = None
+                if bus is not None:
+                    bus.append_event(
+                        namespace=f"hermes/{self._platform}/{session_id or self._session_id}",
+                        agent_id="astor_memory_adapter",
+                        source="hermes.astor_auto_observe",
+                        action="auto_observe",
+                        content=text[:500],
+                        metadata={
+                            "outcome": observe.get("outcome", "neutral"),
+                            "importance": observe.get("importance", 0.0),
+                            "tier": tier,
+                            "agent_id": "astor_memory_adapter",
+                        },
+                    )
                 # Insert candidate for fact extraction pipeline. Use the
                 # forge extractor astor_capture_intent hook (the legacy
                 # astor_memory.bus.capture_intent module was removed in
@@ -653,7 +686,12 @@ class AstorMemoryProvider(MemoryProvider if _HERMES_ABC_OK else object):
                         text=text,
                         actor="astor_memory_adapter",
                         tier=tier,
-                        user_id=None,
+                        # v1.17.55: the real user, not None. With None the
+                        # classifier fell back to the operator's own
+                        # consent switch and a personal decision landed
+                        # in the operator's private store instead of the
+                        # user's.
+                        user_id=_who,
                         source="hermes.astor_auto_observe",
                         metadata={
                             "importance": observe.get("importance", 0.0),

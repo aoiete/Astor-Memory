@@ -1,3 +1,33 @@
+## 1.17.55
+
+**fix(privacy): the raw turn text must not land in the shared tier**
+
+The Hermes adapter wrote the user's raw message into the bus events
+table on every turn, and unconditionally into the *public* tier:
+
+```python
+bus = astor_bus(tier="public")
+bus.append_event(..., content=user_content[:500])
+```
+
+That write bypasses the write path entirely, so the PII gate never
+saw it. And `events.content` is not private to the events table: the
+provenance reader returns it for a promoted fact, and the markdown
+exporter reads it. So one line like "my password is X" in a turn was
+readable through the provenance of any public fact extracted from
+that turn.
+
+The audit row now records the lengths, not the text -- the same shape
+the production plugin already writes. The auto-observe event goes to
+the user's own private store, and the capture carries the real user id
+instead of None: with None the classifier fell back to the operator's
+own consent switch, and a personal decision landed in the operator's
+private store rather than the user's.
+
+Found while triaging an external AI security scan of this repository.
+Note the production plugin was never affected -- it only ever wrote
+lengths. The hole was in the shipped repository adapter.
+
 ## 1.17.54
 
 **fix(auth): an MCP client may not choose whose memory it touches**
