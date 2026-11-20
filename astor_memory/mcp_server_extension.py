@@ -185,8 +185,13 @@ def install(server_module: Any) -> bool:
             if hasattr(server_module, "_enforce_trust"):
                 try:
                     server_module._enforce_trust(arguments or {})
-                except Exception:
-                    pass
+                except Exception as _trust_err:
+                    # v1.17.59: the trust rejection was swallowed, so a
+                    # rejected namespace still got observed. The MCP
+                    # server fails CLOSED: the tool is not called.
+                    return {"content": [{"type": "text",
+                                         "text": f"trust rejected: {_trust_err}"}],
+                            "isError": True}
             return astor_auto_observe_call(
                 arguments=arguments or {},
                 request_fn=server_module._request,

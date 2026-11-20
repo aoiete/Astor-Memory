@@ -1212,6 +1212,31 @@ def _find_parent_fact_ids(text):
 
 
 
+def _astor_allow_commons_write(user_id: str | None) -> bool:
+    """May this user publish to the commons tier?
+
+    user_meta.allow_commons_write is the operator's per-user toggle.
+    The write path reads it; the async write path used to hardcode
+    True, so a user who may not share could still publish by writing
+    asynchronously. Missing row or unreadable db means "allowed" --
+    the default the write path has always used.
+    """
+    if not user_id:
+        return True
+    try:
+        d = os.environ.get('ASTOR_DIR') or str(os.path.expanduser('~/.astor'))
+        if not os.path.exists(d):
+            d = os.getcwd()
+        db = sqlite3.connect(os.path.join(d, 'bot-binding.db'))
+        row = db.execute(
+            "SELECT allow_commons_write FROM user_meta WHERE user_id = ?",
+            (user_id,)).fetchone()
+        db.close()
+        return not (row is not None and row[0] == 0)
+    except Exception:
+        return True
+
+
 def create_app(astor_dir: str | None = None) -> Flask:
     """Create Flask app. astor_dir override for tests."""
     app = Flask(__name__)
@@ -1830,8 +1855,10 @@ def create_app(astor_dir: str | None = None) -> Flask:
         if not text.strip():
             return jsonify({'error': 'text is required'}), 400
         from .nest.visibility_classifier import classify_visibility
-        dec = classify_visibility(text=text, kind=kind, hint=None,
-                                  admin_allow_commons=True)
+        dec = classify_visibility(
+            text=text, kind=kind, hint=None,
+            admin_allow_commons=_astor_allow_commons_write(
+                body.get('user') or body.get('user_id')))
         return jsonify({
             'visibility': dec.get('visibility'),
             'reason': dec.get('reason'),
@@ -3700,13 +3727,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
 
             import threading as _w_thr
 
+            # v1.17.59: the background thread has no ACL ContextVar of
+            # its own and was initialised as 'system', which cannot
+            # open a private bus (the strict privacy model wants the
+            # owner or an explicit grant). A personal fact routed to
+            # the caller's private bucket was therefore DROPPED --
+            # silently, in a thread. The thread acts as the caller:
+            # that is who asked for the write.
+            _w_acl = astor_current_acl()
+
             def _extract_and_promote():
                 try:
-                    # Background thread has no ACL ContextVar — init as
-                    # system actor (background task convention).
                     from ._internal.acl import astor_init_acl as _wia
-                    _wia(actor='system', role='system', tier=_w_tier,
-                         user_id=_w_user if _w_tier == 'private' else None)
+                    _wia(actor=_w_acl.actor, role=_w_acl.role, tier=_w_tier,
+                         user_id=_w_user or user)
                     from .bus.store import astor_bus as _w_bus_factory
                     from .forge.extractor import astor_extract_facts as _w_extract
                     _w_facts = _w_extract(
@@ -3748,6 +3782,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     # puts it.
                     _w_priv_bus = None
                     _w_priv_event = None
+                    # v1.17.59: the async path asked the classifier as if
+                    # every user may share (admin_allow_commons=True).
+                    # The user's own switch decides, like the sync path.
+                    _w_allow_commons = _astor_allow_commons_write(
+                        explicit_uid or user)
                     for _w_f in _w_facts:
                         _w_vis = 'personal'
                         if _w_tier != 'private':
@@ -3757,7 +3796,8 @@ def create_app(astor_dir: str | None = None) -> Flask:
                                 )
                                 _w_vis = (_w_cv(
                                     text=_w_f.content, kind=_w_f.kind,
-                                    hint='auto', admin_allow_commons=True,
+                                    hint='auto',
+                                    admin_allow_commons=_w_allow_commons,
                                     confidence=_w_f.confidence,
                                 ).get('visibility') or 'personal')
                             except Exception:
@@ -4053,22 +4093,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
         from .nest.visibility_classifier import classify_visibility as _classify_vis
         _vis_hint = body.get('visibility_hint') or body.get('visibility') or 'auto'
         # Look up admin_global_toggle from bot-binding.db (cheap; called once per ())
-        _admin_allow = True
-        try:
-            import sqlite3 as _sq
-            _astor_dir_local = _os.environ.get('ASTOR_DIR') or str(_os.path.expanduser('~/.astor'))
-            if not _os.path.exists(_astor_dir_local):
-                _astor_dir_local = _os.getcwd()  # fallback to caller cwd
-            _sqdb = _sq.connect(_os.path.join(_astor_dir_local, 'bot-binding.db'))
-            _row = _sqdb.execute(
-                "SELECT allow_commons_write FROM user_meta WHERE user_id = ?",
-                (bus_user_id,),
-            ).fetchone()
-            _sqdb.close()
-            if _row is not None and _row[0] == 0:
-                _admin_allow = False
-        except Exception:
-            pass
+        # v1.17.59: the toggle used to be looked up with bus_user_id,
+        # which is None for a public-tier write -- so a user's
+        # "may I publish to the commons tier" switch was never
+        # consulted on the path that publishes. The switch belongs to
+        # whoever the content is: the explicit target, else the caller.
+        _admin_allow = _astor_allow_commons_write(explicit_uid or user)
         # Apply to each fact
         for _fx in facts:
             _vis_decision = _classify_vis(

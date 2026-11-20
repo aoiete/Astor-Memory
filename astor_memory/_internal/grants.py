@@ -238,21 +238,26 @@ def check_grant(
 
     _validate_grantee(grantee)
     required_level = _SCOPE_ORDER.get(required_scope, 0)
-    now_iso = datetime.now(timezone.utc).isoformat()
 
+    # v1.17.59: the expiry used to be compared as a STRING against
+    # now_iso. An offset format ("...T12:00:00+08:00") sorts wrong,
+    # so a grant could stay authorized hours after its deadline.
+    # list_grants already parsed it; now both use _not_expired.
     with _lock:
         conn = _conn_lazy()
         rows = conn.execute(
-            """SELECT scope FROM grants
+            """SELECT scope, expires_at FROM grants
                WHERE grantor = ? AND grantee = ? AND revoked = 0
-                 AND (expires_at IS NULL OR expires_at > ?)
                ORDER BY id DESC""",
-            (grantor, grantee, now_iso),
+            (grantor, grantee),
         ).fetchall()
 
-    for (scope,) in rows:
-        if _SCOPE_ORDER.get(scope, 0) >= required_level:
-            return True
+    now = datetime.now(timezone.utc)
+    for scope, expires_at in rows:
+        if (not _not_expired(expires_at, now)
+                or _SCOPE_ORDER.get(scope, 0) < required_level):
+            continue
+        return True
     return False
 
 
@@ -274,9 +279,12 @@ def _not_expired(expires_at: str | None, now: datetime) -> bool:
     if expires_at is None:
         return True
     try:
-        return _parse_iso(expires_at) > now
+        exp = _parse_iso(expires_at)
     except ValueError:
         return False  # treat malformed as expired (fail closed)
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)  # naive stamp means UTC
+    return exp > now
 
 
 def _validate_grantee(grantee: str) -> None:

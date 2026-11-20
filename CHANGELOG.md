@@ -1,3 +1,40 @@
+## 1.17.59
+
+**fix(privacy): the user's "may I publish" switch was never consulted**
+
+`user_meta.allow_commons_write` is the operator's per-user switch for
+publishing to the commons tier. The write path looked it up with
+`bus_user_id` -- which is `None` for a public-tier write -- so on the
+path that actually publishes, the switch was never read. The async
+write path did not even look: it asked the classifier as if every
+user may share.
+
+Both now ask for the user whose content it is: the explicit target if
+there is one, else the caller.
+
+**fix(data loss): an async write of a personal fact was dropped**
+
+The background thread was initialised as `system`, which cannot open a
+private bus -- the strict privacy model wants the owner or an
+explicit grant. A personal fact routed to the caller's private bucket
+was therefore lost, silently, in a thread. The thread now acts as the
+caller, who is who asked for the write.
+
+**fix(auth): a grant's expiry was compared as a string**
+
+`check_grant` compared `expires_at > now_iso` as text. An offset
+format (`...T12:00:00+08:00`) sorts wrong, so a grant could stay
+authorized hours past its deadline. `list_grants` already parsed it;
+both now use the same helper, and a naive stamp is read as UTC.
+
+**fix(auth): the MCP server failed open on a trust rejection**
+
+`_enforce_trust` raised, the exception was swallowed, and the turn was
+observed anyway. It now returns an error and the tool is not called.
+
+All four found while triaging an external AI security scan of this
+repository.
+
 ## 1.17.58
 
 **fix(auth): cascade-forget is a door that was left open**
