@@ -1,3 +1,20 @@
+## 1.17.52
+
+**fix(peer): a fact past its boundary is not shared knowledge**
+
+The peer search filtered tombstoned, visibility and status -- but not
+expiry. A fact that had aged out of its boundary was still handed to
+peers as shared knowledge. The read paths have filtered this since
+v1.17.44; the peer path did not.
+
+The peer query now applies the same expiry filter the read paths use
+(`expires_at` and `valid_until`). The column list is unchanged: the
+peer contract still selects four columns, and this is a WHERE clause.
+
+Found while triaging an external AI security scan of this repository,
+which also flagged the `/v1/read/multi` path that v1.17.51 had just
+fixed -- the scan was run against the pre-fix code.
+
 ## 1.17.51
 
 **feat(recall): a retired fact has to say why it was retired**

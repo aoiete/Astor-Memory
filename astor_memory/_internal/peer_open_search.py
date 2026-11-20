@@ -262,9 +262,20 @@ def _recall_public(query: str, limit: int) -> list[dict]:
     #
     # The fact is not destroyed. It stays in the shared tier with its
     # label and its reason, and the local operator can still see it.
+    # v1.17.52: the same expiry filter the read paths apply.
+    #
+    # The peer query had tombstoned / visibility / status but no
+    # expiry, so a fact that had aged out of its boundary (a retired
+    # fact past its edge, or anything the scope policy expired) was
+    # still handed to peers as shared knowledge. The read path has
+    # filtered this since v1.17.44; the peer path did not.
     where = ('COALESCE(tombstoned, 0) = 0 '
              "AND COALESCE(visibility, 'commons') = 'commons' "
-             "AND COALESCE(status, 'active') = 'active' AND ") + \
+             "AND COALESCE(status, 'active') = 'active' "
+             "AND (expires_at IS NULL OR expires_at > "
+             "strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+             "AND (valid_until IS NULL OR valid_until > "
+             "strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND ") + \
         ' AND '.join('LOWER(content) LIKE ?' for _ in tokens)
     params: list = [f'%{t}%' for t in tokens]
     params.append(max(1, min(20, limit)))

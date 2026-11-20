@@ -75,6 +75,26 @@ class TestPeerDoesNotReceiveRetiredFacts(unittest.TestCase):
                          "a fact the operator reported as not working "
                          "must not be handed to a peer as knowledge")
 
+    def test_an_expired_fact_is_not_served_to_a_peer(self):
+        """A fact past its boundary is not shared knowledge either.
+
+        The peer query filtered tombstoned / visibility / status but
+        not expiry, so a fact that had aged out was still handed out.
+        The read path has filtered this since v1.17.44.
+        """
+        current = self._write("giraffe fact that is still inside its boundary")
+        expired = self._write("giraffe fact that aged out of its boundary")
+        self.bus.conn.execute(
+            "UPDATE memory_canonical SET expires_at = ? WHERE id = ?",
+            ("2020-01-01T00:00:00.000Z", expired))
+        self.bus.conn.commit()
+
+        hits = pos._recall_public("giraffe fact", 10)
+        ids = [h.get("fact_id") for h in hits]
+        self.assertIn(current, ids, ids)
+        self.assertNotIn(expired, ids,
+                         "a fact past its boundary must not be handed to a peer")
+
     def test_the_column_list_is_unchanged(self):
         """The peer contract selects four columns; the fix is a WHERE
         clause, not a new column. This guard already existed."""
