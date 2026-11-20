@@ -1,3 +1,22 @@
+## 1.17.65
+
+**fix(security): a hard delete was still reversible, and the async path could not expire**
+
+Two defects found while reviewing the v1.17.64 fixes.
+
+- **A hard delete was still reversible.** `restore_fact()` reads its
+  row from `audit_log.old_state` -- the most recent row that has one.
+  Clearing the hard delete's own snapshot was not enough: an earlier
+  tombstone of the same fact still held the full row, so restore found
+  that one and put the deleted content back. A hard delete now clears
+  every snapshot for that fact. A tombstone keeps its snapshot -- that
+  path is recoverable on purpose.
+- **The async write path hard-coded `scope_type='long_term'`.** The
+  sync path has graded the scope by evidence since v1.16.92, so an
+  asynchronous fact never got the temporary tier and never got an
+  expiry: the one path where a memory could not expire. The async path
+  uses the same rule now.
+
 ## 1.17.64
 
 **fix(security): the second batch of the external scan -- what was real, what was not**

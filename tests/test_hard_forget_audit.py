@@ -161,6 +161,48 @@ class TestHardForgetLeavesNoContent(unittest.TestCase):
                 needle, (metadata or ""),
                 "the hard forget kept the content in the audit metadata")
 
+    def test_a_hard_forget_clears_the_earlier_snapshot_too(self):
+        """A tombstone leaves a snapshot; the hard delete that follows has
+        to take it away.
+
+        restore_fact() reads its row from audit_log.old_state -- the most
+        recent row that has one. Clearing only the hard delete's own row
+        is not enough: the earlier tombstone still holds the full row, so
+        restore finds that one and puts the deleted content back. That is
+        "forget" being reversible, which is what the hard delete exists
+        to prevent.
+        """
+        needle = ("this one is tombstoned first and hard deleted afterwards "
+                  "so the old snapshot must not survive either")
+        fid = self._write(needle)
+
+        # tombstone: the snapshot is kept on purpose
+        st, _ = _post(self.base + "/v1/forget", {
+            "fact_id": fid, "user": "admin", "tier": "private",
+            "user_id": "admin", "tombstone_only": True})
+        self.assertIn(st, (200, 202))
+
+        # a tombstone CAN be restored -- that path is recoverable
+        st, body = _post(self.base + f"/v1/fact/{fid}/restore", {
+            "tier": "private", "user_id": "admin", "target_state": "preview"})
+        self.assertIn(st, (200, 202), body)
+        self.assertTrue(body.get("would_restore"), body)
+
+        # hard delete: now nothing may restore it
+        st, _ = _post(self.base + "/v1/forget", {
+            "fact_id": fid, "user": "admin", "tier": "private",
+            "user_id": "admin", "tombstone_only": False})
+        self.assertIn(st, (200, 202))
+
+        st, body = _post(self.base + f"/v1/fact/{fid}/restore", {
+            "tier": "private", "user_id": "admin", "target_state": "preview"})
+        self.assertIn(st, (200, 202), body)
+        self.assertFalse(
+            body.get("would_restore"),
+            "the hard-deleted fact was still restorable -- the earlier "
+            "tombstone snapshot was left behind")
+        self.assertNotIn(needle, json.dumps(body, ensure_ascii=False))
+
     def test_a_tombstone_still_keeps_the_snapshot(self):
         """The tombstone is recoverable on purpose -- the snapshot stays."""
         needle = ("this one is only tombstoned so the snapshot has to stay "

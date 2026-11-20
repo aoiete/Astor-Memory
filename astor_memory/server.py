@@ -3936,10 +3936,51 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             overview=getattr(_w_f, 'overview', '') or '',
                             entities=getattr(_w_f, 'entities', None),
                         )
+                        # v1.17.64: the async path hard-coded
+                        # scope_type='long_term', while the sync path
+                        # has graded the scope by evidence since
+                        # v1.16.92. So a fact written asynchronously
+                        # never got the temporary tier and never got an
+                        # expiry -- the async write was the one path
+                        # where a memory could not expire. Same rule
+                        # here.
+                        _w_scope_caller = _w_body.get('scope')
+                        if _w_scope_caller:
+                            _w_scope_type = _w_scope_caller
+                            _w_scope_expires = None
+                        else:
+                            try:
+                                from .nest.scope_policy import (
+                                    classify_scope as _w_classify_scope,
+                                    expiry_from_now as _w_expiry_from_now,
+                                )
+                                import datetime as _w_scope_dt
+                                _w_now_iso = (
+                                    _w_scope_dt.datetime.utcnow().isoformat()
+                                    + 'Z')
+                                _w_dec = _w_classify_scope(
+                                    kind=getattr(_w_f, 'kind', 'fact'),
+                                    outcome=_w_outcome,
+                                    capture_intent=bool(
+                                        _w_body.get('capture_intent')),
+                                    provenance_kind=_w_body.get(
+                                        'provenance_kind'),
+                                    importance=getattr(
+                                        _w_f, 'importance', 0.5),
+                                    explicit=bool(
+                                        _w_body.get('explicit')),
+                                )
+                                _w_scope_type = _w_dec.scope_type
+                                _w_scope_expires = _w_expiry_from_now(
+                                    _w_dec.ttl_days, _w_now_iso)
+                            except Exception:
+                                _w_scope_type = 'long_term'
+                                _w_scope_expires = None
                         _w_cid = _w_target_bus.promote_candidate(
                             _w_cand, promoted_by='rest.write.async',
                             user_id=_w_user, tier=_w_target_tier,
-                            scope_type='long_term', visibility=_w_vis,
+                            scope_type=_w_scope_type, visibility=_w_vis,
+                            expires_at=_w_scope_expires,
                             # v1.16.33: thread conflict_kind + entities through
                             # so the auto-resolver can match against old facts.
                         )
@@ -8011,6 +8052,19 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     "DELETE FROM cascade_state WHERE fact_id = ?", (cfid,))
             except Exception:
                 pass
+            if not tombstone_only:
+                # v1.17.64: a hard delete has to be irreversible, and
+                # restore_fact() reads its snapshot from audit_log.old_state
+                # -- the most recent row that has one. Clearing the
+                # snapshot of THIS delete is not enough: an earlier
+                # tombstone of the same fact still holds the full row,
+                # so restore would find that one and put the content back.
+                # The text has to leave the audit log too, or "forget" is
+                # reversible by anyone with audit access.
+                bus.conn.execute(
+                    "UPDATE audit_log SET old_state = NULL "
+                    "WHERE target_type = 'fact' AND target_id = ? "
+                    "AND old_state IS NOT NULL", (str(cfid),))
             bus.conn.commit()
         except Exception as e:
             bus.conn.rollback()
