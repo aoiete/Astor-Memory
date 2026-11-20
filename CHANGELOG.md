@@ -1,3 +1,30 @@
+## 1.17.60
+
+**fix(audit): a reflection run was attributed to the owner account**
+
+`/v1/reflection/run` checked `ctx.role == 'admin'` and then wrote
+`actor='admin:admin'` -- whatever the caller was, the audit rows said
+the owner did it. A second administrator's destructive merge was
+recorded as the owner's work, which is exactly the attribution an
+incident response needs. The request's own actor is now used.
+
+**fix(security): the relay token file was written with default
+permissions**
+
+`relay.json` holds the relay bearer token in the clear. The sibling
+secret stores already write theirs with `0600`; this one did not, so
+any local reader could impersonate the node to the relay.
+
+**fix(log): a bundle could write to the terminal**
+
+`am bundle inspect` and the import dry-run printed the bundle's own
+path, version and file names straight to the terminal. A bundle is
+somebody else's file: it can carry ANSI escapes and newlines, and a
+terminal will run them. Control characters now become `?`.
+
+All three found while triaging an external AI security scan of this
+repository.
+
 ## 1.17.59
 
 **fix(privacy): the user's "may I publish" switch was never consulted**

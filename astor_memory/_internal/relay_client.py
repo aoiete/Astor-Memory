@@ -113,6 +113,13 @@ def write_relay_entry(base_url: str, key_id: str, token: str,
     cfg["relays"] = others
     path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False),
                     encoding="utf-8")
+    # v1.17.60: relay.json holds the bearer token in the clear, and
+    # the sibling secret stores already chmod it 0600. A local reader
+    # of this file could impersonate the node to the relay.
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
     return cfg
 
 
@@ -126,6 +133,10 @@ def write_config(base_url: str, astor_dir: str | None = None,
     data.update(extra)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False),
                     encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
     return data
 
 

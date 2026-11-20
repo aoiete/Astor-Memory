@@ -2390,6 +2390,18 @@ def cmd_bundle_export(args) -> int:
     return 0
 
 
+def _safe_term(s) -> str:
+    """Untrusted text, made safe to print.
+
+    A bundle is somebody else's file. Its path, version and file names
+    can carry ANSI escapes and newlines, and a terminal will happily
+    run them -- a forged output line, a cleared screen, a pasted
+    command. Control characters become '?'.
+    """
+    return str(s).translate(
+        {i: '?' for i in list(range(0x20)) + list(range(0x7f, 0xa0))})
+
+
 def cmd_bundle_import(args) -> int:
     """`am bundle import` -- put a bundle back."""
     from astor_memory.bundle import import_bundle
@@ -2405,7 +2417,8 @@ def cmd_bundle_import(args) -> int:
         print('[dry-run] %d files would be restored into %s'
               % (len(rep['plan']), astor_dir))
         for p in rep['plan']:
-            print('    %-52s -> %s' % (p['arcname'], p['target']))
+            print('    %-52s -> %s'
+                  % (_safe_term(p['arcname']), _safe_term(p['target'])))
         return 0
     print('[OK] restored %d files into %s' % (rep['restored'], astor_dir))
     return 0
@@ -2420,20 +2433,22 @@ def cmd_bundle_inspect(args) -> int:
     except Exception as e:
         print('[FAIL] %s' % e)
         return 1
-    print('bundle      %s' % man['bundle_path'])
+    print('bundle      %s' % _safe_term(man['bundle_path']))
     print('size        %.1f MB' % (man['bundle_bytes'] / 1024 / 1024))
-    print('created     %s' % man['created_at'])
-    print('astor       %s' % man.get('astor_version'))
-    print('tiers       %s' % ', '.join(man.get('tiers') or []))
+    print('created     %s' % _safe_term(man['created_at']))
+    print('astor       %s' % _safe_term(man.get('astor_version')))
+    print('tiers       %s'
+          % _safe_term(', '.join(man.get('tiers') or [])))
     print('files       %d (%.1f MB)'
           % (len(man['files']), man['total_bytes'] / 1024 / 1024))
     for f in man['files']:
         rows = ', '.join('%s=%d' % (k, v) for k, v in
                          sorted(f['rows'].items()) if v)
         print('    %-52s %8.1f KB  %s'
-              % (f['arcname'], f['bytes'] / 1024, f['sha256'][:12]))
+              % (_safe_term(f['arcname']), f['bytes'] / 1024,
+                 _safe_term(f['sha256'][:12])))
         if rows:
-            print('        %s' % rows)
+            print('        %s' % _safe_term(rows))
     return 0
 
 

@@ -9474,16 +9474,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
         kinds = body.get('kinds') or None
         from .nest import reflection as _reflection
         bus = astor_bus(tier=tier, user_id=user_id)
+        # v1.17.60: the audit rows said 'admin:admin' whoever called.
+        # The role check passed, but the attribution did not -- so a
+        # second administrator's destructive merge was recorded as the
+        # owner's work. The request's own actor is the truth.
         result = _reflection.run_reflection(
             bus, tier=tier, user_id=user_id,
             min_size=min_size, max_clusters=max_clusters, kinds=kinds,
-            actor='admin:admin',
+            actor=ctx.actor,
         )
         # Audit row for the reflection run itself
         try:
             bus.write_audit(
                 event='reflection_run',
-                actor='admin:admin',
+                actor=ctx.actor,
                 target_type='system',
                 target_id='reflection',
                 metadata={
