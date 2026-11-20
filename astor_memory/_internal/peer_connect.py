@@ -44,7 +44,7 @@ DEFAULT_TIMEOUT = 20
 
 # peer 是远端不可信方:它想回多少字节都行,而 resp.read() 不带上限会把
 # 整个 body 读进内存才解析 —— 一次超大响应就够把本地进程拖垮。
-# 按 peer_search.py 的做法给它一个字节上限。
+# 上限跟 peer_search.py 共用同一个常量,两边不会各写各的。
 
 
 class ConnectError(Exception):

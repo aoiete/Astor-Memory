@@ -180,6 +180,24 @@ def check_and_consume(peer_id: str) -> tuple[bool, int, int]:
         con.close()
 
 
+def clear_nonce_ledger() -> int:
+    """Forget every spent nonce. Returns how many rows went.
+
+    The nonce ledger lives in SQLite so it survives across processes --
+    that is the point. But it also means a test run leaves spent nonces
+    behind in its ASTOR_DIR, and the next test that replays the same
+    signed request would be rejected as a replay instead of running the
+    path it meant to test.
+    """
+    con = _connect()
+    try:
+        cur = con.execute("DELETE FROM peer_nonce")
+        con.commit()
+        return cur.rowcount or 0
+    finally:
+        con.close()
+
+
 def consume_nonce(peer_id: str, nonce: str) -> bool:
     """Record a one-time token. False means "already used" -> replay.
 

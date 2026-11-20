@@ -96,6 +96,15 @@ def astor_close_all_test_state() -> None:
     except Exception:
         pass
 
+    # 8b. peer_rate_limit 的 nonce 台账在 SQLite 里(跨进程共享)——
+    # 只清内存里的 _BUCKET 不够,同一个 ASTOR_DIR 里的第二次请求
+    # 会被上一个测试用过的签名判成重放。
+    try:
+        from astor_memory._internal import peer_rate_limit as _prl
+        _prl.clear_nonce_ledger()
+    except Exception:
+        pass
+
     # 9. grants (sqlite singleton for grants.db)
     try:
         from astor_memory._internal import grants as _grants_mod
