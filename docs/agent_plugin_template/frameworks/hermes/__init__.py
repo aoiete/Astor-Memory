@@ -552,7 +552,9 @@ class AstorMemoryProvider(MemoryProvider):
                 # not yet echo this field on /v1/read response.
                 if isinstance(data, dict) and "cross_tier" in body:
                     data.setdefault("cross_tier", body["cross_tier"])
-                return json.dumps(data, ensure_ascii=False, indent=2)
+                return json.dumps(
+                    _mark_untrusted_payload(data),
+                    ensure_ascii=False, indent=2)
             elif tool_name == "astor_fact":
                 # 2026-11-01: drill-down for progressive loading. GET
                 # /v1/fact/<id> returns the full text of one fact.
@@ -570,7 +572,9 @@ class AstorMemoryProvider(MemoryProvider):
                     + _up_fact.urlencode(q)
                 )
                 data = _http_get_json(url, timeout_s=5.0)
-                return json.dumps(data, ensure_ascii=False, indent=2)
+                return json.dumps(
+                    _mark_untrusted_payload(data),
+                    ensure_ascii=False, indent=2)
             elif tool_name == "astor_write":
                 body = {
                     "text": args.get("text", ""),
