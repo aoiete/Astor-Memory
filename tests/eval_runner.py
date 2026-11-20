@@ -279,6 +279,7 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
     "scorer_hash": _scorer_hash(),
     "n_queries": n,
     "hit_rate_at_k": round(hit_rate, 4),
+    "top_ks": sorted({int(q.get("top_k", 10)) for q in eval_set}),
     "mrr": round(mrr, 4),
     # v1.16.98: the decomposition. oracle_hit_rate is the ceiling the
     # store can reach without any ranking at all; storage_gap is what
@@ -324,7 +325,9 @@ def save_run(run: dict) -> tuple[Path, Path]:
 def print_summary(run: dict) -> None:
     s = run["summary"]
     print(f"\n=== {s['variant']} ===")
-    print(f"  hit_rate@{10}     = {s['hit_rate_at_k']:.3f}")
+    _ks = s.get("top_ks") or [10]
+    _klabel = "/".join(str(k) for k in _ks)
+    print(f"  hit_rate@{_klabel}     = {s['hit_rate_at_k']:.3f}")
     print(f"  mrr               = {s['mrr']:.3f}")
     print(f"  avg / p50 / p95 ms= {s['avg_latency_ms']:.0f} / {s['p50_latency_ms']:.0f} / {s['p95_latency_ms']:.0f}")
     if s["by_category"]:

@@ -33,8 +33,8 @@ SERVER = os.environ.get("ASTOR_SERVER", "http://127.0.0.1:7803")
 EVAL_SET = TESTS_DIR / "eval_set.jsonl"
 
 
-def load_eval_set() -> list[dict]:
-    with open(EVAL_SET, encoding="utf-8") as f:
+def load_eval_set(path=None) -> list[dict]:
+    with open(path or EVAL_SET, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
@@ -116,7 +116,7 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=1, help="Parallel workers for variant sweep. Default 1 — astor server is single-threaded Flask, --workers > 1 serializes internally and may timeout (S7)")
     args = ap.parse_args()
 
-    eval_set = load_eval_set()
+    eval_set = load_eval_set(args.set)
     configs = CONFIGS[:4] if args.quick else CONFIGS
     print(f"Loaded {len(eval_set)} queries. Sweeping {len(configs)} configs with {args.workers} workers...")
 
