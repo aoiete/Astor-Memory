@@ -2411,7 +2411,22 @@ def create_app(astor_dir: str | None = None) -> Flask:
         except (TypeError, ValueError):
             return jsonify({'error': 'fact_id required (int)'}), 400
         from .bus.bitemporal import cascade_forget
-        _bt_bus = astor_bus(tier=body.get('tier') or 'public')
+        from ._internal.acl import astor_current_acl
+        tier = body.get('tier') or 'public'
+        user_id = body.get('user_id')
+        # v1.17.58: this endpoint had NO authorization at all.
+        #
+        # The tier came from the request body, the bus was opened with
+        # it, and cascade_forget tombstones any fact_id -- so any
+        # caller could wipe any fact in any tier, including another
+        # user's private one. /v1/forget has checked ownership since
+        # R354; this one never got the check.
+        #
+        # It is a destructive operation across tiers, so it is admin
+        # only. A user who wants their own fact gone uses /v1/forget.
+        if astor_current_acl().role != 'admin':
+            return jsonify({'error': 'cross_user_forbidden'}), 403
+        _bt_bus = astor_bus(tier=tier, user_id=user_id)
         result = cascade_forget(_bt_bus, fid)
         return jsonify(result), (200 if result.get('ok') else 400)
 
@@ -7816,6 +7831,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     "DELETE FROM embeddings WHERE fact_id = ?", (cfid,)
                 )
                 nest_obj.conn.commit()
+            except Exception:
+                pass
+            # v1.17.58: cancel this fact's queued cascade rows.
+            #
+            # A pending embed_insert / lex_index row re-stores the
+            # content of a fact that was just deleted -- the daily
+            # replay pass puts the embedding and the lex document back,
+            # so the "forgotten" fact comes back searchable.
+            try:
+                bus.conn.execute(
+                    "DELETE FROM cascade_state WHERE fact_id = ?", (cfid,))
             except Exception:
                 pass
             bus.conn.commit()

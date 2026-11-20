@@ -62,6 +62,8 @@ STATUS_PENDING = 'pending'
 STATUS_SUCCEEDED = 'succeeded'
 STATUS_FAILED = 'failed'
 STATUS_PROCESSING = 'processing'
+# v1.17.58: the fact this row would re-index is gone.
+STATUS_SKIPPED = 'skipped'
 # A crashed worker must not strand a row forever. Reclaim only rows whose
 # claim has been quiet for this long; active embedding work remains protected.
 PROCESSING_LEASE_MINUTES = 15
@@ -214,6 +216,27 @@ def replay_one(bus, row_id: int, max_attempts: int = 5) -> dict:
         payload = json.loads(payload_json) if payload_json else {}
     except Exception:
         payload = {}
+
+    # v1.17.58: a fact that was forgotten must not be resurrected by a
+    # queued cascade row. The forget path cancels the rows it can see,
+    # but a row can be enqueued again afterwards (or have been written
+    # by an older build), so the fact's own state decides here.
+    try:
+        _tomb = bus.conn.execute(
+            "SELECT tombstoned FROM memory_canonical WHERE id = ?",
+            (int(fact_id),)).fetchone()
+    except Exception:
+        _tomb = None
+    if _tomb is not None and _tomb[0]:
+        bus.conn.execute(
+            "UPDATE cascade_state SET status = ?, last_attempt_at = "
+            "strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), attempt_count = attempt_count + 1, "
+            "last_error = ? WHERE id = ?",
+            (STATUS_SKIPPED, 'fact was forgotten', int(queue_id)))
+        bus.conn.commit()
+        return {'ok': True, 'row_id': int(queue_id), 'fact_id': int(fact_id),
+                'operation': operation, 'status': STATUS_SKIPPED,
+                'attempt_count': attempts + 1}
 
     try:
         if operation == 'embed_insert':
@@ -369,6 +392,6 @@ def requeue(
 
 
 __all__ = [
-    'STATUS_PENDING', 'STATUS_SUCCEEDED', 'STATUS_FAILED',
+    'STATUS_PENDING', 'STATUS_SUCCEEDED', 'STATUS_FAILED', 'STATUS_SKIPPED',
     'enqueue', 'list_pending', 'stats', 'replay_one', 'replay_pending', 'purge',
 ]

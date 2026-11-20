@@ -1,3 +1,26 @@
+## 1.17.58
+
+**fix(auth): cascade-forget is a door that was left open**
+
+`/v1/bitemporal/cascade_forget` had no authorization at all. The tier
+came from the request body, the bus was opened with it, and
+`cascade_forget` tombstones any fact id -- so a caller could wipe any
+fact in any tier, including another user's private one. `/v1/forget`
+has checked ownership since R354; this endpoint never got the check.
+It is a destructive operation across tiers, so it is admin only now.
+
+**fix(privacy): a forgotten fact stays forgotten**
+
+A hard forget tombstoned the fact and removed its embeddings and lex
+entries -- but not the fact's queued cascade rows. The daily replay
+pass re-stores the payload of a pending `embed_insert` / `lex_index`
+row, so the content came back searchable after the fact was deleted.
+The forget cancels the fact's queued rows, and the replay skips a row
+whose fact is tombstoned.
+
+Both found while triaging an external AI security scan of this
+repository.
+
 ## 1.17.57
 
 **fix(security): a bundle must not write outside the restore root**
