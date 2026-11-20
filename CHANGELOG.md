@@ -1,3 +1,27 @@
+## 1.17.56
+
+**fix(auth): a page the operator visits must not be able to write**
+
+The passcode gate trusts loopback, because the CLI, the plugin and the
+cron jobs all talk to 127.0.0.1:7803. But a browser on that machine can
+be made to POST to 127.0.0.1 by any page the operator visits, and
+`/v1/write` parses JSON whatever the content type says -- so a
+`text/plain` body is a *simple* request: no preflight, no CORS check.
+
+DNS rebinding was already covered (a foreign Host is not local), but a
+page that targets 127.0.0.1 directly sends a loopback Host, and it was
+accepted. Verified on the live server before the fix: a loopback POST
+with `Origin: http://evil.example` and a `text/plain` body wrote a
+fact.
+
+A browser always sends `Origin` on a cross-origin POST; our own
+clients send none. So a foreign `Origin` on a state-changing method is
+now refused (`csrf_origin`), before the loopback exemption. An Origin
+that matches the host we serve -- including the tunnel's public name --
+is still allowed.
+
+Found while triaging an external AI security scan of this repository.
+
 ## 1.17.55
 
 **fix(privacy): the raw turn text must not land in the shared tier**

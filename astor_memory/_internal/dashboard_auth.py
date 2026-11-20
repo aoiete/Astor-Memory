@@ -380,6 +380,31 @@ def is_local_request(remote_addr: str, host: str = "") -> bool:
 
 
 
+def _origin_is_ours(origin: str, host: str) -> bool:
+    """Is this Origin the one we serve?
+
+    Compares hostnames only: the port differs between "http://127.0.0.1"
+    and "http://127.0.0.1:7803" for the same origin, and the hostname
+    is what decides whether a page is ours.
+    """
+    o = (origin or "").strip().lower()
+    if not o:
+        return True
+    if "://" in o:
+        o = o.split("://", 1)[1]
+    o = o.split("/", 1)[0]
+    if o.startswith("["):
+        o = o.split("]", 1)[0].lstrip("[")
+    else:
+        o = o.split(":", 1)[0]
+    h = (host or "").strip().lower()
+    if h.startswith("["):
+        h = h.split("]", 1)[0].lstrip("[")
+    else:
+        h = h.split(":", 1)[0]
+    return bool(o) and o == h
+
+
 def request_is_authorized(headers, remote_addr: str, method: str,
                           path: str, host: str = "") -> tuple[bool, str]:
     """Decide whether a request may proceed.
@@ -388,6 +413,18 @@ def request_is_authorized(headers, remote_addr: str, method: str,
     client to know whether to prompt for a passcode (401) or to go away
     (403).
     """
+    # CSRF: a page the operator visits can make their browser POST to
+    # 127.0.0.1:7803. Loopback is trusted below, and /v1/write parses
+    # JSON whatever the content type says, so a text/plain request is
+    # a simple request -- no preflight, no CORS check. A browser
+    # always sends Origin on a cross-origin POST; our own clients (the
+    # CLI, the plugin, cron, curl) send none. So a foreign Origin on a
+    # state-changing method is a forgery, whatever the address.
+    origin = (headers.get("Origin") or "").strip()
+    if origin and method not in ("GET", "HEAD", "OPTIONS"):
+        if not _origin_is_ours(origin, host):
+            return False, "csrf_origin"
+
     # Local requests are trusted. Everything running on this machine
     # already has the runtime directory. The host header is part of the
     # test because a Cloudflare tunnel on this machine forwards to
