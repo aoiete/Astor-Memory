@@ -1,3 +1,19 @@
+## 1.17.66
+
+**fix(privacy): overlapping redactions ate the text after the block, and the PII audit row could be written under any name**
+
+- **Overlapping matches shifted every later replacement.** Replacing one
+  span changes the length of the string, so the next replacement used an
+  offset from the original string. With a whole-block match -- a PEM
+  private key, whose body is also matched by the high-entropy and
+  aws-secret patterns -- the block's end landed past the block and the
+  text after it was destroyed. The redaction now runs as one
+  left-to-right pass and skips a match that starts inside a span it has
+  already replaced.
+- **The PII audit row's actor was built from the user id the request
+  supplied**, so the audit trail could be written under any name. It is
+  now the identity bound to the request.
+
 ## 1.17.65
 
 **fix(security): a hard delete was still reversible, and the async path could not expire**

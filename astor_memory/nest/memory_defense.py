@@ -203,12 +203,23 @@ def redact_facts(content: str, matches: Iterable[PIIMatch]) -> str:
         existing = by_start.get(m.start)
         if existing is None or m.severity == 'redact':
             by_start[m.start] = m
-    sorted_matches = sorted(by_start.values(), key=lambda x: x.start, reverse=True)
-    redacted = content
-    for m in sorted_matches:
+    # One left-to-right pass. Replacing one span changes the length of
+    # the string, so every later replacement used a stale offset -- with a
+    # whole-block match (a PEM key) that shifted the end past the block
+    # and ate the text after it. A match that starts inside a span already
+    # replaced is skipped instead.
+    chosen = sorted(by_start.values(), key=lambda x: x.start)
+    out: list[str] = []
+    pos = 0
+    for m in chosen:
+        if m.start < pos:
+            continue
         tag = f"[BLOCKED:{m.name}]" if m.severity == "block" else f"[REDACTED:{m.name}]"
-        redacted = redacted[:m.start] + tag + redacted[m.end:]
-    return redacted
+        out.append(content[pos:m.start])
+        out.append(tag)
+        pos = m.end
+    out.append(content[pos:])
+    return "".join(out)
 
 
 def has_block_severity(matches: Iterable[PIIMatch]) -> bool:
@@ -285,7 +296,14 @@ def audit_log_record(fact_id: int | None, user: str, tier: str,
         bus = astor_bus(tier=tier if tier in ('public', 'source') else 'public',
                         user_id=user if tier.startswith('private') else None)
         import json as _json
-        actor_str = 'admin:admin' if not user or user == 'admin:admin' else f'admin:{user}'
+        # The actor is the identity bound to this request, not the user id
+        # the request claims -- otherwise a caller could write the audit
+        # row under someone else's name.
+        try:
+            from .._internal.acl import astor_current_acl
+            actor_str = astor_current_acl().actor
+        except Exception:
+            actor_str = 'admin:admin'
         bus.write_audit(
             event='memory_defense_scan',
             actor=actor_str,
