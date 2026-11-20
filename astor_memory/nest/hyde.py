@@ -44,10 +44,17 @@ from functools import lru_cache
 # ---------------------------------------------------------------------------
 # Match llm_rerank.py: also accept OPENAI_API_KEY as the upstream token
 # (single key reused across providers via the OpenRouter-compat layer).
+# The operator's own slot, same as llm_judge.py and llm_rerank.py:
+# ASTOR_LLM_BASE_URL / ASTOR_LLM_API_KEY point this at whatever model
+# the operator runs. Empty -> the OpenRouter default below.
+_OWN_BASE_URL = os.environ.get("ASTOR_LLM_BASE_URL", "").strip()
+_OWN_API_KEY = os.environ.get("ASTOR_LLM_API_KEY", "").strip()
 OPENROUTER_API_KEY = (
-    os.environ.get("OPENAI_API_KEY", "")
+    _OWN_API_KEY
+    or os.environ.get("OPENAI_API_KEY", "")
     or os.environ.get("OPENROUTER_API_KEY", "")
 )
+BASE_URL = _OWN_BASE_URL or "https://openrouter.ai/api/v1"
 HYDE_MODEL = os.environ.get("ASTOR_HYDE_MODEL", "minimax/minimax-m2")
 HYDE_TIMEOUT = float(os.environ.get("ASTOR_HYDE_TIMEOUT", "8"))
 HYDE_MAX_TOKENS = int(os.environ.get("ASTOR_HYDE_MAX_TOKENS", "120"))
@@ -90,7 +97,7 @@ def _call_hyde_llm(query: str) -> str:
     t0 = time.time()
     try:
         req = urllib.request.Request(
-            "https://openrouter.ai/api/v1/chat/completions",
+            BASE_URL.rstrip("/") + "/chat/completions",
             data=body,
             headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
         )

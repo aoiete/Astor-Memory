@@ -27,11 +27,25 @@ from typing import Iterable
 # 2026-08-27 fix: prefer OPENAI_API_KEY over OPENROUTER_API_KEY. hermes redaction
 # may strip OPENROUTER_API_KEY to 15-char placeholder while OPENAI_API_KEY keeps
 # the real value. Both point to https://openrouter.ai/api/v1 in this codebase.
+# The operator's own slot: ASTOR_LLM_BASE_URL / ASTOR_LLM_API_KEY /
+# ASTOR_LLM_MODEL point the reranker at whatever model the operator
+# runs (the same one Hermes itself talks to). Empty -> the OpenRouter
+# default below, which is what the upstream project shipped with.
+_OWN_BASE_URL = os.environ.get("ASTOR_LLM_BASE_URL", "").strip()
+_OWN_API_KEY = os.environ.get("ASTOR_LLM_API_KEY", "").strip()
 OPENROUTER_API_KEY = (
-    os.environ.get("OPENAI_API_KEY", "")
+    _OWN_API_KEY
+    or os.environ.get("OPENAI_API_KEY", "")
     or os.environ.get("OPENROUTER_API_KEY", "")
 )
-RERANK_MODEL = os.environ.get("ASTOR_RERANK_MODEL", "google/gemini-3-flash-preview")
+BASE_URL = _OWN_BASE_URL or "https://openrouter.ai/api/v1"
+RERANK_MODEL = os.environ.get(
+    "ASTOR_RERANK_MODEL",
+    os.environ.get("ASTOR_LLM_MODEL", "google/gemini-3-flash-preview"))
+# A reasoning model spends its budget on thinking before it answers;
+# 200 tokens is not enough for it to finish, and the answer never
+# arrives. 1024 leaves room for the answer itself.
+RERANK_MAX_TOKENS = int(os.environ.get("ASTOR_RERANK_MAX_TOKENS", "1024"))
 RERANK_K = int(os.environ.get("ASTOR_RERANK_K", "30"))
 RERANK_TOP = int(os.environ.get("ASTOR_RERANK_TOP", "5"))
 
@@ -58,26 +72,33 @@ def _call_rerank_llm(query: str, candidates: list[tuple[int, str]]) -> list[int]
     body = json.dumps({
         "model": RERANK_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 200,
+        "max_tokens": RERANK_MAX_TOKENS,
         "temperature": 0.0,
         "response_format": {"type": "json_object"},
-        "provider": {
-            "sort": "throughput",
-            "preferred_min_throughput": {"p50": 30},
-            "allow_fallbacks": True,
-        },
     }).encode("utf-8")
     import sys as _sys
     _t0 = time.time()
     try:
         req = urllib.request.Request(
-            "https://openrouter.ai/api/v1/chat/completions",
+            BASE_URL.rstrip("/") + "/chat/completions",
             data=body,
             headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
             r = json.loads(resp.read().decode("utf-8"))
-            content = r["choices"][0]["message"].get("content", "")
+            _msg_obj = r["choices"][0]["message"]
+            content = _msg_obj.get("content") or ""
+            if not content.strip():
+                # A reasoning model that spent its whole budget thinking.
+                content = _msg_obj.get("reasoning_content") or ""
+            # A reasoning model may wrap the answer in <think>...</think>.
+            if "</think>" in content:
+                content = content.rsplit("</think>", 1)[1]
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.strip("`")
+                if content.lower().startswith("json"):
+                    content = content[4:]
             obj = json.loads(content)
             if isinstance(obj, list):
                 ids = obj

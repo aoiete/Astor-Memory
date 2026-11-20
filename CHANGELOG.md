@@ -1,3 +1,37 @@
+## 1.17.72
+
+**feat(llm): the call sites can talk to the operator's own model**
+
+Every LLM call site in astor was hardwired to OpenRouter. The
+operator runs a different model, so the call sites now read the same
+slot llm_judge.py already had:
+
+    ASTOR_LLM_BASE_URL   e.g. https://api.minimax.io/v1
+    ASTOR_LLM_API_KEY    that provider's key
+    ASTOR_LLM_MODEL      that provider's model
+
+llm_rerank.py and hyde.py gained the slot (hyde had the URL written
+into the request); llm_judge.py already had it; query_expander.py and
+query_rewriter.py already read OPENAI_BASE_URL.
+
+Two things a reasoning model needs and OpenRouter's defaults did not
+give:
+
+  - token budget. MiniMax-M3.1-Flash spends ~300 tokens thinking before
+    it answers; the old max_tokens=200 meant the answer never arrived.
+    ASTOR_RERANK_MAX_TOKENS now defaults to 1024.
+  - the answer may arrive wrapped in <think>...</think>, or in a
+    separate reasoning_content field. The parser now unwraps both.
+
+The OpenRouter-only request keys (the provider routing block) are gone;
+response_format stays, which MiniMax accepts.
+
+Measured on the paraphrase eval set (sandbox copy of the runtime, live
+untouched): the reranker with MiniMax-M3.1-Flash scored hit@10 0.615 /
+mrr 0.399, against 0.654 / 0.402 for the OpenRouter default and
+0.654 / 0.383 with the reranker off. Wiring the model in is the point;
+whether to enable the reranker is still the operator's call.
+
 ## 1.17.71
 
 **fix(retrieval): the reranker must see a pool deeper than top_k**
