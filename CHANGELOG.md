@@ -1,3 +1,17 @@
+## 1.17.63
+
+**fix(test): the peer read test was looking in the wrong window**
+
+The full suite failed one test after v1.17.52: the peer read filter
+test requires every `FROM memory_canonical` in the peer code to have a
+`visibility` predicate within a fixed window around the query. Adding
+the expiry filters moved that predicate out of the window -- the
+filter was still there, the test just could not see it any more.
+
+The predicate moved to the end of the WHERE clause instead, which is
+the same query (AND is commutative) and keeps the test honest: it
+still fails if the filter is removed.
+
 ## 1.17.62
 
 **fix(auth): the repo tier is admin-write-only, and that rule was never called**
