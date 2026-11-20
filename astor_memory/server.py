@@ -6170,17 +6170,23 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             _temporal_boost[int(_tbid)] = (str(_tbd), str(_tbp or 'day'))
                 except Exception:
                     pass
+            # The rerank pool needs more than top_k candidates; the cap is
+            # the reranker's own RERANK_K (ASTOR_RERANK_K, default 30).
+            try:
+                from .nest.llm_rerank import RERANK_K as _RERANK_K
+            except Exception:
+                _RERANK_K = 30
             merged = _hybrid_merge(
                 bm25_hits=bm25_hits,
                 vector_hits=vector_hits,
                 bm25_weight=bm25_weight,
                 vec_weight=vec_weight,
-                limit=oversample,
                 keyword_hits=keyword_hits if keyword_hits else None,
                 query_keywords=query_keywords,
                 temporal_boost=_temporal_boost if _temporal_boost else None,
                 temporal_boost_strength=0.4,
                 query_anchor=query_anchor,
+                limit=max(oversample, _RERANK_K),
             )
             # v1.15.32 (2026-09-28, Ship L) + v1.15.33 (Ship M): MMR rerank.
             # Without MMR, near-duplicate phrasings crowd out the canonical
@@ -6252,12 +6258,29 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     # Build (fid, content) pairs from results.
                     # 2026-08-27 fix: results from hybrid_merge is list of (fid, score)
                     # tuples — no content field. Need to look up content from bus DB.
+                    # The pool is the result order first (MMR order), then the
+                    # deeper hybrid ranks, capped at RERANK_K. results was cut
+                    # to top_k upstream, so the old results[:30] slice could
+                    # never hold more than top_k candidates: the reranker could
+                    # only reorder what it already had and could never promote
+                    # a fact the hybrid ranker put at 11..30.
+                    _rr_items = list(results)
+                    _rr_fids = []
+                    for _r in _rr_items:
+                        if isinstance(_r, (tuple, list)):
+                            _rr_fids.append(_r[0])
+                        elif isinstance(_r, dict):
+                            _rr_fids.append(_r.get('fact_id', _r.get('id')))
+                    _rr_seen = set(_rr_fids)
+                    for _m in merged:
+                        if len(_rr_fids) >= _RERANK_K:
+                            break
+                        if _m[0] not in _rr_seen:
+                            _rr_fids.append(_m[0])
+                            _rr_items.append(_m)
+                            _rr_seen.add(_m[0])
                     _pairs = []
-                    _fids = []
-                    if results and isinstance(results[0], (tuple, list)):
-                        _fids = [r[0] for r in results[:30]]
-                    elif results and isinstance(results[0], dict):
-                        _fids = [r.get('fact_id', r.get('id')) for r in results[:30] if r.get('fact_id') or r.get('id')]
+                    _fids = [f for f in _rr_fids if f is not None]
                     if _fids:
                         try:
                             # Use module-level bus from outer scope (line 474).
@@ -6272,12 +6295,20 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             _fid_text = {int(r[0]): (r[1] or '') for r in _rows}
                         except Exception:
                             _fid_text = {}
-                        _pairs = [(f, _fid_text.get(f, '')) for f in _fids]
+                        # Only a fact whose text we may send may reach the
+                        # reranker -- the personal rows _vis_where filters out
+                        # must not go on the wire.
+                        _pairs = [(f, _fid_text[f]) for f in _fids if f in _fid_text]
                     _ranked = _llm_rr(query, _pairs)
                     _safe_stderr_write(f"[RERANK] returned {len(_ranked)} ranked fids\n")
                     if _ranked:
                         # Re-order results. results shape: list of (fid, score) tuples.
-                        _by_fid = {r[0]: r for r in results} if results and isinstance(results[0], (tuple, list)) else {r.get('fact_id'): r for r in results}
+                        _by_fid = {}
+                        for _r in _rr_items:
+                            if isinstance(_r, (tuple, list)):
+                                _by_fid[_r[0]] = _r
+                            elif isinstance(_r, dict):
+                                _by_fid[_r.get('fact_id', _r.get('id'))] = _r
                         _new = [_by_fid[fid] for fid in _ranked if fid in _by_fid]
                         # Append any not in ranked set (LLM dropped them)
                         _ranked_set = set(_ranked)
@@ -6285,7 +6316,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             _rid = r[0] if isinstance(r, (tuple, list)) else r.get('fact_id')
                             if _rid not in _ranked_set:
                                 _new.append(r)
-                        results = _new
+                        results = _new[:top_k]
                         # v1.10.9: LLM rerank already optimized; skip stage_recall.
                         _skip_stage = True
                 except Exception as _e:

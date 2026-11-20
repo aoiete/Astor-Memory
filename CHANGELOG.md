@@ -1,3 +1,25 @@
+## 1.17.71
+
+**fix(retrieval): the reranker must see a pool deeper than top_k**
+
+The LLM reranker was written to pick the best few out of the top 30
+candidates -- llm_rerank.py says so in its own docstring and caps the
+prompt at RERANK_K=30 -- but the read path cut `results` to top_k
+before the reranker ever saw it, so the `results[:30]` slice could
+never hold more than top_k candidates. Two bugs, fixed together:
+
+1. the candidate pool was top_k deep, not 30;
+2. the by-id map was built from `results`, so even a fact the LLM
+   picked from the deep pool was dropped when it was assembled back.
+
+Measured on the paraphrase eval set: 7 of 26 answers sat at hybrid
+rank 11-30, unreachable to the reranker.
+
+The pool is now the result order first (MMR order) then the deeper
+hybrid ranks, capped at RERANK_K. The result count is still top_k --
+the reranker promotes, it does not widen the response. A candidate
+whose text the visibility filter withheld does not reach the model.
+
 ## 1.17.70
 
 **fix(peer): a peer that predates the signed nonce could not be searched**
