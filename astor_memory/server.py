@@ -836,6 +836,37 @@ def _rc_should_recall(query: str, body: dict) -> tuple[bool, str]:
     return True, 'ok'
 
 
+def demote_lessons_for_invalidated(bus, namespace: str,
+                                    invalidated: list) -> list[int]:
+    """Take the heat off lessons whose trigger fact was invalidated.
+
+    WHY: the occurrence ladder raises an experience's importance every
+    time it is asserted (0.7 -> 0.85 -> 0.95). A fact a later write
+    contradicted was invalidated, but the lesson built on it kept its
+    importance and kept climbing -- so a wrong rule got hotter every
+    time it was repeated and nothing ever took it back down. The
+    lesson goes down with the fact it was built on.
+
+    Returns the ids that were demoted.
+    """
+    fact_ids = [
+        it.get('fact_id') for it in (invalidated or [])
+        if isinstance(it, dict) and it.get('invalidated')
+        and it.get('fact_id') is not None
+    ]
+    if not fact_ids:
+        return []
+    marks = ",".join("?" * len(fact_ids))
+    cur = bus.conn.execute(
+        f"UPDATE memory_experience SET importance = 0.5 "
+        f"WHERE namespace = ? AND EXISTS ("
+        f"  SELECT 1 FROM json_each(memory_experience.trigger_fact_ids) "
+        f"  WHERE json_each.value IN ({marks}))",
+        [namespace] + list(fact_ids))
+    bus.conn.commit()
+    return list(fact_ids)
+
+
 def _resolve_rank_weights(body: dict) -> tuple[float, float]:
     """The bm25/vector weights for a read, from the body then the env.
 
@@ -4751,6 +4782,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     )
                     if _inv:
                         invalidated.extend(_inv)
+
+            # A lesson built on a fact that a later write just
+            # contradicted is a lesson that was wrong. The fact gets
+            # invalidated; the lesson used to keep its importance and
+            # climb the occurrence ladder (0.7 -> 0.85 -> 0.95), so a
+            # wrong rule got hotter every time it was asserted and
+            # never lost. Demote the lesson with the fact it was built
+            # on.
+            _exp_ns = (('private:' + (bus_user_id or user))
+                       if tier.startswith('private') else tier)
+            demote_lessons_for_invalidated(bus, _exp_ns, invalidated)
         except Exception as _bt_exc:
             # Bi-temporal failure must never break the write.
             _safe_stderr_write(f'[astor.server] bitemporal auto-invalidate failed (non-fatal): {type(_bt_exc).__name__}: {_bt_exc}\n')

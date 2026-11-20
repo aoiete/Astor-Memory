@@ -1,3 +1,21 @@
+## 1.17.69
+
+**fix(memory): a lesson whose fact was contradicted keeps its heat**
+
+The occurrence ladder raises an experience's importance every time it
+is asserted: one occurrence 0.7, three 0.85, six 0.95. A fact that a
+later write contradicted was invalidated -- the fact stopped being
+served -- but the lesson built on it kept its importance and kept
+climbing. So a rule that was wrong got hotter every time it was
+repeated, and nothing ever took it back down. It is the failure mode
+the article "智能体的记忆进化" describes: a wrong lesson does not
+surface on its own, and every repeat makes the agent trust it more.
+
+A lesson whose trigger fact was invalidated is now demoted with it.
+The trigger ids are stored as a JSON array of numbers, so the match
+goes through json_each -- a substring match would confuse fact 1 with
+fact 12.
+
 ## 1.17.68
 
 **fix(eval): --set was ignored, and the paraphrase set had nowhere to go**
