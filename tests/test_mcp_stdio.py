@@ -176,6 +176,36 @@ class TestMcpStdioServer(unittest.TestCase):
         # missing table -- that is a clean error, not a protocol break
         self.assertTrue(text.strip(), "astor_status returned empty content")
 
+    def test_an_mcp_client_cannot_choose_another_users_scope(self):
+        """v1.17.54: the MCP tools took `user` from the request.
+
+        astor_recall and astor_write handed it straight to cmd_recall /
+        cmd_write, which open that user's private bucket
+        (open_own_private(user_id)) without checking that the caller may
+        act for them -- so a local MCP client could read another user's
+        private facts, or write into their bucket as them.
+        """
+        r = self._rpc("tools/call", {
+            "name": "astor_recall",
+            "arguments": {"query": "scope probe", "user": "sunday"},
+        })
+        self.assertIn("cross_user_forbidden", json.dumps(r), r)
+
+        w = self._rpc("tools/call", {
+            "name": "astor_write",
+            "arguments": {"text": "scope probe", "tier": "private",
+                          "user": "sunday"},
+        })
+        self.assertIn("cross_user_forbidden", json.dumps(w), w)
+
+    def test_the_server_own_scope_still_works(self):
+        """The guard must not break the normal MCP path."""
+        r = self._rpc("tools/call", {
+            "name": "astor_recall",
+            "arguments": {"query": "scope probe", "user": "admin"},
+        })
+        self.assertNotIn("cross_user_forbidden", json.dumps(r), r)
+
 
 if __name__ == "__main__":
     unittest.main()

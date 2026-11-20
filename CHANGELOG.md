@@ -1,3 +1,27 @@
+## 1.17.54
+
+**fix(auth): an MCP client may not choose whose memory it touches**
+
+`astor_recall` and `astor_write` over MCP took a `user` argument
+straight from the request and handed it to `cmd_recall` / `cmd_write`.
+Those open that user's private bucket -- `open_own_private(user_id)`
+binds the ACL *as* the requested user -- without checking that the
+caller may act for them. A local MCP client could therefore read
+another user's private facts, or write into their bucket as them.
+
+The MCP server has no per-client identity of its own, so the scope it
+may use is now the server's own identity (`ASTOR_USER_ID`, `admin` by
+default). A client that needs another scope goes through the REST API,
+which binds the caller's declared identity. The repo tier is exempt --
+there `user` is the repo_id, not a person.
+
+The `astor_write` schema already promised "ACL denies cross-user
+writes". Now it is true.
+
+Found while triaging an external AI security scan of this repository.
+This was the one finding from that scan that blocks a public release:
+the MCP surface is a documented, supported entry point.
+
 ## 1.17.53
 
 **fix(auth): the provenance routes must not cross the tenant boundary**

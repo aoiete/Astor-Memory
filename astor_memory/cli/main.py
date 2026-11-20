@@ -4798,6 +4798,39 @@ def cmd_mcp_serve(args) -> int:
         if method == 'tools/call':
             tool_name = params.get('name')
             args = params.get('arguments') or {}
+            # v1.17.54: an MCP client must not choose whose memory it
+            # reads or writes.
+            #
+            # astor_recall and astor_write both took a `user` argument
+            # straight from the request and handed it to cmd_recall /
+            # cmd_write, which open that user's private bucket
+            # (open_own_private(user_id)) without checking that the
+            # caller may act for them. A local MCP client could
+            # therefore read another user's private facts, or write into
+            # their bucket as them.
+            #
+            # The MCP server has no per-client identity of its own, so
+            # the scope it may use is the server's own identity
+            # (ASTOR_USER_ID, admin by default). A client that needs
+            # another scope goes through the REST API, which binds the
+            # caller's declared identity.
+            #
+            # The repo tier is exempt: there `user` is the repo_id,
+            # not a person.
+            _mcp_user = str(args.get('user') or '').strip()
+            _mcp_tier = str(args.get('tier') or 'public').strip()
+            _mcp_self = os.environ.get('ASTOR_USER_ID') or 'admin'
+            if (_mcp_tier != 'repo' and _mcp_user
+                    and _mcp_user != _mcp_self):
+                _send({
+                    'jsonrpc': '2.0', 'id': req_id,
+                    'result': {
+                        'content': [{'type': 'text',
+                                     'text': 'cross_user_forbidden'}],
+                        'isError': True,
+                    },
+                })
+                return
             try:
                 # v1.16.76 (2026-10-16): all three handlers called
                 # functions that do not exist. `from .. import astor_read`
