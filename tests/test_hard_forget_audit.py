@@ -113,13 +113,21 @@ class TestHardForgetLeavesNoContent(unittest.TestCase):
         self.assertTrue(ids, body)
         return int(ids[0])
 
-    def _audit_rows(self) -> list:
+    def _audit_rows(self, fact_id: int | None = None) -> list:
         """Forget audit rows, wherever the fact lived.
 
         A plain fact is 'personal', so it lands in the caller's private
-        bucket and the audit row is written there.
+        bucket and the audit row is written there. Pass fact_id to look
+        at one fact only -- the ids restart at 1 for every test, so an
+        unfiltered query picks up rows from an earlier test.
         """
         rows = []
+        sql = ("SELECT event, actor, old_state, metadata FROM audit_log "
+               "WHERE event = 'forget'")
+        args = ()
+        if fact_id is not None:
+            sql += " AND target_id = ?"
+            args = (str(fact_id),)
         for db in (Path(self.tmp) / "users" / "admin" / "memory" /
                   "astor_bus_admin.db",
                   Path(self.tmp) / "public" / "memory" /
@@ -128,9 +136,7 @@ class TestHardForgetLeavesNoContent(unittest.TestCase):
                 continue
             conn = sqlite3.connect(str(db))
             try:
-                rows.extend(conn.execute(
-                    "SELECT event, actor, old_state, metadata FROM audit_log "
-                    "WHERE event = 'forget'").fetchall())
+                rows.extend(conn.execute(sql, args).fetchall())
             except sqlite3.Error:
                 pass
             finally:
@@ -150,7 +156,7 @@ class TestHardForgetLeavesNoContent(unittest.TestCase):
         # the response must not echo the text back either
         self.assertNotIn(needle, json.dumps(body, ensure_ascii=False))
 
-        rows = self._audit_rows()
+        rows = self._audit_rows(fid)
         self.assertTrue(rows, "the forget was not audited at all")
         for event, actor, old_state, metadata in rows:
             self.assertIsNone(
@@ -160,6 +166,36 @@ class TestHardForgetLeavesNoContent(unittest.TestCase):
             self.assertNotIn(
                 needle, (metadata or ""),
                 "the hard forget kept the content in the audit metadata")
+
+    def test_a_hard_forget_clears_an_earlier_tombstone_preview(self):
+        """A tombstone row keeps a content_preview; the hard delete has to
+        take that away too, or the text is still readable in the audit log
+        even though the snapshot is gone."""
+        needle = ("this one is tombstoned with a preview and then hard "
+                  "deleted so the preview must not survive")
+        fid = self._write(needle)
+
+        st, _ = _post(self.base + "/v1/forget", {
+            "fact_id": fid, "user": "admin", "tier": "private",
+            "user_id": "admin", "tombstone_only": True})
+        self.assertIn(st, (200, 202))
+
+        # the tombstone keeps the preview -- that path is recoverable.
+        # (the preview is truncated, so look for the marker, not the
+        # whole text)
+        previews = [m for _e, _a, _o, m in self._audit_rows(fid)
+                    if m and "content_preview" in m]
+        self.assertTrue(previews, "the tombstone kept no preview at all")
+
+        st, _ = _post(self.base + "/v1/forget", {
+            "fact_id": fid, "user": "admin", "tier": "private",
+            "user_id": "admin", "tombstone_only": False})
+        self.assertIn(st, (200, 202))
+
+        for _event, _actor, _old, metadata in self._audit_rows(fid):
+            self.assertNotIn(
+                needle, (metadata or ""),
+                "the hard delete left the content preview in the audit log")
 
     def test_a_hard_forget_clears_the_earlier_snapshot_too(self):
         """A tombstone leaves a snapshot; the hard delete that follows has
@@ -214,7 +250,7 @@ class TestHardForgetLeavesNoContent(unittest.TestCase):
             "user_id": "admin", "tombstone_only": True})
         self.assertIn(st, (200, 202), body)
 
-        rows = self._audit_rows()
+        rows = self._audit_rows(fid)
         self.assertTrue(rows)
         # the newest row for this tombstone keeps the old_state
         snapshots = [r[2] for r in rows if r[2]]

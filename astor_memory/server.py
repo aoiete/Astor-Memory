@@ -8061,10 +8061,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 # so restore would find that one and put the content back.
                 # The text has to leave the audit log too, or "forget" is
                 # reversible by anyone with audit access.
+                # The snapshot AND the preview: a tombstone row keeps
+                # the text in its metadata, so clearing old_state alone
+                # would leave the content readable in the audit log.
                 bus.conn.execute(
-                    "UPDATE audit_log SET old_state = NULL "
+                    "UPDATE audit_log SET old_state = NULL, metadata = '{}' "
                     "WHERE target_type = 'fact' AND target_id = ? "
-                    "AND old_state IS NOT NULL", (str(cfid),))
+                    "AND (old_state IS NOT NULL "
+                    "     OR metadata LIKE '%content_preview%')",
+                    (str(cfid),))
             bus.conn.commit()
         except Exception as e:
             bus.conn.rollback()
