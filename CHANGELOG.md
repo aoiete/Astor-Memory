@@ -1,3 +1,56 @@
+## 1.17.76 (retrieval)
+
+**fix(retrieval): the repair command could not reach the tier that needed it**
+
+A paper on multi-head recurrent memory agents (arXiv 2607.01523)
+diagnoses long-context memory failure by splitting performance into
+memory capture and memory retention, and finds that retention is the
+dominant bottleneck. Applied to this codebase, the same split says
+something specific: capture is fine, retention is not.
+
+    captured  = a live fact in memory_canonical
+    retained  = that fact has an embedding, so the semantic channel
+                can reach it at all
+
+181 of the 5430 live facts in the private admin tier had no
+embedding. They were in the store, they had lexical rows, and they
+were invisible to the semantic arm -- reachable only by exact keyword
+match. Two of the hand-labelled answers on the paraphrase set were
+among them, and the fact that states the answer most directly
+("月令是八字月柱的地支,决定日主旺衰的核心因素") was one of the two. The
+public tier had none; the gaps are all from September to October,
+when the write path was losing the embedding, and the write path was
+fixed in v1.17.36.
+
+The repair command could not fix them. `am reembed` walks every
+(tier, user) pair and checks each scope with the CLI's own identity,
+and the strict privacy model refuses that for every private scope:
+
+    actor='admin:admin' (role=admin) cannot write private_<user>;
+    user write-grant required
+
+The refusal was caught and the tier skipped, one after another, and
+the command reported the number of facts it had repaired -- zero,
+because the tiers it did reach had nothing to repair. A private scope
+needs the owner identity to write into it, the same invariant the
+write path uses since v1.17.36, and a skip has to say so: a repair
+command that skips silently reports success having repaired nothing.
+
+190 facts now carry an embedding again (181 admin, 9 sunday). The
+paraphrase set sees the effect directly: the question "how do you
+judge a strong day master" now returns its answer first, where
+before the answer had no vector at all.
+
+The keyword hit rate does not move, and the hand-labelled hit rate
+drops from 0.577 to 0.500. That is not the repair making retrieval
+worse. The 190 facts that just became visible are R-class notes
+about the system's own rules, and on a paraphrased question they are
+genuinely similar in shape to the question, so they compete for the
+same slots; the answers they displace are still there, at ranks 34
+and 28 instead of inside the top ten. Two answers came back and two
+went from the first screen to the fourth. A fact that the semantic
+channel could not see was not free.
+
 ## 1.17.75 (ci)
 
 **fix(ci): the tests that only pass on one machine**

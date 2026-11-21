@@ -4276,10 +4276,25 @@ def cmd_reembed(args) -> int:
 
     grand_total = 0
     for tier, user_id in targets:
+        # v1.17.76: writing into a private scope needs the OWNER
+        # identity -- the same invariant the write path established in
+        # v1.17.36. Without it the check raises for every private tier
+        # and the whole tier is skipped. That is where most of the
+        # facts live, and it is where every fact missing an embedding
+        # lived: `am reembed` reported "0 facts" while skipping all of
+        # them, because the tiers it did reach had nothing to do.
         try:
-            astor_check_write(tier.value, user_id)
+            if tier.value == 'private' and user_id:
+                from .._internal.acl import own_private_scope as _own_scope
+                with _own_scope(user_id):
+                    astor_check_write(tier.value, user_id)
+            else:
+                astor_check_write(tier.value, user_id)
         except Exception as e:
-            # Skip disallowed tiers (e.g. source when actor is user, not admin)
+            # Name the skip. A silent skip reads as "nothing to do",
+            # which is how a repair command reports success having
+            # repaired nothing.
+            print(f'[astor] [{tier.value}/{user_id or "-"}] skipped: {e}')
             continue
 
         bus_path = get_db_path(tier, Store.BUS, user_id)
