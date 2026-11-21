@@ -1,3 +1,93 @@
+## 1.17.74 (eval)
+
+**fix(eval): the ruler was measuring the words, not the answer**
+
+Chasing a retrieval gap on the paraphrase set turned up something
+uncomfortable: the yardstick was wrong. The keyword ruler asks whether
+a result contains one of the expected strings, and on this corpus that
+is a very loose question. For "can I restart the bot service myself"
+the word "gateway" appears in 272 facts of the tier, and 266 of them
+are not the answer -- so a keyword hit is not evidence of a correct
+recall.
+
+The keyword file already carried a fact id per question. Reading them
+showed six of twenty-six pointing at facts that do not answer their
+question at all (a ship cadence question labelled with an embedding
+model switch; a chart-casting question labelled with an unrelated
+service bug). The labels were picked by keyword match, so they carried
+the same looseness.
+
+**The new ruler.** `tests/eval_paraphrase_golden.jsonl` labels all
+twenty-six by hand: the fact ids a person would accept, the answer as
+a sentence, and why those ids. Two questions are marked
+`corpus_gap` -- the corpus has no fact that answers them, and saying
+so is the honest answer. `tests/eval_runner.py` scores by id and now
+reports the id ruler and the keyword ruler side by side, and
+`tests/test_eval_golden_ruler.py` locks the properties that make the id ruler
+usable, including that a label pointing at a fact which exists but
+answers something else must fail.
+
+**What the honest ruler says.** The two rulers disagree on ten of
+twenty-six questions, so quoting one without the other is how a
+retrieval change gets called an improvement when it only moved the
+ruler. Re-measured on the live corpus:
+
+    arm                     keyword hit / mrr    id hit / mrr
+    baseline (0.5/0.5)         0.731 / 0.414       0.577 / 0.308
+    bm25 only (naive arm)      0.615 / 0.388       0.346 / 0.225
+    vector only                0.538 / 0.197       0.500 / 0.204
+    0.6/0.4                    0.654 / 0.404       0.500 / 0.294
+    0.4/0.6                    0.654 / 0.375       0.500 / 0.275
+
+The semantic stack is worth hit +0.231 and mrr +0.083 over a bag of
+words plus a search -- not the +0.005 an earlier measurement reported
+through the keyword ruler. The even weight split holds up under the
+hand labels as well, which is the second time it has been confirmed
+by a ruler that did not move.
+
+`hit_rate_at_k` keeps its old meaning -- the keyword ruler -- because
+the sweep, the held-out gate and the trend tools all read it, and
+quietly redefining it would make every historical number
+incomparable. The id numbers are additive: `id_hit_rate`, `id_mrr`,
+and `id_labelled_n` say how many questions carried a hand label.
+
+**What it ruled out.** Four plausible explanations for the gap did
+not survive: the e5 query/passage prefixes (sample similarities barely
+move), unnormalised vectors (the search path uses cosine and filters
+by model name, so mixed models cannot collide), using a model as the
+ruler (three prompt variants of the same judge gave 0.423, 0.615 and
+0.692 on one result set), and deepening the candidate pool (pool 60
+leaves the id hit rate flat and drops id mrr 0.308 -> 0.296; pool 120 drops
+the id hit rate to 0.462 -- a deeper pool lets lexically strong but
+semantically wrong candidates in, and on a paraphrased query the
+lexical channel is the weaker one). The bottleneck is ranking, not
+pool depth, so the pool stays where it was and the comment in
+`server.py` now says so.
+
+**Rerank stays off.** With the labels in place, reranking with
+MiniMax-M3 made the honest numbers worse, not better: id hit 0.577 ->
+0.538, id mrr 0.308 -> 0.264. Gemini did not help either: id hit
+unchanged at 0.577, id mrr 0.280. The keyword ruler had shown a small
+gain for the same change, which is what a loose ruler does. The live
+configuration was already rerank-off, so nothing changes there.
+
+HyDE was not measured: it only applies to queries under eight tokens,
+and every question in this set is longer, so it never fired.
+
+**Two leaks the audit was already failing on.** The repository's own
+PII audit turned red while this was being written -- not because of
+anything here, but because two tracked files still carried a platform
+account id in the shape the audit looks for. One was a platform
+account id in a test fixture; the other was a documentation example
+that was missing the prefix the regex it documents actually requires.
+Both are placeholders now, and the audit is green.
+
+Nothing in the retrieval path changed in this release, so there is
+no in-sample risk: the only code change is a comment. The numbers
+above were used to decide what NOT to turn on, and the two of
+them (the even weight split, rerank off) were already the shipped
+configuration before this release.
+
 ## 1.17.73 (privacy)
 
 **chore(privacy): the operator's user handles are out of the source**

@@ -5841,7 +5841,16 @@ def create_app(astor_dir: str | None = None) -> Flask:
         #   but the +3.6% gap exceeds typical noise. Default bumped 0.4 → 0.6.
         #   Override via env/body to A/B on a larger eval set when built.
         bm25_weight, vec_weight = _resolve_rank_weights(body)
-        # Oversample before merge so hybrid doesn't return fewer than top_k
+        # Oversample before merge so hybrid doesn't return fewer than top_k.
+        # v1.17.74: the pool depth was measured and left alone. A fact the
+        # vector search ranks 30th cannot be recalled at all if the pool is
+        # 20, and on the paraphrase set 6 of 26 answers did sit at vector
+        # rank 25-514 -- but deepening the pool made things worse, not
+        # better. Pool 60: labelled-answer hit unchanged, mrr 0.317 ->
+        # 0.296. Pool 120: hit 0.577 -> 0.462. The deeper pool lets
+        # lexically-strong-but-semantically-wrong candidates in, and on a
+        # paraphrased query the lexical channel is the weaker one. The
+        # bottleneck is ranking, not pool depth.
         oversample = max(top_k * 2, 20)
         nest = astor_nest(tier=tier, user_id=user_id)
         bus = astor_bus(tier=tier, user_id=user_id)

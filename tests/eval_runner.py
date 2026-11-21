@@ -136,6 +136,54 @@ def recall(query: str, tier: str, user: str, top_k: int, **kwargs) -> tuple[list
     raise RuntimeError(f"recall failed after 3 retries: {last_err}")
 
 
+def load_golden_ids(path: str | None = None) -> dict[str, list[int]]:
+    """qid -> the fact ids a human would accept as the answer.
+
+    The keyword ruler cannot tell a right answer written in different
+    words from a wrong one that happens to use the right words. On the
+    paraphrase set it disagrees with these labels on 10 of 26 queries,
+    and it disagreed with a model-based judge on 12 of 26 -- so on its
+    own it cannot decide whether a retrieval change helped. This file
+    records the accepted answer ids per question.
+    """
+    if not path:
+        path = str(Path(__file__).resolve().parent / "eval_paraphrase_golden.jsonl")
+    out: dict[str, list[int]] = {}
+    p = Path(path)
+    if not p.exists():
+        return out
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            row = json.loads(line)
+            out[row["qid"]] = [int(x) for x in row.get("answer_fact_ids") or []]
+    return out
+
+
+def score_by_ids(results: list[dict], answer_fact_ids: list[int]) -> dict:
+    """hit/mrr against hand-labelled answer ids."""
+    if not results or not answer_fact_ids:
+        return {"matched": False, "mrr": 0.0, "n_matches": 0, "first_rank": None}
+    wanted = set(answer_fact_ids)
+    first = None
+    n = 0
+    for rank, r in enumerate(results, start=1):
+        fid = r.get("fact_id", r.get("id"))
+        try:
+            fid = int(fid)
+        except (TypeError, ValueError):
+            continue
+        if fid in wanted:
+            n += 1
+            if first is None:
+                first = rank
+    return {
+        "matched": first is not None,
+        "mrr": (1.0 / first) if first else 0.0,
+        "n_matches": n,
+        "first_rank": first,
+    }
+
+
 def score_results(results: list[dict], expected_keywords: list[str], min_hits: int) -> dict:
     """Compute hit/mrr for one query.
 
@@ -190,6 +238,7 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
                           "bm25_weight": 1.0, "vec_weight": 0.0},
     }
     kwargs = variants.get(variant, {})
+    _golden_ids = load_golden_ids()
 
     detail = []
     latencies = []
@@ -211,6 +260,24 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
             detail.append({"qid": q["qid"], "error": str(e), "matched": False, "mrr": 0.0})
             continue
         s = score_results(results, q["expected_keywords"], q.get("min_hits", 1))
+        # The hand-labelled ruler. Both are reported: the keyword ruler
+        # measures whether the words appear, the id ruler measures
+        # whether the answer is there. They disagree on a quarter of
+        # the paraphrase set, so a change that moves only one of them
+        # has to be read with both.
+        # The hand-labelled ruler, reported alongside the keyword one.
+        # hit_rate_at_k keeps its meaning -- the keyword ruler -- because
+        # the sweep, the gate and the trend tools all read it, and
+        # quietly redefining it would make every historical number
+        # incomparable. The id numbers are additive.
+        _gid = _golden_ids.get(q["qid"])
+        s["id_matched"] = None
+        s["id_mrr"] = None
+        if _gid:
+            _gs = score_by_ids(results, _gid)
+            s["id_matched"] = _gs["matched"]
+            s["id_mrr"] = _gs["mrr"]
+            s["id_first_rank"] = _gs["first_rank"]
         # v1.16.98: the same question asked of the store directly. Same
         # keywords, same scoring rule, no embedding/BM25/rerank in
         # between -- so the difference between the two answers is the
@@ -255,6 +322,7 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
     for _d in scored:
         _gap_counts[_d.get("gap", "storage_gap")] = (
             _gap_counts.get(_d.get("gap", "storage_gap"), 0) + 1)
+    _labelled = [d for d in scored if d.get("id_matched") is not None]
     _oracle_rate = (sum(1 for d in scored if d.get("oracle_hit")) / n) if n else 0
     _storage_gap = (_gap_counts.get("storage_gap", 0) / n) if n else 0
     _retrieval_gap = (_gap_counts.get("retrieval_gap", 0) / n) if n else 0
@@ -279,6 +347,20 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
     "scorer_hash": _scorer_hash(),
     "n_queries": n,
     "hit_rate_at_k": round(hit_rate, 4),
+    # The hand-labelled ruler's numbers, over the questions that have a
+    # label. Kept separate from the totals: the label set covers the
+    # paraphrase set, not the whole default set, so mixing them would
+    # average two different questions. On the paraphrase set the two
+    # rulers disagree on 10 of 26 queries, so quoting one without the
+    # other is how a retrieval change gets called an improvement when
+    # it only moved the ruler.
+    "id_labelled_n": len(_labelled),
+    "id_hit_rate": round(
+        (sum(1 for d in _labelled if d.get("id_matched")) / len(_labelled))
+        if _labelled else 0, 4),
+    "id_mrr": round(
+        statistics.mean([d.get("id_mrr", 0) for d in _labelled])
+        if _labelled else 0, 4),
     "top_ks": sorted({int(q.get("top_k", 10)) for q in eval_set}),
     "mrr": round(mrr, 4),
     # v1.16.98: the decomposition. oracle_hit_rate is the ceiling the
@@ -327,7 +409,11 @@ def print_summary(run: dict) -> None:
     print(f"\n=== {s['variant']} ===")
     _ks = s.get("top_ks") or [10]
     _klabel = "/".join(str(k) for k in _ks)
-    print(f"  hit_rate@{_klabel}     = {s['hit_rate_at_k']:.3f}")
+    print(f"  hit_rate@{_klabel}     = {s['hit_rate_at_k']:.3f}   (by expected keyword)")
+    if s.get("id_labelled_n"):
+        print(f"  id_hit_rate@{_klabel}   = {s.get('id_hit_rate', 0):.3f}   "
+              f"(by hand-labelled answer id, n={s['id_labelled_n']})")
+        print(f"  id_mrr             = {s.get('id_mrr', 0):.3f}")
     print(f"  mrr               = {s['mrr']:.3f}")
     print(f"  avg / p50 / p95 ms= {s['avg_latency_ms']:.0f} / {s['p50_latency_ms']:.0f} / {s['p95_latency_ms']:.0f}")
     if s["by_category"]:

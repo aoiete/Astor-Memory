@@ -69,7 +69,7 @@ CONTEXT_ID = re.compile(
 STATE_BLOCK_ID = re.compile(
     r"(\[[A-Za-z0-9_:.-]+\]=)([0-9a-f]{10,}(?:_[0-9a-f]{4,}){0,3})(?=[,\s]|$)")
 
-# A bare platform account id: "8263b17ef000@im.bot".
+# A bare platform account id: "o<account-id>@im.bot".
 WECHAT_ACCT = re.compile(r"\bo[A-Za-z0-9_-]{10,}@im\.(?:bot|wechat)\b")
 
 

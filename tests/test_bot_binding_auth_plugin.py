@@ -196,7 +196,7 @@ def test_active_weixin_dm_authorized(plugin, db):
     """WeChat bindings are per-bot accounts, so the lookup matches the
     platform kind, not one exact platform_id."""
     _add_user(db, "u1")
-    _add_binding(db, "b1", "weixin:11d658c3e7f7@im.bot", "chat-a", "u1")
+    _add_binding(db, "b1", "weixin:bot0001@im.bot", "chat-a", "u1")
     res = _dispatch(plugin, "weixin", "chat-a", "u1")
     assert res is not None
     assert res["action"] == "authorized"

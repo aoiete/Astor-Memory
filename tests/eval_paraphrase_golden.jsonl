@@ -1,0 +1,26 @@
+{"qid": "P01", "answer_fact_ids": [8820], "answer_text": "两个人坐一张桌子用筹码换钱 = 德州扑克现金局（桌上竞技，不是赌博）。", "note": "库里没有真正定义玩法的 fact, 只剩当天 POKER BRIEF(提 poker 但没定义玩法)。标 corpus_gap=true —— 这题应该算 storage gap 不是 retrieval gap。", "corpus_gap": true}
+{"qid": "P02", "answer_fact_ids": [5681, 7711, 13132, 12996], "answer_text": "日主旺衰（身强/身弱）看月令：月令地支决定日主旺衰的核心因素。", "note": "13132 直接讲月令判旺衰（最贴题）；5681/7711 是身强实例；12996 是身强判定实例。"}
+{"qid": "P03", "answer_fact_ids": [13854, 10191, 3023], "answer_text": "写记忆先落到 astor（第一存储），memory md 只做 fallback；老 3-store/auto_route 已被 astor 取代。", "note": "13854/10191 直接讲第一存储规则；3023 讲 auto_route_v2 已被取代。"}
+{"qid": "P04", "answer_fact_ids": [940, 1542, 1869, 971, 4034, 18297], "answer_text": "能，但只有用户本人能重启 gateway（R218）；agent 绝对不能自己重启。", "note": "940/1542/1869/971 都是同一条 R218 规则的多个副本；4034 是用户主动帮重启；18297 是 2026-11-17 实测。"}
+{"qid": "P05", "answer_fact_ids": [9734], "answer_text": "备份目录用 ACTIVE_ 前缀标记在用，命名约定 ACTIVE_smart_backup_<YYYY-MM-DD_HHMMSS>，不被批量删除。", "note": "唯一一条明确讲命名约定的 fact。"}
+{"qid": "P06", "answer_fact_ids": [1197, 1361, 1007], "answer_text": "微信凭证/chat→bot 映射的 SSoT 是 bot-binding.db，不是从 bot JSON 反推。", "note": "1197 讲 scripts/send_to_platform.py 从 .env 读 token、bot-binding.db 查映射；1361 讲 astor 是 SSoT；1007 讲 tier=private 配置导致 403。"}
+{"qid": "P07", "answer_fact_ids": [13646, 8992, 8984, 849, 15559, 4766], "answer_text": "本机时钟是 MDT，与 UTC 差 6 小时。", "note": "13646 是 locked RULE 直接答；15559 是夏令时废除后的最新事实。"}
+{"qid": "P08", "answer_fact_ids": [9696, 9735, 9671, 9666, 2431], "answer_text": "RAM≥16GB 默认 embedding 模型是 intfloat/multilingual-e5-large；bge-base-en-v1.5 是低配默认。", "note": "2431 只说 bge（旧的），是过时事实——这条让关键词尺子判'对'其实判了个过时答案。"}
+{"qid": "P09", "answer_fact_ids": [13832, 13831, 3884, 3818, 4475], "answer_text": "已配 sessions.auto_prune=true + retention_days=14，闲置 14 天自动清。", "note": "问题问的是'多久该清一次'，答案是 14 天 retention。"}
+{"qid": "P10", "answer_fact_ids": [8313, 13685, 3236, 18323], "answer_text": "public repo 的 PII 审计要查 git 跟踪的所有文件，不止 CHANGELOG；表面干净不等于仓库干净。", "note": "8313 是 LESSON 明确讲'漏网的不止 CHANGELOG'；18323 是 public scrub 边界。"}
+{"qid": "P11", "answer_fact_ids": [7633, 9083, 10605, 8028, 7593, 7610], "answer_text": "用 Cloudflare Tunnel（cloudflared）把本地 127.0.0.1:8765 的 pokerstats 暴露成公网。", "note": "多个等价 fact。"}
+{"qid": "P12", "answer_fact_ids": [7045, 12021, 2891, 2770], "answer_text": "Kraken 走 ccxt 统一接口；moomoo 走 OpenD 11111。", "note": "7045 明确'kraken(ccxt)'。"}
+{"qid": "P13", "answer_fact_ids": [4281, 4303, 4320, 4797, 13859], "answer_text": "maker_pocket 状态机 IDLE → ARMED → ENTERED，只有 ARMED 之后才真的会下单。", "note": "4281/4303/4320 三个副本都写状态机。"}
+{"qid": "P14", "answer_fact_ids": [292, 316, 345, 540, 505], "answer_text": "占卜服务（tianshu_api / tianshu-fortune）本地监听 7777 端口。", "note": "292 讲孤儿 tianshu_api.py 占 7777；540 直接'端口7777'。"}
+{"qid": "P15", "answer_fact_ids": [8663, 8667, 8685, 8671], "answer_text": "叫 grounding_check（L4 grounding 守则），写入前要过真实性检查。", "note": "8663 是 canonical R-class 直接给名字。"}
+{"qid": "P16", "answer_fact_ids": [3215, 506, 13842, 13967], "answer_text": "astor 9-DB layout：3-tier × 3-store，每个 user 独立 9 个库，数据隔离不串门。", "note": "3215 是唯一明确写 9-DB layout 的。"}
+{"qid": "P17", "answer_fact_ids": [8685, 8826, 8665, 8671], "answer_text": "L2 auto_link confidence gate 默认 0.6 + regex 0.85；promote_candidate confidence <0.5 hard reject。", "note": "问题问'通过线定在多少'，答案在 8685/8826 的具体阈值。"}
+{"qid": "P18", "answer_fact_ids": [4006, 4040, 4524, 6182, 13704], "answer_text": "整体备份每 3 天跑一次（MDT 04:00），保留 2 个常规 + 1 个月底。", "note": "注意：此题关键词尺子给的 gold(9734) 是'ACTIVE_ 前缀命名'，答的是 P05，不是这题——这是尺子错配的实例。"}
+{"qid": "P19", "answer_fact_ids": [13272, 13270, 4766, 5180, 5205], "answer_text": "cron 一律按 Hermes 配置时区解析，job 的 timezone 字段被忽略。", "note": "13270 是源码验证的 R-class；13272 是可复用方法论。"}
+{"qid": "P20", "answer_fact_ids": [7542, 7634, 9861, 12228, 10330], "answer_text": "用 NSSM（Windows 服务托管）让它崩了能自动拉起。", "note": "12228 讲 NSSM 托管 + Paused 导致拉不起来。"}
+{"qid": "P21", "answer_fact_ids": [12314, 10538, 10018, 8114, 6418, 10534], "answer_text": "ship 节奏按 ROI 排序、做完一起 push（'你都搞定再 push'），每步 ship 后等确认再继续。", "note": "注意：此题关键词尺子给的 gold(9666) 是'embedding 模型切换'，完全答非所问——尺子错配实例。"}
+{"qid": "P22", "answer_fact_ids": [1533, 8899, 2169, 13856, 13873], "answer_text": "铁律 = 不能把没验证过的事说成真的：报假信息零容忍，规则层面也不许杜撰。", "note": "1533 是'用户设铁律:发通知前必须实测,不能报假信息'，语义最贴。"}
+{"qid": "P23", "answer_fact_ids": [8872, 8620, 9722, 15800, 14009], "answer_text": "梅花易数——用数字起卦的推演古法，agent 应接不拒绝。", "note": "关键词尺子给的 gold(8872) 恰好对。"}
+{"qid": "P24", "answer_fact_ids": [8967], "answer_text": "六爻（摇三枚铜钱）/ 梅花起卦的排盘方式；两套卦象系统独立。", "note": "public 层全库没有'六爻'字样, 只有梅花起卦用时辰的说法(13997/14003 在 private 层)。标 corpus_gap=true —— 这题应该算 storage gap 不是 retrieval gap。", "corpus_gap": true}
+{"qid": "P25", "answer_fact_ids": [6215, 8278, 8279], "answer_text": "紫微/命盘的呈现方式在 skill 引用里（tianshu-fortune skill）。", "note": "public 层'紫微'只命中 2 条车牌玄学 fact，'命盘'0 命中。关键词尺子 gold(6215) 是 weixin 触发偏好，完全答非所问——尺子错配实例。"}
+{"qid": "P26", "answer_fact_ids": [8296, 8334, 8794, 8812, 8820, 8478], "answer_text": "poker brief 的时辰打分给旺时/凶时（按日柱 + 时干推旺凶），大凶时段不宜上桌。", "note": "8812/8820 是 POKER BRIEF 给了日分吉凶。"}
