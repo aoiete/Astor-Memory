@@ -60,6 +60,16 @@ jobs:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
 
+      # The embedding model lives in the huggingface cache. Without it
+      # every leg downloads it again, which is most of the wall clock.
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~/.cache/fastembed
+          key: ${{ runner.os }}-embed-${{ hashFiles('pyproject.toml') }}
+
       - name: Install package + test deps
         run: |
           python -m pip install --upgrade pip
@@ -89,7 +99,11 @@ jobs:
             > /tmp/astor-server.log 2>&1 &
           echo $! > /tmp/astor-server.pid
           # Wait for /v1/health to return 200 (max 60s)
-          for i in $(seq 1 60); do
+          # The server warms the embedding model up in a child process
+          # before it binds, and that child downloads the model on a cold
+          # cache -- about two minutes, more on a runner. A short wait
+          # makes the leg fail on a server that was about to come up.
+          for i in $(seq 1 600); do
             if curl -fsS "http://127.0.0.1:$PORT/v1/health" >/dev/null 2>&1; then
               echo "astor server ready after ${i}s"
               break
@@ -189,6 +203,14 @@ jobs:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-3.14-${{ hashFiles('pyproject.toml') }}
 
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~/.cache/fastembed
+          key: ${{ runner.os }}-embed-${{ hashFiles('pyproject.toml') }}
+
       - name: Install package + test deps
         run: |
           python -m pip install --upgrade pip
@@ -207,7 +229,11 @@ jobs:
           nohup python -m astor_memory.server --host 127.0.0.1 --port "$PORT" \
             > /tmp/astor-server.log 2>&1 &
           echo $! > /tmp/astor-server.pid
-          for i in $(seq 1 60); do
+          # The server warms the embedding model up in a child process
+          # before it binds, and that child downloads the model on a cold
+          # cache -- about two minutes, more on a runner. A short wait
+          # makes the leg fail on a server that was about to come up.
+          for i in $(seq 1 600); do
             if curl -fsS "http://127.0.0.1:$PORT/v1/health" >/dev/null 2>&1; then
               echo "astor server ready after ${i}s"
               break

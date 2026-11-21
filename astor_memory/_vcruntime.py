@@ -30,8 +30,17 @@ def _read_vcruntime_version() -> tuple:
     """
     import os
     import pathlib
+    import platform
     import re
     import subprocess
+
+    # The Visual C++ runtime is a Windows thing. On Linux the path below
+    # does not exist, and the old reading of that was "the DLL is
+    # missing" -- which turned into "onnxruntime cannot import" and
+    # disabled semantic recall on every Linux host, including CI. The
+    # onnxruntime linux wheel needs no VC++ runtime at all.
+    if platform.system() != "Windows":
+        return "not applicable (not Windows)", False
 
     path = pathlib.Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "vcruntime140_1.dll"
     if not path.exists():

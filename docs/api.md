@@ -904,7 +904,7 @@ would only invite a restart loop.
 ```json
 {
   "status": "ok",
-  "version": "1.17.79",
+  "version": "1.17.80",
   "astor_dir": "$ASTOR_DIR (e.g. /home/you/.astor)",
   "dbs": {
     "bus": "ok",

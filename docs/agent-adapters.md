@@ -328,7 +328,7 @@ curl -X POST http://localhost:7803/v1/recall \
 curl http://localhost:7803/v1/health
 # → {
 #     "status": "ok",
-#     "version": "1.17.79",
+#     "version": "1.17.80",
 #     "astor_dir": "~/.astor",
 #     "dbs": {"bus": "ok", "nest": "ok", "lex": "ok"},
 #     "facts": 5724,

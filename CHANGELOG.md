@@ -1,3 +1,37 @@
+## 1.17.80 (linux)
+
+**fix: the Visual C++ runtime check was firing on Linux, and the CI
+never started its server**
+
+The CI failure that looked like a port problem was two problems.
+The port was one: a runner host is reused between jobs, the previous
+job's socket was in TIME_WAIT, the fixed 7803 bind failed. The port
+is now picked free and handed to the tests through ASTOR_SERVER and
+ASTOR_BASE_URL. That part is v1.17.79.
+
+The other part was this one, and it was the reason the server never
+came up at all: the server warms the embedding model up in a child
+process before it binds, and that child downloads the model on a cold
+cache -- about two minutes, more on a runner. The wait for
+/v1/health was 60 seconds. The server was about to come up when the
+step gave up on it. The wait is now 600 seconds and the huggingface
+cache is cached between runs, so only the first run pays for the
+download.
+
+And the reason the server was degraded while it was doing that: the
+Visual C++ runtime probe looked for System32/vcruntime140_1.dll, did
+not find it on Linux, and reported "the DLL is missing" -- which the
+server turns into "the native embedding stack is unavailable on this
+host" and disables semantic recall, and which `am preflight` turns
+into BLOCKER. The onnxruntime linux wheel needs no VC++ runtime at
+all. The probe now says so on a non-Windows host, and says it by
+checking the platform first.
+
+So on every Linux host -- the CI included -- astor had been running
+with semantic recall switched off, and nobody noticed because the
+symptom was a leg that went red for a reason that had nothing to do
+with either.
+
 ## 1.17.79 (ci)
 
 **fix(ci): the server was pinned to a port that a reused runner could
