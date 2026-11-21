@@ -166,7 +166,7 @@ def scrub_local_identifiers(
 
     `extra_names` carries identifiers this node already knows are
     private -- the user ids in its own multi-user layout. Without it the
-    scrub can only learn a name from a path, so a fact that says "sunday
+    scrub can only learn a name from a path, so a fact that says "<user_a>
     runs the daemon on his own box" with no path in it keeps the name and
     lands in the shared tier where every peer can read it. The names are
     not hardcoded here: the caller passes the node's own user list, so
@@ -320,7 +320,7 @@ def scrub_local_identifiers(
             continue
         replaced = _replace_name(out, name)
         if replaced == out:
-            # The name is inside a longer word ("roy" in "destroy"), so
+            # The name is inside a longer word ("marlow" in "disallow"), so
             # the boundary-aware replace left the text alone. Recording
             # a change here would report a rewrite that did not happen.
             continue
@@ -337,8 +337,8 @@ def _replace_name(text: str, name: str) -> str:
     """Replace a name only where it stands as a word of its own.
 
     A plain str.replace matches inside any word that happens to contain
-    the name: "guarantee" holds "aran", "royal" holds "roy", and a fact
-    about a guarantee would come back with "gu<user>tee" in it. The
+    the name: "warranty" holds "rant", "celery" holds "cel", and a fact
+    about a warranty would come back with "war<user>ty" in it. The
     boundaries are non-word characters on both sides -- the same rule the
     PII keyword tables use, because a name glued to another word is part
     of that word, not a reference to a person.
@@ -423,8 +423,8 @@ def _scrub_text(v: str, names: set[str]) -> tuple[str, list[dict]]:
     new_v, ch = scrub_local_identifiers(v)
     for name in names:
         # Only report a change that actually happened. "name in new_v" is
-        # true for a name that appears inside a longer word ("roy" in
-        # "destroy"), and the boundary-aware replace leaves that word
+        # true for a name that appears inside a longer word ("marlow" in
+        # "disallow"), and the boundary-aware replace leaves that word
         # alone -- so recording a change there would report a rewrite
         # that never happened, and the CLI would print a scrub notice
         # for a fact it did not touch.

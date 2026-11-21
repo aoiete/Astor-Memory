@@ -63,7 +63,7 @@ def _user_meta_db(astor_dir):
         "allow_commons_write INTEGER NOT NULL DEFAULT 1)")
     conn.execute(
         "INSERT OR REPLACE INTO user_meta "
-        "(user_id, short_alias, role, active) VALUES ('sunday','sunday','user',1)")
+        "(user_id, short_alias, role, active) VALUES ('user_a','user_a','user',1)")
     conn.execute(
         "INSERT OR REPLACE INTO user_meta "
         "(user_id, short_alias, role, active) VALUES ('admin','admin','admin',1)")
@@ -116,7 +116,7 @@ class TestRepoTierIsAdminOnly(unittest.TestCase):
     def test_forget_refuses_a_non_admin_on_the_repo_tier(self):
         st, body = _post(self.base + "/v1/forget",
                           {"fact_id": 999999, "tier": "repo", "repo_id": "r1",
-                           "user": "sunday"})
+                           "user": "user_a"})
         self.assertEqual(st, 403, f"a non-admin deleted repo memory: {body}")
         self.assertEqual(body.get("error"), "cross_user_forbidden")
 
@@ -130,7 +130,7 @@ class TestRepoTierIsAdminOnly(unittest.TestCase):
         st, body = _post(self.base + "/v1/chat/ingest", {
             "namespace": "repo:r1", "agent_id": "test", "window_id": "w1",
             "turns": [{"role": "user", "content": "hello there"}],
-            "user": "sunday"})
+            "user": "user_a"})
         self.assertEqual(st, 403,
                          f"a non-admin wrote into shared repo memory: {body}")
 

@@ -84,7 +84,7 @@ def _node_user_names() -> set[str]:
     A fact in the shared tier is readable by every peer, and a peer that
     learns the name of one of this node's users learns something about
     the operator's household. The public scrub already removes a name it
-    can find in a path, but a name that appears only in prose -- "sunday
+    can find in a path, but a name that appears only in prose -- "<user_a>
     runs the daemon on his own box" -- is not in any path, so it used to
     survive into the shared tier.
 

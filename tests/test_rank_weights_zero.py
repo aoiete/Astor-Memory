@@ -26,9 +26,14 @@ from astor_memory.server import _resolve_rank_weights  # noqa: E402
 class TestRankWeightsResolveZero(unittest.TestCase):
 
     def test_the_defaults_still_apply(self):
+        # v1.17.73: the even split. The 0.6/0.4 default was measured on
+        # a 22-fact corpus; the corpus is 5723 facts now and only the
+        # ratio decides the ranking. Measured on both eval sets the
+        # even split is the peak, and the peak is sharp -- both
+        # neighbours drop.
         bm25, vec = _resolve_rank_weights({})
-        self.assertAlmostEqual(bm25, 0.6)
-        self.assertAlmostEqual(vec, 0.4)
+        self.assertAlmostEqual(bm25, 0.5)
+        self.assertAlmostEqual(vec, 0.5)
 
     def test_a_zero_vector_weight_survives(self):
         bm25, vec = _resolve_rank_weights(

@@ -187,14 +187,14 @@ class TestMcpStdioServer(unittest.TestCase):
         """
         r = self._rpc("tools/call", {
             "name": "astor_recall",
-            "arguments": {"query": "scope probe", "user": "sunday"},
+            "arguments": {"query": "scope probe", "user": "user_a"},
         })
         self.assertIn("cross_user_forbidden", json.dumps(r), r)
 
         w = self._rpc("tools/call", {
             "name": "astor_write",
             "arguments": {"text": "scope probe", "tier": "private",
-                          "user": "sunday"},
+                          "user": "user_a"},
         })
         self.assertIn("cross_user_forbidden", json.dumps(w), w)
 

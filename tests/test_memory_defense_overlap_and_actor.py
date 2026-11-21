@@ -103,9 +103,9 @@ class TestAuditActorIsNotSpoofable(unittest.TestCase):
         return written.get("actor")
 
     def test_the_claimed_user_does_not_become_the_actor(self):
-        actor = self._capture_audit("user:sunday")
+        actor = self._capture_audit("user:user_a")
         self.assertNotEqual(
-            actor, "admin:user:sunday",
+            actor, "admin:user:user_a",
             "the audit actor was built from the user id the request "
             "supplied -- the audit trail can be written under any name")
         self.assertEqual(

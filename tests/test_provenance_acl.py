@@ -9,7 +9,7 @@ GET as the server (admin) because `X-Actor` was only parsed for POST.
 So a scoped caller could ask for another user's private tier and get
 the fact text back:
 
-    X-Actor: user:sunday
+    X-Actor: user:user_a
     GET /v1/fact/18400/provenance?tier=private&user_id=admin
     -> {"ancestors": [{"fact": {"content": "R-class ..."}}]}
 
@@ -127,7 +127,7 @@ class TestProvenanceScope(unittest.TestCase):
                 st, body = _get(
                     f"{self.base}/v1/fact/{fid}/{route}"
                     f"?tier=private&user_id=admin",
-                    headers={"X-Actor": "user:sunday"})
+                    headers={"X-Actor": "user:user_a"})
                 self.assertEqual(st, 403,
                                  f"{route} let a scoped caller read another "
                                  f"user's private scope: {str(body)[:200]}")
@@ -147,7 +147,7 @@ class TestProvenanceScope(unittest.TestCase):
             self.base + f"/v1/fact/{fid}/provenance",
             {"parents": [fid], "kind": "extracted", "tier": "private",
              "user_id": "admin"},
-            headers={"X-Actor": "user:sunday"})
+            headers={"X-Actor": "user:user_a"})
         self.assertEqual(st, 403,
                          "planting a provenance edge across the tenant "
                          f"boundary must be refused: {str(body)[:200]}")

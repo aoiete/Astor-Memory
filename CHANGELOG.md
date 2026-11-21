@@ -1,3 +1,54 @@
+## 1.17.73 (privacy)
+
+**chore(privacy): the operator's user handles are out of the source**
+
+The repository is public, so the names of the people who use it do not
+belong in it -- not even as examples, and not even in the changelog's
+history. Real handles became <user_a> / <user_b> / ... in the
+changelog and in the source comments that used them as illustrations,
+and the word-boundary examples in the public scrub now use words that
+are not anyone's name. The tests use the same placeholders.
+
+## 1.17.73
+
+**feat(retrieval): the even bm25/vector split, and controlled exploration**
+
+Two changes, both measured on the eval sets rather than reasoned about.
+
+**The rank weights.** The 0.6/0.4 split was measured on a 22-fact
+corpus in September. The corpus is 5723 facts now, and only the ratio
+decides the ranking -- so the two weights have to move together. A
+sweep over the ratio, on both sets:
+
+    ratio      paraphrase hit / mrr     default hit / mrr
+    1.00:0.00        0.577 / 0.348          0.982 / 0.806
+    0.60:0.40        0.654 / 0.383          0.982 / 0.817
+    0.50:0.50        0.692 / 0.385          0.982 / 0.831
+    0.40:0.60        0.654 / 0.313          0.764 / 0.584
+    0.00:1.00        0.462 / 0.227          0.773 / 0.558
+
+The even split is the peak on both sets, and the peak is sharp: both
+neighbours drop. That is what a signal looks like and noise does not.
+The default is now 0.5/0.5; ASTOR_BM25_WEIGHT and ASTOR_VEC_WEIGHT
+still override it, and the body still overrides both.
+
+**Controlled exploration.** A fact that retrieval never returns is
+never judged, so it never gets a value estimate, so it stays at the
+bottom of the pool. The retrieval policy decides which facts ever get
+scored -- a selection bias that no scoring rule removes, because a
+fact nobody looked at looks the same as one that was looked at and
+rejected.
+
+So for a fraction of the queries (ASTOR_EXPLORE_RATE, default 0.1),
+surface the facts that have been retrieved least often, from deeper in
+the candidate pool. It does not reorder anything; it widens what gets
+looked at. The draw is deterministic per query so an eval run stays
+repeatable. Off by default.
+
+The switch is readable from the body as well as the env, and that
+matters: the read cache key covers the body knobs, so an env-only
+switch would keep serving the cached answer after the switch flips.
+
 ## 1.17.72
 
 **feat(llm): the call sites can talk to the operator's own model**
@@ -526,7 +577,7 @@ caller could ask for another user's private tier and get the fact text
 back:
 
 ```
-X-Actor: user:sunday
+X-Actor: user:<user_a>
 GET /v1/fact/18400/provenance?tier=private&user_id=admin
 -> {"ancestors": [{"fact": {"content": "R-class ..."}}]}
 ```
@@ -1005,11 +1056,11 @@ the same mistake made again a fortnight later.
 The shared tier is what peers read. The public scrub already removed a
 machine-local path from a fact, and the name of the path's owner with
 it -- but only the name it could find IN a path. A handle that appears
-only in prose ("sunday runs the daemon on his own box") was never
+only in prose ("<user_a> runs the daemon on his own box") was never
 learned, so it survived into a tier every peer can read.
 
 Measured on the 2026-11-18 audit: 18 of 621 public facts carried a real
-user handle (sunday / halama / yuqi / xindi) with visibility='commons'.
+user handle (<user_a> / <user_b> / <user_c> / <user_d>) with visibility='commons'.
 The public write path forces visibility='commons', so every one of them
 was readable by a peer.
 
@@ -1029,8 +1080,8 @@ was readable by a peer.
   role names and the layout's own probe slots; the real names arrive
   at call time and are not in that set.
 - The replacement is word-bounded. A plain substring replace mangles
-  ordinary words -- "aran" lives inside "guarantee", "roy" inside
-  "destroy" -- so the name has to stand on its own to be a reference to
+  ordinary words -- "rant" lives inside "warranty", "marlow" inside
+  "disallow" -- so the name has to stand on its own to be a reference to
   a person.
 - A change is now recorded only when the text actually changed. The
   change list used to be keyed on "the name appears somewhere in the
@@ -2284,8 +2335,8 @@ patterns) is the design's rule for what may be shared, and an explicit
 hint does not get to promote a kind that is not shareable by design.
 
 One row belonged to a user and was filed under a chat id: a fact about
-sunday with sunday's wechat open id in both `namespace` and `user_id`,
-sitting in admin's bucket. It is in sunday's bucket now.
+<user_a> with <user_a>'s wechat open id in both `namespace` and `user_id`,
+sitting in admin's bucket. It is in <user_a>'s bucket now.
 
 The migration moved 509 rows into their owners' private tiers and
 tombstoned the public copies rather than deleting them -- the audit

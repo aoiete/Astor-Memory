@@ -867,6 +867,40 @@ def demote_lessons_for_invalidated(bus, namespace: str,
     return list(fact_ids)
 
 
+def _explore_wanted(body: dict) -> bool:
+    """Whether this read should explore.
+
+    Readable from the body as well as the env, and that matters: the
+    read cache key covers the body knobs, so an env-only switch would
+    keep serving the cached answer after the switch flips.
+    """
+    _v = body.get('explore')
+    if _v is None:
+        return os.environ.get('ASTOR_EXPLORE', '0') == '1'
+    return str(_v).lower() in ('1', 'on', 'true', 'yes')
+
+
+def _explore_candidates(deep: list[tuple[int, float]],
+                        access_counts: dict[int, int],
+                        k: int) -> list[tuple[int, float]]:
+    """The facts exploration should surface: the least-retrieved ones.
+
+    A fact that retrieval never returns is never judged, so it never
+    gets a value estimate, so it stays at the bottom of the pool. The
+    retrieval policy decides which facts ever get scored -- a selection
+    bias that no scoring rule removes.
+
+    So pick the facts nobody has looked at yet. The relevance score
+    breaks the tie, so of two equally cold facts the more relevant one
+    comes first.
+    """
+    if not deep or k <= 0:
+        return []
+    return sorted(
+        deep, key=lambda r: (access_counts.get(int(r[0]), 0), -r[1])
+    )[:k]
+
+
 def _resolve_rank_weights(body: dict) -> tuple[float, float]:
     """The bm25/vector weights for a read, from the body then the env.
 
@@ -877,10 +911,17 @@ def _resolve_rank_weights(body: dict) -> tuple[float, float]:
     """
     _bm25 = body.get('bm25_weight')
     _vec = body.get('vec_weight')
+    # v1.17.73: the 0.6/0.4 default was measured on a 22-fact corpus
+    # (2026-09-08). The corpus is 5723 facts now, and the ratio is what
+    # decides the ranking, not the absolute numbers -- so the two
+    # weights have to move together. Measured on both eval sets:
+    # 0.6:0.4 -> paraphrase hit 0.654 / mrr 0.383, default hit 0.982 /
+    # mrr 0.817; 0.5:0.5 -> 0.692 / 0.385 and 0.982 / 0.831. The even
+    # split is better on both, with no regression on either.
     bm25 = float(_bm25 if _bm25 is not None
-                 else os.environ.get('ASTOR_BM25_WEIGHT', 0.6))
+                 else os.environ.get('ASTOR_BM25_WEIGHT', 0.5))
     vec = float(_vec if _vec is not None
-                else os.environ.get('ASTOR_VEC_WEIGHT', 0.4))
+                else os.environ.get('ASTOR_VEC_WEIGHT', 0.5))
     return bm25, vec
 
 
@@ -5618,7 +5659,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         _rank_key = tuple(
             _hashable(body.get(_p)) for _p in (
                 'hybrid', 'bm25_weight', 'vec_weight', 'rerank',
-                'mmr_lambda', 'hyde', 'use_rrf', 'rrf_k',
+                'mmr_lambda', 'hyde', 'use_rrf', 'rrf_k', 'explore',
                 'query_adaptive', 'query_rewrite', 'query_rewrite_min_hits',
                 'time_boost', 'time_boost_days', 'time_boost_factor',
                 'time_parse', 'topic_boost_factor', 'topic_min_weight',
@@ -6482,6 +6523,50 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 results = _weighted
         except Exception:
             pass
+        # v1.17.73: controlled exploration.
+        #
+        # A fact that never surfaces never gets a value estimate, so it
+        # never leaves the bottom of the pool -- the retrieval policy
+        # decides which facts ever get judged. That is a selection bias,
+        # and no scoring rule fixes it: a fact the scorer never sees is
+        # indistinguishable from one it saw and rejected.
+        #
+        # So for a fraction of the queries, look past top_k and surface
+        # the facts that have been retrieved least often. Those are the
+        # ones whose value is unknown. It does not change the ranking;
+        # it widens what gets looked at. Off by default.
+        #
+        # The draw is deterministic per query so the eval set stays
+        # measurable -- a random draw would make a run unrepeatable.
+        if (_explore_wanted(body) and results and len(results) >= top_k
+                and 'merged' in locals()):
+            try:
+                _e_rate = float(os.environ.get('ASTOR_EXPLORE_RATE', '0.1'))
+                _e_k = int(os.environ.get('ASTOR_EXPLORE_K', '2'))
+                _e_draw = (hash(query) % 1000) / 1000.0
+                if _e_draw < _e_rate:
+                    _e_seen = {int(r[0]) for r in results}
+                    # The deep pool: everything the hybrid merge had,
+                    # minus what already surfaced.
+                    _e_deep = [(int(f), sc) for f, sc in merged
+                               if int(f) not in _e_seen][:40]
+                    if _e_deep:
+                        _dfids = [f for f, _ in _e_deep]
+                        _dph = ','.join('?' * len(_dfids))
+                        _drows = bus.conn.execute(
+                            f"SELECT id, access_count FROM memory_canonical "
+                            f"WHERE id IN ({_dph}) AND tombstoned = 0"
+                            f"{_vis_where}",
+                            _dfids,
+                        ).fetchall()
+                        _dacc = {int(r[0]): (r[1] or 0) for r in _drows}
+                        _cold = _explore_candidates(_e_deep, _dacc, _e_k)
+                        for _c in _cold:
+                            results.append(_c)
+            except Exception as _e_exc:
+                _safe_stderr_write(
+                    "[EXPLORE] failed (continuing without): "
+                    + repr(_e_exc) + chr(10))
         for fact_id, sim in results:
             row = bus.conn.execute(
                 "SELECT id, content, kind, confidence, importance, tags, namespace, user_id, keywords, context, "
@@ -7306,7 +7391,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # is intentionally low — admin corpus is dense (5K+ facts),
         # so genuine misses are rare but worth retrying with reformulation.
         # Without this, callers who write "我上次打 poker 怎么样" get
-        # empty results because the actual stored fact is "Sunday played
+        # empty results because the actual stored fact is "<user_a> played
         # NLHE at Deerfoot on Tuesday" — exact phrase match fails. The
         # rewrite strips discourse markers so semantic vector match can
         # work. Best-effort: never blocks the response, just adds a

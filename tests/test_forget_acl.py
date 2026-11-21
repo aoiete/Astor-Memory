@@ -161,7 +161,7 @@ class TestForgetAndCascade(unittest.TestCase):
         fid = self._public_fact("cascade forget acl probe")
         st, body = _post(self.base + "/v1/bitemporal/cascade_forget",
                           {"fact_id": fid, "tier": "public"},
-                          headers={"X-Actor": "user:sunday"})
+                          headers={"X-Actor": "user:user_a"})
         self.assertEqual(st, 403,
                          f"a non-admin may not cascade-forget: {body}")
         row = self._row(self._bus("public", None), fid)

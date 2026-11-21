@@ -310,11 +310,11 @@ def test_a_sentence_with_ordinary_words_is_not_joined():
 
 def test_a_user_named_in_prose_is_scrubbed():
     out, ch = scrub_local_identifiers(
-        "对非技术 user (sunday/halama/yuqi) 完全不实用",
-        {"sunday", "halama", "yuqi"})
-    assert "sunday" not in out, out
-    assert "halama" not in out, out
-    assert "yuqi" not in out, out
+        "对非技术 user (user_a/user_b/user_c) 完全不实用",
+        {"user_a", "user_b", "user_c"})
+    assert "user_a" not in out, out
+    assert "user_b" not in out, out
+    assert "user_c" not in out, out
     assert "<user>" in out, out
     assert any(c["kind"] == "username" for c in ch), ch
 
@@ -324,15 +324,15 @@ def test_a_user_named_in_prose_stays_when_the_node_does_not_host_it():
     is about this node's users, not about every word that looks like
     one."""
     out, _ch = scrub_local_identifiers(
-        "the operator asked about sunday's daemon", {"halama"})
-    assert "sunday" in out, out
+        "the operator asked about user_a's daemon", {"user_b"})
+    assert "user_a" in out, out
 
 
 def test_without_the_user_list_the_prose_name_survives():
     """The old behaviour, kept so the change is visible: no list, no
     scrub of a name that appears in no path."""
-    out, _ch = scrub_local_identifiers("sunday runs the daemon")
-    assert "sunday" in out, out
+    out, _ch = scrub_local_identifiers("user_a runs the daemon")
+    assert "user_a" in out, out
 
 
 def test_a_short_user_id_is_not_used_as_a_substring():
@@ -343,12 +343,12 @@ def test_a_short_user_id_is_not_used_as_a_substring():
 
 
 def test_a_name_inside_a_longer_word_is_not_scrubbed():
-    """A plain substring replace mangles ordinary words: "aran" lives
-    inside "guarantee" and "roy" inside "royal". The name has to stand
+    """A plain substring replace mangles ordinary words: "user_e" lives
+    inside "guuser_etee" and "roy" inside "royal". The name has to stand
     on its own to be a reference to a person."""
     out, ch = scrub_local_identifiers(
-        "the log asserted a false guarantee", {"aran"})
-    assert out == "the log asserted a false guarantee", out
+        "the log asserted a false guuser_etee", {"user_e"})
+    assert out == "the log asserted a false guuser_etee", out
     # And no change may be reported for a rewrite that did not happen.
     assert ch == [], ch
     out, ch = scrub_local_identifiers(
@@ -360,16 +360,16 @@ def test_a_name_inside_a_longer_word_is_not_scrubbed():
 def test_a_name_glued_to_a_word_is_not_scrubbed():
     """The same rule for a name that is a prefix of a longer word."""
     out, _ch = scrub_local_identifiers(
-        "run it as sundaybot and check", {"sunday"})
-    assert out == "run it as sundaybot and check", out
+        "run it as user_abot and check", {"user_a"})
+    assert out == "run it as user_abot and check", out
 
 
 def test_a_name_standing_alone_is_still_scrubbed():
     """The word-boundary rule must not disarm the scrub."""
     out, _ch = scrub_local_identifiers(
-        "ask sunday about the guarantee", {"sunday", "aran"})
-    assert "sunday" not in out, out
-    assert "guarantee" in out, out
+        "ask user_a about the guuser_etee", {"user_a", "user_e"})
+    assert "user_a" not in out, out
+    assert "guuser_etee" in out, out
 
 
 def test_a_slot_id_is_not_scrubbed():
@@ -387,14 +387,14 @@ def test_a_slot_id_is_not_scrubbed():
 def test_a_real_name_is_still_scrubbed_alongside_a_slot():
     """The slot rule must not disarm the rule."""
     out, _ch = scrub_local_identifiers(
-        "admin asked sunday about it", {"admin", "sunday"})
-    assert "sunday" not in out, out
+        "admin asked user_a about it", {"admin", "user_a"})
+    assert "user_a" not in out, out
     assert "admin" in out, out
 
 
 def test_the_scrub_still_removes_paths_when_the_user_list_is_given():
     """The new argument must not disable the existing rules."""
     out, _ch = scrub_local_identifiers(
-        r"C:\Users\someone\AppData\Local\app\cfg.ini", {"sunday"})
+        r"C:\Users\someone\AppData\Local\app\cfg.ini", {"user_a"})
     assert out == r"<home>\AppData\Local\app\cfg.ini", out
     assert "someone" not in out, out
