@@ -30,20 +30,36 @@ python /path/to/astor-memory/restart.py start
 curl http://127.0.0.1:7803/v1/health
 ```
 
+三个存储, 三个探针: bus(事实本身)、nest(它们的向量)、词法索引(BM25 用的倒排索引)。
+词法索引的状态是 `ok` / `missing` / `error`。**它没了的话 sqlite 会自动建一个空库顶替 ✓**
+→ BM25 返回空 ✓ → **混合召回静默退化成纯向量 ✓** —— 但服务还在跑 ✓ 所以 `status` 仍是 `ok` ✓
+由 `degraded` 指出是哪一库不行 ✓。**重启也修不回索引 ✓ 所以不该让 status 变红 ✓ 只会招来重启风暴 ✓**。
+
 **响应 200:**
 
 ```json
 {
   "status": "ok",
-  "version": "1.2.7",
+  "version": "1.17.78",
   "astor_dir": "$ASTOR_DIR (例如 /home/you/.astor)",
   "dbs": {
-    "bus": "$ASTOR_DIR/public/memory/astor_bus_public.db",
-    "nest": "$ASTOR_DIR/public/memory/astor_nest_public.db"
+    "bus": "ok",
+    "nest": "ok",
+    "lex": "ok"
   },
-  "facts": 866,
-  "events": 86,
-  "embeddings": 624
+  "facts": 5724,
+  "events": 7949,
+  "embeddings": 659
+}
+```
+
+词法索引缺失时:
+
+```json
+{
+  "status": "ok",
+  "dbs": {"bus": "ok", "nest": "ok", "lex": "missing"},
+  "degraded": ["lex"]
 }
 ```
 

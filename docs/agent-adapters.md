@@ -328,14 +328,19 @@ curl -X POST http://localhost:7803/v1/recall \
 curl http://localhost:7803/v1/health
 # → {
 #     "status": "ok",
-#     "version": "0.1.0",
-#     "stores": {
-#       "bus": {"status": "ok", "events": 1247},
-#       "forge": {"status": "ok", "provider": "openai", "latency_ms": 320},
-#       "nest": {"status": "ok", "docs": 847}
-#     }
+#     "version": "1.17.78",
+#     "astor_dir": "~/.astor",
+#     "dbs": {"bus": "ok", "nest": "ok", "lex": "ok"},
+#     "facts": 5724,
+#     "events": 7949,
+#     "embeddings": 659
 #   }
 ```
+
+`dbs` reports the three stores the server reads from. A `lex` of
+`"missing"` means the BM25 index is gone, so recall quietly becomes
+vector-only; `status` stays `"ok"` because the server still serves,
+and `degraded` names the store that is not.
 
 #### POST /v1/verify
 

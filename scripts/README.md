@@ -22,15 +22,22 @@ restarting the server or modifying any source.
 
 Read-only scan of every DB under `ASTOR_DIR`. Prints schema + counts
 per DB and exits non-zero if any DB has NULLs in required NOT NULL
-columns or orphan candidates.
+columns, orphan candidates, or live facts with no embedding.
+
+The last one is the retention check: a fact that is in the store but
+has no embedding is captured and not retained -- the semantic channel
+cannot reach it, so it comes back only on an exact keyword match. The
+per-user databases (`users/<name>/memory/`) are scanned too; they used
+to be skipped, and they are where most of the facts live.
 
 ```bash
 python scripts/astor_doctor.py check
-# Found 8 DBs under <runtime-dir>
+# Found 66 DBs under <runtime-dir>
 # public\memory\astor_bus_public.db
 #    memory_canonical: 52 cols, 4290 rows, user_version=1
 #    memory_candidates: 4701 rows (0 orphan)
 #    events: 5459 rows
+#    retention: 4290 alive facts, 0 without an embedding
 # ...
 # All DBs healthy.
 ```

@@ -890,20 +890,40 @@ severity + counts. Useful for "what happened yesterday?" dashboards.
 
 Health check + DB status. **Always 200** when server is up.
 
+Three stores, three probes: the bus (the facts), the nest (their
+embeddings) and the lexical index (their inverted index for BM25).
+The lexical one is `ok`, `missing` or `error`. If it goes missing,
+sqlite opens an empty database in its place, BM25 returns nothing, and
+the hybrid path silently becomes vector-only -- the server still
+serves, so the status stays `ok` and `degraded` names the store that
+is not. A restart would not bring an index back, so failing the status
+would only invite a restart loop.
+
 **Response 200**
 
 ```json
 {
   "status": "ok",
-  "version": "1.1.1",
+  "version": "1.17.78",
   "astor_dir": "$ASTOR_DIR (e.g. /home/you/.astor)",
   "dbs": {
-    "bus": "$ASTOR_DIR/public/memory/astor_bus_public.db",
-    "nest": "$ASTOR_DIR/public/memory/astor_nest_public.db"
+    "bus": "ok",
+    "nest": "ok",
+    "lex": "ok"
   },
-  "facts": 866,
-  "events": 86,
-  "embeddings": 585
+  "facts": 5724,
+  "events": 7949,
+  "embeddings": 659
+}
+```
+
+With the lexical index missing:
+
+```json
+{
+  "status": "ok",
+  "dbs": {"bus": "ok", "nest": "ok", "lex": "missing"},
+  "degraded": ["lex"]
 }
 ```
 

@@ -13,6 +13,22 @@ curl http://127.0.0.1:7803/v1/health
 Returns a JSON blob with status/version/facts/events/embeddings. If
 `status` is `"ok"` and the others are non-zero, the runtime is healthy.
 
+`dbs` names the three stores the server reads from -- `bus`, `nest`
+and `lex` (the BM25 index). A `lex` of `"missing"` means the lexical
+index is gone: sqlite opened an empty database in its place, BM25
+returns nothing and recall quietly becomes vector-only. `status` stays
+`"ok"` on purpose -- the server still serves, and a restart would not
+bring an index back -- so check `degraded` as well.
+
+To find facts that are stored but have no vector (captured, not
+retained, so only an exact keyword match can bring them back):
+
+```bash
+python scripts/astor_doctor.py check   # prints retention per tier
+```
+
+`am reembed` puts the vectors back.
+
 ## Where the runtime lives
 
 Default: `~/.astor/` (Linux/macOS) or `%USERPROFILE%\.astor\` (Windows).

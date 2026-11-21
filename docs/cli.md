@@ -341,6 +341,16 @@ options:
 
 ### `am reembed`
 
+Re-computes embeddings for canonical facts that do not have one. It
+walks every (tier, user) pair, including the private ones -- writing
+into a private scope needs the owner identity, and a scope it cannot
+write to is named in the output rather than skipped silently.
+
+A fact in the store with no embedding is captured and not retained:
+the semantic channel cannot reach it, so it comes back only on an
+exact keyword match. `scripts/astor_doctor.py check` reports how many
+there are per tier.
+
 ```
 usage: am reembed [-h] [--limit LIMIT] [--batch-size BATCH_SIZE]
 
