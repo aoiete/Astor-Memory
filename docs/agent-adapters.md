@@ -222,7 +222,7 @@ nohup python -m astor_memory.server --host=127.0.0.1 --port=7803 &
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | `/v1/health` | — | `{status, version, astor_dir, dbs: {bus, nest}, facts, events, embeddings}` |
+| GET | `/v1/health` | — | `{status, version, astor_dir, dbs: {bus, nest, lex}, degraded?, facts, events, embeddings}` |
 | POST | `/v1/write` | `{text, user?, mode?, tier?}` | `{event_id, fact_ids: [int], count}` |
 | POST | `/v1/read` | `{query, user?, top_k?}` | `{results: [{fact_id, content, kind, similarity, ...}], count}` |
 | POST | `/v1/install` | `{ide, mode, agent_dir?}` | `{plan: {agent, mode, tier, changes: [...]}}` |
