@@ -12,6 +12,7 @@ v1.16.74 changed the gate's contract:
 """
 import importlib.util
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -28,7 +29,7 @@ _spec.loader.exec_module(control_set_gate)
 _check_control_set = control_set_gate._check_control_set
 CONTROL_SET = control_set_gate.CONTROL_SET
 
-SERVER = "http://127.0.0.1:7803"
+SERVER = os.environ.get("ASTOR_SERVER", "http://127.0.0.1:7803")
 TIER = "source"
 USER = "admin"
 TOP_K = 10

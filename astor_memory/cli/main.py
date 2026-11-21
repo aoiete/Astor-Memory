@@ -240,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                       help='Rows to list; 0 = all (default 50)')
     noise_p.add_argument('--show', action='store_true', help='Print the row content')
     noise_p.add_argument('--archive', action='store_true',
-                      help='Soft-tombstone the matched rows (reversible via am restore)')
+                      help='Soft-tombstone the matched rows (reversible via POST /v1/fact/<id>/restore)')
     noise_p.set_defaults(func=cmd_noise_scan)
 
     sub = subparsers.add_parser('recall', help='Recall facts')
@@ -2956,7 +2956,7 @@ def cmd_noise_scan(args) -> int:
             failed += 1
             print(f'  [archive] id={r["id"]} failed: {exc}', file=sys.stderr)
     print(f'  archived {archived} row(s), {failed} failed'
-          f'  (reversible: am restore)')
+          f'  (reversible: POST /v1/fact/<id>/restore)')
     return 0 if not failed else 1
 
 
@@ -7607,7 +7607,7 @@ def cmd_decay_sweep_run(args) -> int:
         AND access_count <= --low-access-count
         AND tombstoned = 0
     Soft-tombstone (UPDATE tombstoned=1, tombstoned_at=now) — keeps the row
-    but excludes it from recall. Reversible via `am restore`. Logs to audit.
+    but excludes it from recall. Reversible via `POST /v1/fact/<id>/restore`. Logs to audit.
 
     Default: dry-run only. Pass --execute to actually write.
     """
@@ -7720,7 +7720,7 @@ def cmd_decay_sweep_run(args) -> int:
                       "user_id": f.get("user_id"),
                       "eligible_for_decay": True},
             )
-    print(f"   Reversible via: am restore --tier {tier} --user-id {user_id or ''} --ids ... ")
+    print("   Reversible via: POST /v1/fact/<id>/restore")
     return 0
 
 

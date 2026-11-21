@@ -1,3 +1,50 @@
+## 1.17.79 (ci)
+
+**fix(ci): the server was pinned to a port that a reused runner could
+still be holding**
+
+Two matrix legs went red on a commit that changed nothing but
+markdown. The cause was not the change: the CI started its astor
+server on a fixed port, 7803, and a runner host is reused between
+jobs. A socket left in TIME_WAIT by the previous job's server makes
+the bind fail, the server exits 1, and the leg fails on a change
+that has nothing to do with ports.
+
+The port is now picked free at start time and handed to the tests
+through the environment, as ASTOR_SERVER and ASTOR_BASE_URL (the two
+names the test suite reads). The tests that talked to a live server
+by hardcoded address read the environment instead, so the suite and
+the server always agree on where the server is.
+
+A server that still fails to start now says so in an annotation and
+exits 1 with the tail of its log attached, instead of leaving the
+failure to be guessed at from the job log -- which needs admin rights
+to read, while the check-run annotations do not.
+
+**docs: the Chinese pages, and the commands that were never there**
+
+The Chinese pages for the CLI and the agent adapters did not exist,
+while the English ones had grown past them. They are curated subsets,
+the way the Chinese pages in this repository have always been: the
+prose is Chinese, the code blocks stay English.
+
+While writing them, four commands turned out never to have existed:
+`am read` (the real one is `am recall`), `am serve` (the server takes
+--host and --port on the command line), `am restore` (a tombstoned
+fact comes back through POST /v1/fact/<id>/restore) and `am
+--rate-limit=100/minute` (the limits live in the config file). The
+CLI itself printed `am restore` as the way to undo a soft tombstone,
+so the advice was in the source as well as in the docs.
+
+A document that names a command nobody can run is worse than no
+document: the agent follows it, the command fails, and the agent
+reports the failure as a memory problem. The command set is now read
+from `am --help` and every `am <something>` in the docs has to be in
+it -- a new document that invents a command fails the test. The
+commands that planning documents and historical records name as
+planned features are listed per file in that test, so the debt is
+visible and gets paid off one entry at a time.
+
 ## 1.17.78 (health)
 
 **fix(health): the health check did not probe the third store**

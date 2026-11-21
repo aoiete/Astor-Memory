@@ -33,7 +33,11 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-SERVER_URL = "http://127.0.0.1:7803"
+# The CI picks a free port per leg -- a fixed one collides with a
+# socket left in TIME_WAIT by the previous job on a reused runner --
+# so the server URL comes from the environment, with the old default
+# for a local run.
+SERVER_URL = os.environ.get("ASTOR_SERVER", "http://127.0.0.1:7803")
 
 
 def cls_user(obj):
@@ -48,7 +52,7 @@ def _server_alive() -> bool:
         return False
 
 
-@unittest.skipUnless(_server_alive(), "astor server not running on :7803")
+@unittest.skipUnless(_server_alive(), "astor server not running at " + SERVER_URL)
 class TestBitemporalE2E(unittest.TestCase):
     """Full HTTP lifecycle for bi-temporal auto-invalidation."""
 
@@ -234,7 +238,7 @@ class TestBitemporalE2E(unittest.TestCase):
         self.assertIsNotNone(info.get("valid_until"))
 
 
-@unittest.skipUnless(_server_alive(), "astor server not running on :7803")
+@unittest.skipUnless(_server_alive(), "astor server not running at " + SERVER_URL)
 class TestSkillBankChainE2E(unittest.TestCase):
     """Verify the chain endpoint works end-to-end against live server."""
 

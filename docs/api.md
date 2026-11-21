@@ -3,8 +3,8 @@
 > **Status:** v1.1.1 (P0 ACL fix + SQLite thread safety).
 > 18 endpoints total — 11 v1.1.0 base + 7 opt3-6 (merge dedup v2, provenance, versioning, restore).
 
-Base URL: `http://127.0.0.1:7803` (default). The CLI subcommand
-`am serve` and the legacy `restart.py` daemon both bind to this port.
+Base URL: `http://127.0.0.1:7803` (default). The server module and the
+legacy `restart.py` daemon both bind to this port.
 
 For all POST endpoints, send `Content-Type: application/json`.
 
@@ -904,7 +904,7 @@ would only invite a restart loop.
 ```json
 {
   "status": "ok",
-  "version": "1.17.78",
+  "version": "1.17.79",
   "astor_dir": "$ASTOR_DIR (e.g. /home/you/.astor)",
   "dbs": {
     "bus": "ok",

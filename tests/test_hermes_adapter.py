@@ -79,7 +79,9 @@ class HermesAdapterToolTest(unittest.TestCase):
         _ascii_word = "".join(_secrets.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(8))
         _marker = f'熊猫{_ascii_word}{_secrets.token_hex(6)}{int(_t.time() * 1000)}'
         import urllib.request as _ur
-        _base = os.environ.get('ASTOR_BASE_URL', 'http://127.0.0.1:7803')
+        _base = (os.environ.get('ASTOR_BASE_URL')
+                 or os.environ.get('ASTOR_SERVER')
+                 or 'http://127.0.0.1:7803')
         _req = _ur.Request(
             _base + '/v1/write',
             data=json.dumps({
@@ -174,7 +176,9 @@ class HermesAdapterToolTest(unittest.TestCase):
         # safe: it either hits or changes nothing.
         import urllib.request as _ur
         import time as _time
-        _base = os.environ.get('ASTOR_BASE_URL', 'http://127.0.0.1:7803')
+        _base = (os.environ.get('ASTOR_BASE_URL')
+                 or os.environ.get('ASTOR_SERVER')
+                 or 'http://127.0.0.1:7803')
         _req = _ur.Request(
             _base + '/v1/write',
             data=json.dumps({

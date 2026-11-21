@@ -70,25 +70,46 @@ jobs:
           python -c "import astor_memory; print('OK', astor_memory.__version__)"
 
       # 2026-09-02: ServerIntegrationTests + hermes_adapter rely on a live
-      # astor server on 127.0.0.1:7803. Start one as a background process
-      # before pytest, stop it after. Tests that need the server will fail
-      # loudly if the server is missing — better than silent skip.
+      # astor server. Start one as a background process before pytest,
+      # stop it after. Tests that need the server will fail loudly if
+      # the server is missing — better than silent skip.
+      # The port is picked free rather than fixed at 7803. A runner
+      # host is reused between jobs, and a socket left in TIME_WAIT by
+      # the previous job's server makes the bind fail -- the server
+      # exits 1 and this step fails, which is how two matrix legs went
+      # red on a commit that changed nothing but markdown. A free port
+      # removes that whole class of failure.
       - name: Start astor server (background)
         run: |
           mkdir -p /tmp/astor-ci
           export ASTOR_DIR=/tmp/astor-ci
-          nohup python -m astor_memory.server --host 127.0.0.1 --port 7803 \
+          PORT=$(python -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+          echo "astor server port: $PORT"
+          nohup python -m astor_memory.server --host 127.0.0.1 --port "$PORT" \
             > /tmp/astor-server.log 2>&1 &
           echo $! > /tmp/astor-server.pid
-          # Wait for /v1/health to return 200 (max 30s)
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:7803/v1/health >/dev/null 2>&1; then
+          # Wait for /v1/health to return 200 (max 60s)
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:$PORT/v1/health" >/dev/null 2>&1; then
               echo "astor server ready after ${i}s"
               break
             fi
             sleep 1
           done
-          curl -fsS http://127.0.0.1:7803/v1/health || (cat /tmp/astor-server.log; exit 1)
+          if ! curl -fsS "http://127.0.0.1:$PORT/v1/health" >/dev/null 2>&1; then
+            # The log goes out as annotations: the job log needs admin
+            # rights to read, the public API does not.
+            echo "::error title=astor server did not start::port $PORT"
+            tail -40 /tmp/astor-server.log | while read -r line; do
+              echo "::error file=server::${line}"
+            done
+            exit 1
+          fi
+          # Both names are read by the test suite: ASTOR_SERVER by most
+          # of it, ASTOR_BASE_URL by the hermes adapter probe. They have
+          # to point at the same server.
+          echo "ASTOR_SERVER=http://127.0.0.1:$PORT" >> "$GITHUB_ENV"
+          echo "ASTOR_BASE_URL=http://127.0.0.1:$PORT" >> "$GITHUB_ENV"
 
       - name: Run pytest (with 180s per-test timeout)
         run: |
@@ -181,17 +202,30 @@ jobs:
         run: |
           mkdir -p /tmp/astor-ci
           export ASTOR_DIR=/tmp/astor-ci
-          nohup python -m astor_memory.server --host 127.0.0.1 --port 7803 \
+          PORT=$(python -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+          echo "astor server port: $PORT"
+          nohup python -m astor_memory.server --host 127.0.0.1 --port "$PORT" \
             > /tmp/astor-server.log 2>&1 &
           echo $! > /tmp/astor-server.pid
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:7803/v1/health >/dev/null 2>&1; then
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:$PORT/v1/health" >/dev/null 2>&1; then
               echo "astor server ready after ${i}s"
               break
             fi
             sleep 1
           done
-          curl -fsS http://127.0.0.1:7803/v1/health || (cat /tmp/astor-server.log; exit 1)
+          if ! curl -fsS "http://127.0.0.1:$PORT/v1/health" >/dev/null 2>&1; then
+            echo "::error title=astor server did not start::port $PORT"
+            tail -40 /tmp/astor-server.log | while read -r line; do
+              echo "::error file=server::${line}"
+            done
+            exit 1
+          fi
+          # Both names are read by the test suite: ASTOR_SERVER by most
+          # of it, ASTOR_BASE_URL by the hermes adapter probe. They have
+          # to point at the same server.
+          echo "ASTOR_SERVER=http://127.0.0.1:$PORT" >> "$GITHUB_ENV"
+          echo "ASTOR_BASE_URL=http://127.0.0.1:$PORT" >> "$GITHUB_ENV"
 
       - name: Run pytest (with 180s per-test timeout)
         run: |
