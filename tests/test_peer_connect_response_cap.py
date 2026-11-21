@@ -104,11 +104,23 @@ def test_an_oversized_peer_response_is_refused(peer_server):
 
 
 def test_an_oversized_peer_response_is_refused_on_post(peer_server):
-    """The POST path reads a peer body too."""
+    """The POST path refuses an oversized peer body too.
+
+    What has to hold is the refusal, not the wording of it. The client
+    stops reading at the cap, and on some platforms the peer sees the
+    half-read socket and resets the connection before the client has
+    the bytes in hand -- so the failure surfaces as "cannot reach"
+    rather than "larger than". Both are refusals, and neither parses
+    the body. The exact cap arithmetic is checked against a fake
+    response below, where the bytes are under the client's control.
+    """
     from astor_memory._internal import peer_connect as pc
     with pytest.raises(pc.ConnectError) as exc:
         pc._post_json(peer_server + "/v1/peer/recv", {"msg_type": "public_search"})
-    assert "larger than" in str(exc.value)
+    message = str(exc.value)
+    assert ("larger than" in message
+            or "cannot reach" in message
+            or "reset" in message.lower()), message
 
 
 def test_the_read_asks_for_at_most_max_plus_one(monkeypatch):

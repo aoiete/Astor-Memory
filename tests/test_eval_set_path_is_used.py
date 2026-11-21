@@ -78,6 +78,11 @@ class TestEvalSetPathIsUsed(unittest.TestCase):
                 "main() ran a different number of queries than the custom "
                 "set holds -- the --set path was ignored")
 
+    @unittest.skipUnless(
+        (TESTS / "eval_set.jsonl").exists(),
+        "the default eval set is the operator's own and is gitignored, "
+        "so a public checkout does not have it to compare against")
+
     def test_the_paraphrase_set_is_not_the_default_set(self):
         mod = _runner()
         default = mod.load_eval_set()

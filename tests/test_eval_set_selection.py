@@ -45,6 +45,10 @@ class TestEvalSetSelection(unittest.TestCase):
             p.unlink(missing_ok=True)
         self.assertEqual([r["q"] for r in rows], ["a"])
 
+    @unittest.skipUnless(
+        (Path(__file__).parent / "eval_set.jsonl").exists(),
+        "the default eval set is the operator's own and is gitignored, "
+        "so a public checkout does not have it")
     def test_both_default_to_their_own_set(self):
         import eval_runner
         import eval_sweep

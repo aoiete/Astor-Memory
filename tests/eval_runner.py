@@ -81,12 +81,21 @@ def _astor_version() -> str:
         return "unknown"
 
 
-def _eval_set_hash() -> str:
-    """SHA-256 of eval_set.jsonl (so trend tools can detect tampering)."""
+def _eval_set_hash() -> str | None:
+    """SHA-256 of eval_set.jsonl (so trend tools can detect tampering).
+
+    None when the set is not there. The default set is the operator's
+    own and is gitignored, so a public checkout does not have it, and
+    the hash is an audit field -- it must not be the thing that stops
+    a run.
+    """
     import hashlib
-    h = hashlib.sha256()
-    with open(EVAL_SET, "rb") as f:
-        h.update(f.read())
+    try:
+        with open(EVAL_SET, "rb") as f:
+            h = hashlib.sha256()
+            h.update(f.read())
+    except OSError:
+        return None
     return h.hexdigest()[:16]
 
 

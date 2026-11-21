@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 import shutil
 import subprocess
 import tempfile
@@ -30,8 +31,12 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-REPO = Path(r"D:/AI/astor-memory")
-PY = r"D:/AI/PY-311/Scripts/python.exe"
+# The repository, wherever it is checked out, and the interpreter that
+# is running this test. Hard-coding either made this file fail on every
+# machine but one -- including the CI runners, which is how it stayed
+# broken for a release.
+REPO = Path(__file__).resolve().parents[1]
+PY = sys.executable
 
 
 def _free_port():

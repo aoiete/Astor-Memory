@@ -1,3 +1,45 @@
+## 1.17.75 (ci)
+
+**fix(ci): the tests that only pass on one machine**
+
+The CI had been red for two releases. The failures were all the same
+kind -- a test that assumed something about the machine it ran on --
+and none of them were about the code under test.
+
+A test file pointed at a hard-coded `D:/AI/astor-memory` for the
+repository and `D:/AI/PY-311/Scripts/python.exe` for the interpreter.
+On a runner, neither path exists, so the four tests in it errored
+before they ran. Both come from the file's own location now.
+
+Three other tests needed the default eval set, which is the operator's
+own and is gitignored -- a public checkout does not have it. Two of
+them compare the default set against the paraphrase set, so they skip
+when it is not there; the third reads the default set to check that
+the runner and the sweep each point at their own copy, and skips the
+same way. Separately, the runner hashes the eval set for the trend
+tools; that hash is an audit field, so a missing set now yields None
+instead of raising.
+
+The peer response cap test asserted on the wording of the refusal. The
+client stops reading at the cap, and on some platforms the peer sees
+the half-read socket and resets the connection before the client has
+the bytes in hand, so the failure surfaces as "cannot reach" rather
+than "larger than". Both are refusals and neither parses the body, so
+the test now asserts the refusal and the exact cap arithmetic stays
+where it can be checked precisely, against a fake response.
+
+**Rerank, measured properly.** The reranker is shown a deeper pool
+than the caller asked for, and a fact it likes from that pool is put
+at the front of the response -- which pushes the tail of the original
+top_k out. That is deliberate (it is what the deeper pool is for),
+and the paraphrase numbers show why it is worth knowing: with
+MiniMax-M3 reranking, the keyword hit rate moved 0.731 -> 0.654 and
+the id hit rate 0.577 -> 0.577 with two of the hits gone from the
+response entirely. The reranker's own pick is good -- asked which of
+eight candidates answers a question, it puts the right one first -- but
+its ordering over a wall of thirty snippets is worse than the hybrid
+ranker's. Rerank stays off.
+
 ## 1.17.74 (eval)
 
 **fix(eval): the ruler was measuring the words, not the answer**
