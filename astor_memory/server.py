@@ -1936,6 +1936,37 @@ def create_app(astor_dir: str | None = None) -> Flask:
             result['embeddings'] = c.fetchone()[0]
         except Exception as e:
             result['nest_error'] = str(e)
+        # v1.17.78: the lexical index is the third store, and it was the
+        # one store nothing probed. If its file is gone or unreadable,
+        # sqlite opens a fresh empty one and BM25 returns nothing, so
+        # the hybrid path silently becomes vector-only while health
+        # still says ok. On the paraphrase set hybrid beats vector-only
+        # by 0.077 hit, so that degradation is invisible unless
+        # something reports it. Opened read-only: probing must not
+        # create the file it is looking for.
+        try:
+            from .nest.lex_index import _lex_db_path
+            _lex_file = _lex_db_path('public', None)
+            if not _lex_file.exists() or _lex_file.stat().st_size == 0:
+                result['dbs']['lex'] = 'missing'
+            else:
+                import sqlite3 as _sq
+                _lc = _sq.connect(
+                    'file:%s?mode=ro' % _lex_file.as_posix(), uri=True)
+                try:
+                    _lc.execute("SELECT COUNT(*) FROM documents").fetchone()
+                    result['dbs']['lex'] = 'ok'
+                finally:
+                    _lc.close()
+        except Exception as _le:
+            result['dbs']['lex'] = 'error'
+            result['lex_error'] = str(_le)[:200]
+        if result['dbs'].get('lex') != 'ok':
+            # The server still works -- retrieval is just weaker. Say so
+            # without failing the check: a restart would not bring the
+            # index back, and a failing health check invites exactly
+            # that.
+            result['degraded'] = ['lex']
         return jsonify(result)
 
     # v1.16.30 (2026-10-01): Personal-to-Commons Distillation.

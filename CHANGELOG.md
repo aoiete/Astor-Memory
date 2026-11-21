@@ -1,3 +1,46 @@
+## 1.17.78 (health)
+
+**fix(health): the health check did not probe the third store**
+
+astor has three stores: the bus holds the facts, the nest holds their
+embeddings, and the lexical index holds their inverted index for BM25.
+The health endpoint probed two of them.
+
+If the lexical index's file goes away or becomes unreadable, sqlite
+opens a fresh empty database in its place and BM25 returns nothing.
+The hybrid path then quietly becomes vector-only, and health keeps
+saying ok. On the paraphrase set hybrid beats vector-only by 0.077 hit
+rate, so that degradation is real and invisible at the same time.
+
+The health endpoint now reports the index in `dbs.lex` and lists it
+under `degraded` when it is missing or unreadable. The status stays
+"ok": the server still serves, retrieval is just weaker, and a restart
+would not bring an index back -- a failing health check would only
+invite a restart loop.
+
+The probe opens the index read-only, so checking for it does not
+create it.
+
+## 1.17.77 (doctor)
+
+**feat(doctor): the retention check, so the next gap is not a paper**
+
+The diagnostic from arXiv 2607.01523 -- measure capture and retention
+separately, because retention is the one that fails -- is worth more
+as a routine check than as a reading. `astor-doctor check` now reports
+per tier how many live facts have no embedding. A fact in that state
+is captured and not retained: the semantic channel cannot reach it,
+so it comes back only on an exact keyword match.
+
+The check also had to be pointed at the right databases. The doctor
+collected public/memory, private/memory, source/memory and
+users/*.db, and the per-user databases live in users/<name>/memory/,
+so it never opened the private admin tier -- the tier with the most
+facts, and every fact that was missing an embedding. It now finds 66
+databases instead of 9.
+
+A gap makes the command exit non-zero, the way the other checks do.
+
 ## 1.17.76 (retrieval)
 
 **fix(retrieval): the repair command could not reach the tier that needed it**

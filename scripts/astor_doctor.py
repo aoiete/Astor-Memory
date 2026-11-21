@@ -59,6 +59,17 @@ def collect_dbs() -> list[Path]:
         real = base / d
         if real.exists():
             out.extend(sorted(real.glob('*.db')))
+    # The per-user tiers live one level deeper, in users/<name>/memory/.
+    # They were not collected at all, which is where the private admin
+    # tier sits -- the tier with the most facts and every fact that was
+    # missing an embedding. A check that skips the tier it exists to
+    # protect is not a check.
+    users = base / USER_DIR
+    if users.exists():
+        for user_dir in sorted(users.iterdir()):
+            mem = user_dir / 'memory'
+            if mem.is_dir():
+                out.extend(sorted(mem.glob('*.db')))
     return out
 
 
@@ -73,6 +84,19 @@ def _table_exists(c: sqlite3.Connection, name: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
     ).fetchone()
     return r is not None
+
+
+def _nest_sibling(bus_path: Path) -> Path | None:
+    """The nest DB that belongs to this bus DB, if it is there.
+
+    The two live side by side: astor_bus_<scope>.db and
+    astor_nest_<scope>.db in the same directory.
+    """
+    name = bus_path.name
+    if not name.startswith('astor_bus_'):
+        return None
+    cand = bus_path.with_name(name.replace('astor_bus_', 'astor_nest_', 1))
+    return cand if cand.exists() else None
 
 
 def _canonical_columns(c: sqlite3.Connection) -> dict[str, tuple]:
@@ -126,13 +150,41 @@ def cmd_check(args) -> int:
                 null_required.append((col, c.execute(
                     f"SELECT COUNT(*) FROM memory_canonical WHERE {col} IS NULL"
                 ).fetchone()[0]))
+        # Retention: a live fact with no embedding is captured but not
+        # reachable by the semantic channel -- it only comes back on an
+        # exact keyword match. Separating capture from retention is the
+        # diagnostic from arXiv 2607.01523 (Multi-Head Recurrent Memory
+        # Agents), and it is the check that would have caught this
+        # without needing a paper: `am reembed` could not repair the
+        # private tier at all, and reported "0 facts" while doing it.
+        alive_ids = {r[0] for r in c.execute(
+            "SELECT id FROM memory_canonical WHERE tombstoned=0")}
+        nest_path = _nest_sibling(p)
+        unembedded = set()
+        if nest_path is not None:
+            nc = _open(nest_path)
+            try:
+                if _table_exists(nc, 'embeddings'):
+                    emb_ids = {r[0] for r in nc.execute(
+                        "SELECT fact_id FROM embeddings")}
+                    unembedded = alive_ids - emb_ids
+            finally:
+                nc.close()
         c.close()
-        flag = ' ❌' if missing or any(n > 0 for _, n in null_required) else ''
+        flag = ' ❌' if (missing or any(n > 0 for _, n in null_required)
+                         or unembedded) else ''
         print(f'{rel}{flag}')
         print(f'   memory_canonical: {len(cols)} cols, {mc_n} rows, '
               f'user_version={uv}')
         print(f'   memory_candidates: {cand_n} rows ({orphan_n} orphan)')
         print(f'   events: {ev_n} rows')
+        if nest_path is not None:
+            print(f'   retention: {len(alive_ids)} alive facts, '
+                  f'{len(unembedded)} without an embedding')
+            if unembedded:
+                print(f'   ⚠ {len(unembedded)} facts are unreachable by the '
+                      f'semantic channel (run `am reembed`)')
+                issues += 1
         if missing:
             print(f'   ⚠ missing/nullable required: {missing}')
             issues += 1
