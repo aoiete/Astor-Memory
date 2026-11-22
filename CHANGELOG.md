@@ -1,3 +1,49 @@
+## 1.17.84
+
+**fix(privacy): an unresolved sender inherited the operator's identity, and
+the source tier answered a public read**
+
+Two defects, one symptom: a public-tier recall returned a source-tier
+lesson naming the operator's own Telegram chat id.
+
+**1. The meta-recall tier list was hardcoded, not derived from the ACL.**
+Five meta-recall functions in `server.py` (plus `/v1/consult`) each built
+their own tier list by hand:
+
+    if tier and tier.startswith('private'):
+        tiers_to_query.append(('private', user))
+        tiers_to_query.append(('public', None))
+        tiers_to_query.append(('source', None))     # <- always
+    ...
+    else:
+        tiers_to_query.append(('public', None))
+        tiers_to_query.append(('source', None))     # <- always
+
+The comment said why: "the source tier is global lessons that apply
+across users". But the ACL says the opposite, in so many words -- the
+source tier is admin + system only, and "source is not a shared-readable
+layer". The two disagreed and the ACL lost. The source tier is now
+consulted only when the caller may read it, through one shared helper
+(`_meta_recall_tiers`) instead of six copies of the same block.
+
+**2. An unbound bot sender still sent `user="admin"`.** The Hermes
+plugin forces `tier=public` when it cannot resolve a sender -- but the
+server binds the caller from `body.user`/`body.user_id` BEFORE it looks
+at the tier, and the plugin's default identity is `admin`. So a sender
+we could not resolve to a known user was still sent as the operator,
+bound as admin, and got admin-only tiers. "We don't know who this is"
+must not resolve to "this is the operator": an unresolved sender now
+reads as `anonymous`, which the server resolves to a plain user
+(role=user), and the ACL decides what anonymous may see -- public tier
+only.
+
+**Scope, stated precisely.** The peer federation was never affected: it
+reads the public tier only, and its share gate sends `commons`-class
+rows only. The leaked fact was `world_fact` class, so it was never
+peer-shareable either. The exposure was the local read surface -- a
+loopback or same-origin caller. External access was already
+passcode-gated and cross-origin POSTs were already CSRF-blocked.
+
 ## 1.17.83
 
 **fix(privacy): a chat id could reach the commons tier, and the detector

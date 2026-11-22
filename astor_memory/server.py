@@ -416,7 +416,7 @@ def _astor_public_dir_label(astor_dir):
         return _P(str(astor_dir)).name
     except Exception:
         return 'astor'
-from ._internal.acl import astor_init_acl, _CURRENT, astor_current_acl, PermissionError_
+from ._internal.acl import astor_init_acl, _CURRENT, astor_current_acl, PermissionError_, astor_check_read
 from ._internal.bot_binding import get_user
 from .config import get_default_astor_dir, get_default_bus_path, get_default_nest_path
 
@@ -1041,6 +1041,56 @@ WING_TO_PROVENANCE = {
     "rule": {"rule"},
 }
 
+
+def _meta_recall_tiers(tier: str, user: str) -> list:
+    """Which tiers a meta-recall may read, per the ACL.
+
+    v1.17.84: the source tier used to be added unconditionally --
+    "public or None -> public + source" -- because the source tier
+    was treated as global lessons that apply to everyone. But the
+    ACL says the opposite, and says it in so many words: source is
+    NOT a shared-readable layer ("read source: admin + system").
+
+    So a request from a plain user, or from a caller with no
+    identity at all, was served source-tier facts by these five
+    meta-recall functions, because they opened the source bus
+    directly instead of asking whether the caller may read it.
+    The tier check happened nowhere between the request and the
+    query.
+
+    What is in the source tier is the operator's own R-class
+    lessons -- and those are exactly the ones that name the
+    operator's own chat ids, paths and job ids. On this host a
+    public-tier recall returned a source-tier lesson containing the
+    operator's Telegram chat id.
+
+    The rule is now the ACL's, read from the ACL rather than
+    restated here: the source tier is included only when the
+    caller may read it. The behavior for admin and system is
+    unchanged -- they could always read it, and the global-lessons
+    intent is preserved for them.
+    """
+    tiers: list = []
+    if tier and tier.startswith('private'):
+        if user:
+            tiers.append(('private', user))
+        tiers.append(('public', None))
+    elif tier == 'public':
+        tiers.append(('public', None))
+    # tier == 'source' or None -> the source tier alone, gated below.
+
+    # The source tier, but only for a caller the ACL lets read it.
+    # PermissionError_ is the refusal we expect. Anything else is a
+    # bug on our side (a NameError, a broken import) and must not be
+    # swallowed -- it would silently drop the source tier for admin
+    # too, and the symptom would look like "the global lessons
+    # stopped showing up" rather than "the ACL helper is broken".
+    try:
+        astor_check_read('source', None)
+    except PermissionError_:
+        return tiers
+    tiers.append(('source', None))
+    return tiers
 
 def _infer_provenance_kind(origin_session_id: str | None) -> str | None:
     """Auto-derive provenance_kind from origin_session_id prefix.
@@ -5038,17 +5088,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             # - source   → query source tier only
             # - public   → query public tier + source tier
             # The source tier is global lessons that apply across users.
-            tiers_to_query = []
-            if tier and tier.startswith('private'):
-                if user:
-                    tiers_to_query.append(('private', user))
-                tiers_to_query.append(('public', None))
-                tiers_to_query.append(('source', None))
-            elif tier == 'source':
-                tiers_to_query.append(('source', None))
-            else:  # public or None
-                tiers_to_query.append(('public', None))
-                tiers_to_query.append(('source', None))
+            tiers_to_query = _meta_recall_tiers(tier, user)
 
             results = []
             seen_ids = set()
@@ -5110,17 +5150,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             like_params = [f'%{w}%' for w in words]
 
             # Same tier routing as _meta_recall_patterns.
-            tiers_to_query = []
-            if tier and tier.startswith('private'):
-                if user:
-                    tiers_to_query.append(('private', user))
-                tiers_to_query.append(('public', None))
-                tiers_to_query.append(('source', None))
-            elif tier == 'source':
-                tiers_to_query.append(('source', None))
-            else:  # public or None
-                tiers_to_query.append(('public', None))
-                tiers_to_query.append(('source', None))
+            tiers_to_query = _meta_recall_tiers(tier, user)
 
             results = []
             seen_ids = set()
@@ -5296,17 +5326,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             like_clauses = ' OR '.join(['content LIKE ?' for _ in words])
             like_params = [f'%{w}%' for w in words]
             seen_ids = {r['fact_id'] for r in out if r.get('fact_id')}
-            tiers_to_query = []
-            if tier and tier.startswith('private'):
-                if user:
-                    tiers_to_query.append(('private', user))
-                tiers_to_query.append(('public', None))
-                tiers_to_query.append(('source', None))
-            elif tier == 'source':
-                tiers_to_query.append(('source', None))
-            else:
-                tiers_to_query.append(('public', None))
-                tiers_to_query.append(('source', None))
+            tiers_to_query = _meta_recall_tiers(tier, user)
             for t, u in tiers_to_query:
                 try:
                     b = astor_bus(tier=t, user_id=u)
@@ -5362,17 +5382,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 return []
             like_clauses = ' AND '.join(['content LIKE ?' for _ in words])
             like_params = [f'%{w}%' for w in words]
-            tiers_to_query = []
-            if tier and tier.startswith('private'):
-                if user:
-                    tiers_to_query.append(('private', user))
-                tiers_to_query.append(('public', None))
-                tiers_to_query.append(('source', None))
-            elif tier == 'source':
-                tiers_to_query.append(('source', None))
-            else:
-                tiers_to_query.append(('public', None))
-                tiers_to_query.append(('source', None))
+            tiers_to_query = _meta_recall_tiers(tier, user)
             results = []
             seen_ids = set()
             for t, u in tiers_to_query:
@@ -5436,17 +5446,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
                 return []
             like_clauses = ' AND '.join(['content LIKE ?' for _ in words])
             like_params = [f'%{w}%' for w in words]
-            tiers_to_query = []
-            if tier and tier.startswith('private'):
-                if user:
-                    tiers_to_query.append(('private', user))
-                tiers_to_query.append(('public', None))
-                tiers_to_query.append(('source', None))
-            elif tier == 'source':
-                tiers_to_query.append(('source', None))
-            else:
-                tiers_to_query.append(('public', None))
-                tiers_to_query.append(('source', None))
+            tiers_to_query = _meta_recall_tiers(tier, user)
             results = []
             seen_ids = set()
             for t, u in tiers_to_query:
@@ -8912,17 +8912,7 @@ def create_app(astor_dir: str | None = None) -> Flask:
             if _words:
                 _like_clauses = ' AND '.join(['content LIKE ?' for _ in _words])
                 _like_params = [f'%{w}%' for w in _words]
-                _tiers_to_query = []
-                if tier and tier.startswith('private'):
-                    if user:
-                        _tiers_to_query.append(('private', user))
-                    _tiers_to_query.append(('public', None))
-                    _tiers_to_query.append(('source', None))
-                elif tier == 'source':
-                    _tiers_to_query.append(('source', None))
-                else:
-                    _tiers_to_query.append(('public', None))
-                    _tiers_to_query.append(('source', None))
+                _tiers_to_query = _meta_recall_tiers(tier, user)
                 # Patterns (success + failure) — fetch with LIMIT 4 so split gives
                 # ~2 of each kind.
                 _pat_seen = set()
