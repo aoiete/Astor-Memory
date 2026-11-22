@@ -88,6 +88,24 @@ def _current_scorer_hash(history: list[dict]) -> str | None:
     return None
 
 
+def _current_set_hash(history: list[dict]) -> str | None:
+    """The eval-set hash of the most recent baseline run.
+
+    Same rule as the scorer hash, one dimension over: the set is the
+    OTHER half of the ruler. A run measured against a different
+    question set answers a different question, so comparing it with a
+    run against this one reads a measurement change as a recall
+    regression -- and the regression check acts on that reading (it
+    rolls the bm25 weight back).
+
+    None when the most recent run did not record a hash.
+    """
+    for h in reversed(history):
+        if h.get("variant") == "baseline" and h.get("eval_set_hash"):
+            return h["eval_set_hash"]
+    return None
+
+
 def _maybe_update_snapshot(history: list[dict]) -> tuple[dict | None, dict | None, str]:
     """Update last_good_snapshot.json based on last 7 baseline median.
 
@@ -112,6 +130,16 @@ def _maybe_update_snapshot(history: list[dict]) -> tuple[dict | None, dict | Non
     hashed = [h for h in baselines if h.get("scorer_hash") == _cur_scorer]
     if _cur_scorer and hashed:
         baselines = hashed
+
+    # The set is the other half of the ruler. Same rule: a run measured
+    # against a different question set answers a different question, so
+    # it cannot be averaged with a run against this one. The operator's
+    # set is their own and changes when they edit it -- that is a
+    # measurement change, not a recall regression.
+    _cur_set = _current_set_hash(history)
+    same_set = [h for h in baselines if h.get("eval_set_hash") == _cur_set]
+    if _cur_set and same_set:
+        baselines = same_set
 
     # Last 3 baselines = most recent sample. Median is robust to one outlier
     # but responsive to a real drift.
@@ -222,6 +250,12 @@ def main() -> int:
     _hashed = [h for h in baselines if h.get("scorer_hash") == _cur_scorer]
     if _cur_scorer and _hashed:
         baselines = _hashed
+    # Same set rule (see _maybe_update_snapshot): only runs that
+    # measured the current question set belong in the window.
+    _cur_set = _current_set_hash(history)
+    _same_set = [h for h in baselines if h.get("eval_set_hash") == _cur_set]
+    if _cur_set and _same_set:
+        baselines = _same_set
     last_n = baselines[-args.window:]
 
     if not last_n:

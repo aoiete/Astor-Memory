@@ -85,6 +85,23 @@ _RE_SSN = re.compile(r'\b\d{3}-\d{2}-\d{4}\b')
 
 # Chat ID patterns (weixin o-prefix)
 _RE_WECHAT_CHAT = re.compile(r'\bo[A-Za-z0-9_-]{20,}@im\.wechat\b')
+# v1.17.83: the same WeChat id WITHOUT the "@im.wechat" suffix. The
+# suffix form is what the platform hands out in a full address; a fact
+# that quotes the id on its own ("admin 的 <wechat_id>...") is the same
+# identifier with the tail cut off, and it is what ended up in the
+# commons tier. The prefix is what makes it unambiguous: WeChat user
+# ids start with "o" and are long, and nothing else in a memory looks
+# like that.
+#
+# The id is a MIXED-case string with digits in it -- "<wechat_id>". An
+# all-letters word is not one: "occurrences" and "occurrence" are
+# ordinary English, and treating them as identifiers would redact a
+# whole sentence over a word. So the id has to carry at least one
+# digit, which a real WeChat id always does.
+_RE_WECHAT_ID_BARE = re.compile(
+    r'(?<![A-Za-z0-9_])o(?=[A-Za-z0-9]{8,}(?![A-Za-z0-9_]))'
+    r'(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{8,}(?![A-Za-z0-9_])'
+)
 # Telegram chat_id (numeric, 8-12 digits)
 _RE_TG_CHAT = re.compile(r'\b\d{8,12}\b')
 
@@ -106,9 +123,32 @@ _PII_KEYWORDS_EN = re.compile(
 # would drop the whole sentence about it. So the platform name and the
 # digits have to be adjacent. The generic keyword tables above stay
 # free of platform names for the same reason.
+#
+# v1.17.83: the words between the platform name and the digits are not
+# always "chat_id" -- they are the ROLE: "telegram DM <chat_id>",
+# "telegram:dm:<chat_id>", "discord DM <chat_id>". The old pattern
+# only allowed chat_id/user_id there, so a role word in between broke
+# the match and the id was written to the commons tier unredacted.
+#
+# The role word has to be one that NAMES A CONVERSATION. It cannot be
+# any word: "telegram session 20261009" is a Hermes session id (a
+# date), not a chat id, and redacting it would drop a dozen harmless
+# facts over a word. The roles are the ones a platform uses for the
+# conversation itself -- DM, group, channel, chat, supergroup -- and
+# the platform name is still required, which is what keeps
+# "wechat.html" from matching.
+#
+# And the digits have to be the WHOLE identifier. "telegram DM
+# 20261104_122221_61c9ac3a" is a Hermes SESSION id, not a chat id: the
+# date is only its first part. A chat id is digits and nothing else, so
+# the match must not stop in the middle of a longer token. That
+# boundary is what keeps the session-id facts out of the redacted set.
+_RE_CHAT_ROLE = r'(?:dm|pm|group|groups|channel|channels|chat|chats|supergroup|room)'
 _RE_NAMED_CHAT_ID = re.compile(
     r'(?:telegram|discord|wechat|slack|whatsapp|微信|电报|飞书)'
-    r'\s*(?:chat[_\s-]?id|user[_\s-]?id)?\s*[:=]?\s*\d{6,}',
+    r'\s*[:=]?\s*'
+    rf'(?:{_RE_CHAT_ROLE}\s*[:=]?\s*)?'
+    r'\d{6,}(?![0-9A-Za-z_])',
     re.I,
 )
 
@@ -150,6 +190,8 @@ def has_pii(text: str) -> list[dict]:
         if _luhn_ok(digits):
             out.append({'name': 'bank_card', 'severity': 'redact', 'sample': digits})
     for m in _RE_WECHAT_CHAT.finditer(text):
+        out.append({'name': 'wechat_chat_id', 'severity': 'redact', 'sample': m.group()})
+    for m in _RE_WECHAT_ID_BARE.finditer(text):
         out.append({'name': 'wechat_chat_id', 'severity': 'redact', 'sample': m.group()})
     # chat_id with nearby keyword context (avoid false positives on bare numbers)
     if _PII_KEYWORDS_ZH.search(text) or _PII_KEYWORDS_EN.search(text):

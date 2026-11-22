@@ -306,6 +306,19 @@ def _eval_trend(metrics_dir: Path) -> dict:
     _hashed = [h for h in baselines if h.get("scorer_hash") == _cur_scorer]
     if _cur_scorer and _hashed:
         baselines = _hashed
+    # The set is the other half of the ruler, and the same rule applies:
+    # a run measured against a different question set answers a
+    # different question and cannot be averaged with one measured
+    # against this set. tests/eval_trend.py applies the same rule; the
+    # dashboard must agree with it or the two report different truths.
+    _cur_set = None
+    for _h in reversed(baselines):
+        if _h.get("eval_set_hash"):
+            _cur_set = _h["eval_set_hash"]
+            break
+    _same_set = [h for h in baselines if h.get("eval_set_hash") == _cur_set]
+    if _cur_set and _same_set:
+        baselines = _same_set
     recent = baselines[-30:]
     if recent:
         out["window_30d_baselines"] = {

@@ -1,3 +1,187 @@
+## 1.17.83
+
+**fix(privacy): a chat id could reach the commons tier, and the detector
+missed the two shapes it actually arrives in**
+
+The commons tier is what every user of an install can read, and it is
+what the peer path hands to other nodes. An identifier there identifies
+one person to everyone. Three facts in the public tier on this host
+named a real person by their platform identifier: the operator's own
+Telegram chat id (twice) and a WeChat user id.
+
+Both got past the PII detector, and each for its own reason:
+
+**1. The words between the platform name and the digits.** The pattern
+matched a platform name followed by digits, and allowed only
+`chat_id`/`user_id` in between -- but what is actually there is the
+ROLE: `telegram DM <chat_id>`, `telegram:dm:<chat_id>`,
+`deliver=origin->telegram <chat_id>`, `[STATE:10]=<chat_id>`. The role
+word broke the match, and the id was written unredacted.
+
+The role has to be one that NAMES A CONVERSATION -- DM, group,
+channel, chat, supergroup, room -- because "telegram session
+20261009" is a Hermes session id (a date), not a chat id, and
+redacting it would drop a dozen harmless facts over a word. And the
+digits have to be the WHOLE identifier: "telegram DM
+20261104_122221_61c9ac3a" is a session id whose first part is a date,
+so the match must not stop in the middle of a longer token.
+
+**2. A WeChat id without its suffix.** The detector knew the id in its
+full `...@im.wechat` form. A fact that quotes the id on its own --
+"admin's <wechat_id>..." -- is the same identifier with the tail cut
+off, and that is the form that landed in the commons tier. The
+prefix is what makes it unambiguous: WeChat ids start with "o" and are
+long. An all-letters word is not one -- "occurrences" and "occurrence"
+are ordinary English -- so the id has to carry at least one digit,
+which a real WeChat id always does.
+
+The three facts that had reached the commons tier were cleaned: the
+identifier replaced with the house placeholder ([TG_ID] /
+[WECHAT_ID]), which is what the distiller does when it writes to
+commons. The candidates and the events were cleaned too -- a candidate
+can be promoted later, and promoting it would put the identifier back
+into a live fact. The BM25 index was rebuilt, because a stale index
+re-leaks what the store no longer holds. The private tiers and the
+admin-only source tier were left alone: those ids are the operator's
+own records in the operator's own store, and several of those facts
+are ABOUT those bindings.
+
+Verified after the change: the public tier holds zero rows with the
+identifier, in the facts, the candidates and the events, and zero in
+the BM25 index. The detector now flags exactly those three facts and
+nothing else in the tier -- "wechat.html", "occurrences",
+"telegram is where the bot runs" and "state.db = <size> bytes"
+all stay clean.
+
+## 1.17.82
+
+**fix(astor): a fact written asynchronously forgot which session wrote it,
+and `am doctor` reported on four users who do not exist**
+
+Two separate defects, found in the same pass over the Telegram path.
+
+**The session id was captured and then dropped.**
+
+The write path has two halves. The synchronous one promotes the fact
+with `origin_session_id` set. The asynchronous one -- the one every
+write goes through when the embedding is slow, which is the normal case
+-- captured the session id into a local and then never used it:
+
+    _w_session = _write_session_id          # captured
+    ...
+    _w_cid = _w_target_bus.promote_candidate(
+        _w_cand, promoted_by='rest.write.async',
+        ...                                     # no origin_session_id
+
+So a fact written by the Telegram agent through `astor_write` had **no**
+`origin_session_id` -- not a wrong one, none. And that field is what the
+dashboard buckets by when it answers "which platform did this come from"
+and "which session". It is now threaded through, and the source-tier
+mirror of the same write carries it too (the mirror is the same write
+filed in a different tier; it was the one row that could not be traced
+back to a conversation).
+
+The client side was the other half of the same gap: the Hermes plugin
+never sent `session_id` at all, even though the server has accepted it
+since v1.11.0. It does now, prefixed with the platform
+(`telegram:<session_id>`), because that is the form astor reads the
+platform out of -- the dashboard's platform buckets and astor's
+human-versus-hook inference both come from that prefix. A bare Hermes
+session id carries neither.
+
+Verified end to end against a server running this code: a fact written
+with `session_id=telegram:...` comes back with
+`origin_session_id='telegram:...'` on the row.
+
+**`am doctor` reported on alice, bob, carol and dave.**
+
+Those four names were typed into the doctor. They are not users of any
+install -- and every real user was missing from the report. On this
+host that is 26 users, 22 of whom have facts. The doctor now asks
+bot-binding.db (`user_meta` with `active = 1`), which is the SSoT for
+"who is a user", and falls back to the directory listing when there is
+no binding db to ask.
+
+The coverage number it printed was wrong in a second way. It divided
+the embedding count by *every* canonical row, including the 12926
+tombstoned ones -- a tombstoned fact is a fact that was withdrawn, and
+it has no business in the denominator of "how much of what is stored can
+be found by meaning". On this install that read **31%** when every live
+fact had a vector. And "embedded" counted embedding *rows*, not facts: a
+fact can hold a vector from more than one model (a 768-dim and a
+1024-dim one, from different eras), so the numerator could exceed the
+denominator -- which is what made one user read 129%. The doctor now
+reports live coverage as **live facts with a vector over live facts**,
+which is 100% here, and reports the tombstoned count beside it.
+
+## 1.17.81
+
+**fix(eval): the ruler was reading 0.0 because a unit test wrote into it**
+
+The operator's eval trend track had three kinds of run in one file, and
+the ruler -- the median of the last 3 baseline runs -- came out at
+**0.0** while the real measurement was **0.9811**. The dashboard showed
+the same 0.0. Everything that reads that number (the drift detector,
+the regression check that rolls the bm25 weight back, the dashboard)
+was reading it.
+
+Three ways a run got in that should not have:
+
+**1. A unit test called the runner's main() with a scratch set.** The
+runner appended the result to the operator's shared history, so every
+run of that test left a row there: 22 rows of a three-question scratch
+set, hit_rate 0.0, sitting in the middle of the file. The runner
+wrote its detail and summary files into the operator's live metrics
+directory too, so the directory also filled with files named like real
+runs and carrying the same numbers.
+
+**2. A run against the paraphrase set landed in the same file.** It is a
+legitimate run of a legitimate second ruler -- but it was averaged with
+runs against the operator's set, and the average of two rulers is not a
+measurement of either. The CHANGELOG for v1.17.68 said the paraphrase
+set "had nowhere to go"; it now has its own track.
+
+**3. Every row recorded the DEFAULT set's hash, whatever set was
+loaded.** The hash is the field that says which questions a run
+measured, and it said the same thing for all three kinds of run. So
+nothing downstream could tell them apart, and the field was not being
+read by anyone anyway.
+
+The fixes, in the order the causes sit:
+
+- `eval_runner.py` honours `ASTOR_METRICS_DIR`, like `eval_trend.py`,
+  `holdout_gate.py` and `eval_complete.py` already did. A caller (or a
+  test) can now point the runner's output somewhere other than the
+  operator's live directory.
+- The hash is now taken from the set that was LOADED, not from the
+  default set.
+- A run that did not measure the operator's set is written to
+  `eval_history_offtrack.jsonl` instead of the shared track. The
+  shared track holds one ruler's runs and nothing else.
+- The runner's own test now writes to a temporary directory, so it
+  cannot reach the operator's files again.
+- The three readers -- `eval_trend.py`, the dashboard, and
+  `_regression_check.py` -- restrict the window to runs that share the
+  CURRENT set hash, the same rule they already applied to the scorer
+  hash. A run measured against a different set answers a different
+  question, and `_regression_check.py` acts on a reading of "regression"
+  by rolling the bm25 weight back -- so a false regression there is not
+  a noisy report, it is a config change.
+- The guard on the runner checks the hash AND the scored question count.
+  The hash alone can be faked by a row written by a runner that recorded
+  the wrong thing, and those rows are exactly what was in the file.
+
+The history was repaired rather than deleted: the operator's 20 runs
+stayed on the track, the 63 paraphrase runs moved to
+`eval_history_paraphrase.jsonl` with their hash corrected to the set
+they really measured, and the 22 test rows were archived out of the
+metrics directory. The backup is in the repo's `.bak-pre-evalrepair-*`
+directory. The ruler now reads 0.9811, and the paraphrase ruler reads
+0.7308 -- which is the number the v1.17.68 release notes measured.
+
+The trend track is the operator's own (`astor/metrics/` is gitignored),
+so none of the repaired data is part of this release.
+
 ## 1.17.80 (linux)
 
 **fix: the Visual C++ runtime check was firing on Linux, and the CI

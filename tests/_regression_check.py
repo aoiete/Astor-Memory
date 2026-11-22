@@ -100,7 +100,9 @@ def _last_good_bm25_weight() -> str:
         return SAFE_BM25_FALLBACK
     # S15 fix: find the MOST RECENT baseline run that didn't regress (mrr >= 0.85).
     # Reading reverse means we always get the last-good, not the last-bad.
-    for entry in reversed(lines):
+    # Only runs that measured the same questions are candidates: the
+    # weight is only last-good if it was good ON THIS SET.
+    for entry in reversed(_comparable_baselines(lines)):
         if entry.get("variant") != "baseline":
             continue
         kwargs = entry.get("kwargs", {})
@@ -113,14 +115,54 @@ def _last_good_bm25_weight() -> str:
     return SAFE_BM25_FALLBACK
 
 
+def _comparable_baselines(lines: list[dict]) -> list[dict]:
+    """The baseline runs that can be compared with each other.
+
+    Two runs are comparable when they measured the same questions AND
+    were scored by the same rule. A run measured against a different
+    question set, or scored by a different rule, answers a different
+    question -- comparing it with this one reads the change of
+    measurement as a recall regression, and this script acts on that
+    reading: it rolls the bm25 weight back. So a false regression here
+    is not a noisy report, it is a config change.
+
+    The set hash is the newer of the two guards (the scorer hash
+    predates it). When the most recent run has no set hash recorded
+    there is nothing to compare against, and the runs are left alone.
+    """
+    baselines = [l for l in lines if l.get("variant") == "baseline"]
+    if not baselines:
+        return baselines
+
+    def _latest_hash(field: str):
+        for entry in reversed(baselines):
+            if entry.get(field):
+                return entry[field]
+        return None
+
+    _cur_scorer = _latest_hash("scorer_hash")
+    if _cur_scorer:
+        scored = [b for b in baselines if b.get("scorer_hash") == _cur_scorer]
+        if scored:
+            baselines = scored
+
+    _cur_set = _latest_hash("eval_set_hash")
+    if _cur_set:
+        same_set = [b for b in baselines if b.get("eval_set_hash") == _cur_set]
+        if same_set:
+            baselines = same_set
+
+    return baselines
+
+
 def main() -> int:
     if not HISTORY.exists():
         print("no eval_history.jsonl yet; nothing to compare")
         return 0
     lines = [json.loads(l) for l in HISTORY.read_text(encoding="utf-8").splitlines() if l.strip()]
-    baseline_runs = [l for l in lines if l.get("variant") == "baseline"]
+    baseline_runs = _comparable_baselines(lines)
     if len(baseline_runs) < 2:
-        print(f"only {len(baseline_runs)} baseline run(s); need >=2 for regression check")
+        print(f"only {len(baseline_runs)} comparable baseline run(s); need >=2 for regression check")
         return 0
     cur, prev = baseline_runs[-1], baseline_runs[-2]
     delta_hit = cur["hit_rate_at_k"] - prev["hit_rate_at_k"]

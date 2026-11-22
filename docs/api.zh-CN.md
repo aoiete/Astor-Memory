@@ -40,7 +40,7 @@ curl http://127.0.0.1:7803/v1/health
 ```json
 {
   "status": "ok",
-  "version": "1.17.80",
+  "version": "1.17.83",
   "astor_dir": "$ASTOR_DIR (例如 /home/you/.astor)",
   "dbs": {
     "bus": "ok",

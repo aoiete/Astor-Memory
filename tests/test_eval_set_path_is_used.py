@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -18,13 +19,27 @@ from pathlib import Path
 TESTS = Path(__file__).parent
 
 
-def _runner():
-    spec = importlib.util.spec_from_file_location(
-        "eval_runner_path_test", TESTS / "eval_runner.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["eval_runner_path_test"] = mod
-    spec.loader.exec_module(mod)
-    return mod
+def _runner(metrics_dir: Path | None = None):
+    """Load eval_runner, optionally with its metrics dir redirected.
+
+    main() writes a run's detail/summary files into the metrics dir. The
+    operator's live one (ROOT/astor/metrics) holds the eval history the
+    dashboard reads, so a test that calls main() must not write there:
+    this test used to leave a row in the operator's trend history for
+    every run it made.
+    """
+    if metrics_dir is not None:
+        os.environ["ASTOR_METRICS_DIR"] = str(metrics_dir)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "eval_runner_path_test", TESTS / "eval_runner.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["eval_runner_path_test"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        if metrics_dir is not None:
+            os.environ.pop("ASTOR_METRICS_DIR", None)
 
 
 class TestEvalSetPathIsUsed(unittest.TestCase):
@@ -47,8 +62,9 @@ class TestEvalSetPathIsUsed(unittest.TestCase):
         then loaded the default set. Testing load_eval_set(path) alone
         cannot see that.
         """
-        mod = _runner()
         with tempfile.TemporaryDirectory() as tmp:
+            metrics = Path(tmp) / "metrics"
+            mod = _runner(metrics)
             p = Path(tmp) / "custom.jsonl"
             rows = [{"qid": f"X{i}", "query": "q", "expected_keywords": ["k"],
                      "min_hits": 1, "category": "t", "tier": "public",

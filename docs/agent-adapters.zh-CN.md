@@ -157,7 +157,7 @@ write / read / verify 的完整 curl 示例见 [`api.zh-CN.md`](./api.zh-CN.md) 
 curl http://localhost:7803/v1/health
 # → {
 #     "status": "ok",
-#     "version": "1.17.80",
+#     "version": "1.17.83",
 #     "astor_dir": "~/.astor",
 #     "dbs": {"bus": "ok", "nest": "ok", "lex": "ok"},
 #     "facts": 5724,

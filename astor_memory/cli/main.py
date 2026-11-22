@@ -3834,7 +3834,7 @@ def cmd_doctor(args) -> int:
 
     # 9-db canonical + embedded counts
     try:
-        from .._internal.acl_layout import get_db_path, Tier, Store
+        from .._internal.acl_layout import get_db_path, Tier, Store, list_user_ids
         import sqlite3
         total_canon = 0
         total_emb = 0
@@ -3842,7 +3842,30 @@ def cmd_doctor(args) -> int:
         locs = []
         locs.append(('source', Tier.SOURCE, None))
         locs.append(('admin', Tier.PRIVATE, 'admin'))
-        for u in ['alice', 'bob', 'carol', 'dave']:
+        # The users are the ones ON DISK, not four names typed in here.
+        # A doctor that reports on alice/bob/carol/dave reports on
+        # nobody: those are not users of this install, and every real
+        # user is missing from the report.
+        #
+        # bot-binding.db is the SSoT for "who is a user": user_meta
+        # with active = 1. The directories on disk include internal
+        # ones (hook-audit, demo_external_agent, the acl probe) that
+        # are not people, and the dashboard filters those out for the
+        # same reason. So the report is built from user_meta, and the
+        # disk is the fallback when there is no binding db to ask.
+        users = []
+        try:
+            from .._internal.bot_binding import list_users
+            users = [u.get('user_id') for u in list_users(active_only=True)
+                     if u.get('user_id')]
+        except Exception:
+            users = []
+        if not users:
+            from .._internal.acl_layout import list_user_ids
+            users = list_user_ids()
+        for u in users:
+            if u == 'admin':
+                continue  # already listed above
             locs.append((u, Tier.PRIVATE, u))
         for label, tier, user_id in locs:
             try:
@@ -3868,6 +3891,69 @@ def cmd_doctor(args) -> int:
                 print(f'     {label:8s}: {c:5d} canonical, {e:5d} embedded ({r})')
             else:
                 print(f'     {label:8s}: ERR')
+        # The ratio above counts EVERY canonical row, including the
+        # tombstoned ones. A tombstoned fact is not in the store -- it is
+        # a fact that was written and then withdrawn -- and it has no
+        # business in the denominator of "how much of what is stored can
+        # be found by meaning". On this install that read 31% when every
+        # live fact had a vector.
+        #
+        # And "embedded" counts embedding ROWS, not facts: a fact can
+        # have a vector from more than one model (a 768-dim and a
+        # 1024-dim one, from different eras), so the row count can
+        # exceed the fact count and a ratio above 100% is not a
+        # contradiction -- it is the wrong denominator and the wrong
+        # numerator. The number that answers "can semantic recall find
+        # what is stored" is facts-with-a-vector over live facts.
+        live_canon = 0
+        tomb = 0
+        for label, tier, user_id in locs:
+            try:
+                bus_p = get_db_path(tier, Store.BUS, user_id)
+                if not bus_p.exists():
+                    continue
+                co = sqlite3.connect(str(bus_p))
+                try:
+                    live_canon += co.execute(
+                        'SELECT COUNT(*) FROM memory_canonical '
+                        'WHERE COALESCE(tombstoned, 0) = 0').fetchone()[0]
+                    tomb += co.execute(
+                        'SELECT COUNT(*) FROM memory_canonical '
+                        'WHERE COALESCE(tombstoned, 0) = 1').fetchone()[0]
+                finally:
+                    co.close()
+            except Exception:
+                continue
+        # Distinct facts that have a vector AND are still live. A vector
+        # for a tombstoned fact is a vector for a fact that was
+        # withdrawn, and one for a fact that no longer exists at all is
+        # a vector with nothing behind it. Neither counts as coverage.
+        embedded_live = 0
+        for label, tier, user_id in locs:
+            try:
+                bus_p = get_db_path(tier, Store.BUS, user_id)
+                nest_p = get_db_path(tier, Store.NEST, user_id)
+                if not (bus_p.exists() and nest_p.exists()):
+                    continue
+                co = sqlite3.connect(str(bus_p))
+                try:
+                    live_ids = {r[0] for r in co.execute(
+                        'SELECT id FROM memory_canonical '
+                        'WHERE COALESCE(tombstoned, 0) = 0')}
+                finally:
+                    co.close()
+                co = sqlite3.connect(str(nest_p))
+                try:
+                    emb_ids = {r[0] for r in co.execute(
+                        'SELECT DISTINCT fact_id FROM embeddings')}
+                finally:
+                    co.close()
+                embedded_live += len(emb_ids & live_ids)
+            except Exception:
+                continue
+        live_ratio = f'{embedded_live/live_canon*100:.0f}%' if live_canon else 'n/a'
+        print(f'   live canonical: {live_canon} (+{tomb} tombstoned), '
+              f'{embedded_live} live facts with a vector -> live coverage {live_ratio}')
     except Exception as e:
         print(f'   9-db check failed: {e}')
 

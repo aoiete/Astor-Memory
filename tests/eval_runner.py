@@ -46,7 +46,11 @@ except ImportError:  # pragma: no cover - running from another cwd
 
 ROOT = Path(os.environ.get("ASTOR_PROJECT_ROOT", str(Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name in ("tests", "tools") else Path.cwd())))
 TESTS_DIR = ROOT / "tests"
-METRICS_DIR = ROOT / "astor" / "metrics"
+# ASTOR_METRICS_DIR is honoured here, like eval_trend.py / holdout_gate.py /
+# eval_complete.py already do. It is what lets a caller (or a test) redirect
+# the metrics dir away from the operator's live one: a run that writes
+# anywhere else cannot pollute the trend history the dashboard reads.
+METRICS_DIR = Path(os.environ.get("ASTOR_METRICS_DIR", str(ROOT / "astor" / "metrics")))
 METRICS_DIR.mkdir(parents=True, exist_ok=True)
 
 SERVER = os.environ.get("ASTOR_SERVER", "http://127.0.0.1:7803")
@@ -81,17 +85,23 @@ def _astor_version() -> str:
         return "unknown"
 
 
-def _eval_set_hash() -> str | None:
-    """SHA-256 of eval_set.jsonl (so trend tools can detect tampering).
+def _eval_set_hash(set_path: Path | None = None) -> str | None:
+    """SHA-256 of the eval set this run actually measured.
+
+    The hash is the audit field that lets a trend tool tell "recall
+    improved" from "the questions changed". That only works if it
+    hashes the set that was LOADED -- hashing the default set while a
+    --set run measured a different one records a hash that describes
+    a run that never happened.
 
     None when the set is not there. The default set is the operator's
-    own and is gitignored, so a public checkout does not have it, and
-    the hash is an audit field -- it must not be the thing that stops
-    a run.
+    own and is gitignored, so a public checkout does not have it, and the
+    hash is an audit field -- it must not be the thing that stops a
+    run.
     """
     import hashlib
     try:
-        with open(EVAL_SET, "rb") as f:
+        with open(set_path or EVAL_SET, "rb") as f:
             h = hashlib.sha256()
             h.update(f.read())
     except OSError:
@@ -218,7 +228,8 @@ def score_results(results: list[dict], expected_keywords: list[str], min_hits: i
     }
 
 
-def run_variant(variant: str, eval_set: list[dict]) -> dict:
+def run_variant(variant: str, eval_set: list[dict],
+                set_path: Path | None = None) -> dict:
     """Run one variant (a set of recall kwargs overrides)."""
     # Variant -> kwargs to merge into /v1/read body
     variants = {
@@ -350,7 +361,7 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
     # of real recall improvement.
     "astor_version": _astor_version(),
     "git_commit": _git_commit_hash(),
-    "eval_set_hash": _eval_set_hash(),
+    "eval_set_hash": _eval_set_hash(set_path),
     # v1.17.13: hash the scorer too. eval_set_hash alone cannot tell
     # "recall improved" from "the scoring rule was loosened".
     "scorer_hash": _scorer_hash(),
@@ -399,6 +410,61 @@ def run_variant(variant: str, eval_set: list[dict]) -> dict:
     return {"summary": summary, "detail": detail}
 
 
+def _operator_set_fingerprint() -> tuple[str, int] | None:
+    """(hash, scored question count) of the operator's own eval set.
+
+    The hash alone is not enough. A row that LIES about its hash -- one
+    written by a runner that hashed the default set whatever it loaded
+    -- carries the right hash and the wrong questions, and a hash check
+    alone would wave it onto the track. The count is the second half of
+    the identity: the same questions, byte for byte, and as many of
+    them as the operator's set asks.
+
+    None when the set is not there -- it is the operator's own and is
+    gitignored, so a public checkout does not have it.
+    """
+    h = _eval_set_hash(EVAL_SET)
+    if not h:
+        return None
+    try:
+        rows = [json.loads(l) for l in
+                EVAL_SET.read_text(encoding="utf-8").splitlines() if l.strip()]
+    except (OSError, json.JSONDecodeError):
+        return None
+    scored = sum(1 for r in rows if not r.get("expected_miss"))
+    return h, scored
+
+
+def _is_operator_set_run(summary: dict) -> bool:
+    """True when this run measured the operator's own eval set.
+
+    The shared trend track is about ONE question set -- the operator's
+    default one. A run is on that track only if it measured that set.
+
+    Two things have to agree, because either alone can be faked by a
+    row written by a runner that recorded the wrong thing:
+
+      - the set hash, which says which questions were asked, and
+      - the scored question count, which says how many.
+
+    A run whose hash is missing (no set file, no hash) does not
+    qualify: an unhashed run cannot be shown to be on the track.
+    """
+    run_hash = summary.get("eval_set_hash")
+    if not run_hash:
+        return False
+    fp = _operator_set_fingerprint()
+    if not fp:
+        return False
+    default_hash, default_scored = fp
+    if run_hash != default_hash:
+        return False
+    # The count has to agree too. When the set does not score every
+    # question (expected_miss rows are not counted), the run's count is
+    # the scored count -- the same number the fingerprint holds.
+    return summary.get("n_queries") == default_scored
+
+
 def save_run(run: dict) -> tuple[Path, Path]:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     variant = run["summary"]["variant"]
@@ -406,10 +472,29 @@ def save_run(run: dict) -> tuple[Path, Path]:
     summary_path = METRICS_DIR / f"eval_{variant}_{ts}_summary.json"
     detail_path.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
     summary_path.write_text(json.dumps(run["summary"], ensure_ascii=False, indent=2), encoding="utf-8")
-    # Append to history (one-line per run)
+    # Append to history (one-line per run).
+    #
+    # The history file is the trend track: eval_trend.py and the dashboard
+    # read it to answer "did recall get better or did the ruler change".
+    # A run that measured a DIFFERENT question set than the one the trend
+    # is about does not answer that question -- and it lands in the same
+    # file, so it is compared against, and averaged with, runs it has
+    # nothing in common with. The set hash is what says which set a run
+    # measured, so a run whose hash is not the operator's set hash is
+    # written to its own file and NOT appended to the shared track.
+    #
+    # This is why a unit test that calls main() with a three-row scratch
+    # set cannot poison the operator's trend history: it writes its
+    # detail/summary files (harmless, timestamped, identifiable) and
+    # leaves the shared track alone.
     history_path = METRICS_DIR / "eval_history.jsonl"
-    with open(history_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(run["summary"], ensure_ascii=False) + "\n")
+    if _is_operator_set_run(run["summary"]):
+        with open(history_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(run["summary"], ensure_ascii=False) + "\n")
+    else:
+        off_history = METRICS_DIR / "eval_history_offtrack.jsonl"
+        with open(off_history, "a", encoding="utf-8") as f:
+            f.write(json.dumps(run["summary"], ensure_ascii=False) + "\n")
     return detail_path, summary_path
 
 
@@ -456,7 +541,7 @@ def main() -> int:
     variants = ["baseline", "vector_only", "rerank_off", "mmr_lambda_05", "mmr_lambda_07", "mmr_lambda_09", "mmr_off", "hyde_on", "hyde_off", "bm25_only"] if args.all else [args.variant]
     runs = []
     for v in variants:
-        run = run_variant(v, eval_set)
+        run = run_variant(v, eval_set, eval_set_path)
         print_summary(run)
         detail_p, summary_p = save_run(run)
         print(f"  saved: {summary_p.name}")

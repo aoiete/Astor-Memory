@@ -4103,6 +4103,15 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             expires_at=_w_scope_expires,
                             # v1.16.33: thread conflict_kind + entities through
                             # so the auto-resolver can match against old facts.
+                            # The session id belongs here for the same
+                            # reason it is on the sync path: it is what
+                            # records WHICH conversation a fact came from.
+                            # Without it an asynchronously written fact
+                            # has no origin_session_id at all, and the
+                            # write cannot be traced back to a session
+                            # -- which is where every Telegram fact
+                            # written since the async switch came from.
+                            origin_session_id=_w_session,
                         )
                         # v1.16.33: auto conflict resolution (OPT-2). When
                         # the new fact is a correction/preference/decision
@@ -4703,6 +4712,12 @@ def create_app(astor_dir: str | None = None) -> Flask:
                         c_id, promoted_by='rest.write.mirror',
                         user_id=user, tier='source', scope_type=scope,
                         stable_id=src_stable_id,
+                        # The mirror is the SAME write, filed in the
+                        # source tier. It came from the same session as
+                        # the primary fact, so it says so -- otherwise
+                        # the source-tier copy of a fact is the one row
+                        # that cannot be traced back to a conversation.
+                        origin_session_id=_write_session_id,
                         # v1.14.74+ Ship A2-Akasha: mirror evidence-grounded
                         # source linking. Defaults to '' when caller did not
                         # populate evidence on the primary write.
