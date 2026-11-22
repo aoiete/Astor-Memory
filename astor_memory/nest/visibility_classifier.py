@@ -144,10 +144,52 @@ _PII_KEYWORDS_EN = re.compile(
 # the match must not stop in the middle of a longer token. That
 # boundary is what keeps the session-id facts out of the redacted set.
 _RE_CHAT_ROLE = r'(?:dm|pm|group|groups|channel|channels|chat|chats|supergroup|room)'
+# v1.17.84: the identifier KEYWORD forms. "telegram chat_id 448..." and
+# "wechat user_id o9cq..." name a conversation just as plainly as a role
+# word does. The write gate had always known this form; the classifier
+# did not, so when the gate started borrowing the classifier's patterns
+# it LOST the ability to catch it. The keyword belongs next to the role
+# word, not in the gate alone -- one rule, both scanners.
+_RE_CHAT_KEYWORD = r'(?:chat[_ -]?ids?|user[_ -]?ids?)'
+# v1.17.84: the abbreviations the operator actually writes. The facts
+# that named a real Discord channel id said "DC admin DM 通道(...)" and
+# "DC 通道 1514..."; the Telegram ones said "TG DM 448...". The
+# detector only knew the full platform names, so it saw "DC admin DM"
+# and "TG DM" as plain text and passed them through -- three facts in
+# the public tier carried a real Discord id that way.
+#
+# The abbreviations have to be anchored. Bare "DC" or "TG" would fire
+# on "DC power supply" and "TG the joint" -- and a role word has to
+# follow for it to be a conversation. So: the abbreviation, then
+# optional colon/equals, then a role word, then the digits.
+_RE_PLATFORM_ABBREV = r'(?:dc|tg)'
 _RE_NAMED_CHAT_ID = re.compile(
     r'(?:telegram|discord|wechat|slack|whatsapp|微信|电报|飞书)'
     r'\s*[:=]?\s*'
-    rf'(?:{_RE_CHAT_ROLE}\s*[:=]?\s*)?'
+    rf'(?:(?:{_RE_CHAT_ROLE}|{_RE_CHAT_KEYWORD})\s*[:=]?\s*)?'
+    r'\d{6,}(?![0-9A-Za-z_])',
+    re.I,
+)
+# The abbreviation form: "DC DM <id>", "DC 通道 <id>", "TG DM <id>".
+# The role word is REQUIRED here -- without it, "DC 1514..." is too
+# close to ordinary prose, and "TG" alone appears in unrelated text.
+#
+# "admin" is allowed between the abbreviation and the role word, because
+# that is how the real fact was written: "DC admin DM 通道(<id>)". The
+# word names the box, not the conversation, and dropping the match
+# because of it left a real Discord id undetected.
+#
+# The role words may COME IN SEQUENCE -- the real text is "DM 通道(",
+# an English role word followed by a Chinese one. And the digits may be
+# wrapped in parentheses, which is how the id was written. So: one or
+# more role words, then optional punctuation, then the digits.
+_RE_ROLE_SEQ = rf'(?:{_RE_CHAT_ROLE}|通道|群|会话)'
+_RE_ABBREV_CHAT_ID = re.compile(
+    rf'{_RE_PLATFORM_ABBREV}'
+    r'\s*[:=]?\s*'
+    r'(?:admin\s+)?'
+    rf'(?:{_RE_ROLE_SEQ}(?:\s*[:=]?\s*|\s+)){{1,3}}'
+    r'[(（]?\s*'
     r'\d{6,}(?![0-9A-Za-z_])',
     re.I,
 )
@@ -214,6 +256,9 @@ def has_pii(text: str) -> list[dict]:
     # catches "deliver=origin->telegram <chat_id>" without catching
     # "wechat.html", which is a filename and not an identifier.
     for m in _RE_NAMED_CHAT_ID.finditer(text):
+        out.append({'name': 'telegram_chat_id', 'severity': 'redact', 'sample': m.group()})
+    # v1.17.84: the platform abbreviations -- "DC DM <id>", "TG DM <id>".
+    for m in _RE_ABBREV_CHAT_ID.finditer(text):
         out.append({'name': 'telegram_chat_id', 'severity': 'redact', 'sample': m.group()})
     for m in _RE_KEYED_ID.finditer(text):
         out.append({'name': 'keyed_identifier', 'severity': 'redact', 'sample': m.group()})

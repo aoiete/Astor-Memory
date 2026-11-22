@@ -1,3 +1,52 @@
+## 1.17.85
+
+**fix(privacy): the write gate and the tier classifier were two scanners, and
+the weaker one was the one that guarded the door**
+
+Two scanners answer the same question -- "does this text name a
+conversation?" -- and they used to answer it with two separate regex
+sets:
+
+  * memory_defense.scan_facts     -- the public WRITE gate
+  * visibility_classifier.has_pii -- the tier classifier
+
+The classifier had been hardened against real text (role words, the
+bare WeChat id, the boundary that keeps a Hermes session id out). The
+gate had not. The gate knew only "platform name, maybe chat_id/user_id,
+then digits" -- it did not know the ROLE word, which is what the
+operator actually writes:
+
+    telegram DM <chat_id> 只负责 crypto 信号
+    DC admin DM 通道(<discord_id>) 只负责 crypto 信号
+
+So the gate read those as ordinary prose and let them through. Three
+facts in the public tier carried a real Discord id that way, and the
+public write path still does not scrub chat ids at all -- it scrubs
+paths and LAN addresses, which is why `am scrub-public` never found
+them.
+
+The gate now borrows the classifier's patterns instead of restating
+them. One rule, both scanners, and they cannot drift apart again --
+which is exactly how this hole opened the first time.
+
+**The platform abbreviations.** The classifier knew the full platform
+names but not the short ones the operator writes: "DC" for Discord,
+"TG" for Telegram. Those are now caught too, including the shapes the
+real facts used -- "admin" between the abbreviation and the role, an
+English role word followed by a Chinese one, and the id wrapped in
+parentheses. The abbreviation still needs a role word: "DC power
+supply" and "TG the joint probability" are not identifiers.
+
+**One rule, learned the hard way.** The classifier gained the
+`chat_id`/`user_id` keyword form at the same time. It had always
+known that form; the gate had, the classifier had not -- so when the
+gate started borrowing the classifier's patterns it would have LOST
+that ability. The keyword belongs to the rule, not to one scanner.
+
+**The invariant, stated.** The gate may catch MORE than the classifier
+(it holds extra rules, like the hyphenated id form) but it must never
+catch LESS. The hole was exactly a case of less.
+
 ## 1.17.84
 
 **fix(privacy): an unresolved sender inherited the operator's identity, and

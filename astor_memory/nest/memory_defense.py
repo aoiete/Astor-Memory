@@ -38,6 +38,30 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+# v1.17.84: one source of truth for "this text names a conversation".
+#
+# The write gate (memory_defense) and the tier classifier
+# (visibility_classifier) both have to answer the same question -- does
+# this text contain a chat id? -- and they used to answer it with two
+# separate regex sets. When they drifted apart, the gate missed the
+# shapes the operator actually writes and a chat id walked into the
+# public tier. The classifier's patterns are the ones that were
+# hardened against real text (role words, platform abbreviations, the
+# bare WeChat id, and the boundary that keeps a Hermes session id
+# out), so the gate borrows them instead of restating them.
+from .visibility_classifier import (  # noqa: E402
+    _RE_ABBREV_CHAT_ID as _VIS_ABBREV_CHAT_ID,
+    _RE_NAMED_CHAT_ID as _VIS_NAMED_CHAT_ID,
+    _RE_WECHAT_ID_BARE as _VIS_WECHAT_BARE,
+)
+
+# The pattern sources, as strings, so they can be composed into the
+# gate's own combined regex (which also carries the hyphen form).
+_VIS_CHAT_ID_SOURCE = (
+    _VIS_NAMED_CHAT_ID.pattern + "|" + _VIS_ABBREV_CHAT_ID.pattern
+)
+_VIS_WECHAT_BARE_SOURCE = _VIS_WECHAT_BARE.pattern
+
 # ---------------------------------------------------------------------------
 # Pattern registry (45 categories — Hindsight parity + WeChat-specific)
 # ---------------------------------------------------------------------------
@@ -79,14 +103,30 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
     # write could carry a chat id past Memory Defense. The platform
     # name has to be adjacent: a bare 6-12 digit number is far too
     # common to treat as an identifier on its own, which is why the
-    # hyphen anchor was there. Same rule as
-    # visibility_classifier._RE_NAMED_CHAT_ID -- the two scanners were
-    # separate implementations and they disagreed.
+    # hyphen anchor was there.
+    #
+    # v1.17.84: the gate and the visibility classifier were two
+    # separate implementations of the same rule, and they disagreed.
+    # The gate knew only "platform name, maybe chat_id/user_id, then
+    # digits" -- it did not know the ROLE word, which is what the
+    # operator actually writes: "telegram DM 448...", "DC admin DM
+    # 通道(1514...)". So the write gate saw a chat id as ordinary
+    # prose and let it into the public tier.
+    #
+    # Now there is ONE source of truth. The classifier already knows
+    # the role words, the platform abbreviations, the bare WeChat id
+    # and the boundary that keeps a Hermes session id out. The gate
+    # imports those patterns instead of restating them, so the two
+    # scanners cannot drift apart again -- which is exactly how this
+    # hole opened the first time.
+    #
+    # The hyphenated form stays here: it is not a classifier rule.
     ("telegram_chat_id", re.compile(
-        r"(?<!\w)-\d{6,12}(?!\d)|"
-        r"(?:telegram|discord|slack|whatsapp|wechat|weixin|\u5fae\u4fe1|\u7535\u62a5|\u98de\u4e66)"
-        r"\s*(?:chat[_ -]?id|user[_ -]?id)?\s*(?:is\s*)?[:=]?\s*\d{6,}|"
-        r"(?:chat[_ -]?id|user[_ -]?id)\s*(?:is\s*)?[:=]?\s*\d{6,}", re.I), "redact"),  # not followed by another digit (epoch 13+ digit guard)
+        r"(?<!\w)-\d{6,12}(?!\d)|" + _VIS_CHAT_ID_SOURCE, re.I), "redact"),
+    # v1.17.84: the bare WeChat id, without the "@im.wechat" suffix.
+    # "read the WEIXIN_ADMIN_ID (admin's <wechat_id>-...)" -- the full
+    # form was known, the bare one was not, so the gate let it past.
+    ("wechat_chat_id", re.compile(_VIS_WECHAT_BARE_SOURCE, re.I), "redact"),
 
     # Discord IDs (snowflakes)
     ("discord_snowflake", re.compile(r"\b\d{17,20}\b"), "redact"),

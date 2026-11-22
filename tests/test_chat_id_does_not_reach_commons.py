@@ -43,6 +43,9 @@ _CHAT_ID = "448" "000" "241"
 # one in the source would be an identifier sitting in a public repo.
 _WECHAT_ID = "o9cq" "80632"
 
+# A Discord id: a longer run of digits. Assembled the same way.
+_DISCORD_ID = "151" "448084" "479266" "412"
+
 
 def _redacted(text: str) -> list[str]:
     return [m["name"] for m in has_pii(text) if m["severity"] == "redact"]
@@ -100,6 +103,49 @@ class TestChatIdsDoNotReachCommons(unittest.TestCase):
         """The rule the existing tests already pin."""
         self.assertEqual(_redacted("our key rotation is automated now"), [])
         self.assertEqual(_redacted("we put the API key in .env"), [])
+
+    # --- v1.17.84: the platform ABBREVIATIONS -------------------------
+    #
+    # The detector knew the full platform names. The operator writes
+    # the short ones -- "DC" for Discord, "TG" for Telegram -- so three
+    # facts in the public tier carried a real Discord id that the
+    # detector read as ordinary prose.
+    #
+    # The abbreviation forms are now caught, including the shapes the
+    # real facts used: "admin" between the abbreviation and the role,
+    # an English role word followed by a Chinese one, and the digits
+    # wrapped in parentheses.
+
+    def test_a_discord_id_written_with_the_abbreviation_is_caught(self):
+        self.assertTrue(_redacted(
+            f"DC admin DM 通道({_DISCORD_ID})只负责 crypto 信号"),
+            "the operator's discord id was not detected")
+
+    def test_a_discord_id_written_as_dc_channel_is_caught(self):
+        self.assertTrue(_redacted(
+            f"DC 通道 {_DISCORD_ID} 只负责 crypto 信号"))
+
+    def test_a_telegram_id_written_with_the_abbreviation_is_caught(self):
+        self.assertTrue(_redacted(
+            f"TG DM {_CHAT_ID} 只负责 crypto 信号"))
+
+    def test_an_abbreviation_without_a_role_word_is_not_a_chat_id(self):
+        """The neighbour that must stay clean.
+
+        "DC" and "TG" are ordinary words in English and abbreviations
+        in plenty of contexts. Without a role word naming a
+        conversation there is no identifier to redact.
+        """
+        self.assertEqual(_redacted("DC power supply model 5000W"), [])
+        self.assertEqual(_redacted("TG the joint probability distribution"), [])
+        self.assertEqual(_redacted("the DC group of companies reported"), [])
+        self.assertEqual(_redacted("TGIF revenue grew 12%"), [])
+
+    def test_an_abbreviation_with_a_role_word_but_no_digits_is_clean(self):
+        """The neighbour that must stay clean."""
+        self.assertEqual(_redacted("DC admin panel is broken"), [])
+        self.assertEqual(_redacted("tg admin dashboard needs a refresh"), [])
+        self.assertEqual(_redacted("DC channel 5000 words a day"), [])
 
 
 if __name__ == "__main__":
