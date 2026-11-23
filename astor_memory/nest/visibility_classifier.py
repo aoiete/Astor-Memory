@@ -98,9 +98,32 @@ _RE_WECHAT_CHAT = re.compile(r'\bo[A-Za-z0-9_-]{20,}@im\.wechat\b')
 # ordinary English, and treating them as identifiers would redact a
 # whole sentence over a word. So the id has to carry at least one
 # digit, which a real WeChat id always does.
+#
+# v1.17.85: a digit is NOT enough. A bare "o" plus 8+ alphanumerics
+# containing a digit matches a random token often enough to matter --
+# 4% of the time for a lowercase word plus a hex string plus a
+# millisecond timestamp, which is exactly what a test marker looks
+# like. On the public tier the gate REJECTS a write on a match, so a
+# 4% false-positive rate does not just mislabel a fact, it blocks a
+# legitimate write with a 400.
+#
+# What separates a real id from a random token is that a real id
+# carries a SEPARATOR: the ilink form is "o<hex>-<mixed case>", and
+# the standard openid form is "o<something>_<mixed case>". A random
+# hex-and-digits run has neither.
+#
+# The separator is REQUIRED, and it must not be an uppercase letter as
+# the test: this pattern is compiled with re.IGNORECASE (the gate
+# compiles every pattern that way), and IGNORECASE turns [A-Z] into
+# [A-Za-z] -- so "must carry an uppercase letter" is the same as "must
+# carry a letter", which every word has. Under re.I only the
+# separator discriminates.
 _RE_WECHAT_ID_BARE = re.compile(
-    r'(?<![A-Za-z0-9_])o(?=[A-Za-z0-9]{8,}(?![A-Za-z0-9_]))'
-    r'(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{8,}(?![A-Za-z0-9_])'
+    r'(?<![A-Za-z0-9_])o'
+    r'(?=[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-]))'
+    r'(?=[A-Za-z0-9_-]*[0-9])'
+    r'(?=[A-Za-z0-9_-]*[-_])'
+    r'[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])'
 )
 # Telegram chat_id (numeric, 8-12 digits)
 _RE_TG_CHAT = re.compile(r'\b\d{8,12}\b')
