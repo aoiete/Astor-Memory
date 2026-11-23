@@ -85,7 +85,25 @@ class TestScorerHashIsRecorded(unittest.TestCase):
         self.assertIn("_scorer_hash", src)
 
     def test_scorer_hash_changes_when_the_scorer_changes(self):
-        """A hash that ignores its input is not a hash."""
+        """A hash that ignores its input is not a hash.
+
+        v1.17.87: the probe used to be "append a trailing comment to
+        eval_runner.py". That asserted the hash covers the whole file,
+        which is exactly what made it too broad: the runner holds the
+        harness (the metrics directory, the set-hash plumbing, the
+        off-track guard), so any edit to the harness changed the hash
+        and the trend reader discarded the entire history. That is
+        what happened on 2026-11-22 -- the scoring rules were
+        untouched, and the ruler went blank.
+
+        The hash now covers the SCORING SURFACE: the source of
+        score_results() and the whole of eval_oracle.py. So the probe
+        has to touch the scoring surface: a comment inside
+        score_results() changes the hash, and a comment outside it does
+        not. Both halves are asserted -- the first by this test, the
+        second by test_scorer_hash_covers_only_scoring.py, which also
+        asserts that a real scoring change moves the hash.
+        """
         path = Path(__file__).parent / "eval_runner.py"
         original = path.read_text(encoding="utf-8")
         try:
@@ -94,7 +112,16 @@ class TestScorerHashIsRecorded(unittest.TestCase):
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             h1 = mod._scorer_hash()
-            path.write_text(original + "\n# a trailing comment\n", encoding="utf-8")
+
+            # Touch the scoring surface itself, not the file around it.
+            edited = original.replace(
+                '    """Compute hit/mrr for one query.',
+                '    # a comment inside the scoring function\n'
+                '    """Compute hit/mrr for one query.',
+                1)
+            self.assertNotEqual(edited, original,
+                                 "the test did not actually edit the scorer")
+            path.write_text(edited, encoding="utf-8")
             spec2 = importlib.util.spec_from_file_location(
                 "eval_runner_probe2", path)
             mod2 = importlib.util.module_from_spec(spec2)
@@ -104,7 +131,7 @@ class TestScorerHashIsRecorded(unittest.TestCase):
             path.write_text(original, encoding="utf-8")
         self.assertTrue(h1)
         self.assertNotEqual(h1, h2,
-                            "scorer_hash must change when the scorer file changes")
+                            "scorer_hash must change when the scorer changes")
 
 
 if __name__ == "__main__":
