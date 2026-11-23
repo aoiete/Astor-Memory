@@ -56,12 +56,24 @@ class TestTheTrackHoldsOneRuler(unittest.TestCase):
 
     def test_the_two_sets_are_distinguishable(self):
         """Two rulers must not hash the same, or nothing can tell them
-        apart -- and the set hash is the only thing that does."""
+        apart -- and the set hash is the only thing that does.
+
+        The default set is the operator's own and is gitignored, so a
+        public checkout does not have it. The hash is an audit field,
+        not a gate: it returns None when the set is not there, and a
+        None is a legitimate answer ("this run measured nothing"). The
+        property under test is that the two sets are DIFFERENT when
+        both are present -- the hash of the one that exists must not
+        be mistaken for the hash of the other.
+        """
         d = self.runner._eval_set_hash(self.default_set)
         p = self.runner._eval_set_hash(self.para_set)
-        self.assertIsNotNone(d)
-        self.assertIsNotNone(p)
-        self.assertNotEqual(d, p)
+        self.assertIsNotNone(p,
+                             "the paraphrase set is tracked, so it must hash")
+        if d is not None:
+            self.assertNotEqual(d, p,
+                                "the two sets hash the same -- the rows "
+                                "cannot be told apart")
 
     def test_a_run_is_on_the_track_only_if_it_measured_the_operators_set(self):
         """The classification the repair used, exercised on real sets.
