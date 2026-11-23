@@ -113,7 +113,7 @@ def _scorer_hash() -> str:
     """SHA-256 of the scoring code itself (eval_runner.py + eval_oracle.py).
 
     RSIHub's boundary condition: the evaluator is controlled by the
-    framework, so a candidate cannot raise its score by changing the
+    framework, so a candidate cannot raise their score by changing the
     scoring rules. A run summary that records only the eval-set hash
     cannot tell "the recall improved" from "the scorer was loosened" --
     editing the set is only half the tampering surface.
@@ -121,14 +121,65 @@ def _scorer_hash() -> str:
     Both files are hashed: eval_runner.py holds score_results(), and
     eval_oracle.py holds the coverage/classify helpers whose verdict
     feeds the gap decomposition.
+
+    v1.17.87: the hash covers the SCORING SURFACE, not the whole file.
+
+    It used to hash eval_runner.py byte-for-byte, which meant any edit
+    to the runner's plumbing -- the metrics directory, the set-hash
+    plumbing, the off-track guard -- changed the scorer hash. And the
+    trend reader keeps only the baselines that share the CURRENT scorer
+    hash, so a plumbing edit silently discarded the entire history:
+    the window collapsed to the one run recorded after the edit, and
+    the trend read "no_data".
+
+    That is what happened on 2026-11-22. The scoring rules did not
+    change at all -- score_results() and eval_oracle.py were untouched
+    -- but the runner was edited, so every prior baseline became
+    "not comparable" and the ruler went blank. A hash whose purpose is
+    to detect a changed measurement must not fire on a change that did
+    not touch the measurement.
+
+    So the hash now covers exactly what it is for: the source of
+    score_results() and the whole of eval_oracle.py. A change to the
+    scoring rules still invalidates the history; a change to the
+    harness does not.
     """
     import hashlib
+    try:
+        runner_src = Path(__file__).resolve().read_text(encoding="utf-8")
+        oracle_src = (Path(__file__).resolve().parent / "eval_oracle.py").read_text(encoding="utf-8")
+    except OSError:
+        return "unknown"
+    return _scorer_hash_from_source(runner_src, oracle_src)
+
+
+def _scorer_hash_from_source(runner_src: str, oracle_src: str) -> str:
+    """The same hash, computed from source text instead of from disk.
+
+    Used both for the live hash and to re-seed historical rows: a row
+    recorded before the hash covered only the scoring surface carries a
+    whole-file hash, and the trend reader discards rows whose scorer
+    hash is not the current one. Recomputing the surface hash for the
+    commit each row was recorded at says whether that row was measured
+    by the same rules.
+
+    The extraction is done with ast, not inspect, so it gives the same
+    answer whether it is reading a file or a string -- inspect needs a
+    live module.
+    """
+    import ast
+    import hashlib
+    try:
+        tree = ast.parse(runner_src)
+        fn = next(n for n in tree.body
+                  if isinstance(n, ast.FunctionDef) and n.name == 'score_results')
+        lines = runner_src.splitlines()
+        body = "\n".join(lines[fn.lineno - 1:fn.end_lineno])
+    except (SyntaxError, StopIteration, OSError):
+        return "unknown"
     h = hashlib.sha256()
-    for _f in (Path(__file__).resolve(), Path(__file__).resolve().parent / "eval_oracle.py"):
-        try:
-            h.update(_f.read_bytes())
-        except OSError:
-            return "unknown"
+    h.update(body.encode("utf-8"))
+    h.update(oracle_src.encode("utf-8"))
     return h.hexdigest()[:16]
 
 

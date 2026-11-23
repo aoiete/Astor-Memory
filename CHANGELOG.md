@@ -1,3 +1,47 @@
+## 1.17.87
+
+**fix(eval): editing the runner's plumbing discarded the entire measurement
+history, and the ruler read "no_data"**
+
+The trend reader keeps only the baselines that share the current scorer
+hash. That rule is right -- a run measured under different scoring
+rules is a different measurement -- and it predates this fix
+(v1.17.13).
+
+But the scorer hash covered `eval_runner.py` byte-for-byte, and the
+runner is where the harness lives: the metrics directory, the set-hash
+plumbing, the off-track guard. None of that is scoring. So editing the
+harness changed the hash, and the reader then discarded every baseline
+recorded before the edit.
+
+That is what happened on 2026-11-22, during the v1.17.85 work. The
+scoring rules did not change at all -- `score_results()` and
+`eval_oracle.py` were untouched -- but the runner was edited for the
+metrics isolation, so the whole history became "not comparable". The
+window collapsed to the single run recorded after the edit, and the
+dashboard read `no_data` with a snapshot of `0.0`.
+
+**A hash whose purpose is to detect a changed measurement must not fire
+on a change that did not touch the measurement.**
+
+The hash now covers the scoring surface: the source of
+`score_results()` and the whole of `eval_oracle.py`. A scoring change
+still invalidates the history; a harness change does not.
+
+**The historical rows were re-seeded, and it was proved rather than
+assumed.** For each row, the commit it was recorded at was found, the
+scoring surface extracted from THAT commit, and the surface hash
+computed. A row whose commit had today's rules gets today's hash. A
+row whose commit had different rules keeps a hash matching nothing, so
+the reader skips it -- the correct outcome for a different ruler. Three
+rows (2026-11-20, before the last `eval_oracle.py` change on 11-18's
+successor) were marked superseded; 20 were re-seeded. The scoring
+surface at the last commit that touched `eval_oracle.py` is byte-identical
+to today's, which is what makes those 20 comparable.
+
+The ruler reads `0.9811` again, `trend_status: stable`, with the
+snapshot honestly marked as re-seeded rather than silently carried over.
+
 ## 1.17.86
 
 **fix(release): the release workflow could not have published anything, and
