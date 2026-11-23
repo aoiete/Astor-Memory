@@ -1,3 +1,46 @@
+## 1.17.86
+
+**fix(release): the release workflow could not have published anything, and
+the tags had silently stopped at v1.17.40**
+
+The release workflow has never run. PyPI has never received a package
+(`pypi.org/pypi/astor-memory/json` returns 404), and the newest tag on the
+remote is `v1.17.40` from 2026-11-17 -- 64 commits and 45 versions ago.
+Nothing was failing, because nothing was running.
+
+Three defects, each of which alone would have failed a release:
+
+**1. The version input defaulted to `v1.17.26`** -- frozen since Week 4 of
+the plan, long before the project reached 1.17.85. The workflow compares
+its input against `pyproject.toml`, so the default was a landmine: it
+failed with a version mismatch naming a version from months ago, which
+reads like "the release is broken" rather than "the default was never
+updated". The default now tracks `pyproject.toml`, and a test keeps the
+two in sync.
+
+**2. The checkout took the DEFAULT BRANCH, not the tag.** The workflow
+names a version to release and then verifies it against `pyproject.toml` --
+but `pyproject.toml` came from main. So the check compared main's version
+against the tag's name, and it could never succeed for any tag that was
+not also main's HEAD. It was not a release of a tag; it was a release of
+whatever happened to be on main, wearing the tag's name. The checkout now
+pins the tag, and fetches tags so the tag can be verified.
+
+**3. The tag was never checked.** A version naming a tag nobody pushed was
+accepted, then failed later with a confusing message. The release now
+fails first, and says what to do about it.
+
+**The docs described a process that does not exist.** `docs/contributing.md`
+said "GitHub Actions builds wheel + sdist on tag push" -- no workflow has a
+`tags:` trigger. The release workflow is `workflow_dispatch`-only, so
+pushing a tag publishes nothing by itself. The docs now say so.
+
+**Also checked, and left alone:** the `pypi` environment does not exist on
+the repo yet and PyPI trusted publishing is not configured. GitHub creates
+the environment on first use, but the trusted publisher must be registered
+on PyPI before the publish job can succeed -- that is a PyPI account
+setting, not a repository one.
+
 ## 1.17.85
 
 **fix(privacy): the write gate and the tier classifier were two scanners, and

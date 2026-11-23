@@ -529,10 +529,23 @@ CI 必须过。Reviewer 可能要求改动。推到同一分支修。
 
 1. 更新 `pyproject.toml` 和 `astor_memory/__init__.py` 里的 version
 2. 更新 `CHANGELOG.md` — 把 "Unreleased" 移到带日期的版本 section
-3. 打 tag：`git tag v1.2.3 && git push --tags`
-4. GitHub Actions 在 tag push 时构建 wheel + sdist
-5. 手动触发 PyPI publish workflow
-6. Smoke test：在新 venv `pip install astor-memory==1.2.3`
+3. 打 tag：`git tag -a v1.2.3 -m "release v1.2.3" && git push origin v1.2.3`
+4. 手动触发 `release` workflow（GitHub Actions → "Run workflow"），
+   把 `version` 输入填成同一个 tag —— `v1.2.3`。workflow 会 checkout
+   这个 tag、校验 tag 存在且版本与 `pyproject.toml` 一致、构建 wheel +
+   sdist，并通过 trusted publishing 发到 PyPI。
+
+   想只构建不发布，把 `pypi` 填 `false`。
+
+**没有任何 workflow 会在 tag push 时自动构建。** release workflow 只有
+`workflow_dispatch` 触发，所以光推 tag 不会发布任何东西 —— 必须手动触发
+workflow，并且告诉它要发哪个版本。
+
+5. Smoke test：在新 venv `pip install astor-memory==1.2.3`
+
+`version` 输入的默认值就是 `pyproject.toml` 里的版本，有测试保证两者同步，
+所以默认值不会再过期。但这个输入不能代替 tag：tag 必须存在并已推送，否则
+workflow 会失败并明确告诉你缺什么。
 
 ---
 

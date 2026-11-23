@@ -526,10 +526,26 @@ Once approved, maintainers will squash-merge. Your branch can be deleted after m
 
 1. Update version in `pyproject.toml` and `astor_memory/__init__.py`
 2. Update `CHANGELOG.md` — move "Unreleased" to versioned section with date
-3. Tag: `git tag v1.2.3 && git push --tags`
-4. GitHub Actions builds wheel + sdist on tag push
-5. Manually trigger PyPI publish workflow
-6. Smoke test: `pip install astor-memory==1.2.3` in fresh venv
+3. Tag: `git tag -a v1.2.3 -m "release v1.2.3" && git push origin v1.2.3`
+4. Manually trigger the `release` workflow (GitHub Actions → "Run workflow"),
+   and set the `version` input to the same tag — `v1.2.3`. The workflow
+   checks out that tag, verifies it exists and that its version matches
+   `pyproject.toml`, builds wheel + sdist, and publishes to PyPI via
+   trusted publishing.
+
+   Set `pypi: false` to build the artifacts without publishing.
+
+There is **no** workflow that builds on tag push. The release workflow is
+`workflow_dispatch`-only, so pushing the tag does not publish anything by
+itself — the workflow has to be triggered, and it has to be told which
+version it is releasing.
+
+5. Smoke test: `pip install astor-memory==1.2.3` in fresh venv
+
+The `version` input defaults to the version in `pyproject.toml`, and a test
+keeps the two in sync — so the default is never stale. But the input is
+not a substitute for the tag: the tag must exist and must be pushed, or
+the workflow fails and says so.
 
 ---
 

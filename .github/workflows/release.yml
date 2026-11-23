@@ -8,9 +8,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. v1.17.26)'
+        description: 'Version to release (e.g. v1.17.86) -- the tag must already exist'
         required: true
-        default: 'v1.17.26'
+        # v1.17.86: this default was v1.17.26, frozen since Week 4 of the
+        # plan. A stale default is worse than no default: the workflow
+        # runs, compares the input against pyproject.toml, and fails
+        # with a version mismatch that names the OLD version -- which
+        # reads like "the release is broken" rather than "the default
+        # was never updated". test_release_workflow_security.py keeps
+        # this default equal to pyproject.toml's version, so it cannot
+        # go stale again.
+        default: 'v1.17.86'
       pypi:
         description: 'Upload to PyPI?'
         required: false
@@ -33,6 +41,23 @@ jobs:
       - name: Checkout
         # 固定到 commit SHA：tag 可被重指向，SHA 不可变（记录原版本 v4）
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # v1.17.85: this checked out the DEFAULT BRANCH, not the tag.
+          # The workflow names a version to release, then verifies that
+          # version against pyproject.toml -- but pyproject came from
+          # main, not from the tag. So "release v1.17.40" would build
+          # whatever happened to be on main, and the check would compare
+          # main's version against the tag's name. It fails, but it
+          # fails for the wrong reason, and it can never succeed for
+          # any tag that is not also main's HEAD.
+          #
+          # The tag is the thing being released, so the tag is what has
+          # to be checked out. The version input is passed through env
+          # and quoted: an untrusted workflow_dispatch input must not
+          # be interpolated into a run block (it would be read as
+          # shell code).
+          ref: ${{ github.event.inputs.version }}
+          fetch-depth: 0
 
       - name: Setup Python 3.12
         # 固定到 commit SHA（记录原版本 v5）
@@ -50,18 +75,26 @@ jobs:
           pip install -e ".[dev]"
           pytest tests/ -v --tb=short
 
-      - name: Verify version in pyproject matches tag
+      - name: Verify the release tag exists and matches the version
         # 不可信的 workflow_dispatch 输入不能直接插值进 run 块（会被当成 shell 代码执行），
         # 必须经 env 传入并在 shell 内加引号引用。
         env:
           VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
+          set -euo pipefail
+          EXPECTED="$VERSION_INPUT"
+          if ! git rev-parse -q --verify "refs/tags/$EXPECTED" >/dev/null; then
+            echo "::error::Tag '$EXPECTED' does not exist in this repository."
+            echo "::error::Create it first: git tag -a '$EXPECTED' -m 'release $EXPECTED' && git push origin '$EXPECTED'"
+            echo "::error::Tags on the remote: $(git ls-remote --tags origin | sed 's#.*refs/tags/##;s/\^{}//' | sort -uV | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "tag '$EXPECTED' exists at $(git rev-list -n1 "$EXPECTED" | cut -c1-8)"
           VERSION=$(grep '^version' pyproject.toml | head -1 | cut -d'"' -f2)
           echo "pyproject version: $VERSION"
-          EXPECTED="$VERSION_INPUT"
           EXPECTED_STRIP="${EXPECTED#v}"
           if [ "$VERSION" != "$EXPECTED_STRIP" ]; then
-            echo "::error::Version mismatch: pyproject.toml has '$VERSION' but release tag is '$EXPECTED_STRIP'"
+            echo "::error::Version mismatch: the tag '$EXPECTED' carries version '$EXPECTED_STRIP' but pyproject.toml says '$VERSION'"
             exit 1
           fi
           echo "Version match OK"

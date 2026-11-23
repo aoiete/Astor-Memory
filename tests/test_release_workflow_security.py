@@ -157,3 +157,95 @@ def test_version_input_travels_through_env_and_is_quoted() -> None:
         "EXPECTED must be assigned from the quoted env var \"$VERSION_INPUT\", "
         f"found assignments: {quoted!r}"
     )
+
+
+# --- v1.17.85: the release was unrunnable, and silently so ----------------
+#
+# The version dispatch input defaulted to 'v1.17.26' -- frozen since
+# Week 4 of the plan, long before the project reached 1.17.85. Two
+# things followed, and neither was visible until someone tried to
+# release:
+#
+#   1. The default was wrong, so the workflow failed its own version
+#      check against a version that had nothing to do with the code.
+#      The error named the OLD version, which reads like "the release
+#      is broken" rather than "the default was never updated".
+#
+#   2. The checkout had no `ref:`, so it took the DEFAULT BRANCH, not
+#      the tag. The workflow names a version to release and then
+#      verifies it against pyproject.toml -- but pyproject came from
+#      main. So the check compared main's version against the tag's
+#      name, and it could never succeed for any tag that was not also
+#      main's HEAD. It was not a release of a tag; it was a release of
+#      whatever happened to be on main, wearing the tag's name.
+#
+# The tags had also stopped at v1.17.40 -- nothing creates them.
+
+
+def test_the_version_default_matches_the_declared_version() -> None:
+    """The dispatch default must be the version the code actually is.
+
+    A stale default is worse than no default: the workflow runs, and
+    fails, with an error naming a version from months ago.
+    """
+    text = _workflow_text()
+    m = re.search(r"^\s*default:\s*'(v\d+\.\d+\.\d+)'\s*$", text, re.MULTILINE)
+    assert m, "the version input has no default"
+    default = m.group(1)
+
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8-sig")
+    pm = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
+    assert pm, "pyproject.toml has no [project].version"
+    declared = pm.group(1)
+
+    assert default == f"v{declared}", (
+        f"the release workflow's version default is {default} but "
+        f"pyproject.toml declares {declared} -- the release would fail "
+        f"its own version check against a version from the past"
+    )
+
+
+def test_the_checkout_uses_the_release_tag() -> None:
+    """The tag being released must be what gets built.
+
+    Without a `ref:`, checkout takes the default branch, so the
+    workflow verifies the tag's version against main's pyproject.toml
+    and packages main's code under the tag's name.
+    """
+    text = _workflow_text()
+    # The checkout step runs from its `- name: Checkout` line to the
+    # next step. Comments inside the `with:` block are part of it, so
+    # the block is taken by step boundaries rather than by a pattern
+    # that would stop at the first comment.
+    lines = text.splitlines()
+    start = next((i for i, l in enumerate(lines)
+                  if re.match(r"^\s*- name: Checkout\s*$", l)), None)
+    assert start is not None, "the checkout step was not found"
+    end = next((i for i in range(start + 1, len(lines))
+                 if re.match(r"^\s*- name: ", lines[i])), len(lines))
+    block = "\n".join(lines[start:end])
+
+    assert re.search(r"^\s*ref:\s*\$\{\{\s*github\.event\.inputs\.version\s*\}\}\s*$",
+                     block, re.MULTILINE), (
+        "the checkout does not pin the release tag -- it would build "
+        "the default branch and publish it under the tag's name"
+    )
+    assert re.search(r"^\s*fetch-depth:\s*0\s*$", block, re.MULTILINE), (
+        "the checkout does not fetch tags, so the tag cannot be verified"
+    )
+
+
+def test_the_release_verifies_that_the_tag_exists() -> None:
+    """A version that names a tag nobody pushed is not a release.
+
+    The check has to fail loudly and say what to do about it, because
+    the whole gap was invisible: the workflow had never run, PyPI had
+    never received a package, and the tags had silently stopped.
+    """
+    text = _workflow_text()
+    assert re.search(r'refs/tags/\$EXPECTED', text), (
+        "the release does not check that the tag exists"
+    )
+    assert "git tag -a" in text, (
+        "the failure message does not say how to create the missing tag"
+    )
