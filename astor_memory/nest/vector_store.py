@@ -163,6 +163,18 @@ class AstorNest:
         if self._conn is not None:
             self._conn.close()
             self._conn = None
+        # v1.17.90: the recency lookup keeps its own connection to this
+        # tier's bus DB. It has to be closed here too, for the same
+        # reason the nest connection is: the file lock it holds would
+        # otherwise block the tmpdir cleanup on Windows.
+        _bus_conn = getattr(self, '_bus_conn_cache', None)
+        if _bus_conn is not None:
+            try:
+                _bus_conn.close()
+            except Exception:
+                pass
+        self._bus_conn_cache = None
+        self._bus_conn_sig = None
         # Pop our key from the singleton so the next astor_nest() rebuilds.
         from .. import _cleanup_nest_singleton
         _cleanup_nest_singleton(self)
