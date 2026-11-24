@@ -138,6 +138,12 @@ Two smaller things fell out of the same change:
   is used concurrently by request threads. If the bus DB is unreachable
   the lookup returns empty and the ranking falls back to the previous
   `updated_at` behaviour.
+- That connection is opened once per tier and reused, and rebuilt when
+  the bus file on disk changes -- a cached sqlite connection keeps
+  reading the file it opened, so an operator restoring a backup would
+  otherwise be served the pre-restore copy. Opening it per call cost
+  more than the lookup itself: the read path went from 458ms to 672ms,
+  and back to 536ms once the connection was cached.
 
 Regression test: `tests/test_recency_clock.py` (4 cases).
 

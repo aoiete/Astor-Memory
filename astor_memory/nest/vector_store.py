@@ -67,6 +67,10 @@ class AstorNest:
         astor_init_nest_schema(self._conn)
 
         self._cache_size = cache_size_mb * 1024 * 1024  # bytes
+        # Cached read-only connection to this tier's bus DB, used by the
+        # recency lookup. Rebuilt when the file on disk changes.
+        self._bus_conn_cache = None
+        self._bus_conn_sig = None
         self._cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._cache_lock = threading.RLock()
 
@@ -484,6 +488,51 @@ class AstorNest:
         )
         return self._topk(query_embedding, emb_matrix, fact_ids, e_norms, limit)
 
+    def _bus_conn(self):
+        """A read-only connection to this tier's bus DB, opened once.
+
+        The recency lookup runs on every vector search, so opening a
+        connection per call cost 200ms+ on the admin tier (measured: the
+        read path went from 458ms to 672ms). The nest connection itself
+        cannot be reused for this -- it points at a different database --
+        and it must not be re-attached, because it is shared across request
+        threads. So the bus gets its own connection, kept on the instance
+        (astor_nest hands out one instance per tier, so this is one
+        connection per tier per process).
+        """
+        from .._internal.acl_layout import get_db_path as _gdp
+        bus_path = _gdp(self.tier, 'bus', self.user_id)
+        p = Path(bus_path)
+        if not p.exists():
+            raise FileNotFoundError(str(bus_path))
+        # A cached connection keeps reading the file it opened, even if
+        # the file is replaced underneath it (an operator restoring a
+        # backup does exactly that). Compare the file's signature and
+        # reopen when it changed, so the cache never serves a stale copy.
+        try:
+            st = p.stat()
+            sig = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            sig = None
+        conn = getattr(self, '_bus_conn_cache', None)
+        if conn is not None and getattr(self, '_bus_conn_sig', None) == sig:
+            try:
+                conn.execute("SELECT 1").fetchone()
+                return conn
+            except Exception:
+                conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        conn = sqlite3.connect(str(bus_path), check_same_thread=False)
+        conn.execute('PRAGMA journal_mode = WAL')
+        conn.execute('PRAGMA busy_timeout = 5000')
+        self._bus_conn_cache = conn
+        self._bus_conn_sig = sig
+        return conn
+
     def _confirmed_age_map(self, fids: list[int]) -> dict[int, float]:
         """Age in days keyed on memory_canonical.last_confirmed_at.
 
@@ -507,22 +556,14 @@ class AstorNest:
         if not fids:
             return {}
         try:
-            from .._internal.acl_layout import get_db_path as _gdp
-            bus_path = _gdp(self.tier, 'bus', self.user_id)
-            if not Path(bus_path).exists():
-                return {}
-            conn = sqlite3.connect(str(bus_path), check_same_thread=False)
-            try:
-                placeholders = ",".join("?" * len(fids))
-                rows = conn.execute(
-                    f"SELECT id, "
-                    f"  (julianday('now') - julianday(last_confirmed_at)) AS age_days "
-                    f"FROM memory_canonical "
-                    f"WHERE id IN ({placeholders}) AND tombstoned = 0",
-                    fids,
-                ).fetchall()
-            finally:
-                conn.close()
+            placeholders = ",".join("?" * len(fids))
+            rows = self._bus_conn().execute(
+                f"SELECT id, "
+                f"  (julianday('now') - julianday(last_confirmed_at)) AS age_days "
+                f"FROM memory_canonical "
+                f"WHERE id IN ({placeholders}) AND tombstoned = 0",
+                fids,
+            ).fetchall()
         except Exception:
             return {}
         out = {}
