@@ -484,16 +484,79 @@ class AstorNest:
         )
         return self._topk(query_embedding, emb_matrix, fact_ids, e_norms, limit)
 
+    def _confirmed_age_map(self, fids: list[int]) -> dict[int, float]:
+        """Age in days keyed on memory_canonical.last_confirmed_at.
+
+        v1.17.89. The recency boost used to age a fact by the age of its
+        embedding row (embeddings.updated_at), which only moves when the
+        fact is rewritten. A rule that is re-confirmed every week but never
+        rewritten looks ancient: the answer fact for a paraphrase query
+        scored 0.92 cosine but lost to a newer, less relevant fact because
+        its recency had decayed to 0.17.
+
+        last_confirmed_at is the "still in force / still in use" clock --
+        it is refreshed on every read (bus.store confirm path). Median age
+        on the admin tier: 3.9 days via last_confirmed_at vs 76.8 days via
+        embeddings.updated_at.
+
+        Read through a separate read-only connection: the nest connection
+        is shared across request threads and must not be re-attached or
+        re-pointed. Returns {} when the bus DB is unreachable, so the
+        caller falls back to embeddings.updated_at.
+        """
+        if not fids:
+            return {}
+        try:
+            from .._internal.acl_layout import get_db_path as _gdp
+            bus_path = _gdp(self.tier, 'bus', self.user_id)
+            if not Path(bus_path).exists():
+                return {}
+            conn = sqlite3.connect(str(bus_path), check_same_thread=False)
+            try:
+                placeholders = ",".join("?" * len(fids))
+                rows = conn.execute(
+                    f"SELECT id, "
+                    f"  (julianday('now') - julianday(last_confirmed_at)) AS age_days "
+                    f"FROM memory_canonical "
+                    f"WHERE id IN ({placeholders}) AND tombstoned = 0",
+                    fids,
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception:
+            return {}
+        out = {}
+        for r in rows:
+            if r[1] is None:
+                continue
+            out[int(r[0])] = float(r[1])
+        return out
+
     def _topk(self, query_embedding, emb_matrix, fact_ids, e_norms, limit,
-              recency_weight: float = 0.2, half_life_days: float = 30.0):
+              recency_weight=None, half_life_days: float = 30.0):
         """Inner top-k cosine + recency boost. Shared by search() and _search_slow().
 
         v1.12.0 (2026-08-29): multi-signal ranking per R250 / Mem0 2026 lesson.
-        Final score = sim * (1 - recency_weight) + recency_weight * recency_score
+        Final score = sim * (1 - w) + w * 0.5 ** (age_days / 30)
         where recency_score = 0.5 ** (age_days / half_life_days) (exponential decay).
         recency_weight=0 means pure cosine; recency_weight=1 means pure recency.
-        Lookup updated_at via single batch query against embeddings.updated_at.
+
+        v1.17.89: the age clock is memory_canonical.last_confirmed_at
+        ("still in force"), not embeddings.updated_at ("last rewritten").
+        See _confirmed_age_map for why.
+
+        v1.17.90: ASTOR_RECENCY_WEIGHT overrides the weight, so an operator
+        can turn the boost off (0) or up without a code change. The age
+        clock is still last_confirmed_at; note that this clock is
+        refreshed whenever a fact is surfaced, so a high weight turns the
+        boost into "recalled often -> easier to recall again".
         """
+        import os as _os
+        if recency_weight is None:
+            try:
+                recency_weight = float(_os.environ.get('ASTOR_RECENCY_WEIGHT', '0.2'))
+            except (TypeError, ValueError):
+                recency_weight = 0.2
         import time as _time
         query = np.asarray(query_embedding, dtype=np.float32).reshape(-1)
         q_norm = float(np.linalg.norm(query))
@@ -531,6 +594,11 @@ class AstorNest:
         except Exception:
             age_rows = []
         age_map = {int(r[0]): float(r[1] if r[1] is not None else 9999.0) for r in age_rows}
+        # v1.17.89: prefer the "still in force" clock over the "last rewritten"
+        # one. Facts that never got confirmed keep their updated_at age.
+        confirmed_map = self._confirmed_age_map(cand_fids)
+        for fid, age in confirmed_map.items():
+            age_map[fid] = age
 
         scored = []
         for i in pre_idx:
@@ -539,8 +607,13 @@ class AstorNest:
                 continue
             fid = int(fact_ids[i])
             age = age_map.get(fid, 9999.0)
-            # recency_score in [0,1] via half-life decay; cap at 9999 days → ~0
-            rec = 0.5 ** (min(age, 9999.0) / half_life_days)
+            # recency_score in [0,1] via half-life decay.
+            # v1.17.89: clamp BOTH ends. A timestamp in the future (imported
+            # data, clock drift) gives a negative age, and 0.5 ** negative
+            # overflows to +inf, which would poison the ranking. A future
+            # timestamp simply means "confirmed just now" -> recency 1.0.
+            age = min(max(age, 0.0), 9999.0)
+            rec = 0.5 ** (age / half_life_days)
             final = s * (1.0 - recency_weight) + rec * recency_weight
             scored.append((fid, final, s, rec))
         scored.sort(key=lambda x: x[1], reverse=True)

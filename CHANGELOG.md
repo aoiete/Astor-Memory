@@ -1,3 +1,147 @@
+## 1.17.90
+
+**chore(retrieval): MMR pool sizing and score scale -- measured, then reverted**
+
+Two hypotheses about the MMR reranker were tested against the
+human-labelled paraphrase ruler, and neither survived.
+
+**Widening the MMR pool.** MMR always returns exactly `top_k` items, so
+a larger pool does not make it "only reorder" -- it gives MMR more
+diverse replacements to choose from, and it evicts MORE. Widening the
+pool from `top_k * 2` to the whole merged list dropped the accepted
+answer for "有一条铁律是不许把没验证过的事说成真的" out of the top 10
+entirely, because that fact reads like the one MMR had already picked.
+The pool sizing is left as it was.
+
+**Scaling the diversity penalty to the score spread.** The MMR score is
+`lambda * score - (1 - lambda) * jaccard`, and the two terms were on
+different scales: hybrid_merge scores inside one pool have a useful
+spread of about 0.02 while a token-Jaccard penalty reaches 0.3, so the
+diversity term was about fifteen times larger than any relevance
+difference in the pool. Scaling the penalty by the pool's score spread
+fixes the units, and it does put the near-duplicate answer back at rank
+2 -- but on the ruler it only swaps one question for another (the
+answer for "用几个数字推出来的那种古法" moves out of the top 10 while the
+answer for "把文字变成向量用的是哪个模型" moves in).
+
+Final measurement across the three configurations:
+
+| configuration | id ruler top-10 | top-30 | the "铁律" answer |
+|---|---|---|---|
+| as shipped | 16/26 | 20/26 | rank 2 |
+| widened pool | 16/26 | 20/26 | absent |
+| scaled penalty | 16/26 | 20/26 | rank 2 |
+
+All three are within one question of each other, so there is no
+measurable gain and the changes were reverted. Recorded here because
+the mechanism is real -- MMR can evict a correct answer when the
+candidate that was picked is a near-duplicate of it -- and a future
+change to that area should start from this measurement rather than
+from the intuition that a bigger pool is safer.
+
+## 1.17.89
+
+**fix(retrieval): the recency boost was ageing every fact by when it was
+last rewritten, not by when it was last confirmed**
+
+The vector ranking blends cosine similarity with a recency boost
+(`final = sim * (1 - w) + w * 0.5 ** (age_days / 30)`). The age came from
+`embeddings.updated_at`, which only moves when the fact row is rewritten.
+A rule that the user restates weekly but that is never rewritten looks
+ancient.
+
+Measured on the live admin tier:
+
+- median age by `embeddings.updated_at`: **76.8 days**
+- median age by `memory_canonical.last_confirmed_at`: **3.9 days**
+- 4360 of 5795 admin embeddings (75%) sat in the 30-90 day band, where
+  the decay has already eaten most of the recency signal
+
+Why `updated_at` was the wrong clock: it is not "when the fact was last
+rewritten", it is "when the embedding row was last written". The
+e5-large re-embed rewrote 3047 of the 5795 admin embeddings in one go
+on 2026-09-08, so for 53% of the corpus `updated_at` is one constant
+date that says nothing about the fact. Only 3.9% of embedding rows
+carry an `updated_at` later than the fact's own `created_at`. Measured
+by day, `updated_at` clusters on 2026-09-08 (3047 rows) and 2026-09-15
+(291), while `created_at` clusters on 2026-09-15 (4278 rows) -- the
+migration date. The recency signal was a re-embed timestamp wearing a
+content timestamp's name.
+
+The consequence was severe. On the hand-labelled paraphrase set
+(26 questions, answer fact ids written by a human), the vector segment
+put the correct answer inside the top 10 for **1 of 22** private-tier
+questions. The canonical example: the query "有一条铁律是不许把没验证过
+的事说成真的" -- the answer fact scored **0.9205** cosine, the best
+match in the entire corpus, and still ranked outside the top 10 because
+its recency had decayed to 0.17, losing to a less relevant fact written
+two weeks later at 0.90.
+
+The fix is the clock, not the weight. `last_confirmed_at` is the "still in
+force / still in use" timestamp, and it is refreshed whenever a fact is
+surfaced. Switching to it, with the recency weight left untouched at
+0.2, measured as an A/B on the live runtime with both clocks reading
+the same database state:
+
+| clock | id ruler top-10 | top-30 | keyword eval hit@10 | mrr |
+|---|---|---|---|---|
+| `updated_at` (before) | 12/26 | 16/26 | 0.972 | 0.882 |
+| `last_confirmed_at` (after) | **16/26** | **18/26** | **0.991** | **0.935** |
+
+The weight is no longer a sensitive knob: 0.2, 0.15 and 0.1 all give the
+same result, so nothing was tuned -- only the clock moved.
+
+One caveat worth stating, because it looks like a bug and is not: the
+`last_confirmed_at` clock is refreshed every time a fact is surfaced,
+so a fact that is read often keeps a fresh age while a fact nobody
+reads goes stale. In the vector segment alone that is a rich-get-richer
+loop. End to end it is not, because the BM25 channel is independent of
+the clock -- and the end-to-end numbers above were taken with both
+clocks reading the same database, so the comparison holds.
+
+`ASTOR_RECENCY_WEIGHT` now overrides the weight (default 0.2, the
+previous behaviour) so an operator can turn the boost off or up
+without a code change.
+
+Two smaller things fell out of the same change:
+
+- The age is now clamped at both ends. A confirmation timestamp in the
+  future (imported data, clock drift) produced a negative age, and
+  `0.5 ** negative` raises `OverflowError` -- the read path would have
+  died on it. A future timestamp now simply means "confirmed just now".
+- The confirmed-age lookup reads through its own read-only connection
+  rather than attaching the bus DB to the shared nest connection, which
+  is used concurrently by request threads. If the bus DB is unreachable
+  the lookup returns empty and the ranking falls back to the previous
+  `updated_at` behaviour.
+
+Regression test: `tests/test_recency_clock.py` (4 cases).
+
+**tool(eval): `tests/eval_id_ruler.py` -- the honest ruler, with a miss classifier**
+
+The 110-question keyword eval asks "is a fact containing the expected
+keyword in the top 10". It cannot tell a right answer written in
+different words from a wrong one that happens to use the right words,
+so it hides ranking changes: the recency-clock fix above moved the
+human-labelled id ruler from 11/26 to 16/26 at top 10, and the keyword
+ruler only from 0.972 to 0.991.
+
+`tests/eval_id_ruler.py` asks the sharper question -- "is a
+human-accepted answer fact id in the top 10" -- and with `--classify`
+splits every miss into the three buckets that decide what to do next:
+
+- **storage gap** -- the accepted answer is not in the store
+- **retrieval gap** -- it is in the store, in the queried tier, alive
+- **ruler bug** -- the gold ids do not answer the question
+
+Only the retrieval-gap bucket can be fixed by changing the ranking. On
+the current corpus that split is 7 retrieval gaps against 3 storage
+gaps, and one of the retrieval gaps (a question about how astrological
+charts are rendered, whose accepted answers are two car-licence
+numerology lessons) is a ruler bug on inspection. Running the classifier
+before shipping a ranking change keeps effort off the misses no code
+change can reach.
+
 ## 1.17.88
 
 **fix(ops): the sleep-period maintenance never ran, and the topic layer was

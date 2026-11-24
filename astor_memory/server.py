@@ -6414,6 +6414,11 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     and _mmr_lambda != 1.0):  # 1.0 = no MMR
                 try:
                     from .nest.mmr_reranker import mmr_rerank as _mmr_fn
+                    # Pool sized to top_k on purpose: MMR always returns
+                    # top_k items, so a bigger pool evicts MORE, not less.
+                    # Widening it to the merged list dropped the answer for
+                    # "有一条铁律是不许把没验证过的事说成真的" out of the
+                    # top 10 (it reads like the fact MMR had picked).
                     _mmr_pool = merged[:max(top_k * 2, top_k + 4)]
                     _mmr_fids = [int(f) for f, _ in _mmr_pool]
                     _placeholders = ",".join("?" * len(_mmr_fids))
