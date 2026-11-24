@@ -103,6 +103,30 @@ clocks reading the same database, so the comparison holds.
 previous behaviour) so an operator can turn the boost off or up
 without a code change.
 
+The obvious worry about this clock -- it is refreshed every time a fact
+is surfaced, so a fact that gets recalled often keeps a fresh age while
+a fact nobody reads goes stale, which looks like a rich-get-richer loop
+that buries the long tail -- was measured rather than assumed:
+
+- the facts with `access_count = 0` are 63, and every one of them was
+  created within the last 30 days, so a brand new fact starts with a
+  fresh age and is not suppressed;
+- of the 1745 facts with `access_count` between 1 and 5, **none** has a
+  confirmation older than 90 days, so there is no fact frozen at a high
+  recency by a single old sighting;
+- of the 921 facts created in the last 30 days, 907 have a recency of at
+  least 0.5.
+
+The one real residue is that a fact nobody reads stops having its age
+updated, so its recency freezes at whatever the decay had reached
+instead of continuing down. The fix for that -- averaging the
+confirmation age with the creation age, so the recency keeps decaying
+as the fact itself ages -- was tried and rejected: it holds the honest
+ruler flat (16/26 top-10, 18/26 top-30) but drops the keyword eval
+from hit@10 0.991 / mrr 0.935 to 0.972 / 0.872, because it pushes
+exactly the facts it should protect -- old rules the user keeps
+restating -- further down. A single clock is the better trade.
+
 Two smaller things fell out of the same change:
 
 - The age is now clamped at both ends. A confirmation timestamp in the
