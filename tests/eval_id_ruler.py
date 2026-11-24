@@ -29,10 +29,27 @@ import glob
 import json
 import os
 import sqlite3
+import sys
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RUNTIME = os.environ.get('ASTOR_RUNTIME', r'D:/AI/Astor-Memory-Runtime')
+
+
+def _runtime_root() -> str:
+    """Where the live tier databases live.
+
+    ASTOR_DIR first, then the same resolver astor itself uses, so the
+    tool works on any install without a machine-specific path baked in.
+    """
+    env = os.environ.get('ASTOR_DIR')
+    if env:
+        return env
+    try:
+        sys.path.insert(0, os.path.dirname(HERE))
+        from astor_memory._internal.acl_layout import get_astor_dir
+        return str(get_astor_dir())
+    except Exception:
+        return os.path.expanduser('~/Astor-Data')
 
 
 def read(server, query, tier, user, k=30):
@@ -47,11 +64,12 @@ def read(server, query, tier, user, k=30):
 
 
 def _bus_paths():
+    root = _runtime_root()
     paths = {}
     for tier, pat in (('public', 'public/memory/astor_bus_public.db'),
                       ('source', 'source/memory/astor_bus_source.db'),
                       ('private', 'users/*/memory/astor_bus_*.db')):
-        for p in glob.glob(os.path.join(RUNTIME, pat)):
+        for p in glob.glob(os.path.join(root, pat)):
             paths[p] = tier
     return paths
 
