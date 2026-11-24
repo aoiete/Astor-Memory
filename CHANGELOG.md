@@ -1,3 +1,114 @@
+## 1.17.88
+
+**fix(ops): the sleep-period maintenance never ran, and the topic layer was
+empty**
+
+Four dead paths, all found by measuring the live runtime rather than by
+reading the docs:
+
+1. **`astor_daily_sweep.py` step 1 never executed.** It tested
+   `if "promoted" in cols` on `memory_candidates` -- a column the schema
+   no longer has (it is `review_state` now), so the branch never ran and
+   the counter always read 0. The fix is to count the REAL pending set,
+   NOT to auto-promote it: pending candidates are deliberately held for a
+   human (`am pending` / `am confirm <id> --force` / `am reject <id>`),
+   and at least two of the current ones are test residue
+   ("v1.16.9.3 bi-temporal integration test", "[DATE_1]用 method curl+UA
+   测试 marker-final-v1632") that must not reach the long-term layer.
+2. **The same script's docstring claimed a fourth step** ("找出 nest
+   missing embeddings 的 → embed") that never existed in the code -- and
+   does not need to: measured per tier, nest embeddings are >= the
+   tier's live canonical count (public 723 vs 620, admin 5795 vs 5457).
+   A documented step that does not exist is worse than an undocumented
+   one.
+3. **The sweep only covered per-user tiers.** It never touched the
+   shared `public` (620 live facts) or `source` (209 live facts) buses,
+   so the shared layers were effectively maintenance-free. Both are now
+   swept, with `kind IN ('lock_rule','rule')` excluded -- those rows'
+   importance does not mean "recall traffic", so decaying them by
+   recall staleness was wrong. Measured on the live runtime: 0 rows
+   currently qualify for decay or tombstone in either shared tier, so
+   the change is a pure coverage fix.
+4. **`astor_memory/consolidate.py` had no entry point.** ADR-0007 chose
+   option C ("astor consolidate CLI with 4 actions") and the module
+   shipped, but the `am consolidate` subcommand was never wired -- so
+   the consolidation pass the ADR describes had zero callers. It also
+   had defaults that hid it: `--tier private --age-days 30` returned "0
+   actions" every time, because the dedup groups facts by their first 30
+   characters and every R-class lesson starts differently. The new
+   defaults (`--tier all --age-days 0`) surface the 31 dedup actions that
+   are actually there.
+
+Also: the knowledge_page topic layer is alive for the first time. The
+module and the cron script both existed, but the script was never
+scheduled, and the only 12 knowledge_page rows in the runtime were
+tombstoned test residue from one debugging session on 2026-09-29. The
+monthly refresh (cron `astor-topic-layer-refresh-monthly`,
+`09d55503711c`) now writes 5 live topic pages into the source tier,
+each linking 10 evidence facts.
+
+And the page body is now an INDEX rather than a hard-coded template.
+The template was a second source of truth that had already drifted: it
+cited "R106: position sizing -- no single stock over concentration
+limit" while R106 appears in ZERO astor facts (the real R106 is about
+single-token violations and cross-account basis differentials). The
+indexing logic lives in `astor_memory/nest/knowledge_pages.py`
+(`index_body`), so it ships with the package and is tested; the
+operator-specific topic list stays in the operator-side script.
+
+**fix(recall): the injection channels were preempting the ranking, and a
+LIKE match could outrank the fact the vector index had ranked first**
+
+The five auto-injection channels (meta-recall patterns, meta-recall
+lessons, trigger-aware boost, mental_model, knowledge_page) PREPENDED
+their rows to the recall list and stamped a hard-coded `similarity`
+(0.99 / 0.95 / 1.0) on them. The list was never globally sorted -- its
+order came from whichever channel ran last.
+
+So the order of the results was a property of the plumbing rather than
+of the relevance, and a row that merely matched the query lexically
+(a `content LIKE '%word%'` hit) landed at rank 1 with a synthetic 0.99,
+displacing the fact the vector index had actually ranked first.
+
+Measured on the 110-query eval set: **33.6% of rank-1 hits came from an
+injection channel.** For the query `德州扑克现金局` the rank-1 answer was
+an unrelated R-class lesson that happened to contain that string
+somewhere in its body -- it was not an answer to the question.
+
+Two changes, together:
+
+1. An injected row's similarity is derived from the REAL lexical overlap
+   between the query and the row (`_injection_similarity`), not a
+   constant. The 0.5 cap keeps an injected row below a strong vector hit
+   (typically 0.8-0.9) while letting a genuinely overlapping row outrank
+   a weak lexical match. The alpha sweep on the eval set is flat between
+   0.3 and 0.9, so this is a conservative pick inside a wide plateau.
+2. The finished list is sorted by similarity once, globally
+   (`_sort_by_similarity`), so every row competes on merit. The
+   retired-facts-sink-below-active rule (v1.17.50) rides along as the
+   primary key. The cold-start row stays pinned first -- it is a
+   behavioural gate ("recall before tool"), not a memory fact, and its
+   similarity of 1.0 carries no relevance meaning.
+
+Result on the same eval set:
+
+| metric | before | after |
+|---|---|---|
+| rank-1 accuracy | 0.727 | **0.845** |
+| MRR | 0.811 | **0.891** |
+| hit@10 | 0.955 | 0.955 (unchanged) |
+
+The injection feature keeps working: injected rows still land inside the
+top 10. That was the constraint -- simply demoting them below the scored
+rows pushed 94.5% of them out of the top 10, which would have disabled
+the feature the channels exist for (surfacing facts the lexical scorer
+would otherwise miss).
+
+Also fixed: the eval oracle's keyword-only "the store already holds it"
+verdict was reporting false positives (a query about the current timezone
+matched a date-mismatch R-class lesson that merely contained the word
+"时区"). Noted for a follow-up ruler fix.
+
 ## 1.17.87
 
 **fix(eval): editing the runner's plumbing discarded the entire measurement

@@ -596,6 +596,36 @@ def main(argv: list[str] | None = None) -> int:
     help='Flag stagnation if N of last --window sweeps share the same dimension (default 4)')
     decay_stag_p.set_defaults(func=cmd_decay_sweep_stagnation)
 
+    # v1.17.88: `am consolidate` -- ADR-0007 chose option C ("astor
+    # consolidate CLI with 4 actions") and the module shipped
+    # (astor_memory/consolidate.py) but the CLI subcommand was never
+    # added, so the tool had no entry point and zero callers.
+    #
+    # The defaults also hid the tool: --tier private + --age-days 30 on a
+    # corpus whose facts are long R-class lessons (each with a DIFFERENT
+    # first 30 characters, so the dedup prefix grouping finds nothing)
+    # returned "0 actions" every time -- which reads like "the tool is
+    # broken" rather than "the scope was empty". The defaults now cover
+    # every tier and every age, which is what an operator asking
+    # "consolidate my memory" means.
+    consol_p = subparsers.add_parser(
+        'consolidate', help='Sleep-period memory maintenance (ADR-0007): dedup / upgrade / classify / promote')
+    consol_p.add_argument('--actions', default='dedup,upgrade,classify',
+                        help='comma-separated subset of dedup,upgrade,classify,promote')
+    consol_p.add_argument('--age-days', type=int, default=0,
+                        help='only consider facts older than this (default 0 = every age)')
+    consol_p.add_argument('--user', default='admin',
+                        help="whose private tier to look in ('admin' = admin's own DB)")
+    consol_p.add_argument('--tier', default='all', choices=['all', 'public', 'source', 'private'],
+                        help="which tier to look in (default all)")
+    consol_p.add_argument('--cap', type=int, default=6000,
+                        help='max facts to consider per run (default 6000)')
+    consol_p.add_argument('--execute', action='store_true',
+                        help='actually apply the changes; default is a dry-run report')
+    consol_p.add_argument('--report', default=None,
+                        help='write the JSON report to this file')
+    consol_p.set_defaults(func=cmd_consolidate)
+
     mcp_serve.add_argument('--transport', default='stdio', choices=['stdio'],
                        help='MCP transport (only stdio supported in v1.1)')
     mcp_serve.set_defaults(func=cmd_mcp_serve)
@@ -7808,6 +7838,50 @@ def cmd_decay_sweep_run(args) -> int:
             )
     print("   Reversible via: POST /v1/fact/<id>/restore")
     return 0
+
+
+def cmd_consolidate(args) -> int:
+    """v1.17.88: `am consolidate` -- ADR-0007 option C, the sleep-period
+    memory maintenance pass (dedup / upgrade / classify / promote).
+
+    The module (astor_memory/consolidate.py) shipped with ADR-0007 but the
+    CLI subcommand was never wired, so the tool had no entry point and no
+    callers -- the consolidation pass this ADR describes simply never ran.
+
+    Default is a dry-run report. --execute applies the changes.
+    """
+    from ..consolidate import consolidate as _consolidate
+
+    actions = [a.strip() for a in str(args.actions).split(',') if a.strip()]
+    known = {'dedup', 'upgrade', 'classify', 'promote'}
+    unknown = [a for a in actions if a not in known]
+    if unknown:
+        print(f'[ERR] unknown action(s): {", ".join(unknown)}. '
+              f'Known: {", ".join(sorted(known))}', file=sys.stderr)
+        return 2
+
+    report = _consolidate(
+        actions=actions,
+        age_days=int(args.age_days),
+        dry_run=not bool(getattr(args, 'execute', False)),
+        user_id=args.user,
+        tier=args.tier,
+        cap=int(args.cap),
+    )
+    out = report.to_dict()
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+
+    report_path = getattr(args, 'report', None)
+    if report_path:
+        try:
+            Path(report_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(report_path).write_text(
+                json.dumps(out, ensure_ascii=False, indent=2), encoding='utf-8')
+            print(f'report written: {report_path}', file=sys.stderr)
+        except OSError as exc:
+            print(f'[ERR] could not write report: {exc}', file=sys.stderr)
+            return 1
+    return 0 if not report.errors else 1
 
 
 def cmd_decay_sweep_stats(args) -> int:

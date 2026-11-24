@@ -344,4 +344,45 @@ def link_facts(
 def is_enabled() -> bool:
     """ASTOR_KNOWLEDGE_PAGES=1 enables read endpoints (default on)."""
     import os
-    return os.environ.get("ASTOR_KNOWLEDGE_PAGES", "1") == "1"
+    return os.environ.get('ASTOR_KNOWLEDGE_PAGES', '1') == '1'
+
+
+def index_body(title: str, evidence: list[dict]) -> str:
+    """Build a knowledge_page body that INDEXES the evidence.
+
+    v1.17.88. The topic pages were previously built from a hard-coded
+    markdown template PLUS a "Referenced: [ids]" footer. That template
+    was a second source of truth, and it had already drifted: it cited
+    "R106: position sizing -- no single stock over concentration limit"
+    while R106 appears in ZERO astor facts (the real R106 lives in a
+    skill file and is about single-token violations and cross-account
+    basis differentials -- a different rule).
+
+    A page that states a rule it cannot cite is worse than no page: the
+    agent reads it as authoritative. So the body is an INDEX -- the topic
+    title, the evidence count, and the first line of each evidence fact.
+    The rules live in the evidence rows (linked as parent_fact_ids), so
+    there is exactly one copy of every rule and it is the same copy the
+    recall path serves.
+
+    Args:
+      title:    the page title (the topic name).
+      evidence: list of dicts with at least 'id' and 'content'.
+
+    Returns:
+      the markdown body.
+    """
+    lines = [f"# {title}", ""]
+    if not evidence:
+        lines.append("_(no matching facts in the bus right now)_")
+        return "\n".join(lines) + "\n"
+
+    lines.append(f"{len(evidence)} matching fact(s). "
+                 "This page is an index -- the rules live in the facts it "
+                 "links, which are recalled in full on demand.")
+    lines.append("")
+    for r in evidence:
+        content = (r.get('content') or '').strip().replace('\n', ' ')
+        first = content[:160] + ('...' if len(content) > 160 else '')
+        lines.append(f"- **#{r['id']}** — {first}")
+    return "\n".join(lines) + "\n"

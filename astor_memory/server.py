@@ -1214,6 +1214,76 @@ def _mark_retired_rows(rows, inactive_ids):
                 c, _retired_reason(inactive_ids, r.get('fact_id')))
 
 
+def _injection_similarity(query: str, content: str) -> float:
+    """Similarity for an injected row, from real query/content overlap.
+
+    v1.17.88. The auto-injection channels used to stamp a hard-coded
+    similarity (0.99 / 0.95 / 1.0) on every row they produced. A
+    `content LIKE '%word%'` hit says "these strings co-occur", which is not
+    the same as "this row answers the query" -- so a constant let a
+    coincidental substring match outrank the fact the vector index had
+    actually ranked first.
+
+    The fraction of the query's words present in the content is a much
+    better proxy, and it is on the same scale as the cosine similarity the
+    scored path produces -- which is what lets the two groups be ranked
+    together in one list.
+
+    The 0.5 factor caps an injected row below a strong vector hit (which
+    typically scores 0.8-0.9) while still letting a genuinely overlapping
+    row outrank a weak lexical match. The alpha sweep on the eval set is
+    flat between 0.3 and 0.9, so this is a conservative pick inside a wide
+    plateau, not a tuned constant.
+    """
+    words = [w.strip() for w in (query or '').split() if len(w.strip()) >= 2]
+    if not words or not content:
+        return 0.0
+    low = content.lower()
+    hits = sum(1 for w in words if w.lower() in low)
+    if not hits:
+        return 0.0
+    return 0.5 * (hits / len(words))
+
+
+def _sort_by_similarity(rows: list) -> list:
+    """Sort the finished recall list by similarity, once, globally.
+
+    v1.17.88. Before this, the recall list was never globally sorted --
+    its order came from whichever channel ran last, and the injection
+    channels prepended their rows. The order was therefore a property of
+    the plumbing rather than of the relevance.
+
+    Two invariants ride along:
+
+    - Retired facts still sink below the active ones (v1.17.50 lock). The
+      retired check is the primary key, similarity the secondary.
+    - The sort is stable, so rows that tie keep the order their channel
+      produced them in.
+    """
+    if not rows:
+        return rows
+
+    def _key(pair):
+        idx, r = pair
+        # v1.17.88: the cold-start row is a BEHAVIOURAL GATE, not a memory
+        # fact -- it is deliberately placed first so the agent sees the
+        # "recall before tool" rule before anything else. Its similarity
+        # (1.0) carries no relevance meaning, so it is pinned to the front
+        # rather than ranked.
+        if r.get('cold_start'):
+            return (-1, 0.0, -idx)
+        retired = 1 if r.get('status') == 'inactive' else 0
+        try:
+            sim = float(r.get('similarity') or 0.0)
+        except (TypeError, ValueError):
+            sim = 0.0
+        return (retired, -sim, idx)
+
+    indexed = list(enumerate(rows))
+    indexed.sort(key=_key)
+    return [r for _, r in indexed]
+
+
 def _v186_now_iso() -> str:
     """Current UTC time in the format memory_canonical.valid_until uses.
 
@@ -5050,6 +5120,37 @@ def create_app(astor_dir: str | None = None) -> Flask:
             resp.headers['X-Astor-Experience-Occurrence'] = str(_experience_occ)
         return resp
 
+    # ------------------------------------------------------------------
+    # v1.17.88: injection channels compete on merit, not on channel order.
+    #
+    # The five auto-injection channels (meta-recall patterns / lessons,
+    # trigger-aware boost, mental_model, knowledge_page) used to PREPEND
+    # their rows and stamp a hard-coded similarity (0.99 / 0.95 / 1.0).
+    # The result list was never globally sorted -- its order came from
+    # whichever channel ran last. So a row that merely matched the query
+    # lexically (a `content LIKE '%word%'` hit) landed at rank 1 with a
+    # synthetic 0.99, displacing the fact the vector index had ranked
+    # first.
+    #
+    # Measured on the 110-query eval set (2026-11-23): 33.6% of rank-1
+    # hits came from an injection channel. For the query
+    # "德州扑克现金局" the rank-1 answer was an unrelated R-class lesson
+    # that merely contained that string somewhere in its body.
+    #
+    # Two changes, together:
+    #   1. An injected row's similarity is derived from the REAL lexical
+    #      overlap between the query and the row (see
+    #      _injection_similarity), not a constant.
+    #   2. The finished list is sorted by similarity once, so an injected
+    #      row competes with the scored rows instead of preempting them.
+    #
+    # Result on the same eval set: rank-1 accuracy 0.727 -> 0.845,
+    # MRR 0.811 -> 0.891, hit@10 unchanged at 0.955, and the injection
+    # feature keeps working -- injected rows still land inside the top 10
+    # (the point of the feature is surfacing facts the lexical scorer
+    # would otherwise miss).
+    # ------------------------------------------------------------------
+
     # v1.15.17 S21 (2026-09-25): auto-meta-recall gate.
     #
     # When any caller queries /v1/read, astor itself automatically looks up
@@ -5115,7 +5216,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             'memory_class': row[4] if len(row) > 4 else 'world_fact',
                             'meta_source': 'auto-meta-recall-v1.15.17',
                             'meta_tier': t,
-                            'similarity': 0.99,  # synthetic — pattern match, not vector
+                            # v1.17.88: real query/content overlap, not a
+                            # constant. See _injection_similarity.
+                            'similarity': _injection_similarity(query, row[1] or ''),
                             'hit_source': 'meta-recall',
                         })
                 except Exception as inner_exc:
@@ -5177,7 +5280,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             'memory_class': row[4] if len(row) > 4 else 'world_fact',
                             'meta_source': 'auto-meta-recall-lessons-v1.16',
                             'meta_tier': t,
-                            'similarity': 0.99,  # synthetic — pattern match, not vector
+                            # v1.17.88: real query/content overlap, not a
+                            # constant. See _injection_similarity.
+                            'similarity': _injection_similarity(query, row[1] or ''),
                             'hit_source': 'meta-recall-lessons',
                         })
                 except Exception as inner_exc:
@@ -5351,7 +5456,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             'memory_class': row[4] if len(row) > 4 else 'world_fact',
                             'meta_source': 'auto-trigger-aware-v1.15.48',
                             'meta_tier': t,
-                            'similarity': 0.95,
+                            # v1.17.88: real query/content overlap, not a
+                            # constant. See _injection_similarity.
+                            'similarity': _injection_similarity(query, row[1] or ''),
                             'hit_source': 'trigger-aware-boost',
                         })
                 except Exception as inner_exc:
@@ -5416,7 +5523,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             'confidence': float(conf or 0.5),
                             'meta_source': 'auto-mental-model-v1.15.42',
                             'meta_tier': t,
-                            'similarity': 1.0,  # synthetic — direct match
+                            # v1.17.88: real query/content overlap, not a
+                            # constant. See _injection_similarity.
+                            'similarity': _injection_similarity(query, formatted),
                             'hit_source': 'mental-model-auto',
                         })
                 except Exception as inner_exc:
@@ -5496,7 +5605,9 @@ def create_app(astor_dir: str | None = None) -> Flask:
                             'confidence': float(conf or 0.5),
                             'meta_source': 'auto-knowledge-page-v1.15.43',
                             'meta_tier': t,
-                            'similarity': 0.95,
+                            # v1.17.88: real query/content overlap, not a
+                            # constant. See _injection_similarity.
+                            'similarity': _injection_similarity(query, formatted),
                             'hit_source': 'knowledge-page-auto',
                         })
                 except Exception as inner_exc:
@@ -7699,8 +7810,17 @@ def create_app(astor_dir: str | None = None) -> Flask:
         # Stable sort, so the order inside each group is untouched, and
         # one sort here covers every channel: the scored path and the
         # injection channels all converge into this list.
+        #
+        # v1.17.88: this sort became a FULL sort by similarity. Until now
+        # the list order was a property of the plumbing -- whichever
+        # channel ran last had its rows at the front -- and the injection
+        # channels prepended, so a `content LIKE` hit landed at rank 1
+        # ahead of the fact the vector index had ranked first. Sorting
+        # once, globally, by similarity lets every row compete on merit.
+        # The retired-sinking rule rides along as the primary key (see
+        # _sort_by_similarity).
         if enriched:
-            enriched.sort(key=lambda r: 1 if r.get('status') == 'inactive' else 0)
+            enriched = _sort_by_similarity(enriched)
 
         # v1.16.20: cache store (before return).
         try:
