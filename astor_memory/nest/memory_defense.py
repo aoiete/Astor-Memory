@@ -208,13 +208,47 @@ class PIIMatch:
 # ---------------------------------------------------------------------------
 # Scan / redact / audit
 # ---------------------------------------------------------------------------
+def _luhn_ok(digits: str) -> bool:
+    """Luhn checksum on a 13-19 digit run.
+
+    The `credit_card` rule matches any run of 13-19 digits, but a
+    WeChat message id, an order number and a millisecond timestamp all
+    have that exact shape -- so a public-tier write carrying one was
+    refused with HTTP 400 (`pii_blocked`). A real card number passes
+    Luhn; a random id of that length passes about one time in ten.
+    """
+    nums = [int(c) for c in digits if c.isdigit()]
+    if len(nums) < 13:
+        return False
+    total = 0
+    for i, d in enumerate(reversed(nums)):
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+# A rule whose regex matches a SHAPE rather than a SEMANTIC gets a
+# validator here: a hit that fails the validator is not a hit. The
+# pattern behind them is the same one that made "Chrome/120.0.0.0" read
+# as an IPv4 address.
+_MATCH_VALIDATORS = {
+    'credit_card': _luhn_ok,
+}
+
+
 def scan_facts(content: str) -> list[PIIMatch]:
     """Return all PII hits in `content`. Empty list if clean."""
     if not content:
         return []
     out: list[PIIMatch] = []
     for name, rx, sev in _PATTERNS:
+        _validator = _MATCH_VALIDATORS.get(name)
         for m in rx.finditer(content):
+            if _validator is not None and not _validator(m.group(0)):
+                continue
             snippet = m.group(0)
             out.append(PIIMatch(
                 name=name,

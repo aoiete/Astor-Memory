@@ -221,3 +221,21 @@ def test_ipv4_rule_ignores_browser_version_numbers():
         "100.64.0.1",
     ):
         assert _has_ipv4(text), text
+
+def test_credit_card_rule_requires_a_luhn_checksum():
+    """v1.17.92: the credit_card rule matched any run of 13-19 digits, so a
+    WeChat message id, an order number and a millisecond timestamp were
+    read as card numbers and a public-tier write was refused with HTTP 400
+    (`pii_blocked`). A real card number passes Luhn."""
+    from astor_memory.nest.memory_defense import scan_facts as _scan
+
+    def _has_card(text):
+        return "credit_card" in {m.name for m in _scan(text)}
+
+    for text in ("wsid 7512345678901234567", "order 751234567890123456",
+                 "timestamp 1735689600000"):
+        assert not _has_card(text), text
+
+    for text in ("4111111111111111", "5555555555554444", "378282246310005",
+                 "6011111111111117", "4111-1111-1111-1111"):
+        assert _has_card(text), text
