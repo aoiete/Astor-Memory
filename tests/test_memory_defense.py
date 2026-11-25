@@ -24,15 +24,13 @@ sys.path.insert(0, str(ROOT))
 
 def _eq(label: str, got, expected) -> None:
     if got != expected:
-        print(f"  [FAIL] {label}\n    got     : {got}\n    expected: {expected}")
-        sys.exit(1)
+        raise AssertionError(f"{label}\n    got     : {got}\n    expected: {expected}")
     print(f"  [PASS] {label}")
 
 
 def _truthy(label: str, got) -> None:
     if not got:
-        print(f"  [FAIL] {label} (got falsy: {got!r})")
-        sys.exit(1)
+        raise AssertionError(f"{label} (got falsy: {got!r})")
     print(f"  [PASS] {label}")
 
 
@@ -55,7 +53,11 @@ def main() -> int:
         ("openrouter", "sk-or-v1-1234567890abcdefghijklmnop", "openrouter_api_key"),
         ("anthropic", "sk-ant-api03-1234567890abcdefghijklmnopqrst", "anthropic_api_key"),
         ("email", "alice@example.com", "email"),
-        ("wechat chat id", "<test-wechat-user-id>@im.wechat", "wechat_chat_id"),
+        # v1.17.91: the old sample was a <placeholder>, so it never matched
+        # the rule (which needs a leading "o" plus 20+ chars) -- and this
+        # file had never run under pytest, so nobody noticed. The rule was
+        # right; the sample was stale.
+        ("wechat chat id", "oABCDEFGHIJKLMNOPQRSTUVWXYZ012345@im.wechat", "wechat_chat_id"),
         ("btc legacy", "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", "btc_address"),
         ("eth", "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1", "eth_address"),
         ("aws access key", "AKIAIOSFODNN7EXAMPLE", "aws_access_key"),
@@ -167,7 +169,7 @@ def main() -> int:
     # 15) Real-world composite
     txt = (
         "User Alice (alice@example.com) sent a message to "
-        "<test-wechat-user-id>@im.wechat from 192.168.1.1. "
+        "oABCDEFGHIJKLMNOPQRSTUVWXYZ012345@im.wechat from 192.168.1.1. "
         "Her API key was sk-abcdefghijklmnopqrstuvwxyz0123456789."
     )
     matches = scan_facts(txt)
@@ -184,3 +186,11 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_memory_defense_script():
+    """v1.17.91: this file was a script (main() + sys.exit()), so pytest
+    collected nothing from it and its assertions had never run. The helper
+    functions now raise AssertionError instead of calling sys.exit(), and
+    this entry point runs the original body under pytest."""
+    assert main() == 0

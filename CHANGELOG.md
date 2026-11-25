@@ -17,6 +17,16 @@
   shared-tier writes into the private tier. A common surname is now
   required in front. Layer 1 remains the authoritative PII gate.
 
+### Fixed
+- **Two test files that pytest never collected now run.** Both were
+  scripts (`main()` + `sys.exit()`), so their assertions had never
+  executed. `test_memory_defense.py` immediately failed on two stale
+  samples: the WeChat id samples were `<test-wechat-user-id>` placeholders,
+  which the `wechat_chat_id` rule has never matched (it requires a
+  leading `o` plus 20+ characters). The rule was right; the samples were
+  stale. `test_personal_content_sniff.py` and `test_pii_public_gate.py`
+  were converted the same way.
+
 ### Changed
 - `tests/test_personal_content_sniff.py` is pytest-style now. It was a
   script (`main()` + `sys.exit()`), so pytest collected nothing from it
