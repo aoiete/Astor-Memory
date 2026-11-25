@@ -1,3 +1,27 @@
+## 1.17.91
+
+### Fixed
+- **Retired facts no longer crowd out live ones in the candidate pool.** The
+  vector index keeps embeddings for tombstoned facts, so on the source tier
+  312 of the 516 indexed facts were dead rows. They filled the whole
+  top-20 pool, and the final `tombstoned = 0` filter then left a single
+  row -- `kraken API limit order` over tier `source` returned 1 result
+  where BM25 alone had 34 hits. The dead ids are now dropped from the
+  BM25 and vector hit lists before the merge.
+  Effect: that query returns 9 rows instead of 1; the control-set gate
+  goes 38/39 -> 39/39 (Q72 passes); the 110-question eval improves
+  (MRR 0.9362 -> 0.9425, misses 5 -> 3).
+- **`name_chinese` no longer reads ordinary technical prose as a person's
+  name.** The Layer 2 sniff matched any 2-4 Chinese characters followed by
+  a verb, so "丢失发生在", "尚未定位到" and "截断到" all matched and pushed
+  shared-tier writes into the private tier. A common surname is now
+  required in front. Layer 1 remains the authoritative PII gate.
+
+### Changed
+- `tests/test_personal_content_sniff.py` is pytest-style now. It was a
+  script (`main()` + `sys.exit()`), so pytest collected nothing from it
+  and its assertions had never run.
+
 ## 1.17.90
 
 **chore(retrieval): MMR pool sizing and score scale -- measured, then reverted**

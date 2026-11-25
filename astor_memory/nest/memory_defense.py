@@ -370,8 +370,19 @@ def audit_log_record(fact_id: int | None, user: str, tier: str,
 _PERSONAL_CONTENT_PATTERNS: dict[str, list] = {
     # 中文 2-4 字姓名 + 后续事件动词 (张三去了 / 张三家发生钱王) — 用反向匹配
     # 后续是"发生/说/做/去/来/在/到/跟/和"等动词时，前面 2-4 中文字符视为人名
+    # v1.17.91: this is the Layer 2 sniff, not the authoritative gate
+    # (Layer 1 blocks the real PII), so a false positive only costs a
+    # shared-tier write its shared tier. The old shape matched ANY 2-4
+    # Chinese chars followed by a verb, so ordinary technical prose read
+    # as a person's name: "丢失发生在", "尚未定位到", "截断到" all
+    # matched and pushed the fact into the private tier. Require a
+    # common surname in front -- that is what a Chinese name looks like.
     'name_chinese': [
-        re.compile(r'[一-鿿]{2,4}(?:家|说|做|去|来|在|到|跟|和|把|给|叫|想|觉得|发生|去世|结婚)'),
+        re.compile(
+            r'[张李王刘陈杨黄赵周吴徐孙马朱胡郭何高林罗郑梁谢宋唐许韩冯邓曹彭曾肖田董袁潘'
+            r'于蒋蔡余杜叶程苏魏吕丁任沈姚卢姜崔钟谭陆汪范金石廖贾夏韦付方白邹孟熊秦邱江尹'
+            r'薛段雷侯龙史陶黎贺顾毛郝龚邵万钱严覃武戴莫孔向汤]'
+            r'[一-鿿]{1,2}(?:家|说|做|去|来|在|到|跟|和|把|给|叫|想|觉得|发生|去世|结婚)'),
     ],
     # "我在 X" / "我去 X" / "她在 X" + 地点（中文 2-5 字地名，常见城市名 + 后缀可选）
     'location': [

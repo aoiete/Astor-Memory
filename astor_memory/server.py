@@ -6295,6 +6295,25 @@ def create_app(astor_dir: str | None = None) -> Flask:
                     if _fid not in _bm25_seen or _s > _bm25_seen[_fid]:
                         _bm25_seen[_fid] = _s
             bm25_hits = list(_bm25_seen.items())
+            # v1.17.91: the vector index keeps embeddings for retired facts,
+            # so a hit list can be mostly dead rows. On the source tier
+            # 312 of the 516 indexed facts are tombstoned; they filled the
+            # whole candidate pool, and the final `tombstoned = 0` filter
+            # then left a single row for a query that BM25 had 34 hits
+            # for. Drop the dead ones before the merge, not after.
+            _dead_ids = set()
+            for _hits in (bm25_hits, vector_hits):
+                _hf = [int(f) for f, _ in _hits]
+                if not _hf:
+                    continue
+                _ph = ",".join("?" * len(_hf))
+                _dead_ids.update(
+                    int(r[0]) for r in bus.conn.execute(
+                        f"SELECT id FROM memory_canonical WHERE id IN ({_ph}) "
+                        f"AND COALESCE(tombstoned,0)=1", _hf))
+            if _dead_ids:
+                bm25_hits = [(f, s) for f, s in bm25_hits if int(f) not in _dead_ids]
+                vector_hits = [(f, s) for f, s in vector_hits if int(f) not in _dead_ids]
             # v1.16.73 Ship F: opt-in RRF (Reciprocal Rank Fusion) path.
             # When caller passes body.use_rrf=True, replace the weighted-sum
             # hybrid_merge with proper RRF across the existing candidate
