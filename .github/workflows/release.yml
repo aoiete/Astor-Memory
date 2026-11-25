@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. 1.17.91) -- the tag must already exist'
+        description: 'Version to release (e.g. v1.17.91) -- the tag must already exist'
         required: true
         # v1.17.86: this default was v1.17.26, frozen since Week 4 of the
         # plan. A stale default is worse than no default: the workflow
@@ -18,7 +18,7 @@ on:
         # was never updated". test_release_workflow_security.py keeps
         # this default equal to pyproject.toml's version, so it cannot
         # go stale again.
-        default: '1.17.91'
+        default: 'v1.17.91'
       pypi:
         description: 'Upload to PyPI?'
         required: false
