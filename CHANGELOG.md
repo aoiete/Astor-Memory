@@ -1,3 +1,31 @@
+## 1.17.95
+
+### Changed
+- **Seventeen test files now actually run.** pytest collects functions
+  named `test_*`, and these files were scripts (`main()` + `sys.exit()`),
+  so pytest collected nothing from them and their assertions had never
+  executed. A file that reads as coverage but asserts nothing is worse
+  than no test, because its presence looks like protection. Each file
+  gained a pytest entry point that runs the original body and turns the
+  script's own `sys.exit(1)` into a test failure; the bodies are
+  untouched, so running the files directly still works.
+
+  Three stale expectations were found and fixed while converting
+  (`test_distiller.py`): a bare domain is kept on purpose since v1.17.8,
+  and the full-width dot in a `[STATE-CONST]` token was dropped in
+  v1.17.7.
+
+  One case is now a documented known failure rather than a passing
+  expectation: `test_distiller.py` case 12, where the sentence splitter
+  also cuts at the dot inside `abc.py`, so the surviving fragment is
+  dropped with the first-person clause and the method keywords never
+  survive. The current behaviour was NOT written into the expectation --
+  that would freeze the defect into the test.
+
+  `test_tier_routing.py` reaches the live server through
+  `ASTOR_BASE_URL`; point that at a dead port when running it so it does
+  not write to the live public tier.
+
 ## 1.17.94
 
 ### Fixed

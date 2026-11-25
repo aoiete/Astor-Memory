@@ -29,15 +29,13 @@ from astor_memory.nest.knowledge_pages import (
 
 def _eq(label, got, expected):
     if got != expected:
-        print(f"  [FAIL] {label}\n    got     : {got!r}\n    expected: {expected!r}")
-        sys.exit(1)
+        raise AssertionError(f"{label}\n    got     : {got!r}\n    expected: {expected!r}")
     print(f"  [PASS] {label}")
 
 
 def _truthy(label, got):
     if not got:
-        print(f"  [FAIL] {label} (got falsy: {got!r})")
-        sys.exit(1)
+        raise AssertionError(f"{label} (got falsy: {got!r})")
     print(f"  [PASS] {label}")
 
 
@@ -157,6 +155,10 @@ def _make_bus_db() -> sqlite3.Connection:
             col_defs.append(" ".join(parts))
         ddl = "CREATE TABLE memory_canonical (" + ", ".join(col_defs) + ")"
     else:
+        # Fallback schema for a machine with no live runtime to mirror.
+        # Must carry every column the FakeBus writes and knowledge_pages.py
+        # reads: keywords/context (v1.2.0), scope_type/verdict (Insight 6/12),
+        # invalidated_reason (bi-temporal v13->v14).
         ddl = (
             "CREATE TABLE memory_canonical ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -169,9 +171,10 @@ def _make_bus_db() -> sqlite3.Connection:
             "memory_class TEXT NOT NULL DEFAULT 'world_fact',"
             "content TEXT NOT NULL DEFAULT '',"
             "importance REAL,confidence REAL,"
-            "tags TEXT,metadata TEXT,source_hash TEXT,"
+            "tags TEXT,metadata TEXT,keywords TEXT,context TEXT,source_hash TEXT,"
             "created_at TEXT,promoted_at TEXT,promoted_by TEXT,"
             "tombstoned INTEGER DEFAULT 0,tombstoned_at TEXT,"
+            "scope_type TEXT,verdict TEXT,invalidated_reason TEXT,"
             "embedding_version INTEGER NOT NULL DEFAULT 1,"
             "provenance_kind TEXT,provenance_agent TEXT,"
             "evidence_quote TEXT,source_ref TEXT)"
@@ -323,8 +326,7 @@ def main() -> int:
     bus = FakeBus(conn)
     try:
         link_facts(bus, slug="missing", tier="public")
-        print("  [FAIL] link_facts unknown slug should raise")
-        sys.exit(1)
+        raise AssertionError("link_facts unknown slug should raise")
     except ValueError:
         print("  [PASS] link_facts unknown slug raises ValueError")
     conn.close()
@@ -379,8 +381,7 @@ def main() -> int:
     bus = FakeBus(conn)
     try:
         upsert_knowledge_page(bus, slug="", title="x", body="x", tier="public")
-        print("  [FAIL] empty slug should raise")
-        sys.exit(1)
+        raise AssertionError("empty slug should raise")
     except ValueError:
         print("  [PASS] empty slug raises ValueError")
     conn.close()
@@ -391,3 +392,11 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def test_knowledge_pages_script():
+    """v1.17.91: this file was a script (main() + sys.exit()), so pytest
+    collected nothing from it and its assertions had never run. The helper
+    functions now raise AssertionError instead of calling sys.exit(), and
+    this entry point runs the original body under pytest."""
+    assert main() == 0

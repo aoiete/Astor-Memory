@@ -182,3 +182,16 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+def test_test_mmr_reranker_script():
+    """v1.17.91: this file was a script (main() + sys.exit()), so pytest
+    collected nothing from it and its assertions had never run.
+
+    The body is untouched: running the file directly still works, and the
+    script's own sys.exit(1) on a failed assertion becomes a test failure
+    instead of killing the whole pytest session."""
+    try:
+        _rc = main()
+    except SystemExit as _exc:
+        raise AssertionError("the script's own check failed and exited with %s" % (_exc.code,))
+    assert _rc in (0, None), "the script returned %r" % (_rc,)

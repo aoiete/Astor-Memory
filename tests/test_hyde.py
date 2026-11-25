@@ -42,15 +42,13 @@ from astor_memory.nest.hyde import (
 
 def _eq(label, got, expected):
     if got != expected:
-        print(f"  [FAIL] {label}\n    got     : {got}\n    expected: {expected}")
-        sys.exit(1)
+        raise AssertionError(f"{label}\n    got     : {got}\n    expected: {expected}")
     print(f"  [PASS] {label}")
 
 
 def _truthy(label, got):
     if not got:
-        print(f"  [FAIL] {label} (got falsy: {got!r})")
-        sys.exit(1)
+        raise AssertionError(f"{label} (got falsy: {got!r})")
     print(f"  [PASS] {label}")
 
 
@@ -162,3 +160,11 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_hyde_script():
+    """v1.17.91: this file was a script (main() + sys.exit()), so pytest
+    collected nothing from it and its assertions had never run. The helper
+    functions now raise AssertionError instead of calling sys.exit(), and
+    this entry point runs the original body under pytest."""
+    assert main() == 0

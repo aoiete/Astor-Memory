@@ -43,15 +43,13 @@ class FakeBus:
 
 def _truthy(label, got):
     if not got:
-        print(f"  [FAIL] {label} (got falsy: {got!r})")
-        sys.exit(1)
+        raise AssertionError(f"{label} (got falsy: {got!r})")
     print(f"  [PASS] {label}")
 
 
 def _eq(label, got, expected):
     if got != expected:
-        print(f"  [FAIL] {label}\n    got     : {got!r}\n    expected: {expected!r}")
-        sys.exit(1)
+        raise AssertionError(f"{label}\n    got     : {got!r}\n    expected: {expected!r}")
     print(f"  [PASS] {label}")
 
 
@@ -273,8 +271,7 @@ def main_lessons() -> int:
     ).fetchall()
     _eq("lesson kind filter excludes success_pattern", len(rows4), 1)
     if rows4 and rows4[0][0] != 'lesson':
-        print(f"  [FAIL] lesson row kind mismatch: {rows4[0][0]!r}")
-        sys.exit(1)
+        raise AssertionError(f"lesson row kind mismatch: {rows4[0][0]!r}")
     print("  [PASS] lesson kind filter excludes success_pattern (kind check)")
 
     print("\nAll tests PASSED.")
@@ -286,3 +283,17 @@ if __name__ == "__main__":
     if rc == 0:
         rc = main_lessons()
     sys.exit(rc)
+
+
+def test_meta_recall_injection_script():
+    """v1.17.91: this file was a script (main() + sys.exit()), so pytest
+    collected nothing from it and its assertions had never run. The helper
+    functions now raise AssertionError instead of calling sys.exit(), and
+    this entry point runs the original body under pytest."""
+    assert main() == 0
+
+
+def test_meta_recall_lessons_script():
+    """The v1.16+ lesson-injection half of the file (main_lessons) was
+    likewise never collected."""
+    assert main_lessons() == 0

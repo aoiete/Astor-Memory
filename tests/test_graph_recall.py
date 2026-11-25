@@ -29,15 +29,13 @@ from astor_memory.nest.graph_recall import (
 
 def _eq(label, got, expected):
     if got != expected:
-        print(f"  [FAIL] {label}\n    got     : {got!r}\n    expected: {expected!r}")
-        sys.exit(1)
+        raise AssertionError(f"{label}\n    got     : {got!r}\n    expected: {expected!r}")
     print(f"  [PASS] {label}")
 
 
 def _truthy(label, got):
     if not got:
-        print(f"  [FAIL] {label} (got falsy: {got!r})")
-        sys.exit(1)
+        raise AssertionError(f"{label} (got falsy: {got!r})")
     print(f"  [PASS] {label}")
 
 
@@ -207,3 +205,11 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def test_graph_recall_script():
+    """v1.17.91: this file was a script (main() + sys.exit()), so pytest
+    collected nothing from it and its assertions had never run. The helper
+    functions now raise AssertionError instead of calling sys.exit(), and
+    this entry point runs the original body under pytest."""
+    assert main() == 0

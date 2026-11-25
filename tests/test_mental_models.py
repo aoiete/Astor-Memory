@@ -114,7 +114,6 @@ def _make_minimal_bus_db() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     _live_dir = os.environ.get('ASTOR_DIR') or os.path.expanduser('~/.astor')
     live_db = os.path.join(_live_dir, 'public', 'memory', 'astor_bus_public.db')
-    import os
     src = None
     if os.path.exists(live_db):
         src = sqlite3.connect(live_db)
@@ -143,7 +142,9 @@ def _make_minimal_bus_db() -> sqlite3.Connection:
             col_defs.append(" ".join(parts))
         ddl = "CREATE TABLE memory_canonical (" + ", ".join(col_defs) + ")"
     else:
-        # No live DB to mirror — minimal fallback (just the cols mental_models.py uses)
+        # No live DB to mirror — minimal fallback (just the cols mental_models.py
+        # uses). Must also carry every column FakeBus.promote_candidate writes:
+        # metadata/keywords/context (v1.2.0), scope_type/verdict (Insight 6/12).
         ddl = (
             "CREATE TABLE memory_canonical ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -156,9 +157,13 @@ def _make_minimal_bus_db() -> sqlite3.Connection:
             "memory_class TEXT NOT NULL DEFAULT 'world_fact',"
             "content TEXT NOT NULL DEFAULT '',"
             "importance REAL,confidence REAL,"
-            "tags TEXT,source_hash TEXT,"
+            "tags TEXT,metadata TEXT,keywords TEXT,context TEXT,source_hash TEXT,"
             "created_at TEXT,promoted_at TEXT,promoted_by TEXT,"
-            "tombstoned INTEGER DEFAULT 0,tombstoned_at TEXT)"
+            "tombstoned INTEGER DEFAULT 0,tombstoned_at TEXT,"
+            "scope_type TEXT,verdict TEXT,"
+            "embedding_version INTEGER NOT NULL DEFAULT 1,"
+            "provenance_kind TEXT,provenance_agent TEXT,"
+            "evidence_quote TEXT,source_ref TEXT)"
         )
     conn.execute(ddl)
     conn.execute("""
@@ -193,15 +198,13 @@ def _make_minimal_bus_db() -> sqlite3.Connection:
 
 def _eq(label, got, expected):
     if got != expected:
-        print(f"  [FAIL] {label}\n    got     : {got}\n    expected: {expected}")
-        sys.exit(1)
+        raise AssertionError(f"{label}\n    got     : {got}\n    expected: {expected}")
     print(f"  [PASS] {label}")
 
 
 def _truthy(label, got):
     if not got:
-        print(f"  [FAIL] {label} (got falsy: {got!r})")
-        sys.exit(1)
+        raise AssertionError(f"{label} (got falsy: {got!r})")
     print(f"  [PASS] {label}")
 
 
@@ -315,3 +318,11 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_mental_models_script():
+    """v1.17.91: this file was a script (main() + sys.exit()), so pytest
+    collected nothing from it and its assertions had never run. The helper
+    functions now raise AssertionError instead of calling sys.exit(), and
+    this entry point runs the original body under pytest."""
+    assert main() == 0
