@@ -1,3 +1,19 @@
+## 1.17.94
+
+### Fixed
+- **A technical lesson that merely MENTIONS a sensitive topic can now
+  reach the shared tier.** `has_any_block` counted any non-empty
+  `has_pii()` list as a block signal, but `has_pii` also returns
+  `pii_keyword_context` at severity `review` -- a soft warning by
+  definition. The keyword table behind it includes "address", "credit
+  card", "SSN", "bank account" and "passport", so any lesson ABOUT card
+  detection or address handling was itself treated as personal content
+  and silently routed to the private tier. Only `block` and `redact`
+  severities gate the promotion now.
+
+  Real PII is unaffected: a card number, a phone number or a home
+  address still classifies as personal.
+
 ## 1.17.92
 
 ### Fixed

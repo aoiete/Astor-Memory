@@ -112,3 +112,27 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+def test_review_severity_does_not_block_shared_tier():
+    """v1.17.93: 'review' severity is a soft warning by definition, but
+    has_any_block counted any non-empty has_pii() list -- so a technical
+    lesson that merely MENTIONED a sensitive topic ("credit card",
+    "address", "SSN") was routed to the private tier and could never reach
+    the shared layer. Only block/redact severities gate the promotion."""
+    from astor_memory.nest.visibility_classifier import classify_visibility
+
+    technical = (
+        "R-class: the credit_card rule matched any run of 13-19 digits, so a "
+        "WeChat message id read as a card number. Fixed with a Luhn checksum. "
+        "A sentence-final private address still matches."
+    )
+    r = classify_visibility(technical, kind='lesson', confidence=0.85)
+    assert r['visibility'] == 'commons', r
+    # the soft warning is still recorded
+    assert any(m['name'] == 'pii_keyword_context' for m in r['signals']['pii'])
+
+    # real PII is still personal
+    for text in ("my credit card number is 4111111111111111",
+                 "I live at 123 Main Street, my phone is 555-123-4567"):
+        r2 = classify_visibility(text, kind='lesson', confidence=0.85)
+        assert r2['visibility'] == 'personal', (text, r2)

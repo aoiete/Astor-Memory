@@ -519,7 +519,20 @@ def classify_visibility(
         'emotion': has_emotion(text),
         'geographic': has_geographic(text),
     }
-    has_any_block = any(bool(v) for v in signals.values())
+    # v1.17.93: 'review' severity is a SOFT warning by definition -- it
+    # exists to flag a text for a human, not to block it. Counting it as
+    # a block signal meant any technical text that merely MENTIONED a
+    # sensitive topic was routed to the private tier: the keyword table
+    # includes "address", "credit card", "SSN" and "bank account", so a
+    # lesson ABOUT card-number detection was itself treated as personal
+    # and could never reach the shared layer. Only block/redact
+    # severities gate the promotion.
+    def _blocks(v) -> bool:
+        if isinstance(v, list):
+            return any(m.get('severity') in ('block', 'redact') for m in v)
+        return bool(v)
+
+    has_any_block = any(_blocks(v) for v in signals.values())
 
     # Layer 1: admin global toggle (highest priority)
     if not admin_allow_commons:
