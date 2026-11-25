@@ -194,3 +194,30 @@ def test_memory_defense_script():
     functions now raise AssertionError instead of calling sys.exit(), and
     this entry point runs the original body under pytest."""
     assert main() == 0
+
+def test_ipv4_rule_ignores_browser_version_numbers():
+    """v1.17.92: a browser UA carried a false positive -- "Chrome/120.0.0.0"
+    was read as an IPv4 address, and a public-tier write carrying a UA was
+    refused with HTTP 400. The version-number SHAPE is excluded, not the
+    context: excluding by context ("not preceded by /") would also drop a
+    real IP inside a URL."""
+    from astor_memory.nest.memory_defense import scan_facts as _scan
+
+    def _has_ipv4(text):
+        return "ipv4" in {m.name for m in _scan(text)}
+
+    for text in (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "version 120.0.0.0 of the browser",
+        "Chrome/131.0.6778.86",
+    ):
+        assert not _has_ipv4(text), text
+
+    for text in (
+        "the host is at 192.168.1.1 and the gateway 10.0.0.1",
+        "resolve 8.8.8.8 first",
+        "see http://192.168.1.1:8080/x for details",
+        "100.64.0.1",
+    ):
+        assert _has_ipv4(text), text

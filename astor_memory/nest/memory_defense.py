@@ -93,7 +93,20 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
     ("phone_intl", re.compile(r"\+\d{1,3}[\s-]\d{3,}[\s-]\d{3,}[\s-]\d{3,}\b"), "block"),
     ("ssn_us", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "block"),
     ("credit_card", re.compile(r"\b(?:\d[ -]*?){13,19}\b"), "block"),
-    ("ipv4", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "block"),
+    # v1.17.92: the old pattern matched ANY 4 dot-separated numbers, so a
+    # browser UA carried a false positive -- "Chrome/120.0.0.0" was read
+    # as an IPv4 address, and a public-tier write containing a UA was
+    # refused with HTTP 400. Exclude the version-number SHAPE (first
+    # octet >= 100 with three zero octets) rather than excluding by
+    # context: a context rule like "not preceded by /" would also drop a
+    # real IP inside a URL (http://192.168.1.1:8080/), which is the
+    # direction that must not fail. Octets are also bounded to 0-255 now.
+    ("ipv4", re.compile(
+        r"(?<![\d.])"
+        r"(?!(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.0\.0\.0\b)"
+        r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
+        r"(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}"
+        r"(?!\d)"), "block"),
 
     # WeChat chat IDs — operator's specific concern (R-class 1152, 8983)
     ("wechat_chat_id", re.compile(r"\bo[A-Za-z0-9_-]{20,}@im\.wechat\b"), "block"),

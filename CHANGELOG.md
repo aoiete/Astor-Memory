@@ -1,3 +1,24 @@
+## 1.17.92
+
+### Fixed
+- **A browser UA no longer reads as an IPv4 address.** The `ipv4` rule
+  matched any four dot-separated numbers, so `Chrome/120.0.0.0` was a
+  false positive -- and a public-tier write carrying a UA was refused
+  with HTTP 400. The version-number SHAPE is now excluded (first octet
+  >= 100 with three zero octets) rather than the context: a context
+  rule like "not preceded by /" would also drop a real IP inside a URL
+  (`http://192.168.1.1:8080/`), which is the direction that must not
+  fail. Octets are bounded to 0-255 now, and a sentence-final
+  `192.168.1.1.` still matches.
+
+  This is the third instance of the same class (astor R-class fact 8591
+  recorded the browser-version and loopback-address false positives on
+  2026-10-30, and the same sweep found stock tickers hitting the
+  secret-key rule and 19-digit WeChat message ids hitting the card-number
+  rule). The pattern behind them: a PII rule that matches a SHAPE
+  rather than a SEMANTIC will eventually collide with ordinary text,
+  and the fix belongs in the rule, not in the caller.
+
 ## 1.17.91
 
 ### Fixed
